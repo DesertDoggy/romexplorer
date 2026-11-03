@@ -31,6 +31,9 @@
 [submodule "external/mame"]
 	path = external/mame
 	url = https://github.com/mamedev/mame
+	# Untracked files only: an IDE restoring the C# project under 3rdparty/zlib/contrib/nuget
+	# writes obj/ beside it; no build here writes into this tree.
+	ignore = untracked
 [submodule "external/playmatch"]
 	path = external/playmatch
 	url = https://github.com/RetroRealm/playmatch
