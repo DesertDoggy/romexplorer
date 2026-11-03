@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- romexplorer's application icon. THIS FILE IS THE SOURCE OF TRUTH.
+     Edit here, then re-render the bitmaps with scripts/render_icon.sh. That is a dev-machine
+     step: it needs a Chromium, which build hosts and CI do not have, which is exactly why the
+     rendered .png/.icns/.ico are committed next to it.
+
+     A Famicom read: white console body, #711521 cartridge and two controller bays inset on
+     the sides. The bays are inset rather than run edge to edge on purpose, so they read as
+     controllers sitting in recesses instead of as a border.
+
+     Composition: cartridge and magnifier over the wordmark, so "RomEx" stays legible down to
+     48px. The label text on the cartridge itself is gone by then; the wordmark is not. At
+     24px nothing keeps text, and the silhouette carries it.
+
+     Palette: body #711521, deepening to #4E0C17 and lifting to #8E2130; gold lens as the warm
+     complement; white tile so it stands apart from a screen of dark icons. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#ECE6DE"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#8E2130"/><stop offset="0.5" stop-color="#711521"/>
+      <stop offset="1" stop-color="#4E0C17"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#FFD98A"/><stop offset="1" stop-color="#D99A26"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- the two controller bays -->
+  <rect x="20" y="104" width="62" height="304" rx="22" fill="#711521"/>
+  <rect x="430" y="104" width="62" height="304" rx="22" fill="#711521"/>
+  <rect x="20" y="104" width="62" height="304" rx="22" fill="none" stroke="#4E0C17" stroke-width="6" opacity="0.5"/>
+  <rect x="430" y="104" width="62" height="304" rx="22" fill="none" stroke="#4E0C17" stroke-width="6" opacity="0.5"/>
+
+  <!-- cartridge + magnifier, scaled about their own centre so the tile stays balanced -->
+  <g transform="translate(262,190) scale(1.12) translate(-262,-190)">
+    <path fill="url(#body)" d="M158 64 h176 a30 30 0 0 1 30 30 v188 a30 30 0 0 1 -30 30 h-44 v-30 h-88 v30 h-44 a30 30 0 0 1 -30 -30 v-188 a30 30 0 0 1 30 -30 z"/>
+    <path fill="#FFFFFF" opacity="0.22" d="M158 64 h176 a30 30 0 0 1 30 30 v14 h-236 v-14 a30 30 0 0 1 30 -30 z"/>
+    <rect x="182" y="96" width="128" height="74" rx="12" fill="#FFFFFF"/>
+    <!-- two bars, not type: a label reading "RomEx" would be illegible at every size that matters -->
+    <g fill="#B08089" opacity="0.6">
+      <rect x="196" y="114" width="100" height="13" rx="6"/>
+      <rect x="196" y="137" width="68" height="13" rx="6"/>
+    </g>
+    <g fill="#3A0A12" opacity="0.8">
+      <rect x="196" y="206" width="30" height="40" rx="6"/>
+      <rect x="231" y="206" width="30" height="40" rx="6"/>
+      <rect x="266" y="206" width="30" height="40" rx="6"/>
+    </g>
+    <line x1="330" y1="268" x2="372" y2="310" stroke="#4E0C17" stroke-width="44" stroke-linecap="round"/>
+    <line x1="330" y1="268" x2="372" y2="310" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round"/>
+    <circle cx="300" cy="238" r="72" fill="#4E0C17"/>
+    <circle cx="300" cy="238" r="58" fill="url(#lens)"/>
+    <circle cx="300" cy="238" r="65" fill="none" stroke="#FFFFFF" stroke-width="16"/>
+  </g>
+
+  <text x="256" y="440" text-anchor="middle" font-family="DejaVu Sans, Verdana, sans-serif"
+        font-weight="bold" font-size="92" letter-spacing="-3" fill="#711521">Rom<tspan fill="#C08A2E">Ex</tspan></text>
+</svg>

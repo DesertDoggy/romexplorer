@@ -1,0 +1,230 @@
+diff --git a/C/Sha512.c b/C/Sha512.c
+index f0787fd..45382a9 100644
+--- a/C/Sha512.c
++++ b/C/Sha512.c
+@@ -574,7 +574,7 @@ Are there any ways to fix the problems with arm64-wine and x64-SDE cases?
+       return False;
+     }
+     */
+-    printf("====== signal(SIGILL)\n");
++    PRF(printf("====== signal(SIGILL)\n");)
+     signal_prev = signal(SIGILL, Sha512_signal_Handler);
+     if (signal_prev == SIG_ERR)
+     {
+diff --git a/CPP/7zip/Archive/7z/7zExtract.cpp b/CPP/7zip/Archive/7z/7zExtract.cpp
+index 1c31e1d..aad89e9 100644
+--- a/CPP/7zip/Archive/7z/7zExtract.cpp
++++ b/CPP/7zip/Archive/7z/7zExtract.cpp
+@@ -30,6 +30,7 @@ private:
+   bool _calcCrc;
+   UInt32 _crc;
+   UInt64 _rem;
++  Int32 _askMode;
+ 
+   const UInt32 *_indexes;
+   // unsigned _startIndex;
+@@ -44,8 +45,11 @@ private:
+ public:
+   const CDbEx *_db;
+   CMyComPtr<IArchiveExtractCallback> ExtractCallback;
++  CMyComPtr<IArchiveExtractCallbackData2> DataCallback;
++  CMyComPtr<IArchiveExtractCallbackDataFile2> DataFileCallback;
+ 
+   bool ExtraWriteWasCut;
++  bool StopByDataCallback;
+ 
+   CFolderOutStream():
+       TestMode(false),
+@@ -68,6 +72,8 @@ HRESULT CFolderOutStream::Init(unsigned startIndex, const UInt32 *indexes, unsig
+   
+   _fileIsOpen = false;
+   ExtraWriteWasCut = false;
++  StopByDataCallback = false;
++  _askMode = NExtract::NAskMode::kSkip;
+   
+   return ProcessEmptyFiles();
+ }
+@@ -102,11 +108,28 @@ HRESULT CFolderOutStream::OpenFile(bool isCorrupted)
+       && !_db->IsItemAnti(_fileIndex)
+       && !fi.IsDir)
+     askMode = NExtract::NAskMode::kSkip;
++
++  if (DataFileCallback)
++  {
++    Int32 action = NExtract::NDataAction::kContinue;
++    RINOK(DataFileCallback->OnFileBegin(_fileIndex, fi.Size, askMode, &action))
++    if (action == NExtract::NDataAction::kStop && askMode == NExtract::NAskMode::kTest)
++    {
++      _askMode = askMode;
++      StopByDataCallback = true;
++      return k_My_HRESULT_WritingWasCut;
++    }
++  }
++
++  _askMode = askMode;
+   return ExtractCallback->PrepareOperation(askMode);
+ }
+ 
+ HRESULT CFolderOutStream::CloseFile_and_SetResult(Int32 res)
+ {
++  const UInt32 fileIndex = _fileIndex;
++  const Int32 askMode = _askMode;
++
+   _stream.Release();
+   _fileIsOpen = false;
+   
+@@ -119,7 +142,12 @@ HRESULT CFolderOutStream::CloseFile_and_SetResult(Int32 res)
+   }
+ 
+   _fileIndex++;
+-  return ExtractCallback->SetOperationResult(res);
++  RINOK(ExtractCallback->SetOperationResult(res))
++
++  if (DataFileCallback)
++    RINOK(DataFileCallback->OnFileEnd(fileIndex, res, askMode))
++
++  return S_OK;
+ }
+ 
+ HRESULT CFolderOutStream::CloseFile()
+@@ -150,12 +178,24 @@ Z7_COM7F_IMF(CFolderOutStream::Write(const void *data, UInt32 size, UInt32 *proc
+     if (_fileIsOpen)
+     {
+       UInt32 cur = (size < _rem ? size : (UInt32)_rem);
++      const UInt64 offsetInFile = _db->Files[_fileIndex].Size - _rem;
+       if (_calcCrc)
+       {
+         const UInt32 k_Step = (UInt32)1 << 20;
+         if (cur > k_Step)
+           cur = k_Step;
+       }
++      if (DataCallback && _askMode != NExtract::NAskMode::kSkip)
++      {
++        Int32 action = NExtract::NDataAction::kContinue;
++        RINOK(DataCallback->OnData(_fileIndex, offsetInFile, data, cur, _askMode, &action))
++        // We allow fast stop only in test mode to avoid partial file output.
++        if (action == NExtract::NDataAction::kStop && _askMode == NExtract::NAskMode::kTest)
++        {
++          StopByDataCallback = true;
++          return k_My_HRESULT_WritingWasCut;
++        }
++      }
+       HRESULT result = S_OK;
+       if (_stream)
+         result = _stream->Write(data, cur, &cur);
+@@ -295,11 +335,19 @@ Z7_COM7F_IMF(CHandler::Extract(const UInt32 *indices, UInt32 numItems,
+   CMyComPtr<IArchiveExtractCallbackMessage2> callbackMessage;
+   extractCallback.QueryInterface(IID_IArchiveExtractCallbackMessage2, &callbackMessage);
+ 
++  CMyComPtr<IArchiveExtractCallbackData2> callbackData;
++  extractCallback.QueryInterface(IID_IArchiveExtractCallbackData2, &callbackData);
++
++  CMyComPtr<IArchiveExtractCallbackDataFile2> callbackDataFile;
++  extractCallback.QueryInterface(IID_IArchiveExtractCallbackDataFile2, &callbackDataFile);
++
+   CFolderOutStream *folderOutStream = new CFolderOutStream;
+   CMyComPtr<ISequentialOutStream> outStream(folderOutStream);
+ 
+   folderOutStream->_db = &_db;
+   folderOutStream->ExtractCallback = extractCallback;
++  folderOutStream->DataCallback = callbackData;
++  folderOutStream->DataFileCallback = callbackDataFile;
+   folderOutStream->TestMode = (testModeSpec != 0);
+   folderOutStream->CheckCrc = (_crcSize != 0);
+ 
+@@ -394,6 +442,12 @@ Z7_COM7F_IMF(CHandler::Extract(const UInt32 *indices, UInt32 numItems,
+           #endif
+           );
+ 
++      if (folderOutStream->StopByDataCallback)
++      {
++        RINOK(folderOutStream->FlushCorrupted(NExtract::NOperationResult::kOK))
++        break;
++      }
++
+       if (result == S_FALSE || result == E_NOTIMPL || dataAfterEnd_Error)
+       {
+         const bool wasFinished = folderOutStream->WasWritingFinished();
+diff --git a/CPP/7zip/Archive/IArchive.h b/CPP/7zip/Archive/IArchive.h
+index 6a35ced..6423273 100644
+--- a/CPP/7zip/Archive/IArchive.h
++++ b/CPP/7zip/Archive/IArchive.h
+@@ -128,6 +128,15 @@ namespace NArchive
+         kReadExternal
+       };
+     }
++
++    namespace NDataAction
++    {
++      enum
++      {
++        kContinue = 0,
++        kStop
++      };
++    }
+   
+     namespace NOperationResult
+     {
+@@ -259,6 +268,50 @@ Z7_IFACE_CONSTR_ARCHIVE_SUB(IArchiveExtractCallbackMessage, IProgress, 0x21)
+   x(ReportExtractResult(UInt32 indexType, UInt32 index, Int32 opRes))
+ Z7_IFACE_CONSTR_ARCHIVE(IArchiveExtractCallbackMessage2, 0x22)
+ 
++
++/*
++IArchiveExtractCallbackData2 is optional interface for stream consumers.
++Extract() can request it from IArchiveExtractCallback object.
++
++OnData()
++  index - item index in archive.
++  offsetInFile - offset in unpacked file for current data block.
++  data, size - unpacked bytes for current item.
++  askExtractMode - NExtract::NAskMode value for that item.
++  action - input/output value from NExtract::NDataAction.
++
++returns:
++  S_OK - continue extraction
++  another value - extraction error
++*/
++
++#define Z7_IFACEM_IArchiveExtractCallbackData2(x) \
++  x(OnData(UInt32 index, UInt64 offsetInFile, const void *data, UInt32 size, Int32 askExtractMode, Int32 *action))
++Z7_IFACE_CONSTR_ARCHIVE(IArchiveExtractCallbackData2, 0x23)
++
++
++/*
++IArchiveExtractCallbackDataFile2 is optional interface for file-level boundaries.
++It can be used together with IArchiveExtractCallbackData2 to simplify per-file
++hash state lifecycle in multi-file archives.
++
++OnFileBegin()
++  index - item index in archive.
++  unpackSize - unpacked file size.
++  askExtractMode - NExtract::NAskMode value for that item.
++  action - input/output NExtract::NDataAction value.
++
++OnFileEnd()
++  index - item index in archive.
++  opRes - NExtract::NOperationResult value for that item.
++  askExtractMode - NExtract::NAskMode value for that item.
++*/
++
++#define Z7_IFACEM_IArchiveExtractCallbackDataFile2(x) \
++  x(OnFileBegin(UInt32 index, UInt64 unpackSize, Int32 askExtractMode, Int32 *action)) \
++  x(OnFileEnd(UInt32 index, Int32 opRes, Int32 askExtractMode))
++Z7_IFACE_CONSTR_ARCHIVE(IArchiveExtractCallbackDataFile2, 0x24)
++
+ #define Z7_IFACEM_IArchiveOpenVolumeCallback(x) \
+   x(GetProperty(PROPID propID, PROPVARIANT *value)) \
+   x(GetStream(const wchar_t *name, IInStream **inStream))
+diff --git a/CPP/7zip/Bundles/Format7zF/Arc_gcc.mak b/CPP/7zip/Bundles/Format7zF/Arc_gcc.mak
+index 814a797..3fd930a 100644
+--- a/CPP/7zip/Bundles/Format7zF/Arc_gcc.mak
++++ b/CPP/7zip/Bundles/Format7zF/Arc_gcc.mak
+@@ -49,6 +49,7 @@ COMMON_OBJS = \
+   $O/MyMap.o \
+   $O/MyString.o \
+   $O/MyVector.o \
++  $O/MyWindows.o \
+   $O/MyXml.o \
+   $O/NewHandler.o \
+   $O/Sha1Prepare.o \

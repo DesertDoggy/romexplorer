@@ -1,0 +1,42 @@
+/* The list toolbar's filter group: part of the toolbar row, except on phones (below). */
+.toolbar .filters { display: contents; }
+.toolbar .filtertoggle { display: none; }
+
+/* The app's own additions to the console stylesheet (app.css stays a verbatim copy of the
+   console's <style>). Phone widths: the tabs become a bottom bar, subtabs and wide tables
+   scroll sideways, toolbars wrap, key/value lists stack, cards get narrower. A completely
+   separate phone UI would replace this file and the Shell, not the screens. */
+@media (max-width: 700px) {
+  body { padding-bottom: 58px; }
+  header { padding: 6px 10px; }
+  header .meta { display: none; }
+  nav#nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    flex-wrap: nowrap; overflow-x: auto; padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); border-bottom: none;
+  }
+  nav#nav button { border-radius: 6px; padding: 8px 10px; white-space: nowrap; }
+  nav.sub { flex-wrap: nowrap; overflow-x: auto; padding: 4px 8px; }
+  nav.sub button { white-space: nowrap; }
+  main { padding: 8px; }
+  table.grid { display: block; overflow-x: auto; }
+  .toolbar { flex-wrap: wrap; }
+  .toolbar .filtertoggle { display: inline-block; }
+  .toolbar .filters { display: none; }
+  .toolbar .filters.open { display: contents; }
+  .toolbar > input[type=text] { flex: 1 1 100%; min-width: 0; }
+  .combo { flex: 1 1 45%; }
+  .cardgrid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .kv { grid-template-columns: 1fr; }
+  .kv > div:nth-child(odd) { color: var(--dim); margin-top: 6px; }
+  #modal, #submodal { padding: 8px; }
+  #modal .box, #submodal .box { padding: 10px; }
+  form.inline { flex-wrap: wrap; }
+  .rahead { flex-wrap: wrap; }
+  img.hero { max-width: 40vw; }
+}
+/* Touch screens: bigger hit targets for the row checkboxes (select mode). */
+@media (pointer: coarse) {
+  input.rowsel, input.cardsel, input.selall { width: 20px; height: 20px; }
+  .btn.small { padding: 5px 9px; }
+}

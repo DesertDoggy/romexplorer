@@ -1,0 +1,271 @@
+//! `chdlite.toml`: what the GUI's settings screen edits and the CLI reads its defaults from.
+//!
+//! Portable when a `chdlite.toml` sits beside the executable; otherwise the per-user config
+//! directory. Every field has a default, so a missing or partial file is never an error.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+pub const FILE_NAME: &str = "chdlite.toml";
+
+/// CD codecs chdman accepts for `createcd`, and the plain ones for `createdvd`.
+pub const CD_CODECS: [&str; 4] = ["cdlz", "cdzs", "cdzl", "cdfl"];
+pub const DVD_CODECS: [&str; 5] = ["lzma", "zstd", "zlib", "huff", "flac"];
+pub const MAX_CODECS: usize = 4;
+
+pub const RVZ_CODECS: [&str; 5] = ["zstd", "lzma2", "lzma", "bzip2", "none"];
+pub const RVZ_BLOCKS: [(&str, u32); 7] =
+    [("32k", 32 << 10), ("64k", 64 << 10), ("128k", 128 << 10), ("256k", 256 << 10), ("512k", 512 << 10), ("1m", 1 << 20), ("2m", 2 << 20)];
+pub const HASHES: [&str; 5] = ["sha1", "md5", "crc32", "sha256", "xxh3"];
+pub const CUE_STYLES: [&str; 3] = ["redump", "redump_catalog", "chdman"];
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub output: Output,
+    pub lite: Lite,
+    pub comp: Comp,
+    pub rvz: Rvz,
+    pub extract: Extract,
+    pub hash: Hash,
+    pub jobs: Jobs,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Output {
+    /// Empty: next to each input.
+    pub dir: String,
+    /// Replace an output that already exists instead of skipping the input.
+    pub force: bool,
+    /// Ask before making a lossy output (WUA, ZAR, XISO). The GUI's "don't ask again" turns
+    /// it off; the console versions only print a warning.
+    pub lossy_warning: bool,
+}
+
+impl Default for Output {
+    fn default() -> Self {
+        Self { dir: String::new(), force: false, lossy_warning: true }
+    }
+}
+
+/// Which machine the fast preset tunes for (`romexplorer::rom::models::ChdPresets`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LitePreset {
+    #[default]
+    Pc,
+    Mobile,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lite {
+    pub preset: LitePreset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompMode {
+    /// Every codec chdman has for the media, so it keeps the smallest per hunk.
+    #[default]
+    Best,
+    /// No codec list at all: whatever chdman itself defaults to.
+    Chdman,
+    /// `cd_codecs` / `dvd_codecs` and the hunk sizes below.
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Comp {
+    pub mode: CompMode,
+    pub cd_codecs: Vec<String>,
+    pub dvd_codecs: Vec<String>,
+    /// Bytes; 0 lets chdman choose. A CD hunk must be a multiple of 2448, a DVD hunk of 2048.
+    pub cd_hunk_size: u32,
+    pub dvd_hunk_size: u32,
+}
+
+impl Default for Comp {
+    fn default() -> Self {
+        Self {
+            mode: CompMode::Best,
+            cd_codecs: CD_CODECS.iter().map(|c| c.to_string()).collect(),
+            dvd_codecs: DVD_CODECS[..4].iter().map(|c| c.to_string()).collect(),
+            cd_hunk_size: 0,
+            dvd_hunk_size: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rvz {
+    pub codec: String,
+    pub level: i32,
+    /// One of [`RVZ_BLOCKS`]' names.
+    pub block: String,
+    /// Dolphin's "remove junk data". Smaller, but the image no longer round-trips to the
+    /// original ISO, so off unless asked for.
+    pub scrub: bool,
+}
+
+impl Default for Rvz {
+    fn default() -> Self {
+        // romexplorer's own `RvzArgs::default()`: Dolphin's recommended settings.
+        Self { codec: "zstd".into(), level: 5, block: "128k".into(), scrub: false }
+    }
+}
+
+impl Rvz {
+    pub fn block_bytes(&self) -> u32 {
+        RVZ_BLOCKS.iter().find(|(name, _)| *name == self.block).map_or(128 << 10, |(_, bytes)| *bytes)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Extract {
+    /// One of [`CUE_STYLES`].
+    pub cue_style: String,
+}
+
+impl Default for Extract {
+    fn default() -> Self {
+        Self { cue_style: "redump".into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hash {
+    pub algorithms: Vec<String>,
+}
+
+impl Default for Hash {
+    fn default() -> Self {
+        Self { algorithms: vec!["sha1".into()] }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Jobs {
+    /// Compression threads in total; 0 = every core.
+    pub threads: u32,
+    /// Files converted at once; 0 = automatic (a quarter of the cores, at most 4).
+    pub concurrent_files: u32,
+}
+
+impl Jobs {
+    /// Threads in total when `threads` is automatic: every core.
+    pub fn auto_threads() -> usize {
+        num_cpus::get().max(1)
+    }
+
+    /// Files at once when `concurrent_files` is automatic, given `cores` threads in total: a
+    /// quarter of them, at most 4. chdman and Dolphin already compress each file on every
+    /// thread they are given, so more files at once mostly overlaps each file's single-threaded
+    /// stretches (reading, parsing, finishing the header); beyond 4, the files only split the
+    /// same cores finer.
+    pub fn auto_files(cores: usize) -> usize {
+        (cores / 4).clamp(1, 4)
+    }
+
+    /// (files at once, threads for each), for `inputs` files.
+    pub fn plan(&self, inputs: usize) -> (usize, u32) {
+        let cores = if self.threads > 0 { self.threads as usize } else { Self::auto_threads() };
+        let concurrent = if self.concurrent_files > 0 { self.concurrent_files as usize } else { Self::auto_files(cores) };
+        let concurrent = concurrent.min(inputs.max(1));
+        let per_file = if concurrent > 1 { (cores / concurrent).max(2) } else { cores };
+        (concurrent, per_file as u32)
+    }
+}
+
+impl Settings {
+    pub fn output_dir(&self) -> Option<PathBuf> {
+        let dir = self.output.dir.trim();
+        (!dir.is_empty()).then(|| PathBuf::from(dir))
+    }
+
+    /// Where the settings file is (or would be written).
+    pub fn path() -> PathBuf {
+        if let Some(portable) = exe_dir().map(|dir| dir.join(FILE_NAME)).filter(|path| path.is_file()) {
+            return portable;
+        }
+        user_dir(DirKind::Config).join("chdlite").join(FILE_NAME)
+    }
+
+    pub fn load() -> Self {
+        Self::load_from(&Self::path())
+    }
+
+    pub fn load_from(path: &Path) -> Self {
+        std::fs::read_to_string(path).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<PathBuf, String> {
+        let path = Self::path();
+        self.save_to(&path)?;
+        Ok(path)
+    }
+
+    /// Why the settings file there was not used, when it exists but does not parse.
+    pub fn problem_with(path: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        toml::from_str::<Settings>(&text).err().map(|err| format!("{} could not be read, so the defaults are used: {}", path.display(), err.message()))
+    }
+
+    pub fn problem() -> Option<String> {
+        Self::problem_with(&Self::path())
+    }
+
+    /// A file there that does not parse is kept, as `<name>.bak`, rather than overwritten.
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+        }
+        if Self::problem_with(path).is_some() {
+            let mut backup = path.as_os_str().to_owned();
+            backup.push(".bak");
+            std::fs::rename(path, &backup).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
+        let text = toml::to_string_pretty(self).map_err(|err| err.to_string())?;
+        std::fs::write(path, text).map_err(|err| format!("{}: {err}", path.display()))
+    }
+}
+
+pub fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
+}
+
+#[derive(Clone, Copy)]
+pub enum DirKind {
+    Config,
+    Cache,
+}
+
+/// The per-user config or cache directory, by each platform's own convention.
+pub fn user_dir(kind: DirKind) -> PathBuf {
+    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = || env("HOME").unwrap_or_else(std::env::temp_dir);
+    if cfg!(windows) {
+        let var = match kind {
+            DirKind::Config => "APPDATA",
+            DirKind::Cache => "LOCALAPPDATA",
+        };
+        env(var).unwrap_or_else(std::env::temp_dir)
+    } else if cfg!(target_os = "macos") {
+        home().join("Library").join(match kind {
+            DirKind::Config => "Application Support",
+            DirKind::Cache => "Caches",
+        })
+    } else {
+        match kind {
+            DirKind::Config => env("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")),
+            DirKind::Cache => env("XDG_CACHE_HOME").unwrap_or_else(|| home().join(".cache")),
+        }
+    }
+}

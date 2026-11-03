@@ -1,0 +1,895 @@
+diff --git a/api/src/lib.rs b/api/src/lib.rs
+index 9bb4fb3..2e2cf37 100644
+--- a/api/src/lib.rs
++++ b/api/src/lib.rs
+@@ -363,8 +363,14 @@ async fn start() -> anyhow::Result<()> {
+ 
+ 	let serv = HttpServer::new(move || {
+ 		let mut app = App::new()
+-			.app_data(JsonConfig::default().limit(64 * 1024))
+-			.app_data(PayloadConfig::default().limit(256 * 1024))
++			.app_data(JsonConfig::default().limit(env_body_limit_bytes(
++				"API_JSON_BODY_LIMIT_BYTES",
++				8 * 1024 * 1024,
++			)))
++			.app_data(PayloadConfig::default().limit(env_body_limit_bytes(
++				"API_PAYLOAD_LIMIT_BYTES",
++				16 * 1024 * 1024,
++			)))
+ 			.app_data(conn_data.clone())
+ 			.app_data(redis_client_data.clone())
+ 			.app_data(redis_conn_data.clone());
+@@ -992,15 +998,26 @@ fn build_igdb_client(
+ 
+ /// Builds the rate-limiter config used by the public API scopes. Exposed for
+ /// integration tests so they can construct the version scopes exactly as the
+-/// running server does without naming internal extractor types.
++/// running server does without naming internal extractor types. `RATE_LIMIT_BURST_SIZE`
++/// (default 200) and `RATE_LIMIT_MS_PER_REQUEST` (default 20, i.e. 50 req/s
++/// sustained) override the defaults for self-hosted deployments that want
++/// looser per-IP limits.
+ #[doc(hidden)]
+ pub fn public_api_governor_config()
+ -> GovernorConfig<ReverProxyExtractor, StateInformationMiddleware> {
++	let burst_size = env::var("RATE_LIMIT_BURST_SIZE")
++		.ok()
++		.and_then(|v| v.trim().parse().ok())
++		.unwrap_or(200u32);
++	let ms_per_request = env::var("RATE_LIMIT_MS_PER_REQUEST")
++		.ok()
++		.and_then(|v| v.trim().parse().ok())
++		.unwrap_or(20u64);
+ 	GovernorConfigBuilder::default()
+ 		.use_headers()
+-		.milliseconds_per_request(250)
++		.milliseconds_per_request(ms_per_request)
+ 		.key_extractor(ReverProxyExtractor)
+-		.burst_size(20)
++		.burst_size(burst_size)
+ 		.finish()
+ 		.expect("governor config is valid by construction")
+ }
+@@ -1100,15 +1117,26 @@ fn configure_version_routes(cfg: &mut ServiceConfig, version: ApiVersion, flags:
+ 	}
+ }
+ 
+-/// The 256 KiB JsonConfig for the v2 bulk endpoints, with an error handler that
++/// Parses a byte-size limit from an env var, falling back to `default` when the
++/// var is absent or not a valid `usize`.
++fn env_body_limit_bytes(key: &str, default: usize) -> usize {
++	env::var(key)
++		.ok()
++		.and_then(|v| v.trim().parse().ok())
++		.unwrap_or(default)
++}
++
++/// The v2 bulk endpoints' JsonConfig, with an error handler that
+ /// turns a malformed, mistyped, or oversized JSON body into the v2 `V2ErrorBody`
+ /// envelope. Scoped to the v2 surface only; v1 keeps the global plain-text
+ /// JsonConfig. Every `JsonPayloadError` (deserialize failure, wrong content type,
+ /// or overflow past the cap) maps to a single `malformed_body` 400 so a bad bulk
+-/// body never reaches the client as actix's default plain-text error.
++/// body never reaches the client as actix's default plain-text error. The cap
++/// defaults to 16 MiB and can be raised via `API_V2_JSON_BODY_LIMIT_BYTES` to
++/// match a larger `MAX_BULK_ITEMS`.
+ fn v2_json_config() -> JsonConfig {
+ 	JsonConfig::default()
+-		.limit(256 * 1024)
++		.limit(env_body_limit_bytes("API_V2_JSON_BODY_LIMIT_BYTES", 16 * 1024 * 1024))
+ 		.error_handler(|err, _req| {
+ 			let response = crate::routes::v2::error::v2_malformed_body(err.to_string());
+ 			actix_web::error::InternalError::from_response(err, response).into()
+@@ -1124,10 +1152,10 @@ fn configure_public_api_routes_v2(cfg: &mut ServiceConfig, flags: PublicRouteFla
+ 	// Everything mounts inside ONE empty-prefix scope. An actix `scope("")` matches
+ 	// every path, so a sibling empty scope registered ahead of other services
+ 	// swallows their requests and 404s them; a single scope avoids that. It also
+-	// carries the larger 256 KiB JsonConfig so a full bulk batch (up to 100 items
+-	// with hashes) clears the global 64 KiB body limit, which stays untouched
+-	// elsewhere. Each bulk batch still counts as one request against the version
+-	// scope's shared Governor.
++	// carries the larger v2 JsonConfig (see `v2_json_config`) so a full bulk batch
++	// clears the smaller global v1 body limit, which stays untouched elsewhere.
++	// Each bulk batch still counts as one request against the version scope's
++	// shared Governor.
+ 	//
+ 	// Literal paths (`/games/bulk`, `/games/search`, `/games/by-name`, the
+ 	// `/games/{id}/...` sub-resources, `/companies/search`, `/platforms/search`,
+diff --git a/api/src/model/bulk.rs b/api/src/model/bulk.rs
+index 8e5b9f3..1b250eb 100644
+--- a/api/src/model/bulk.rs
++++ b/api/src/model/bulk.rs
+@@ -1,5 +1,5 @@
+ use serde::{Deserialize, Serialize};
+-pub use service::bulk::MAX_BULK_ITEMS;
++pub use service::bulk::max_bulk_items;
+ use service::model::GameFileMatchSearch;
+ use utoipa::ToSchema;
+ use uuid::Uuid;
+@@ -22,7 +22,7 @@ pub struct BulkIdentifyItem {
+ 	pub key: Option<String>,
+ }
+ 
+-/// Bulk identify request body. Up to 100 items per request.
++/// Bulk identify request body. Up to the configured cap per request (see `MAX_BULK_ITEMS`).
+ #[derive(Debug, Clone, Deserialize, ToSchema)]
+ pub struct BulkIdentifyRequest {
+ 	pub items: Vec<BulkIdentifyItem>,
+@@ -157,7 +157,7 @@ pub fn validate_batch_size(len: usize) -> BatchValidation {
+ 	if len == 0 {
+ 		return BatchValidation::Empty;
+ 	}
+-	if len > MAX_BULK_ITEMS {
++	if len > max_bulk_items() {
+ 		return BatchValidation::TooLarge { received: len };
+ 	}
+ 	BatchValidation::Ok
+@@ -197,11 +197,11 @@ pub fn validate_keys(items: &[BulkIdentifyItem]) -> Result<(), (usize, BulkItemE
+ 	Ok(())
+ }
+ 
+-/// Bulk get-by-id request body. Up to 100 ids per request, correlated by id, so
+-/// no caller key is needed.
++/// Bulk get-by-id request body. Up to the configured cap per request (see
++/// `MAX_BULK_ITEMS`), correlated by id, so no caller key is needed.
+ #[derive(Debug, Clone, Deserialize, ToSchema)]
+ pub struct BulkIdsRequest {
+-	/// The ids to look up. Up to 100 per request; duplicate ids are resolved once.
++	/// The ids to look up. Up to the configured cap per request; duplicate ids are resolved once.
+ 	pub ids: Vec<Uuid>,
+ }
+ 
+@@ -436,15 +436,15 @@ mod tests {
+ 
+ 	#[test]
+ 	fn batch_at_the_cap_is_accepted() {
+-		assert_eq!(validate_batch_size(MAX_BULK_ITEMS), BatchValidation::Ok);
++		assert_eq!(validate_batch_size(max_bulk_items()), BatchValidation::Ok);
+ 	}
+ 
+ 	#[test]
+ 	fn batch_above_the_cap_reports_received_count() {
+ 		assert_eq!(
+-			validate_batch_size(MAX_BULK_ITEMS + 1),
++			validate_batch_size(max_bulk_items() + 1),
+ 			BatchValidation::TooLarge {
+-				received: MAX_BULK_ITEMS + 1
++				received: max_bulk_items() + 1
+ 			}
+ 		);
+ 	}
+diff --git a/api/src/model/pagination.rs b/api/src/model/pagination.rs
+index 5391618..7873304 100644
+--- a/api/src/model/pagination.rs
++++ b/api/src/model/pagination.rs
+@@ -7,13 +7,28 @@ use service::model::{
+ 	CompanyMetadataResponse, GameMetadataResponse, GameNameSearchResultV2,
+ 	PlatformMetadataResponse, PlaymatchGameFileV2, PlaymatchSignatureGroupV2,
+ };
++use std::env;
+ use utoipa::{IntoParams, ToSchema};
+ use uuid::Uuid;
+ 
+ /// Hard ceiling on a single page. Requests above this are clamped, never rejected.
+-pub const MAX_PAGE_LIMIT: u64 = 50;
+-/// Page size used when the client omits `limit` or sends `0`.
+-pub const DEFAULT_PAGE_LIMIT: u64 = 25;
++/// Override with the `MAX_PAGE_LIMIT` env var.
++pub fn max_page_limit() -> u64 {
++	env_u64("MAX_PAGE_LIMIT", 2000)
++}
++
++/// Page size used when the client omits `limit` or sends `0`. Override with the
++/// `DEFAULT_PAGE_LIMIT` env var.
++pub fn default_page_limit() -> u64 {
++	env_u64("DEFAULT_PAGE_LIMIT", 100)
++}
++
++fn env_u64(key: &str, default: u64) -> u64 {
++	env::var(key)
++		.ok()
++		.and_then(|v| v.trim().parse().ok())
++		.unwrap_or(default)
++}
+ 
+ /// Wire format version of the cursor payload. Bump this when the byte layout
+ /// changes. A cursor carrying an unrecognized version is not an error: callers
+@@ -99,8 +114,8 @@ pub struct PageMeta {
+ #[derive(Debug, Clone, Default, Serialize, Deserialize, IntoParams)]
+ #[serde(rename_all = "camelCase")]
+ pub struct PageParams {
+-	/// Page size. Ranges from 1 to 50. Defaults to 25 when omitted or `0`. Values above 50 are clamped, never rejected.
+-	#[param(required = false, minimum = 1, maximum = 50)]
++	/// Page size. Ranges from 1 to 2000 by default (see `MAX_PAGE_LIMIT`). Defaults to 100 when omitted or `0`. Values above the cap are clamped, never rejected.
++	#[param(required = false, minimum = 1, maximum = 2000)]
+ 	pub limit: Option<u64>,
+ 
+ 	/// Opaque cursor copied from the previous page's `nextCursor`. Omit it to fetch the first page. Keep the filters identical across pages.
+@@ -122,12 +137,12 @@ impl PageParams {
+ 	}
+ }
+ 
+-/// Clamp a requested limit into `[1, MAX_PAGE_LIMIT]`, substituting the default
++/// Clamp a requested limit into `[1, max_page_limit()]`, substituting the default
+ /// for an absent or zero value. Out-of-range inputs are clamped, never rejected.
+ pub fn clamp_limit(requested: Option<u64>) -> u64 {
+ 	match requested {
+-		None | Some(0) => DEFAULT_PAGE_LIMIT,
+-		Some(n) => n.min(MAX_PAGE_LIMIT),
++		None | Some(0) => default_page_limit(),
++		Some(n) => n.min(max_page_limit()),
+ 	}
+ }
+ 
+@@ -239,8 +254,8 @@ mod tests {
+ 
+ 	#[test]
+ 	fn clamp_limit_substitutes_default_for_absent_or_zero() {
+-		assert_eq!(clamp_limit(None), DEFAULT_PAGE_LIMIT);
+-		assert_eq!(clamp_limit(Some(0)), DEFAULT_PAGE_LIMIT);
++		assert_eq!(clamp_limit(None), default_page_limit());
++		assert_eq!(clamp_limit(Some(0)), default_page_limit());
+ 	}
+ 
+ 	#[test]
+@@ -248,18 +263,18 @@ mod tests {
+ 		assert_eq!(clamp_limit(Some(1)), 1);
+ 		assert_eq!(clamp_limit(Some(25)), 25);
+ 		assert_eq!(clamp_limit(Some(50)), 50);
+-		assert_eq!(clamp_limit(Some(51)), MAX_PAGE_LIMIT);
+-		assert_eq!(clamp_limit(Some(u64::MAX)), MAX_PAGE_LIMIT);
++		assert_eq!(clamp_limit(Some(max_page_limit() + 1)), max_page_limit());
++		assert_eq!(clamp_limit(Some(u64::MAX)), max_page_limit());
+ 	}
+ 
+ 	#[test]
+ 	fn page_params_helpers_mirror_clamp_and_total_flag() {
+ 		let p = PageParams {
+-			limit: Some(1000),
++			limit: Some(u64::MAX),
+ 			cursor: None,
+ 			with_total: Some(true),
+ 		};
+-		assert_eq!(p.limit_clamped(), MAX_PAGE_LIMIT);
++		assert_eq!(p.limit_clamped(), max_page_limit());
+ 		assert!(p.wants_total());
+ 		assert!(!PageParams::default().wants_total());
+ 	}
+diff --git a/api/src/routes/v2/bulk_by_id.rs b/api/src/routes/v2/bulk_by_id.rs
+index aad3901..f8e2ef4 100644
+--- a/api/src/routes/v2/bulk_by_id.rs
++++ b/api/src/routes/v2/bulk_by_id.rs
+@@ -1,7 +1,7 @@
+ use crate::error;
+ use crate::model::bulk::{
+-	BatchValidation, BulkByIdResponse, BulkByIdResult, BulkByIdStatusV2, BulkByIdSummary,
+-	BulkIdsRequest, MAX_BULK_ITEMS, dedupe_ids, validate_batch_size,
++	BulkByIdResponse, BulkByIdResult, BulkByIdStatusV2, BulkByIdSummary, BulkIdsRequest,
++	BatchValidation, dedupe_ids, max_bulk_items, validate_batch_size,
+ };
+ use crate::routes::v2::error::{batch_too_large_response, v2_batch_error};
+ use actix_web::web::{Data, Json};
+@@ -9,7 +9,7 @@ use actix_web::{HttpResponse, Responder, post};
+ use futures_util::stream::{self, StreamExt};
+ use sea_orm::DatabaseConnection;
+ use serde::Serialize;
+-use service::bulk::BULK_CONCURRENCY;
++use service::bulk::bulk_concurrency;
+ use service::db::game_file::get_game_file_by_id;
+ use service::entities::company::get_company_by_id_and_external_metadata;
+ use service::entities::dat_file::{DatFileDetail, find_dat_file_detail_by_id};
+@@ -43,12 +43,12 @@ where
+ 			return Ok(v2_batch_error(
+ 				"empty_batch",
+ 				"batch must contain at least one item",
+-				MAX_BULK_ITEMS,
++				max_bulk_items(),
+ 				0,
+ 			));
+ 		}
+ 		BatchValidation::TooLarge { received } => {
+-			return Ok(batch_too_large_response(MAX_BULK_ITEMS, received));
++			return Ok(batch_too_large_response(max_bulk_items(), received));
+ 		}
+ 		BatchValidation::Ok => {}
+ 	}
+@@ -59,7 +59,7 @@ where
+ 	let mut resolved: Vec<error::Result<(usize, Uuid, Option<T>)>> =
+ 		stream::iter(ids.into_iter().enumerate())
+ 			.map(|(index, id)| async move { fetch(id).await.map(|data| (index, id, data)) })
+-			.buffer_unordered(BULK_CONCURRENCY)
++			.buffer_unordered(bulk_concurrency())
+ 			.collect()
+ 			.await;
+ 
+@@ -108,16 +108,17 @@ async fn fetch_game(
+ 
+ /// Looks up many games by id in one request.
+ ///
+-/// Up to 100 ids per request; duplicate ids are resolved once. A missing id is a
+-/// per-item `not_found`, never a batch-level 404. The whole batch counts as one
+-/// request against the rate limiter.
++/// Up to the configured cap per request (see `MAX_BULK_ITEMS`); duplicate ids
++/// are resolved once. A missing id is a per-item `not_found`, never a
++/// batch-level 404. The whole batch counts as one request against the rate
++/// limiter.
+ #[utoipa::path(
+ 	post,
+ 	tag = "Game",
+ 	request_body = BulkIdsRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item game results with a batch summary", body = BulkGamesByIdResponse),
+-		(status = 400, description = "Empty batch, or batch over the 100-item cap", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, or batch over the configured item cap", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/games/bulk")]
+@@ -131,16 +132,17 @@ pub async fn bulk_games_by_id_v2(
+ 
+ /// Looks up many platforms by id in one request.
+ ///
+-/// Up to 100 ids per request; duplicate ids are resolved once. A missing id is a
+-/// per-item `not_found`, never a batch-level 404. The whole batch counts as one
+-/// request against the rate limiter.
++/// Up to the configured cap per request (see `MAX_BULK_ITEMS`); duplicate ids
++/// are resolved once. A missing id is a per-item `not_found`, never a
++/// batch-level 404. The whole batch counts as one request against the rate
++/// limiter.
+ #[utoipa::path(
+ 	post,
+ 	tag = "Platform",
+ 	request_body = BulkIdsRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item platform results with a batch summary", body = BulkPlatformsByIdResponse),
+-		(status = 400, description = "Empty batch, or batch over the 100-item cap", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, or batch over the configured item cap", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/platforms/bulk")]
+@@ -164,16 +166,17 @@ pub async fn bulk_platforms_by_id_v2(
+ 
+ /// Looks up many companies by id in one request.
+ ///
+-/// Up to 100 ids per request; duplicate ids are resolved once. A missing id is a
+-/// per-item `not_found`, never a batch-level 404. The whole batch counts as one
+-/// request against the rate limiter.
++/// Up to the configured cap per request (see `MAX_BULK_ITEMS`); duplicate ids
++/// are resolved once. A missing id is a per-item `not_found`, never a
++/// batch-level 404. The whole batch counts as one request against the rate
++/// limiter.
+ #[utoipa::path(
+ 	post,
+ 	tag = "Company",
+ 	request_body = BulkIdsRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item company results with a batch summary", body = BulkCompaniesByIdResponse),
+-		(status = 400, description = "Empty batch, or batch over the 100-item cap", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, or batch over the configured item cap", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/companies/bulk")]
+@@ -192,16 +195,17 @@ pub async fn bulk_companies_by_id_v2(
+ 
+ /// Looks up many dat files by id in one request.
+ ///
+-/// Up to 100 ids per request; duplicate ids are resolved once. A missing id is a
+-/// per-item `not_found`, never a batch-level 404. The whole batch counts as one
+-/// request against the rate limiter.
++/// Up to the configured cap per request (see `MAX_BULK_ITEMS`); duplicate ids
++/// are resolved once. A missing id is a per-item `not_found`, never a
++/// batch-level 404. The whole batch counts as one request against the rate
++/// limiter.
+ #[utoipa::path(
+ 	post,
+ 	tag = "DAT File",
+ 	request_body = BulkIdsRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item dat file results with a batch summary", body = BulkDatFilesByIdResponse),
+-		(status = 400, description = "Empty batch, or batch over the 100-item cap", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, or batch over the configured item cap", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/dat-files/bulk")]
+@@ -218,16 +222,17 @@ pub async fn bulk_dat_files_by_id_v2(
+ 
+ /// Looks up many signature groups by id in one request.
+ ///
+-/// Up to 100 ids per request; duplicate ids are resolved once. A missing id is a
+-/// per-item `not_found`, never a batch-level 404. The whole batch counts as one
+-/// request against the rate limiter.
++/// Up to the configured cap per request (see `MAX_BULK_ITEMS`); duplicate ids
++/// are resolved once. A missing id is a per-item `not_found`, never a
++/// batch-level 404. The whole batch counts as one request against the rate
++/// limiter.
+ #[utoipa::path(
+ 	post,
+ 	tag = "Signature Group",
+ 	request_body = BulkIdsRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item signature group results with a batch summary", body = BulkSignatureGroupsByIdResponse),
+-		(status = 400, description = "Empty batch, or batch over the 100-item cap", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, or batch over the configured item cap", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/signature-groups/bulk")]
+@@ -250,17 +255,17 @@ pub async fn bulk_signature_groups_by_id_v2(
+ 
+ /// Looks up many game files by id in one request.
+ ///
+-/// Up to 100 ids per request; duplicate ids are resolved once. A missing id is a
+-/// per-item `not_found`, never a batch-level 404. The whole batch counts as one
+-/// request against the rate limiter. Each file carries the same projection as
+-/// `/games/{id}/files`.
++/// Up to the configured cap per request (see `MAX_BULK_ITEMS`); duplicate ids
++/// are resolved once. A missing id is a per-item `not_found`, never a
++/// batch-level 404. The whole batch counts as one request against the rate
++/// limiter. Each file carries the same projection as `/games/{id}/files`.
+ #[utoipa::path(
+ 	post,
+ 	tag = "Game",
+ 	request_body = BulkIdsRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item game file results with a batch summary", body = BulkGameFilesByIdResponse),
+-		(status = 400, description = "Empty batch, or batch over the 100-item cap", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, or batch over the configured item cap", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/game-files/bulk")]
+diff --git a/api/src/routes/v2/identify_bulk.rs b/api/src/routes/v2/identify_bulk.rs
+index c18170b..7032b36 100644
+--- a/api/src/routes/v2/identify_bulk.rs
++++ b/api/src/routes/v2/identify_bulk.rs
+@@ -1,7 +1,7 @@
+ use crate::error;
+ use crate::model::bulk::{
+ 	BatchValidation, BulkCache, BulkIdentifyItem, BulkIdentifyRequest, BulkIdentifyResponse,
+-	BulkIdentifyResult, BulkIdentifySummary, BulkItemError, BulkItemStatus, MAX_BULK_ITEMS,
++	BulkIdentifyResult, BulkIdentifySummary, BulkItemError, BulkItemStatus, max_bulk_items,
+ 	validate_batch_size, validate_keys,
+ };
+ use crate::routes::v2::error::{batch_too_large_response, v2_bad_request, v2_batch_error};
+@@ -11,7 +11,7 @@ use futures_util::stream::{self, StreamExt};
+ use redis::aio::MultiplexedConnection;
+ use sea_orm::DatabaseConnection;
+ use serde::Serialize;
+-use service::bulk::BULK_CONCURRENCY;
++use service::bulk::bulk_concurrency;
+ use service::cache::CacheStatus;
+ use service::identification::{
+ 	identify_game_and_get_relations, identify_game_and_metadata_mappings,
+@@ -198,12 +198,12 @@ where
+ 			return v2_batch_error(
+ 				"empty_batch",
+ 				"batch must contain at least one item",
+-				MAX_BULK_ITEMS,
++				max_bulk_items(),
+ 				0,
+ 			);
+ 		}
+ 		BatchValidation::TooLarge { received } => {
+-			return batch_too_large_response(MAX_BULK_ITEMS, received);
++			return batch_too_large_response(max_bulk_items(), received);
+ 		}
+ 		BatchValidation::Ok => {}
+ 	}
+@@ -226,7 +226,7 @@ where
+ 					(index, item.key, outcome)
+ 				}
+ 			})
+-			.buffer_unordered(BULK_CONCURRENCY)
++			.buffer_unordered(bulk_concurrency())
+ 			.collect()
+ 			.await;
+ 
+@@ -237,16 +237,17 @@ where
+ 
+ /// Identifies many game files in one request, returning metadata mappings.
+ ///
+-/// Each item is resolved by its file hashes or by filename and size. Up to 100
+-/// items per request. A per-item failure does not fail the batch; it is reported
+-/// on that item. The whole batch counts as one request against the rate limiter.
++/// Each item is resolved by its file hashes or by filename and size. Up to the
++/// configured cap per request (see `MAX_BULK_ITEMS`). A per-item failure does not
++/// fail the batch; it is reported on that item. The whole batch counts as one
++/// request against the rate limiter.
+ #[utoipa::path(
+ 	post,
+ 	tag = "Identify",
+ 	request_body = BulkIdentifyRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item identify results with a batch summary", body = BulkIdentifyIdsResponse),
+-		(status = 400, description = "Empty batch, batch over the 100-item cap, or malformed body", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, batch over the configured item cap, or malformed body", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/identify/bulk/ids")]
+@@ -271,9 +272,10 @@ pub async fn identify_bulk_ids_v2(
+ /// Identifies many game files in one request, returning full relations.
+ ///
+ /// Each item is resolved by its file hashes or by filename and size, with the
+-/// matched game's relations on each result. Up to 100 items per request. A per-item
+-/// failure does not fail the batch; it is reported on that item. The whole batch
+-/// counts as one request against the rate limiter.
++/// matched game's relations on each result. Up to the configured cap per request
++/// (see `MAX_BULK_ITEMS`). A per-item failure does not fail the batch; it is
++/// reported on that item. The whole batch counts as one request against the
++/// rate limiter.
+ ///
+ /// `additionalMatches` is omitted on every item here to keep the batch cheap.
+ /// Resolve the co-hashed siblings for a specific file through the single
+@@ -284,7 +286,7 @@ pub async fn identify_bulk_ids_v2(
+ 	request_body = BulkIdentifyRequest,
+ 	responses(
+ 		(status = 200, description = "Per-item identify results with a batch summary", body = BulkIdentifyRelationsResponse),
+-		(status = 400, description = "Empty batch, batch over the 100-item cap, or malformed body", body = V2ErrorBody)
++		(status = 400, description = "Empty batch, batch over the configured item cap, or malformed body", body = V2ErrorBody)
+ 	)
+ )]
+ #[post("/identify/bulk/relations")]
+diff --git a/api/tests/v2_bulk_by_id.rs b/api/tests/v2_bulk_by_id.rs
+index 61df69c..ab92c6d 100644
+--- a/api/tests/v2_bulk_by_id.rs
++++ b/api/tests/v2_bulk_by_id.rs
+@@ -286,16 +286,17 @@ async fn over_cap_batch_is_rejected_with_header() {
+ 	let (_redis, redis) = start_redis().await;
+ 	let app = test::init_service(build_app!(db, redis)).await;
+ 
+-	let ids: Vec<String> = (0..101)
++	let cap = service::bulk::max_bulk_items();
++	let ids: Vec<String> = (0..=cap)
+ 		.map(|i| format!("00000000-0000-0000-0000-{i:012}"))
+ 		.collect();
+ 	let (status, max_items, value) =
+ 		post_json!(app, "/api/v2/companies/bulk", &json!({ "ids": ids }));
+ 
+ 	assert_eq!(status, 400);
+-	assert_eq!(max_items.as_deref(), Some("100"));
++	assert_eq!(max_items.as_deref(), Some(cap.to_string().as_str()));
+ 	assert_eq!(value["code"], "batch_too_large");
+-	assert_eq!(value["limit"], 100);
+-	assert_eq!(value["received"], 101);
++	assert_eq!(value["limit"], cap);
++	assert_eq!(value["received"], cap + 1);
+ 	assert!(value["message"].is_string());
+ }
+diff --git a/api/tests/v2_error_envelope.rs b/api/tests/v2_error_envelope.rs
+index 5970b68..1aef8ad 100644
+--- a/api/tests/v2_error_envelope.rs
++++ b/api/tests/v2_error_envelope.rs
+@@ -210,6 +210,13 @@ async fn v2_wrong_method_answers_json_envelope() {
+ 
+ #[actix_web::test]
+ async fn v2_rate_limit_429_answers_json_envelope() {
++	// Override the configured burst so the test doesn't need hundreds of
++	// requests to trip the limiter; the governor config reads these env vars
++	// uncached at build time.
++	unsafe {
++		std::env::set_var("RATE_LIMIT_BURST_SIZE", "20");
++		std::env::set_var("RATE_LIMIT_MS_PER_REQUEST", "250");
++	}
+ 	let (_pg, db) = start_pg().await;
+ 	let (_redis, redis) = start_redis().await;
+ 	let app = test::init_service(build_app!(db, redis)).await;
+diff --git a/api/tests/v2_identify_bulk.rs b/api/tests/v2_identify_bulk.rs
+index 7388d83..5e701bc 100644
+--- a/api/tests/v2_identify_bulk.rs
++++ b/api/tests/v2_identify_bulk.rs
+@@ -236,7 +236,8 @@ async fn over_cap_batch_is_rejected_with_header() {
+ 	let (_redis, redis) = start_redis().await;
+ 	let app = test::init_service(build_app!(db, redis)).await;
+ 
+-	let items: Vec<Value> = (0..101)
++	let cap = service::bulk::max_bulk_items();
++	let items: Vec<Value> = (0..=cap)
+ 		.map(|i| json!({ "fileName": format!("f-{i}.rom"), "fileSize": 1 }))
+ 		.collect();
+ 	let (status, max_items, value) = post_json!(
+@@ -246,10 +247,10 @@ async fn over_cap_batch_is_rejected_with_header() {
+ 	);
+ 
+ 	assert_eq!(status, 400);
+-	assert_eq!(max_items.as_deref(), Some("100"));
++	assert_eq!(max_items.as_deref(), Some(cap.to_string().as_str()));
+ 	assert_eq!(value["code"], "batch_too_large");
+-	assert_eq!(value["limit"], 100);
+-	assert_eq!(value["received"], 101);
++	assert_eq!(value["limit"], cap);
++	assert_eq!(value["received"], cap + 1);
+ 	assert!(value["message"].is_string());
+ }
+ 
+diff --git a/api/tests/v2_pagination.rs b/api/tests/v2_pagination.rs
+index 31a0496..d033619 100644
+--- a/api/tests/v2_pagination.rs
++++ b/api/tests/v2_pagination.rs
+@@ -184,10 +184,14 @@ async fn platforms_honor_with_total_and_clamp_limit() {
+ 	seed_platforms(&db, 3).await;
+ 	let app = test::init_service(build_app!(db)).await;
+ 
+-	// limit=9999 must clamp to 50, never 400.
+-	let (status, page) = get_json!(app, "/api/v2/platforms?limit=9999&withTotal=true");
++	// A request above the configured cap must clamp, never 400.
++	let cap = service::db::pagination::max_page_limit();
++	let (status, page) = get_json!(
++		app,
++		&format!("/api/v2/platforms?limit={}&withTotal=true", cap + 9999)
++	);
+ 	assert_eq!(status, 200);
+-	assert_eq!(page["pagination"]["limit"], 50);
++	assert_eq!(page["pagination"]["limit"], cap);
+ 	let total = page["pagination"]["totalItems"].as_u64().unwrap();
+ 	assert!(
+ 		total >= 3,
+diff --git a/docs/api.md b/docs/api.md
+index 951c92e..090f132 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -43,8 +43,9 @@ Swagger UI is at `/swagger-ui/` with three tabs: v2 (primary), v1, and the alias
+ 
+ All v2 list endpoints use keyset (cursor) pagination.
+ 
+-* `limit` is clamped to `[1, 50]`. Absent or `0` falls back to `25`. Out-of-range
+-  values are clamped, never rejected with a 400.
++* `limit` is clamped to `[1, MAX_PAGE_LIMIT]` (default 2000). Absent or `0` falls
++  back to `DEFAULT_PAGE_LIMIT` (default 100). Out-of-range values are clamped,
++  never rejected with a 400.
+ * `cursor` is an opaque base64url string with no padding. Absent or empty starts
+   at page 1.
+ * `withTotal` is honored only on platforms and signature-groups. It is ignored
+@@ -56,7 +57,7 @@ Responses are wrapped in a fixed envelope:
+ {
+   "data": [],
+   "pagination": {
+-    "limit": 25,
++    "limit": 100,
+     "hasNextPage": false,
+     "hasPreviousPage": false,
+     "nextCursor": null,
+@@ -89,15 +90,33 @@ Eight v2 endpoints accept a batch in one request:
+ * `POST /api/v2/identify/bulk/ids`
+ * `POST /api/v2/identify/bulk/relations`
+ 
+-`MAX_BULK_ITEMS` is 100 per request and the JSON body is capped at 256 KiB. Each
+-bulk request counts as exactly one request against the per-IP rate limiter, no
+-matter how many items it carries. A request over the cap returns `400` with an
+-`X-Bulk-Max-Items: 100` header.
++`MAX_BULK_ITEMS` defaults to 5000 per request and the JSON body is capped at
++`API_V2_JSON_BODY_LIMIT_BYTES` (default 16 MiB). Each bulk request counts as
++exactly one request against the per-IP rate limiter, no matter how many items
++it carries. A request over the cap returns `400` with an `X-Bulk-Max-Items`
++header echoing the configured cap.
+ 
+ Partial failures do not fail the batch. The response stays `200` and reports a
+ per-item result (`ok`/`notFound` for get-by-id, or `ok`/`invalid`/`error` for
+ identify) for each entry.
+ 
++### Self-hosting: tuning limits
++
++The defaults above (and the pagination and rate-limiter defaults elsewhere in
++this doc) are process-wide fallbacks read once per request/response; every one
++of them can be overridden with an env var, no rebuild required:
++
++* `MAX_BULK_ITEMS` (default 5000) - item cap per bulk request.
++* `BULK_CONCURRENCY` (default 64) - per-batch fan-out against the DB/cache pools.
++* `MAX_PAGE_LIMIT` (default 2000) / `DEFAULT_PAGE_LIMIT` (default 100) - list
++  pagination bounds.
++* `RATE_LIMIT_BURST_SIZE` (default 200) / `RATE_LIMIT_MS_PER_REQUEST` (default
++  20, i.e. 50 req/s sustained) - per-IP Governor rate limit.
++* `API_JSON_BODY_LIMIT_BYTES` (default 8 MiB) - v1 JSON body cap.
++* `API_PAYLOAD_LIMIT_BYTES` (default 16 MiB) - raw payload cap (both versions).
++* `API_V2_JSON_BODY_LIMIT_BYTES` (default 16 MiB) - v2 bulk endpoints' JSON body cap.
++
++
+ ### Authentication
+ 
+ Most v2 read endpoints are public. The v2 suggestion endpoint requires a bearer
+@@ -190,4 +209,4 @@ The server exposes these 18 tools:
+ * `playmatch_search_games_by_name` - fuzzy game search by human title when you
+   have no hash; returns candidate ids, names, and platforms.
+ * `playmatch_find_dats_containing_hash` - find the DAT files that contain a hash.
+-* `playmatch_bulk_identify` - identify many ROMs in one call (capped at 100 items).
++* `playmatch_bulk_identify` - identify many ROMs in one call (capped at `MAX_BULK_ITEMS`, default 5000).
+diff --git a/mcp/src/server.rs b/mcp/src/server.rs
+index d64eed0..884c01f 100644
+--- a/mcp/src/server.rs
++++ b/mcp/src/server.rs
+@@ -13,7 +13,7 @@ use serde::Deserialize;
+ use service::entities::dat_file::HashLookup;
+ 
+ use crate::tools;
+-use crate::tools::{BulkIdentifyItem, MAX_BULK_ITEMS};
++use crate::tools::{BulkIdentifyItem, max_bulk_items};
+ 
+ #[derive(Debug, Deserialize, JsonSchema)]
+ pub struct IdentifyRomArgs {
+@@ -573,7 +573,7 @@ impl PlaymatchMcp {
+ 	}
+ 
+ 	#[tool(
+-		description = "Identify a batch of game files by hash or name+size in one call, returning a per-item result with a summary. At most 100 items per request; each item may carry an optional key (unique within the batch) echoed back for correlation. Per-item status is ok (cascade ran, match may be NoMatch), invalid (failed validation) or error (per-item failure); the batch still succeeds. Mirrors playmatch_identify_rom_by_hash per item."
++		description = "Identify a batch of game files by hash or name+size in one call, returning a per-item result with a summary. Capped at the server's configured bulk item limit; each item may carry an optional key (unique within the batch) echoed back for correlation. Per-item status is ok (cascade ran, match may be NoMatch), invalid (failed validation) or error (per-item failure); the batch still succeeds. Mirrors playmatch_identify_rom_by_hash per item."
+ 	)]
+ 	async fn playmatch_bulk_identify(
+ 		&self,
+@@ -582,9 +582,10 @@ impl PlaymatchMcp {
+ 		if args.items.is_empty() {
+ 			return Ok(bad_input("items must not be empty"));
+ 		}
+-		if args.items.len() > MAX_BULK_ITEMS {
++		if args.items.len() > max_bulk_items() {
+ 			return Ok(bad_input(format!(
+-				"batch exceeds the {MAX_BULK_ITEMS}-item cap"
++				"batch exceeds the {}-item cap",
++				max_bulk_items()
+ 			)));
+ 		}
+ 
+@@ -643,7 +644,8 @@ impl ServerHandler for PlaymatchMcp {
+ 				 playmatch_list_dat_files and their games and files with playmatch_list_dat_file_games \
+ 				 and playmatch_get_game_files. playmatch_find_dats_containing_hash is the reverse \
+ 				 lookup from a hash to the dat files that carry it, and playmatch_bulk_identify runs \
+-				 up to 100 identify cascades in one call. external_metadata entries are provider id \
++				 many identify cascades in one call, up to the server's configured bulk item limit. \
++				 external_metadata entries are provider id \
+ 				 mappings only; resolving them to full records needs the separate provider HTTP API, \
+ 				 so the ids are references, not dead ends.",
+ 			);
+diff --git a/mcp/src/tools.rs b/mcp/src/tools.rs
+index 21c1a87..5d2d7ee 100644
+--- a/mcp/src/tools.rs
++++ b/mcp/src/tools.rs
+@@ -3,8 +3,8 @@ use redis::aio::MultiplexedConnection;
+ use sea_orm::DatabaseConnection;
+ use sea_orm::prelude::Uuid;
+ use serde::Serialize;
+-use service::bulk::BULK_CONCURRENCY;
+-pub use service::bulk::MAX_BULK_ITEMS;
++use service::bulk::bulk_concurrency;
++pub use service::bulk::max_bulk_items;
+ use service::cache::CacheStatus;
+ use service::db::dat_file::DatFileBrowseFilters;
+ use service::entities::dat_file::{
+@@ -328,7 +328,7 @@ pub async fn bulk_identify_json(
+ 					(index, item.key, outcome)
+ 				}
+ 			})
+-			.buffer_unordered(BULK_CONCURRENCY)
++			.buffer_unordered(bulk_concurrency())
+ 			.collect()
+ 			.await;
+ 
+diff --git a/service/src/bulk.rs b/service/src/bulk.rs
+index e6eb05e..fab9467 100644
+--- a/service/src/bulk.rs
++++ b/service/src/bulk.rs
+@@ -1,10 +1,23 @@
++use std::env;
++
+ /// Hard cap on the number of items a single bulk request may carry. Uniform
+ /// across every bulk endpoint so callers learn one limit. A bulk request still
+ /// counts as one ordinary request against the per-IP rate limiter regardless of
+-/// how many items it carries.
+-pub const MAX_BULK_ITEMS: usize = 100;
++/// how many items it carries. Override with the `MAX_BULK_ITEMS` env var.
++pub fn max_bulk_items() -> usize {
++	env_usize("MAX_BULK_ITEMS", 5000)
++}
+ 
+ /// Upper bound on per-item lookups run in parallel within a single bulk batch.
+ /// Keeps fan-out from a single batch bounded against the shared database and
+-/// cache pools.
+-pub const BULK_CONCURRENCY: usize = 8;
++/// cache pools. Override with the `BULK_CONCURRENCY` env var.
++pub fn bulk_concurrency() -> usize {
++	env_usize("BULK_CONCURRENCY", 64)
++}
++
++fn env_usize(key: &str, default: usize) -> usize {
++	env::var(key)
++		.ok()
++		.and_then(|v| v.trim().parse().ok())
++		.unwrap_or(default)
++}
+diff --git a/service/src/db/pagination.rs b/service/src/db/pagination.rs
+index c24f65b..5e0e8d8 100644
+--- a/service/src/db/pagination.rs
++++ b/service/src/db/pagination.rs
+@@ -1,16 +1,32 @@
+ use sea_orm::{ConnectionTrait, Cursor, DbErr, SelectorTrait};
++use std::env;
+ 
+ /// Hard ceiling on a single keyset page. Requests above this are clamped.
+-pub const MAX_PAGE_LIMIT: u64 = 50;
+-pub const DEFAULT_PAGE_LIMIT: u64 = 25;
++/// Override with the `MAX_PAGE_LIMIT` env var.
++pub fn max_page_limit() -> u64 {
++	env_u64("MAX_PAGE_LIMIT", 2000)
++}
++
++/// Page size used when the caller omits `limit` or sends `0`. Override with the
++/// `DEFAULT_PAGE_LIMIT` env var.
++pub fn default_page_limit() -> u64 {
++	env_u64("DEFAULT_PAGE_LIMIT", 100)
++}
++
++fn env_u64(key: &str, default: u64) -> u64 {
++	env::var(key)
++		.ok()
++		.and_then(|v| v.trim().parse().ok())
++		.unwrap_or(default)
++}
+ 
+-/// Clamp a requested page limit into `[1, MAX_PAGE_LIMIT]`, substituting
+-/// [`DEFAULT_PAGE_LIMIT`] for an absent or zero value. Out-of-range values are
++/// Clamp a requested page limit into `[1, max_page_limit()]`, substituting
++/// [`default_page_limit`] for an absent or zero value. Out-of-range values are
+ /// clamped rather than rejected so a list endpoint never 400s on `limit` alone.
+ pub fn clamp_page_limit(requested: Option<u64>) -> u64 {
+ 	match requested {
+-		None | Some(0) => DEFAULT_PAGE_LIMIT,
+-		Some(n) => n.min(MAX_PAGE_LIMIT),
++		None | Some(0) => default_page_limit(),
++		Some(n) => n.min(max_page_limit()),
+ 	}
+ }
+ 
+@@ -59,8 +75,8 @@ mod tests {
+ 
+ 	#[test]
+ 	fn clamp_substitutes_default_for_absent_or_zero() {
+-		assert_eq!(clamp_page_limit(None), DEFAULT_PAGE_LIMIT);
+-		assert_eq!(clamp_page_limit(Some(0)), DEFAULT_PAGE_LIMIT);
++		assert_eq!(clamp_page_limit(None), default_page_limit());
++		assert_eq!(clamp_page_limit(Some(0)), default_page_limit());
+ 	}
+ 
+ 	#[test]
+@@ -68,7 +84,10 @@ mod tests {
+ 		assert_eq!(clamp_page_limit(Some(1)), 1);
+ 		assert_eq!(clamp_page_limit(Some(25)), 25);
+ 		assert_eq!(clamp_page_limit(Some(50)), 50);
+-		assert_eq!(clamp_page_limit(Some(51)), MAX_PAGE_LIMIT);
+-		assert_eq!(clamp_page_limit(Some(u64::MAX)), MAX_PAGE_LIMIT);
++		assert_eq!(
++			clamp_page_limit(Some(max_page_limit() + 1)),
++			max_page_limit()
++		);
++		assert_eq!(clamp_page_limit(Some(u64::MAX)), max_page_limit());
+ 	}
+ }
+diff --git a/service/tests/keyset_pagination.rs b/service/tests/keyset_pagination.rs
+index dd35f21..f3eaffc 100644
+--- a/service/tests/keyset_pagination.rs
++++ b/service/tests/keyset_pagination.rs
+@@ -3,7 +3,7 @@
+ use migration::{Migrator, MigratorTrait};
+ use sea_orm::prelude::Uuid;
+ use sea_orm::{ActiveModelTrait, ColumnTrait, Database, DbConn, EntityTrait, QueryFilter, Set};
+-use service::db::pagination::fetch_keyset_page;
++use service::db::pagination::{fetch_keyset_page, max_page_limit};
+ use testcontainers_modules::postgres::Postgres;
+ use testcontainers_modules::testcontainers::runners::AsyncRunner;
+ use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+@@ -109,6 +109,11 @@ async fn after_seeks_past_the_previous_page() {
+ 
+ #[tokio::test]
+ async fn limit_is_clamped_to_max() {
++	// Override the configured cap so the test doesn't need to seed thousands of
++	// rows to exercise the clamp; `max_page_limit` reads the env var uncached.
++	unsafe {
++		std::env::set_var("MAX_PAGE_LIMIT", "50");
++	}
+ 	let (_pg, db) = start_pg().await;
+ 	seed_groups(&db, 55).await;
+ 
+@@ -122,6 +127,10 @@ async fn limit_is_clamped_to_max() {
+ 	let page = fetch_keyset_page(&mut cursor, Some(1000), &db)
+ 		.await
+ 		.unwrap();
+-	assert_eq!(page.rows.len(), 50, "limit above the cap is clamped to 50");
++	assert_eq!(
++		page.rows.len() as u64,
++		max_page_limit(),
++		"limit above the cap is clamped to the configured max"
++	);
+ 	assert!(page.has_more, "five rows remain beyond the clamped page");
+ }

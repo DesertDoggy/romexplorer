@@ -1,0 +1,321 @@
+diff -ru orig/providers/igdb/mod.rs patched/providers/igdb/mod.rs
+--- orig/providers/igdb/mod.rs	2026-09-27 18:37:47.460898800 +0900
++++ patched/providers/igdb/mod.rs	2026-09-27 18:37:47.468935200 +0900
+@@ -72,9 +72,7 @@
+ use tower::{Service, ServiceBuilder, ServiceExt};
+ 
+ mod apicalypse;
+-pub mod cache;
+ mod constants;
+-pub mod matching;
+ pub mod model;
+ 
+ struct OAuth2Handler {
+@@ -100,7 +98,6 @@
+ 	service: Mutex<RateLimit<Retry<RetryPolicy, Client>>>,
+ 	oauth2handler: RwLock<OAuth2Handler>,
+ 	client_id: String,
+-	redis_conn: redis::aio::MultiplexedConnection,
+ }
+ 
+ impl IgdbClient {
+@@ -108,7 +105,6 @@
+ 		client_id: String,
+ 		client_secret: String,
+ 		client: Client,
+-		redis_conn: redis::aio::MultiplexedConnection,
+ 	) -> anyhow::Result<Self> {
+ 		let rate_limit_layer = RateLimitLayer::new(
+ 			IGDB_RATELIMIT_AMOUNT,
+@@ -152,7 +148,6 @@
+ 				last_token_request: None,
+ 				http: oauth2_http,
+ 			}),
+-			redis_conn,
+ 		})
+ 	}
+ 
+@@ -233,6 +228,50 @@
+ 		.await
+ 	}
+ 
++	/// romexplorer addition (see patches/01_igdb.patch): one page of every game on a
++	/// platform, for the `by_platform` bulk sync -- or, with `updated_since` (unix seconds),
++	/// only those IGDB changed after it (a diff sync). IGDB caps `limit` at 500.
++	pub async fn get_games_by_platform(
++		&self,
++		platform_id: i32,
++		updated_since: Option<i64>,
++		limit: usize,
++		offset: usize,
++	) -> anyhow::Result<Vec<Game>> {
++		let since = updated_since.map(|t| format!(" & updated_at > {t}")).unwrap_or_default();
++		self.do_request_parsed::<Vec<Game>>(
++			Method::POST,
++			IGDB_ROUTE_GAMES,
++			None,
++			Some(&format!("where platforms = ({platform_id}){since}; sort id asc;")),
++			Some(&format!("limit {}; offset {offset};", limit.min(500))),
++		)
++		.await
++	}
++
++	/// romexplorer addition: how many games IGDB has (`games/count`), on one platform or
++	/// overall -- the denominator for "how much of IGDB is cached".
++	/// With `updated_since` (unix seconds): only games changed after it -- a cheap
++	/// "did anything change?" check.
++	pub async fn count_games(&self, platform_id: Option<i32>, updated_since: Option<i64>) -> anyhow::Result<i64> {
++		#[derive(serde::Deserialize)]
++		struct Count {
++			count: i64,
++		}
++		let mut conditions: Vec<String> = Vec::new();
++		if let Some(p) = platform_id {
++			conditions.push(format!("platforms = ({p})"));
++		}
++		if let Some(t) = updated_since {
++			conditions.push(format!("updated_at > {t}"));
++		}
++		let filter = if conditions.is_empty() { String::new() } else { format!("where {};", conditions.join(" & ")) };
++		let count = self
++			.do_request_parsed::<Count>(Method::POST, &format!("{IGDB_ROUTE_GAMES}/count"), Some(""), Some(&filter), Some(""))
++			.await?;
++		Ok(count.count)
++	}
++
+ 	pub async fn get_age_rating_by_id(&self, id: i32) -> anyhow::Result<Option<AgeRating>> {
+ 		self.get_single_by_id(IGDB_ROUTE_AGE_RATINGS, id).await
+ 	}
+@@ -1139,6 +1178,31 @@
+ 		Ok(res.pop())
+ 	}
+ 
++	/// romexplorer addition: `ids` from `endpoint` as raw JSON objects, with only `fields`
++	/// (e.g. "name,region") -- for records whose typed model has required fields IGDB
++	/// doesn't always send (game_localizations, alternative_names, regions).
++	pub async fn get_raw_by_ids(
++		&self,
++		endpoint: &str,
++		ids: Vec<i32>,
++		fields: &str,
++	) -> anyhow::Result<Vec<serde_json::Value>> {
++		self.do_request_parsed::<Vec<serde_json::Value>>(
++			Method::POST,
++			endpoint,
++			Some(&format!("fields {fields};")),
++			Some(&format!(
++				"where id =({});",
++				ids.iter()
++					.map(|id| id.to_string())
++					.collect::<Vec<String>>()
++					.join(",")
++			)),
++			Some(&format!("limit {};", ids.len().clamp(1, 500))),
++		)
++		.await
++	}
++
+ 	async fn get_vec_by_ids<T: DeserializeOwned>(
+ 		&self,
+ 		endpoint: &str,
+@@ -1155,7 +1219,10 @@
+ 					.collect::<Vec<String>>()
+ 					.join(",")
+ 			)),
+-			Some(""),
++			// romexplorer fix: without a limit IGDB returns only its default 10 rows, so a
++			// list request for 100 ids silently came back with 10 of them. IGDB caps a page
++			// at 500; callers chunk below that.
++			Some(&format!("limit {};", ids.len().clamp(1, 500))),
+ 		)
+ 		.await
+ 	}
+@@ -1318,36 +1385,3 @@
+ 	}
+ }
+ 
+-#[async_trait::async_trait]
+-impl crate::providers::MetadataProvider for IgdbClient {
+-	fn provider_label(&self) -> &'static str {
+-		"igdb"
+-	}
+-
+-	fn provider_enum(&self) -> entity::sea_orm_active_enums::MetadataProviderEnum {
+-		entity::sea_orm_active_enums::MetadataProviderEnum::Igdb
+-	}
+-
+-	fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+-		&self.redis_conn
+-	}
+-
+-	async fn match_db(self: std::sync::Arc<Self>, db_conn: &sea_orm::DbConn) -> anyhow::Result<()> {
+-		crate::providers::igdb::matching::match_db_to_igdb_entities(self, db_conn).await
+-	}
+-
+-	async fn match_via_sibling_names(
+-		self: std::sync::Arc<Self>,
+-		db_conn: &sea_orm::DbConn,
+-	) -> anyhow::Result<()> {
+-		crate::providers::drive_cross_match_pipeline(
+-			"igdb",
+-			entity::sea_orm_active_enums::MetadataProviderEnum::Igdb,
+-			crate::providers::igdb::matching::game::match_game_via_sibling_name_igdb,
+-			self,
+-			db_conn,
+-			crate::providers::DEFAULT_CHUNK_SIZE,
+-		)
+-		.await
+-	}
+-}
+diff -ru orig/providers/igdb/model.rs patched/providers/igdb/model.rs
+--- orig/providers/igdb/model.rs	2026-09-27 18:37:47.464934500 +0900
++++ patched/providers/igdb/model.rs	2026-09-27 18:37:47.471935600 +0900
+@@ -4,8 +4,8 @@
+ use bigdecimal::BigDecimal;
+ use chrono::serde::{ts_seconds, ts_seconds_option};
+ use chrono::{DateTime, Utc};
+-use sea_orm::prelude::Uuid;
+ use serde::{Deserialize, Serialize};
++use uuid::Uuid;
+ use serde_repr::{Deserialize_repr, Serialize_repr};
+ use utoipa::ToSchema;
+ 
+@@ -114,10 +114,14 @@
+ 	pub artwork_type: Option<i32>,
+ 	pub checksum: Uuid,
+ 	pub game: i32,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -179,10 +183,14 @@
+ 	#[serde(skip_serializing_if = "Option::is_none")]
+ 	pub animated: Option<bool>,
+ 	pub checksum: Uuid,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -383,10 +391,14 @@
+ 	#[serde(skip_serializing_if = "Option::is_none")]
+ 	pub animated: Option<bool>,
+ 	pub checksum: Uuid,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -458,10 +470,14 @@
+ 	pub game: i32,
+ 	#[serde(skip_serializing_if = "Option::is_none")]
+ 	pub game_localization: Option<i32>,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -536,13 +552,17 @@
+ 	#[schema(value_type = i64)]
+ 	pub created_at: DateTime<Utc>,
+ 	pub event: i32,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	#[serde(with = "ts_seconds")]
+ 	#[schema(value_type = i64)]
+ 	pub updated_at: DateTime<Utc>,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -784,10 +804,14 @@
+ 	#[serde(skip_serializing_if = "Option::is_none")]
+ 	pub animated: Option<bool>,
+ 	pub checksum: Uuid,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -1131,10 +1155,14 @@
+ 	#[serde(skip_serializing_if = "Option::is_none")]
+ 	pub animated: Option<bool>,
+ 	pub checksum: Uuid,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+@@ -1428,10 +1456,14 @@
+ 	pub animated: Option<bool>,
+ 	pub checksum: Uuid,
+ 	pub game: i32,
+-	pub height: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub height: Option<i32>,
+ 	pub image_id: String,
+ 	pub url: String,
+-	pub width: i32,
++	/// romexplorer fix: IGDB omits it on some images.
++	#[serde(default)]
++	pub width: Option<i32>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

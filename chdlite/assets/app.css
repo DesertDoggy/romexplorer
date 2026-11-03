@@ -1,0 +1,63 @@
+@property --spin { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #14161b; color: #e6e8ee; font: 14px/1.4 "Segoe UI", system-ui, sans-serif; user-select: none; }
+/* WebKitGTK draws a pulldown with the system theme, a light box, unless told the page is dark;
+   with the page's light text on it, the selected value was unreadable. The popup list is the
+   platform's too and inherits only `color`, so its options get the dark background here. */
+:root { color-scheme: dark; }
+select option, select optgroup { background: #1b1e25; color: #e6e8ee; }
+#main { height: 100%; }
+.app { display: flex; flex-direction: column; height: 100vh; padding: 10px 12px 12px; gap: 10px; }
+
+.top { display: flex; align-items: center; gap: 8px; }
+.top h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+.top .ver { color: #8a90a0; font-size: 12px; }
+.spacer { flex: 1; }
+
+button, .btn { background: #262a33; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 5px 12px; font: inherit; cursor: pointer; }
+button:hover { background: #303644; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: #2f6fed; border-color: #2f6fed; }
+button.danger { background: #8d2b2b; border-color: #a33; }
+
+/* The four modes. The selected one is ringed with a thick rainbow: the ring is the padding
+   of the button showing its own conic gradient behind the image. */
+.modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mode { padding: 6px; border: 0; border-radius: 16px; background: transparent; display: flex; flex-direction: column; align-items: center; gap: 2px; transition: transform .15s ease-out; }
+.mode:hover { background: #20242c; }
+.mode img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 11px; background: #1b1e25; pointer-events: none; }
+.mode span { font-size: 12px; color: #aab0bf; pointer-events: none; }
+.mode.active { background: conic-gradient(from var(--spin), #ff2d2d, #ff9a1f, #ffe81f, #3ddc4a, #1fc8ff, #4a5bff, #c43dff, #ff2d2d); animation: spin 6s linear infinite; }
+.mode.active span { color: #fff; font-weight: 600; text-shadow: 0 1px 2px #000; }
+.mode.over { transform: scale(1.06); }
+@keyframes spin { to { --spin: 360deg; } }
+
+.hint { color: #8a90a0; font-size: 12px; margin: -4px 2px 0; }
+
+.drop { border: 2px dashed #3a404d; border-radius: 12px; padding: 18px 12px; text-align: center; color: #aab0bf; cursor: pointer; }
+.drop.over { border-color: #2f6fed; background: #1a2233; color: #fff; }
+.drop b { display: block; font-size: 15px; color: #e6e8ee; margin-bottom: 2px; }
+
+.row { display: flex; align-items: center; gap: 8px; }
+.row label { color: #aab0bf; white-space: nowrap; }
+input[type=text], input[type=number], select { flex: 1; min-width: 0; background: #1b1e25; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 5px 8px; font: inherit; user-select: text; }
+
+.bar { height: 8px; background: #20242c; border-radius: 4px; overflow: hidden; }
+.bar > div { height: 100%; background: linear-gradient(90deg, #2f6fed, #1fc8ff); transition: width .15s linear; }
+.status { color: #aab0bf; font-size: 12px; min-width: 110px; text-align: right; }
+
+.log { flex: 1; min-height: 80px; overflow-y: auto; background: #0f1115; border: 1px solid #262a33; border-radius: 8px; padding: 8px 10px; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; user-select: text; }
+.log div { white-space: pre-wrap; word-break: break-word; }
+.log .ok { color: #6fdc8c; }
+.log .err { color: #ff7b72; }
+.log .muted { color: #6f7686; }
+
+.overlay { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; }
+.panel { width: min(500px, 94vw); max-height: 92vh; overflow-y: auto; background: #1b1e25; border: 1px solid #3a404d; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.panel h2 { margin: 0 0 2px; font-size: 16px; }
+.panel h3 { margin: 8px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: #8a90a0; }
+.panel .row label { width: 120px; }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 14px; flex: 1; }
+.checks label { width: auto !important; color: #e6e8ee; display: flex; align-items: center; gap: 4px; }
+.note { color: #8a90a0; font-size: 12px; }

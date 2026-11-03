@@ -1,0 +1,10 @@
+[application]
+name = "romexplorer"
+
+[web.app]
+title = "romexplorer"
+# Served by romexplorer_server at /app/ (the web build copied to app_root_ex/assets/gui_web).
+base_path = "app"
+
+[web.wasm_opt]
+level = "1"

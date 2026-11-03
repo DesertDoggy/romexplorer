@@ -1,0 +1,36 @@
+#!/bin/sh
+# What a service manager runs instead of `romexplorer_server` directly, so that first-run
+# setup needs no second unit, no ordering between them, and no installer privileges.
+#
+# Why this exists at all: `--init-from-config FILE` is how accounts get created, and
+# `api::setup::SetupFile::load` treats a missing FILE as an error -- so the flag cannot just
+# live in the unit forever. The server itself deletes the file once setup has succeeded, so
+# "does setup still need to run?" is exactly "is that file still there?", and this is the one
+# line of shell that asks it.
+#
+# Deliberately *only* that file, and not also "does data/database.env not exist yet": the
+# installer pre-seeds database.env with the settings setup has to read rather than decide
+# (db_datadir, the share flags), so its presence says nothing about whether accounts exist.
+# A failed setup leaves setup.env in place and is retried on the next start, which is right.
+#
+# The installer cannot do this part itself: the bundled mariadbd refuses to start as root
+# (it takes no --user), so setup has to run as the same unprivileged account the service
+# uses. Letting the service do it on its first start is how both end up being that account
+# without the installer switching users and juggling signals.
+#
+# Every argument is passed through. Order does not matter to the server's own parser.
+set -e
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+# This script ships at the top level of the package, and the package is the app root.
+app="$here"
+
+if [ -f "$app/data/setup.env" ]; then
+    set -- --init-from-config "$app/data/setup.env" "$@"
+fi
+
+# exec, not a subshell: the service manager's MAINPID must be the server, so that its
+# SIGTERM reaches the process that knows how to put running jobs back and shut the database
+# down cleanly (src/lifecycle.rs), and so that exit 75 -- "start me again" -- is the status
+# the manager actually sees.
+exec "$here/romexplorer_server" "$@"

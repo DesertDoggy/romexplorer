@@ -1,0 +1,71 @@
+#!/bin/sh
+# The AppImage's entry point: point every writable path at the user's own directories
+# before handing over to the GUI.
+#
+# An AppImage is a read-only squashfs mounted somewhere under /tmp, and `AppPaths` puts
+# `data/`, `assets/media/`, `assets/download/dats/` and the provider cache *next to the
+# executable* by default -- which here is that read-only mount. Without the three variables
+# below the app cannot write its database, let alone gigabytes of cover art. This is what
+# `ROMEXPLORER_ASSETS_DIR` was added for; see the comment on `AppPaths::assets_root`.
+#
+# XDG, not a single ~/.romexplorer: the database and downloaded media are data the user
+# would want backed up, the provider-response cache is not, and the split is the whole point
+# of having both directories.
+#
+# Two extras this also handles: `--install` puts romexplorer in the desktop menu (an
+# AppImage is a loose file and nothing indexes it otherwise) and `--uninstall` takes it out
+# again. Neither installs the app itself -- the AppImage stays wherever the user keeps it.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+
+XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+STATE="$XDG_DATA_HOME/romexplorer"
+
+export ROMEXPLORER_ASSETS_DIR="${ROMEXPLORER_ASSETS_DIR:-$STATE/assets}"
+export ROMEXPLORER_DATA_DIR="${ROMEXPLORER_DATA_DIR:-$STATE/data}"
+export ROMEXPLORER_CACHE_DIR="${ROMEXPLORER_CACHE_DIR:-$XDG_CACHE_HOME/romexplorer}"
+
+# The AppImage runtime sets APPIMAGE to the .AppImage file itself; running the AppDir
+# directly (which is how this gets tested) it is unset, so fall back to this script.
+SELF=${APPIMAGE:-$HERE/AppRun}
+
+case "${1:-}" in
+    --install|--uninstall)
+        action=$1
+        apps="$XDG_DATA_HOME/applications"
+        icons="$XDG_DATA_HOME/icons/hicolor/512x512/apps"
+        entry="$apps/romexplorer.desktop"
+        if [ "$action" = "--uninstall" ]; then
+            rm -f "$entry" "$icons/romexplorer.png"
+            command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" 2>/dev/null || true
+            echo "removed the romexplorer menu entry (the AppImage itself is still at $SELF)"
+            exit 0
+        fi
+        mkdir -p "$apps" "$icons"
+        [ -f "$HERE/romexplorer.png" ] && cp -f "$HERE/romexplorer.png" "$icons/romexplorer.png"
+        # Exec points at wherever the AppImage actually is: move the file and re-run
+        # --install. Quoted, because "$SELF" may well be under ~/Downloads/My Stuff/.
+        sed -e "s|^Exec=.*|Exec=\"$SELF\"|" -e "s|^TryExec=.*|TryExec=$SELF|" \
+            "$HERE/romexplorer.desktop" > "$entry"
+        chmod 644 "$entry"
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" 2>/dev/null || true
+        echo "romexplorer is now in the desktop menu, pointing at $SELF"
+        echo "(run it again with --uninstall to remove the entry)"
+        exit 0
+        ;;
+esac
+
+mkdir -p "$ROMEXPLORER_ASSETS_DIR" "$ROMEXPLORER_DATA_DIR" "$ROMEXPLORER_CACHE_DIR"
+
+# The platform pictograms ship inside the read-only image, but `icons_dir()` follows
+# ROMEXPLORER_ASSETS_DIR out to the writable copy -- so without this the console would show
+# none of them. Copied once and never over the top of an existing file, so a user who edits
+# or deletes one keeps that decision across upgrades.
+if [ -d "$HERE/assets/icons" ]; then
+    mkdir -p "$ROMEXPLORER_ASSETS_DIR/icons"
+    cp -rn "$HERE/assets/icons/." "$ROMEXPLORER_ASSETS_DIR/icons/" 2>/dev/null || true
+fi
+
+exec "$HERE/romexplorer" "$@"

@@ -1,0 +1,12 @@
+diff --git a/src/Hash3DS.cpp b/src/Hash3DS.cpp
+index a2d87cc..b3000d5 100644
+--- a/src/Hash3DS.cpp
++++ b/src/Hash3DS.cpp
+@@ -25,6 +25,7 @@ along with RALibretro.  If not, see <http://www.gnu.org/licenses/>.
+ 
+ #include <libmincrypt/sha256.h>
+ 
++#include <stdlib.h> /* strtol -- libstdc++ happens to pull it in; libc++ (llvm-mingw) does not */
+ #include <string.h>
+ 
+ void rhash_log_error_message(const char* message); /* in Hash.c */

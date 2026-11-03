@@ -1,0 +1,370 @@
+# Build every shippable package and leave them as workflow artifacts.
+#
+# Deliberately does NOT create, edit or upload to a GitHub release: `permissions: contents:
+# read` makes that impossible rather than merely unwritten, so the workflow cannot start
+# publishing by accident later. Download `romexplorer-packages-<version>` from the run's
+# summary page and attach the files to a release by hand.
+#
+# What gets built, and what does not:
+#
+#   linux/x64     server + desktop + AppImage
+#   windows/x64   server + desktop
+#   macos/arm64   server + desktop + .app
+#
+#   linux/arm64 and windows/arm64 are absent here although every submodule script now has an
+#   arm64 arm: build_native_deps.sh refuses them until its SUPPORTS_ARM64_{LINUX,WINDOWS}
+#   entries are flipped by a verified build, and they need cross toolchains (gcc-aarch64 +
+#   qemu; llvm-mingw) these runners do not have. scripts/build_release.sh builds them locally.
+#
+# Everything lands under release/<version>/: staged trees in <os>/<arch>/<kind>/, archives in
+# dist/. The version is read from the workspace once per job, into $VERSION.
+name: Release packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild_native_deps:
+        description: "Ignore the cached native libraries and rebuild them from the submodules (slow)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The GUI's web build is wasm32-unknown-unknown -- one portable artifact for every OS
+  # (see scripts/build_gui_web.sh). Building it once rather than per-platform is both
+  # quicker and the only way all three server packages are guaranteed to serve the same /app/.
+  gui-web:
+    name: GUI web build (wasm)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-web
+
+      - name: Install the dioxus CLI
+        run: cargo install dioxus-cli --version ^0.7 --locked
+
+      - name: Build
+        run: scripts/build_gui_web.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-web
+          path: app_root_ex/assets/gui_web
+          if-no-files-found: error
+
+  package:
+    name: ${{ matrix.name }}
+    needs: gui-web
+    runs-on: ${{ matrix.runner }}
+    # One platform failing must not deny the others: a broken Windows or macOS build is no
+    # reason to lose the Linux packages from the same run.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 on purpose: it has glibc 2.35, and binaries linked against a newer
+          # one refuse to start on Debian 12 / Ubuntu 22.04. The oldest runner we support is
+          # the right build host for the most portable result.
+          - { name: linux-x64, runner: ubuntu-22.04, os: linux, arch: x64 }
+          - { name: windows-x64, runner: windows-2022, os: windows, arch: x64 }
+          - { name: macos-arm64, runner: macos-14, os: macos, arch: arm64 }
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Not recursive: mame, dolphin and romm are enormous, and on a cache hit no
+          # submodule is needed at all. The ones the build actually uses are fetched below,
+          # shallowly, and only when there is nothing cached.
+          submodules: false
+
+      - name: Work out the native-library cache key
+        id: deps
+        run: |
+          # The pinned submodule commits, straight out of the tree object -- no checkout
+          # needed to read them. Any submodule bump, or an edit to either script that decides
+          # what gets built or where it is deployed, is a different key and a fresh build.
+          subs=$(git ls-tree HEAD external/ | awk '{print $3, $4}' | sort)
+          # deps/ holds our build scripts, wrappers and patches: any change there rebuilds too.
+          scripts=$(cat scripts/build_native_deps.sh scripts/move_libs_to_app_root.sh; git ls-tree -r HEAD deps/ | grep -v '/release/' | awk '{print $3, $4}')
+          hash=$(printf '%s\n%s' "$subs" "$scripts" | shasum -a 256 | cut -c1-16)
+          echo "key=nativedeps-${{ matrix.os }}-${{ matrix.arch }}-$hash" >> "$GITHUB_OUTPUT"
+          echo "native deps key: nativedeps-${{ matrix.os }}-${{ matrix.arch }}-$hash"
+
+      - name: Restore the native libraries
+        id: libcache
+        uses: actions/cache/restore@v4
+        with:
+          path: app_root_ex/lib/${{ matrix.os }}/${{ matrix.arch }}
+          key: ${{ steps.deps.outputs.key }}
+
+      # --- everything below the cache line only runs on a miss -------------------------------
+      - name: Install build prerequisites (Linux)
+        if: steps.libcache.outputs.cache-hit != 'true' && matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config bison \
+            libncurses-dev libssl-dev zlib1g-dev
+
+      - name: Install build prerequisites (macOS)
+        if: steps.libcache.outputs.cache-hit != 'true' && matrix.os == 'macos'
+        run: brew install cmake ninja bison pkg-config
+
+      - name: Check out the submodules the build uses
+        if: steps.libcache.outputs.cache-hit != 'true'
+        run: |
+          # build_native_deps.sh's ORDER, and nothing else. --depth 1 because these are built,
+          # never bisected.
+          git submodule update --init --depth 1 --recursive \
+            external/openssl \
+            external/zlib-ng \
+            external/7-Zip-zstd \
+            external/mariadb-connector-c \
+            external/mariadb-server \
+            external/chdman-simd \
+            external/dolphin \
+            external/RALibretro
+          # Not recursive: Cemu's own submodules (vcpkg among them) are not used. cemuwua
+          # compiles a few of its files against ZArchive, zstd and fmt checked out beside it.
+          git submodule update --init --depth 1 \
+            external/cemu \
+            external/ZArchive \
+            external/zstd \
+            external/fmt
+          # extract-xiso (XISO) and Beetle PSX (its PBP reader) build from their own trees.
+          git submodule update --init --depth 1 \
+            external/extract-xiso \
+            external/beetle-psx-libretro
+
+      - name: Build the native dependencies
+        if: steps.libcache.outputs.cache-hit != 'true' || inputs.rebuild_native_deps
+        run: scripts/build_native_deps.sh ${{ matrix.os }} ${{ matrix.arch }}
+
+      - name: Save the native libraries
+        if: steps.libcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: app_root_ex/lib/${{ matrix.os }}/${{ matrix.arch }}
+          key: ${{ steps.deps.outputs.key }}
+      # ---------------------------------------------------------------------------------------
+
+      - name: Prove the bundle is complete before building anything against it
+        run: |
+          # Cheap, and it turns "the package gate failed twenty minutes later" into a failure
+          # here, next to the step that would have caused it.
+          lib="app_root_ex/lib/${{ matrix.os }}/${{ matrix.arch }}"
+          test -d "$lib" || { echo "::error::$lib does not exist -- the native dependency build produced nothing"; exit 1; }
+          echo "$lib holds $(find "$lib" -type f | wc -l) files"
+
+      - name: Install the desktop GUI's system dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          # dioxus/desktop is wry, which is webkit2gtk. Needed to compile romexplorer-gui,
+          # not to run the server.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libxdo-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Read the workspace version
+        run: |
+          # The same source package.sh defaults to, read once so every path below agrees.
+          v=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="romexplorer"))')
+          test -n "$v" || { echo "::error::could not read the workspace version"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "version $v"
+
+      - name: Take the GUI web build from the job that made it
+        uses: actions/download-artifact@v4
+        with:
+          name: gui-web
+          path: app_root_ex/assets/gui_web
+
+      # Every platform archives in package.sh itself: tar.gz on Linux, zip on macOS (with
+      # symlinks and modes kept -- upload-artifact would dereference the SONAME symlinks and
+      # drop the executable bit) and zip on Windows (package.sh falls back to Python's zipfile
+      # where Git Bash has no `zip`).
+      - name: Package the server
+        run: scripts/package.sh --kind server --os ${{ matrix.os }} --arch ${{ matrix.arch }} --version "$VERSION"
+
+      - name: Package the desktop app
+        run: scripts/package.sh --kind desktop --os ${{ matrix.os }} --arch ${{ matrix.arch }} --version "$VERSION"
+
+      - name: Build the AppImage
+        if: matrix.os == 'linux'
+        run: scripts/appimage.sh --stage "release/$VERSION/linux/${{ matrix.arch }}/desktop" --arch ${{ matrix.arch }} --version "$VERSION"
+
+      - name: Build the .app bundle
+        if: matrix.os == 'macos'
+        run: |
+          # macos_app.sh zips the bundle into release/<version>/dist itself (ditto, so the
+          # executable bit, the symlinks and the signature's seal all survive), which is why
+          # nothing here hands the .app directory to upload-artifact.
+          scripts/macos_app.sh --stage "release/$VERSION/macos/${{ matrix.arch }}/desktop" --arch ${{ matrix.arch }} --version "$VERSION"
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.name }}
+          path: |
+            release/${{ env.VERSION }}/dist/*.tar.gz
+            release/${{ env.VERSION }}/dist/*.zip
+            release/${{ env.VERSION }}/dist/*.AppImage
+          if-no-files-found: error
+
+      # chdlite: the standalone convert tools, with their own version (chdlite/Cargo.toml) and
+      # their own tree, release/cli/<version>/. A separate artifact, named so the gather job's
+      # `packages-*` pattern leaves it out of the romexplorer archive. After the romexplorer
+      # packages on purpose: a chdlite failure must not cost those.
+      - name: Package chdlite
+        run: scripts/package.sh --kind cli --os ${{ matrix.os }} --arch ${{ matrix.arch }}
+
+      - name: Upload chdlite
+        uses: actions/upload-artifact@v4
+        with:
+          name: chdlite-${{ matrix.name }}
+          path: |
+            release/cli/*/dist/*.tar.gz
+            release/cli/*/dist/*.zip
+          if-no-files-found: error
+
+  gather:
+    name: Gather into one archive
+    needs: package
+    # Runs even when a platform failed, so a broken Windows build still yields the Linux and
+    # macOS packages rather than nothing at all.
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Collect every platform's artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: incoming
+
+      - name: Work out the version
+        id: v
+        run: |
+          # The tag when there is one, else whatever the packages call themselves, else the date.
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(find incoming -name 'romexplorer*-*.tar.gz' -o -name 'romexplorer*-*.zip' -o -name 'romexplorer*.AppImage' \
+              | head -n1 | sed -E 's#.*romexplorer(-server|-app)?-([^-]+)-.*#\2#')
+          fi
+          echo "version=${version:-$(date -u +%Y%m%d)}" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble
+        id: bundle
+        run: |
+          set -euo pipefail
+          version="${{ steps.v.outputs.version }}"
+          out="romexplorer-packages-$version"
+          mkdir -p "$out"
+
+          # download-artifact gives each artifact its own directory, so the archives arrive
+          # nested. Flatten the ready-made ones up; the per-file .sha256 stubs are dropped
+          # because the single SHA256SUMS below supersedes them.
+          # Every platform's package.sh now makes its own archive (Windows included), so this
+          # is a plain flatten -- no staged trees to re-zip, and no dependence on how deep
+          # release/<version>/<os>/<arch>/<kind>/ nests.
+          find incoming -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' \) -exec cp -f {} "$out/" \;
+
+          # One SHA256SUMS over everything, in the format `sha256sum -c` reads. Written under
+          # a temporary name so the file cannot end up listing itself.
+          rm -f "$out"/*.sha256
+          (cd "$out" && sha256sum -- * > .sums.tmp && mv .sums.tmp SHA256SUMS && sha256sum -c SHA256SUMS)
+
+          zip -qry "$out.zip" "$out"
+          echo "name=$out" >> "$GITHUB_OUTPUT"
+          echo
+          echo "### Packages" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh "$out" | sed 's/  */ /g' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the single archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: ${{ steps.bundle.outputs.name }}.zip
+          if-no-files-found: error
+
+  # Optional, and inert unless configured: this is the only place with both the artifacts and
+  # a credential that can push them. The build container that assembles packages interactively
+  # cannot -- its Drive connector uploads content as a base64 string inside a tool call, with
+  # no resumable upload, so a 300 MB lib tree (~400 MB of base64) has no path through it.
+  #
+  # To turn it on, set two repository secrets. rclone reads a remote straight out of the
+  # environment, so no config file is written and the token never lands on disk:
+  #
+  #   GDRIVE_RCLONE_TOKEN      the `token` line from an `rclone config` Google Drive remote,
+  #                            i.e. {"access_token":...,"refresh_token":...,"expiry":...}
+  #   GDRIVE_ROOT_FOLDER_ID    the id of claude/romexplorer, from its URL
+  #
+  # Leave either unset and the job logs why it skipped and succeeds. It is deliberately not a
+  # hard dependency of anything: the workflow artifacts remain the source of truth, and a
+  # Drive outage must not fail a release build.
+  publish-drive:
+    name: Copy to Drive (optional)
+    needs: gather
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Collect the artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: romexplorer-packages-*
+          path: incoming
+
+      - name: Copy
+        env:
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_RCLONE_TOKEN }}
+          RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RCLONE_CONFIG_GDRIVE_TOKEN:-}" ] || [ -z "${RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID:-}" ]; then
+            echo "::notice::GDRIVE_RCLONE_TOKEN / GDRIVE_ROOT_FOLDER_ID are not set; skipping the Drive copy."
+            echo "The packages are still on this run's summary page as workflow artifacts."
+            exit 0
+          fi
+          bundle=$(find incoming -name 'romexplorer-packages-*.zip' | head -n1)
+          [ -n "$bundle" ] || { echo "::error::no bundle to copy"; exit 1; }
+          version=$(basename "$bundle" .zip | sed 's/^romexplorer-packages-//')
+
+          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.deb -o /tmp/rclone.deb
+          sudo dpkg -i /tmp/rclone.deb
+
+          # --immutable: a published version is a fixed thing. Re-running a release build must
+          # not quietly rewrite an artifact someone has already downloaded and checksummed.
+          rclone copy --immutable --no-traverse -v "$bundle" "gdrive:packages/$version/"
+          echo "::notice::copied $(basename "$bundle") to claude/romexplorer/packages/$version/"

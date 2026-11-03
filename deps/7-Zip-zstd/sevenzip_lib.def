@@ -1,0 +1,10 @@
+EXPORTS
+  sevenzip_open PRIVATE
+  sevenzip_close PRIVATE
+  sevenzip_get_entry_count PRIVATE
+  sevenzip_get_entry PRIVATE
+  sevenzip_extract_entry_to_file PRIVATE
+  sevenzip_extract_entry_to_buffer PRIVATE
+  sevenzip_free_buffer PRIVATE
+  sevenzip_create_archive PRIVATE
+  sevenzip_get_last_error PRIVATE

@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Shell scripts run on Linux and macOS, where a CR after `#!/usr/bin/env bash` is part of
+# the interpreter name. LF in every checkout, Windows included.
+*.sh text eol=lf

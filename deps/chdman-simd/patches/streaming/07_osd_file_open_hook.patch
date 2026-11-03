@@ -1,0 +1,50 @@
+--- a/src/osd/modules/file/posixfile.cpp
++++ b/src/osd/modules/file/posixfile.cpp
+@@ -61,6 +61,8 @@
+ #include <cstdlib>
+ #include <unistd.h>
+ 
++#include "chdman_stream_hook.h" // romexplorer streaming build: user/patches/streaming/07
++
+ 
+ 
+ namespace {
+@@ -224,6 +226,13 @@
+ 
+ std::error_condition osd_file::open(std::string const &path, std::uint32_t openflags, ptr &file, std::uint64_t &filesize) noexcept
+ {
++	// romexplorer streaming build: sources registered by chdman_create_from_sources
++	{
++		std::error_condition virtual_err;
++		if (chdman_stream::open_virtual(path, openflags, &file, filesize, virtual_err))
++			return virtual_err;
++	}
++
+ 	std::string dst;
+ 	if (posix_check_socket_path(path))
+ 		return posix_open_socket(path, openflags, file, filesize);
+--- a/src/osd/modules/file/winfile.cpp
++++ b/src/osd/modules/file/winfile.cpp
+@@ -29,6 +29,8 @@
+ #include <cstdlib>
+ #include <cctype>
+ 
++#include "chdman_stream_hook.h" // romexplorer streaming build: user/patches/streaming/07
++
+ 
+ namespace {
+ 
+@@ -175,6 +177,13 @@
+ 
+ std::error_condition osd_file::open(std::string const &path, uint32_t openflags, ptr &file, std::uint64_t &filesize) noexcept
+ {
++	// romexplorer streaming build: sources registered by chdman_create_from_sources
++	{
++		std::error_condition virtual_err;
++		if (chdman_stream::open_virtual(path, openflags, &file, filesize, virtual_err))
++			return virtual_err;
++	}
++
+ 	if (win_check_socket_path(path))
+ 		return win_open_socket(path, openflags, file, filesize);
+ 	else if (win_check_ptty_path(path))

@@ -1,0 +1,30 @@
+[package]
+name = "romexplorer-types"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "The API types romexplorer's server and GUI share: request and response shapes, nothing that touches a database."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `alloc` + `serde` only: `NaiveDateTime` parse/format, no clock, no wasmbind. This crate is
+# in the GUI's wasm build, and chrono's default features would drag js-sys/wasm-bindgen and
+# iana-time-zone in for a timestamp that is only ever displayed.
+chrono = { version = "0.4", default-features = false, features = ["alloc", "serde"] }
+
+# Certificate pinning for talking to a romexplorer server over TLS (`pinning`), shared by the
+# backend (machine to machine) and the GUI's native REST builds. Off by default so the web
+# build, where the browser does TLS, never compiles rustls. `ring` rather than rustls's
+# default aws-lc: it is already the provider everything else in the tree uses.
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
+sha2 = { version = "0.11", optional = true }
+
+# Owner-only secret files (`private_file`): 0o600 on unix, a protected owner-only DACL on
+# Windows. Off by default for the same reason as `pinning` -- the web build writes no files.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+
+[features]
+pinning = ["dep:rustls", "dep:sha2"]
+private-files = ["dep:windows-sys"]

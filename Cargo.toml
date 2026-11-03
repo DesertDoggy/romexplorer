@@ -1,0 +1,258 @@
+[workspace]
+# The GUI (Dioxus) is its own crate so its dependencies stay out of every existing lib /
+# bin / test build here; `cargo build` in this directory still builds just `romexplorer`.
+members = [".", "romexplorer-gui", "romexplorer-types", "chdlite"]
+default-members = ["."]
+resolver = "2"
+
+# One version for every crate here, so the packaging scripts and the release tag have a
+# single source of truth. `src/database/playmatch_deredis` deliberately keeps its own: its
+# CARGO_PKG_VERSION is playmatch's, and goes out as that client's X-Version header.
+[workspace.package]
+version = "0.1.7"
+edition = "2021"
+repository = "https://github.com/DesertDoggy/romexplorer"
+
+[package]
+name = "romexplorer"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "biosdb_gen"
+path = "tools/biosdb_gen.rs"
+
+[[test]]
+name = "test_archiver"
+path = "tests/src/test_archiver.rs"
+
+[[test]]
+name = "test_detect"
+path = "tests/src/test_detect.rs"
+
+[[test]]
+name = "test_hasher"
+path = "tests/src/test_hasher.rs"
+
+[[test]]
+name = "test_wiiu"
+path = "tests/src/test_wiiu.rs"
+
+[[test]]
+name = "test_xbox"
+path = "tests/src/test_xbox.rs"
+
+[[test]]
+name = "test_serial"
+path = "tests/src/test_serial.rs"
+
+[[test]]
+name = "test_pbp"
+path = "tests/src/test_pbp.rs"
+
+[[test]]
+name = "test_converter"
+path = "tests/src/test_converter.rs"
+
+[[test]]
+name = "bench_streaming"
+path = "tests/src/bench_streaming.rs"
+
+[[test]]
+name = "test_operation"
+path = "tests/src/test_operation.rs"
+
+[[test]]
+name = "test_database"
+path = "tests/src/test_database.rs"
+
+[[test]]
+name = "test_api"
+path = "tests/src/test_api.rs"
+
+[[test]]
+name = "test_copy"
+path = "tests/src/test_copy.rs"
+
+[[test]]
+name = "test_sheets"
+path = "tests/src/test_sheets.rs"
+
+[[test]]
+name = "test_tls"
+path = "tests/src/test_tls.rs"
+
+[features]
+# Hook for the optional hand-written x86_64 MASM decode loop for LZMA (see build.rs). Off by
+# default: has no effect on non-x86_64 hosts, and falls back to the portable C decoder if no
+# MASM-compatible assembler is found even when enabled on x86_64.
+lzma_dec_asm = []
+# AVIF *decoding* of media sources through dav1d (C, via the image crate's avif-native).
+# Off by default: provider art is JPEG/PNG/WebP, and dav1d would need building per target
+# (incl. iOS/Android). Without it an AVIF source is served as-is, with no thumbnail.
+avif-decode = ["image/avif-native"]
+
+[dependencies]
+bitflags = "2.6"
+crc32fast = "1.4"
+# Cue sheets from Japanese sets are often Shift-JIS (`rom::detect::sheet`).
+encoding_rs = "0.8"
+libloading = "0.8"
+# Physical (non-hyperthread) core count -- std only exposes logical count
+# (`available_parallelism`), which is wrong for a decode-thread default on hybrid P/E CPUs
+# (see native_lib::physical_core_count / rom::decode_threads).
+num_cpus = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = "0.13"
+nod = "2.0.0-alpha.9"
+
+# md-5/sha1/sha2 0.11: the old external-crate "asm" feature (sha2-asm/md5-asm,
+# GNU-assembler .S files, hardcoded to refuse Windows entirely) was removed
+# upstream. sha1 and sha2 replaced it with automatic runtime SHA-NI dispatch
+# (cpufeatures-checked core::arch::x86_64 intrinsics, no external asm, no
+# feature flag) -- accelerated on x86_64 Windows and Linux alike, falling back
+# to the portable implementation on CPUs without SHA-NI. md-5 has no such
+# backend (no x86 hardware instruction extension for MD5 exists), so it is
+# always the portable implementation now, on every platform.
+md-5 = "0.11"
+sha1 = "0.11"
+sha2 = "0.11"
+# AES-128 for the outer layer of PS3/PSP packages, to read their PARAM.SFO (rom::platforms::sony,
+# off unless `scan_pkg_titles` is set). Already in the lock file through nod; test_wiiu uses it too.
+aes = "0.9"
+
+# src/database: MariaDB-backed reference data (hash -> game/region lookup, later
+# file/content/game "pages" -- see docs/plan and the database module's own doc comments).
+# Async because a GUI and a browser-facing web backend are planned to share this layer.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "process", "sync", "io-util", "signal"] }
+# sqlx over mysql/mysql_async: pure-Rust wire-protocol client like both (no libmysqlclient
+# dependency on any platform), but with one Pool/FromRow abstraction that already covers
+# MariaDB explicitly, compile-time-checked query macros, and a migration runner -- and it's
+# the standard pairing with axum for the planned web backend.
+# "sqlite" is here for the mobile cache export/import (api::sqlite), not for the app's own
+# storage, which is MariaDB everywhere it can run one. sqlx-sqlite bundles SQLite itself, so
+# this adds no system dependency, and it was already resolved in the lock file.
+# FuturesUnordered: a copy's files run several at once (api::parallel) while borrowing the
+# job's own state, which tokio's JoinSet would need cloned into 'static tasks. Already in the
+# lock file through sqlx and reqwest.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+sqlx = { version = "0.9", default-features = false, features = ["mysql", "sqlite", "runtime-tokio", "tls-rustls", "macros", "migrate", "chrono", "json"] }
+# dat_download.rs's runtime fetch/scrape of the reference DAT sources (reqwest, not the dev-
+# time scripts/fetch_*.sh, which stay as the bulk/manual downloader).
+# "zstd"/"gzip": advertise Accept-Encoding and decode transparently, so a catalogue sync pulls
+# ~18 MB instead of ~130 MB (api::sync). Decoding happens inside reqwest -- nothing downstream
+# of `response.bytes()` knows the difference.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json", "cookies", "multipart", "stream", "zstd", "gzip"] }
+quick-xml = { version = "0.31", features = ["serialize"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The API types shared with the GUI (see that crate's docs for why it is a separate leaf).
+romexplorer-types = { path = "romexplorer-types", features = ["pinning", "private-files"] }
+# The seven vendored, de-redis'd playmatch provider clients (see src/database/playmatch_deredis/
+# README.md); the RetroAchievements client is this crate's own (database/providers/retroachievements.rs).
+playmatch_deredis = { path = "src/database/playmatch_deredis" }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+# DAT packs (redump per-system zips, no-intro/tosec "everything" zips) are plain deflate zips:
+# read them with the pure-Rust zip crate rather than routing through the native 7-Zip wrapper,
+# which needs the streaming native library built for this platform (rom::sevenzip_wrapper).
+# "deflate" is for *reading*, not writing: every upstream DAT pack (No-Intro, TOSEC, redump)
+# is a deflate zip, and dat_parse.rs opens them with this crate -- dropping the feature would
+# break DAT import, which is what builds the catalogue in the first place.
+#
+# "zstd" is what backups are *written* with. Measured on this repo's own 135 MB catalogue
+# export, zstd -3 is both smaller than deflate -6 (18.40 vs 19.44 MB) and ~5x faster to produce
+# (362 MB/s against 75); on a multi-GB backup the speed is what decides whether it gets run
+# often. ZipArchive picks the method per member, so a restore reads either without being told.
+zip = { version = "2", default-features = false, features = ["deflate", "zstd"] }
+# Response compression for the REST API. zstd for romexplorer's own clients, gzip so a browser
+# or curl benefits too; tower-http picks whichever the caller advertises. Already in the lock
+# file via axum's own dependency graph.
+tower-http = { version = "0.6", features = ["compression-zstd", "compression-gzip"] }
+# Streaming a file out as a response body. Already in the lock file (axum and reqwest both
+# pull it), so naming it directly adds nothing to the graph -- it is here so a catalogue
+# backup, which can be several GB, is served chunk by chunk instead of read into a Vec.
+tokio-util = { version = "0.7", features = ["io"] }
+# database/matching: ported from playmatch's matching/{name_parse,util,scoring}.rs (MIT),
+# same crates it uses there.
+regex = "1"
+unicode-normalization = "0.1"
+lazy_static = "1"
+# Logging sink for the romexplorer-worker binary (and the database tests).
+env_logger = "0.11"
+# System RAM amount and per-path disk kind (HDD/SSD/network), cross-platform -- backs
+# rom::hash::RamClass::detect/StorageKind::for_path, which api::parallel uses to suggest
+# how many files a scan or copy works on at once. No hand-rolled OS-specific calls
+# (procfs, WinAPI, IOKit) needed for what this one dependency already covers on all three.
+sysinfo = "0.39.6"
+axum = { version = "0.8", features = ["multipart"] }
+# Grid thumbnails (database::media_cache): decode JPEG/PNG/GIF/WebP, resize, encode lossy
+# AVIF through ravif (pure Rust -- no nasm/C toolchain, so it builds for every target) or
+# JPEG. `rayon` parallelizes AVIF encoding; rayon itself runs batch thumbnail generation.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "avif", "rayon"] }
+rayon = "1"
+rand = "0.9"
+# Secrets at rest (`database::vault`): provider keys in api.env and peer tokens in
+# remote_sources are sealed with XChaCha20-Poly1305 under a key file. The 24-byte nonce is what
+# makes a random nonce per value safe with no counter to keep.
+chacha20poly1305 = "0.10"
+# Account passwords (`api::auth`): argon2id, the password-hashing default, stored as a PHC
+# string so its parameters travel with each hash.
+argon2 = "0.5"
+# `romexplorer_server reset-admin` reads the MariaDB root password and the new admin password
+# without echoing them to the terminal (unix and Windows alike).
+rpassword = "7"
+# TLS on the server's LAN listener (`server::tls`) and pinned certificates for machine-to-
+# machine calls (`romexplorer_types::pinning`). rustls and tokio-rustls are already in the tree
+# through reqwest and sqlx; `ring` keeps them on the provider those use rather than pulling in
+# aws-lc. rcgen makes the self-signed certificate a fresh install serves.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+lofty = "0.25.4"
+# Decoding for audio conversion and loudness measurement: pure Rust, so it builds for every
+# target. Only the codecs the audio library lists; no WMA / APE decoder exists here.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "alac", "flac", "pcm", "vorbis", "wav", "aiff", "isomp4", "ogg"] }
+# DSD (DSF / DFF) to PCM, pure Rust. Not on crates.io, so pinned to a commit; GPL-3.0, which
+# this AGPL-3.0 project may combine with. It converts file to file only, which is what the
+# conversion cache wants (api::audio_convert).
+rdsd2pcm = { git = "https://github.com/clone206/rdsd2pcm", rev = "a06475eb8de3ff19c33aaf403158894f60b58d43" }
+# The FLAC encoder rdsd2pcm already brings in, used directly for the lossless cache of the
+# other formats a browser cannot play (ALAC, AIFF).
+flac-codec = "1.2"
+# EBU R128 integrated loudness (pure Rust), measured at scan time for the player's "normalise".
+ebur128 = "0.1"
+
+# Native OS folder picker for api::fs::pick_dir_native (the console's "Browse" button when
+# the browser runs on the server's own machine). Desktop only -- rfd has no Android/iOS
+# backend; there, and for remote browsers, the console falls back to api::fs::list_dir.
+# xdg-portal (pure Rust, over D-Bus) rather than gtk3 on Linux: no GTK build dependency.
+# getrlimit/setrlimit for common::fd_limit (raising the 1024 open-files soft limit at start).
+# Already in the lock file through tokio and others.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+[dev-dependencies]
+# `oneshot` for driving the router in-process in server tests, the way the desktop app does.
+# Already in the lock file via axum and the GUI's `local` backend.
+tower = { version = "0.5", features = ["util"] }
+
+[build-dependencies]
+cc = "1.1"
+
+# Release binaries are shipped, so they carry no symbol table: the server binary is 40.6 MB
+# built and ~31.4 MB stripped, and nothing needs `.symtab` at run time -- every `dlopen`ed
+# native library is reached through `.dynsym`, which `strip` leaves alone. Done here rather
+# than in scripts/package.sh so an unpackaged `cargo build --release` can't ship fat by
+# accident. `lto = "thin"` is the cheap half of link-time optimisation; `codegen-units = 1`
+# is deliberately left at the default, because on a tree this size it costs several minutes
+# of every release build for a few percent.
+[profile.release]
+strip = "symbols"
+lto = "thin"

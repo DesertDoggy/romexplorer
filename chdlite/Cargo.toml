@@ -1,0 +1,62 @@
+[package]
+name = "chdlite"
+# chdlite's own version, not the workspace's: it is released and release-noted separately
+# from romexplorer (docs/chdlite_release_notes.md), continuing the C++ tool's 0.2.x line.
+version = "0.3.0"
+edition.workspace = true
+repository.workspace = true
+description = "Drop a disc image, get a CHD or RVZ: the standalone convert tool built on the romexplorer core."
+default-run = "chdlite"
+build = "build.rs"
+
+# Four console binaries rather than one with a mode flag: a file dropped onto an executable
+# arrives as a bare path, so the executable's own identity is the only way to choose a mode.
+[[bin]]
+name = "chdlite"
+path = "src/main.rs"
+
+[[bin]]
+name = "chdcomp"
+path = "src/bin/chdcomp.rs"
+
+[[bin]]
+name = "chdread"
+path = "src/bin/chdread.rs"
+
+[[bin]]
+name = "chdhash"
+path = "src/bin/chdhash.rs"
+
+[[bin]]
+name = "chdlite-gui"
+path = "src/bin/chdlite-gui.rs"
+required-features = ["gui"]
+
+[features]
+gui = ["dep:dioxus", "dep:rfd", "dep:image"]
+# Carries chdman, dolphinrvz and (when built) cemuwua inside the executable (see build.rs and
+# src/natives.rs), so the Windows GUI ships as one file. Needs `app_root_ex/lib/<os>/<arch>/` populated for the
+# target at build time.
+bundled-natives = ["dep:zstd"]
+
+[dependencies]
+romexplorer = { path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+num_cpus = "1"
+zstd = { version = "0.13", optional = true }
+
+dioxus = { version = "0.7", features = ["desktop"], optional = true }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
+# Decodes the embedded PNG for the window icon; already in the lock file through romexplorer.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# The batch runs on romexplorer's `Multiple`, which schedules on tokio.
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[build-dependencies]
+zstd = "0.13"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

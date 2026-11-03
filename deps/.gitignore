@@ -1,0 +1,7 @@
+# Build output and scratch state of every dependency's build script (deps/<name>/...).
+*/release/
+*/_build/
+*/logs/
+*/tests/_build/
+# 7-Zip's dev helpers (scripts/run-with-user-zlib-ng.sh) read a local zlib-ng copy from here.
+7-Zip-zstd/deps/

@@ -1,0 +1,4 @@
+{
+  "_": "Version notes for Collection > Definitive: games whose latest version may have less content than an earlier one. Keyed by the base game's IGDB id, in id order. rank: S = the older version is strongly recommended, A = depends on preference, B = the latest lacks some content but is still the better version. recommend / note: the UI's text per language (en is the fallback). No game names: the id says which game.",
+  "notes": {}
+}

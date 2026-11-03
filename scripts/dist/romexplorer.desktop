@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=romexplorer
+GenericName=ROM Collection Manager
+Comment=Catalogue, verify and browse a ROM collection
+# Rewritten by AppRun --install to the AppImage's real path; appimagetool also requires the
+# key to be present here.
+Exec=romexplorer
+TryExec=romexplorer
+Icon=romexplorer
+Terminal=false
+Categories=Game;Utility;
+Keywords=ROM;emulator;collection;No-Intro;redump;TOSEC;MAME;
+StartupWMClass=romexplorer

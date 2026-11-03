@@ -1,0 +1,11 @@
+-- A job that waits its turn (`database::jobs::enqueue_in_turn`, the "add to queue" buttons).
+--
+-- The worker runs lanes side by side: a DAT sync, a Hasheous dump and an IGDB sync started
+-- together all run at once. That is right for a machine in use and wrong for a first setup,
+-- where each step wants the one before it finished (the DATs imported before anything is
+-- matched against them) and three large jobs at once only fight over the database.
+--
+-- A job with this set starts only when nothing at all is running and no ordinary job is
+-- waiting, oldest first among themselves -- so a list of them runs one after another, each
+-- after the follow-up jobs the one before it queued.
+ALTER TABLE jobs ADD COLUMN in_turn BOOLEAN NOT NULL DEFAULT FALSE;

@@ -1,0 +1,598 @@
+diff -ru orig/providers/screenscraper/mod.rs patched/providers/screenscraper/mod.rs
+--- orig/providers/screenscraper/mod.rs	2026-09-23 12:48:37.688934213 +0900
++++ patched/providers/screenscraper/mod.rs	2026-09-23 12:48:37.697652749 +0900
+@@ -13,10 +13,8 @@
+ use anyhow::{Context, anyhow};
+ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
+ use chrono_tz::Europe::Paris;
+-use entity::sea_orm_active_enums::MetadataProviderEnum;
+-use log::{debug, error, info, warn};
++use log::{debug, error, info};
+ use rand::RngExt;
+-use redis::AsyncCommands;
+ use reqwest::header::HeaderMap;
+ use reqwest::{Client, Method, StatusCode, Url};
+ use serde::de::DeserializeOwned;
+@@ -30,8 +28,6 @@
+ use tower::retry::Retry;
+ use tower::{Service, ServiceBuilder, ServiceExt};
+ 
+-pub mod cache;
+-pub mod matching;
+ pub mod model;
+ 
+ pub const API_URL: &str = "https://api.screenscraper.fr/api2";
+@@ -135,7 +131,6 @@
+ 	outage_until_unix: AtomicI64,
+ 	blacklisted: AtomicBool,
+ 	systems_cache: OnceCell<Arc<Vec<SsSystem>>>,
+-	redis_conn: redis::aio::MultiplexedConnection,
+ }
+ 
+ impl ScreenScraperClient {
+@@ -144,7 +139,6 @@
+ 		dev_password: String,
+ 		user: Option<(String, String)>,
+ 		client: Client,
+-		redis_conn: redis::aio::MultiplexedConnection,
+ 	) -> anyhow::Result<Self> {
+ 		let retry_layer = tower::retry::RetryLayer::new(RetryPolicy::new("screenscraper"));
+ 
+@@ -167,7 +161,6 @@
+ 			outage_until_unix: AtomicI64::new(0),
+ 			blacklisted: AtomicBool::new(false),
+ 			systems_cache: OnceCell::new(),
+-			redis_conn,
+ 		})
+ 	}
+ 
+@@ -580,79 +573,13 @@
+ 		Ok(Some(account.clone()))
+ 	}
+ 
+-	async fn refresh_account_state_from_redis(&self) {
+-		let Some(account) = self.account.as_ref() else {
+-			return;
+-		};
+-		let mut conn = self.redis_conn.clone();
+-		let now = now_unix_secs();
+-		for a in std::iter::once(account) {
+-			if a.exhausted_until_unix.load(Ordering::Relaxed) <= now {
+-				let val: Result<Option<String>, _> = conn.get(&a.redis_key).await;
+-				if let Ok(Some(raw)) = val
+-					&& let Ok(ts) = raw.parse::<i64>()
+-					&& ts > now
+-				{
+-					a.exhausted_until_unix.store(ts, Ordering::Relaxed);
+-				}
+-			}
+-
+-			let snap_raw: Result<Option<String>, _> = conn.get(&a.quota_redis_key).await;
+-			let snapshot = match snap_raw {
+-				Ok(Some(raw)) => serde_json::from_str::<QuotaSnapshot>(&raw).ok(),
+-				_ => None,
+-			};
+-			if let Some(snapshot) = snapshot.as_ref() {
+-				apply_concurrency(a, snapshot.concurrency);
+-			}
+-
+-			if a.exhausted_until_unix.load(Ordering::Relaxed) > now {
+-				continue;
+-			}
+-
+-			if let Some(snapshot) = snapshot {
+-				let ok_hit = soft_limit_reached(
+-					Some(snapshot.requests_today),
+-					Some(snapshot.max_requests_per_day),
+-				);
+-				let ko_hit = soft_limit_reached(
+-					Some(snapshot.requests_ko_today),
+-					Some(snapshot.max_requests_ko_per_day),
+-				);
+-				if ok_hit || ko_hit {
+-					let reset = next_paris_midnight_unix(now);
+-					a.exhausted_until_unix.store(reset, Ordering::Relaxed);
+-					crate::metrics::record_screenscraper_quota_exhaustion(if ok_hit {
+-						"ok_soft_limit_restored"
+-					} else {
+-						"ko_soft_limit_restored"
+-					});
+-					let reason = if ok_hit {
+-						format!(
+-							"OK quota soft limit (restored from snapshot, {}/{})",
+-							snapshot.requests_today, snapshot.max_requests_per_day
+-						)
+-					} else {
+-						format!(
+-							"KO quota soft limit (restored from snapshot, {}/{})",
+-							snapshot.requests_ko_today, snapshot.max_requests_ko_per_day
+-						)
+-					};
+-					info!(
+-						"ScreenScraper account exhausted: {reason}; resuming at next paris midnight (~{}s)",
+-						(reset - now).max(0)
+-					);
+-					let ttl = (reset - now).max(60) as u64;
+-					let mut c = conn.clone();
+-					let key = a.redis_key.clone();
+-					let value = reset.to_string();
+-					tokio::spawn(async move {
+-						let _: Result<(), _> = c.set_ex(&key, value, ttl).await;
+-					});
+-				}
+-			}
+-		}
+-	}
++	/// De-redis stub: upstream restores exhaustion/quota state persisted in Redis here, so
++	/// this account's limits survive a process restart. Without Redis, that cross-restart
++	/// persistence is gone -- `self.account`'s in-process `AtomicI64` fields are the only
++	/// source of truth now, so there is nothing to load. A known, accepted limitation for a
++	/// single local process: quota tracking resets on restart instead of resuming exactly
++	/// where it left off. See patches/ for the exact upstream diff this removes.
++	async fn refresh_account_state_from_redis(&self) {}
+ 
+ 	async fn mark_account_exhausted(&self, account: &Account, http_code: u16) {
+ 		let now = now_unix_secs();
+@@ -668,13 +595,9 @@
+ 			"ScreenScraper account exhausted: {reason}; resuming at next paris midnight (~{}s)",
+ 			(reset - now).max(0)
+ 		);
+-		let ttl = (reset - now).max(60) as u64;
+-		let mut conn = self.redis_conn.clone();
+-		let key = account.redis_key.clone();
+-		let value = reset.to_string();
+-		tokio::spawn(async move {
+-			let _: Result<(), _> = conn.set_ex(&key, value, ttl).await;
+-		});
++		// De-redis: upstream also persists `reset` to Redis here (survives a restart);
++		// `account.exhausted_until_unix` above is already updated in-process, which is what
++		// actually enforces the limit for this run. See patches/ for the diff removed.
+ 	}
+ 
+ 	fn update_quota_from(&self, account: &Account, user: &Option<SsUser>) {
+@@ -725,28 +648,16 @@
+ 			"ScreenScraper account exhausted: {reason}; resuming at next paris midnight (~{}s)",
+ 			(reset - now).max(0)
+ 		);
+-		let ttl = (reset - now).max(60) as u64;
+-		let mut conn = self.redis_conn.clone();
+-		let key = account.redis_key.clone();
+-		let value = reset.to_string();
+-		tokio::spawn(async move {
+-			let _: Result<(), _> = conn.set_ex(&key, value, ttl).await;
+-		});
++		// De-redis: see the comment in mark_account_exhausted above -- same removal.
+ 	}
+ 
+-	fn persist_quota_snapshot(&self, account: &Account, snapshot: &QuotaSnapshot) {
+-		let Ok(value) = serde_json::to_string(snapshot) else {
+-			return;
+-		};
+-		let now = now_unix_secs();
+-		let reset = next_paris_midnight_unix(now);
+-		let ttl = (reset - now).max(60) as u64;
+-		let mut conn = self.redis_conn.clone();
+-		let key = account.quota_redis_key.clone();
+-		tokio::spawn(async move {
+-			let _: Result<(), _> = conn.set_ex(&key, value, ttl).await;
+-		});
+-	}
++	/// De-redis stub: upstream persists `snapshot` to Redis here for cross-restart/cross-
++	/// instance sharing. Not needed for a single local process; the in-process `Account`
++	/// fields `update_quota_from` already updated are the only state that matters. Kept as
++	/// a named no-op (not deleted outright) so its one call site in `update_quota_from`
++	/// doesn't need touching, and so a future MariaDB-backed persistence layer has an
++	/// obvious place to plug in.
++	fn persist_quota_snapshot(&self, _account: &Account, _snapshot: &QuotaSnapshot) {}
+ }
+ 
+ fn apply_concurrency(account: &Account, target: usize) {
+@@ -951,408 +862,3 @@
+ 	Ok(ParseOutcome::Parseable)
+ }
+ 
+-#[async_trait::async_trait]
+-impl crate::providers::MetadataProvider for ScreenScraperClient {
+-	fn provider_label(&self) -> &'static str {
+-		"screenscraper"
+-	}
+-
+-	fn provider_enum(&self) -> MetadataProviderEnum {
+-		MetadataProviderEnum::Screenscraper
+-	}
+-
+-	fn chunk_size(&self) -> usize {
+-		let now = now_unix_secs();
+-		self.account
+-			.as_ref()
+-			.filter(|a| a.exhausted_until_unix.load(Ordering::Relaxed) <= now)
+-			.map(|a| a.concurrency.load(Ordering::Relaxed))
+-			.unwrap_or(1)
+-			.clamp(1, MAX_CONCURRENCY)
+-	}
+-
+-	fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+-		&self.redis_conn
+-	}
+-
+-	async fn match_db(self: Arc<Self>, db_conn: &sea_orm::DbConn) -> anyhow::Result<()> {
+-		if self.is_quota_exhausted() {
+-			warn!("ScreenScraper quota exhausted at cycle start, skipping");
+-			return Ok(());
+-		}
+-		matching::match_db_to_screenscraper_entities(self, db_conn).await
+-	}
+-
+-	async fn match_via_sibling_names(
+-		self: Arc<Self>,
+-		db_conn: &sea_orm::DbConn,
+-	) -> anyhow::Result<()> {
+-		if self.is_quota_exhausted() {
+-			warn!("ScreenScraper quota exhausted at cross-pass start, skipping");
+-			return Ok(());
+-		}
+-		crate::providers::drive_cross_match_pipeline(
+-			"screenscraper",
+-			MetadataProviderEnum::Screenscraper,
+-			matching::game::match_game_via_sibling_name_screenscraper,
+-			self,
+-			db_conn,
+-			crate::providers::DEFAULT_CHUNK_SIZE,
+-		)
+-		.await
+-	}
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-	use super::*;
+-
+-	#[test]
+-	fn parse_or_incident_rejects_each_french_phrase() {
+-		for phrase in INCIDENT_PHRASES {
+-			let body = format!("preamble {phrase} trailing");
+-			assert!(
+-				parse_or_incident(&body, Some("application/json")).is_err(),
+-				"phrase {phrase} should be flagged"
+-			);
+-		}
+-	}
+-
+-	#[test]
+-	fn parse_or_incident_rejects_non_json_content_type() {
+-		let body = "{\"jeu\": {\"id\": \"1\"}}";
+-		assert!(parse_or_incident(body, Some("text/html; charset=utf-8")).is_err());
+-	}
+-
+-	#[test]
+-	fn valid_system_id_rejects_zero_and_negative() {
+-		assert!(!valid_system_id(0));
+-		assert!(!valid_system_id(-1));
+-		assert!(valid_system_id(1));
+-		assert!(valid_system_id(57));
+-	}
+-
+-	#[test]
+-	fn body_preview_collapses_whitespace_and_caps_length() {
+-		let body = "Recherche\n\ntrop\tcourte";
+-		assert_eq!(body_preview(body), "Recherche trop courte");
+-		let long: String = "a".repeat(1024);
+-		assert_eq!(body_preview(&long).chars().count(), 256);
+-	}
+-
+-	#[test]
+-	fn parse_or_incident_accepts_valid_json_body() {
+-		let body = "{\"header\": {\"success\": \"true\"}}";
+-		assert!(matches!(
+-			parse_or_incident(body, Some("application/json")),
+-			Ok(ParseOutcome::Parseable)
+-		));
+-	}
+-
+-	#[test]
+-	fn parse_or_incident_classifies_not_found_phrases_as_misses() {
+-		for phrase in NOT_FOUND_PHRASES {
+-			let body = format!("Erreur : ROM/ISO/Fichier {phrase} !");
+-			assert!(
+-				matches!(
+-					parse_or_incident(&body, Some("application/json")),
+-					Ok(ParseOutcome::NotFound)
+-				),
+-				"phrase {phrase} should classify as NotFound, got something else"
+-			);
+-		}
+-	}
+-
+-	#[test]
+-	fn url_for_log_strips_passwords() {
+-		let url = Url::parse(
+-			"https://api.screenscraper.fr/api2/jeuInfos.php?devid=foo&devpassword=secret&ssid=u&sspassword=topsecret&gameid=42",
+-		)
+-		.unwrap();
+-		let logged = url_for_log(&url);
+-		assert!(!logged.contains("secret"), "got: {logged}");
+-		assert!(!logged.contains("topsecret"), "got: {logged}");
+-		assert!(logged.contains("devid=foo"));
+-		assert!(logged.contains("gameid=42"));
+-	}
+-
+-	fn user_with(
+-		today: Option<&str>,
+-		max: Option<&str>,
+-		ko: Option<&str>,
+-		kmax: Option<&str>,
+-	) -> SsUser {
+-		SsUser {
+-			requeststoday: today.map(str::to_string),
+-			maxrequestsperday: max.map(str::to_string),
+-			requestskotoday: ko.map(str::to_string),
+-			maxrequestskoperday: kmax.map(str::to_string),
+-			maxrequestspermin: None,
+-			maxthreads: None,
+-		}
+-	}
+-
+-	#[test]
+-	fn soft_limit_triggers_on_ok_quota_above_threshold() {
+-		let u = user_with(Some("950"), Some("1000"), None, None);
+-		assert!(soft_limit_reached(
+-			parsed_u64(u.requeststoday.as_deref()),
+-			parsed_u64(u.maxrequestsperday.as_deref())
+-		));
+-	}
+-
+-	#[test]
+-	fn soft_limit_does_not_trigger_below_threshold() {
+-		let u = user_with(Some("900"), Some("1000"), None, None);
+-		assert!(!soft_limit_reached(
+-			parsed_u64(u.requeststoday.as_deref()),
+-			parsed_u64(u.maxrequestsperday.as_deref())
+-		));
+-	}
+-
+-	#[test]
+-	fn soft_limit_safe_when_max_unknown_or_zero() {
+-		let u = user_with(Some("950"), None, None, None);
+-		assert!(!soft_limit_reached(
+-			parsed_u64(u.requeststoday.as_deref()),
+-			parsed_u64(u.maxrequestsperday.as_deref())
+-		));
+-		let u = user_with(Some("0"), Some("0"), None, None);
+-		assert!(!soft_limit_reached(
+-			parsed_u64(u.requeststoday.as_deref()),
+-			parsed_u64(u.maxrequestsperday.as_deref())
+-		));
+-	}
+-
+-	#[test]
+-	fn soft_limit_triggers_on_ko_quota_independently() {
+-		let u = user_with(Some("0"), Some("1000"), Some("96"), Some("100"));
+-		assert!(!soft_limit_reached(
+-			parsed_u64(u.requeststoday.as_deref()),
+-			parsed_u64(u.maxrequestsperday.as_deref())
+-		));
+-		assert!(soft_limit_reached(
+-			parsed_u64(u.requestskotoday.as_deref()),
+-			parsed_u64(u.maxrequestskoperday.as_deref())
+-		));
+-	}
+-
+-	fn user_with_maxthreads(value: Option<&str>) -> SsUser {
+-		SsUser {
+-			requeststoday: None,
+-			maxrequestsperday: None,
+-			requestskotoday: None,
+-			maxrequestskoperday: None,
+-			maxrequestspermin: None,
+-			maxthreads: value.map(str::to_string),
+-		}
+-	}
+-
+-	#[test]
+-	fn parse_maxthreads_accepts_typical_tier_values() {
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(Some("1"))), Some(1));
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(Some("5"))), Some(5));
+-		assert_eq!(
+-			parse_maxthreads(&user_with_maxthreads(Some("16"))),
+-			Some(16)
+-		);
+-	}
+-
+-	#[test]
+-	fn parse_maxthreads_clamps_to_max_concurrency() {
+-		assert_eq!(
+-			parse_maxthreads(&user_with_maxthreads(Some("100"))),
+-			Some(MAX_CONCURRENCY)
+-		);
+-		assert_eq!(
+-			parse_maxthreads(&user_with_maxthreads(Some("17"))),
+-			Some(MAX_CONCURRENCY)
+-		);
+-	}
+-
+-	#[test]
+-	fn parse_maxthreads_rejects_garbage_and_missing() {
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(None)), None);
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(Some(""))), None);
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(Some("abc"))), None);
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(Some("0"))), None);
+-		assert_eq!(parse_maxthreads(&user_with_maxthreads(Some("-1"))), None);
+-	}
+-
+-	#[test]
+-	fn next_paris_midnight_is_future_and_within_two_days() {
+-		let now = now_unix_secs();
+-		let reset = next_paris_midnight_unix(now);
+-		assert!(reset > now);
+-		assert!(reset - now < 2 * 86400);
+-	}
+-
+-	#[test]
+-	fn sha256_hex_is_64_chars_lowercase() {
+-		let hex = sha256_hex("hello");
+-		assert_eq!(hex.len(), 64);
+-		assert!(
+-			hex.chars()
+-				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+-		);
+-	}
+-
+-	#[test]
+-	fn secs_until_recovery_returns_none_when_nothing_exhausted() {
+-		let now = 1_000_000;
+-		assert_eq!(compute_secs_until_recovery(false, 0, &[0, 0], now), None);
+-	}
+-
+-	#[test]
+-	fn secs_until_recovery_returns_none_when_blacklisted() {
+-		let now = 1_000_000;
+-		assert_eq!(
+-			compute_secs_until_recovery(true, now + 600, &[now + 3600], now),
+-			None
+-		);
+-	}
+-
+-	#[test]
+-	fn secs_until_recovery_uses_outage_when_pool_clean() {
+-		let now = 1_000_000;
+-		assert_eq!(
+-			compute_secs_until_recovery(false, now + 120, &[0], now),
+-			Some(120)
+-		);
+-	}
+-
+-	#[test]
+-	fn secs_until_recovery_uses_pool_earliest_when_outage_clean() {
+-		let now = 1_000_000;
+-		assert_eq!(
+-			compute_secs_until_recovery(false, 0, &[now + 600, now + 300], now),
+-			Some(300)
+-		);
+-	}
+-
+-	#[test]
+-	fn secs_until_recovery_takes_max_of_outage_and_pool() {
+-		let now = 1_000_000;
+-		assert_eq!(
+-			compute_secs_until_recovery(false, now + 600, &[now + 120], now),
+-			Some(600)
+-		);
+-	}
+-
+-	#[test]
+-	fn account_has_distinct_redis_keys_for_exhaustion_and_quota() {
+-		let acc = Account::new("user42".into(), "pw".into());
+-		assert!(acc.redis_key.ends_with(":exhausted_until"));
+-		assert!(acc.quota_redis_key.ends_with(":quota"));
+-		assert_ne!(acc.redis_key, acc.quota_redis_key);
+-		assert!(acc.redis_key.starts_with(REDIS_KEY_PREFIX));
+-		assert!(acc.quota_redis_key.starts_with(REDIS_KEY_PREFIX));
+-	}
+-
+-	#[test]
+-	fn quota_snapshot_round_trips_through_json() {
+-		let snap = QuotaSnapshot {
+-			requests_today: 19_000,
+-			max_requests_per_day: 20_000,
+-			requests_ko_today: 630,
+-			max_requests_ko_per_day: 2_000,
+-			concurrency: 4,
+-		};
+-		let raw = serde_json::to_string(&snap).expect("serialize");
+-		let back: QuotaSnapshot = serde_json::from_str(&raw).expect("deserialize");
+-		assert_eq!(snap, back);
+-		assert!(raw.contains("\"concurrency\":4"));
+-	}
+-
+-	#[test]
+-	fn quota_snapshot_deserialises_legacy_payload_without_concurrency() {
+-		let legacy = r#"{
+-			"requests_today": 100,
+-			"max_requests_per_day": 1000,
+-			"requests_ko_today": 5,
+-			"max_requests_ko_per_day": 100
+-		}"#;
+-		let snap: QuotaSnapshot = serde_json::from_str(legacy).expect("deserialize");
+-		assert_eq!(snap.concurrency, 0);
+-		assert_eq!(snap.requests_today, 100);
+-	}
+-
+-	#[test]
+-	fn apply_concurrency_scales_up_via_add_permits() {
+-		let acc = Account::new("u".into(), "p".into());
+-		assert_eq!(acc.concurrency.load(Ordering::Relaxed), 1);
+-		assert_eq!(acc.permits.available_permits(), 1);
+-		apply_concurrency(&acc, 5);
+-		assert_eq!(acc.concurrency.load(Ordering::Relaxed), 5);
+-		assert_eq!(acc.permits.available_permits(), 5);
+-	}
+-
+-	#[test]
+-	fn apply_concurrency_scales_down_via_forget_permits() {
+-		let acc = Account::new("u".into(), "p".into());
+-		apply_concurrency(&acc, 5);
+-		assert_eq!(acc.permits.available_permits(), 5);
+-		apply_concurrency(&acc, 2);
+-		assert_eq!(acc.concurrency.load(Ordering::Relaxed), 2);
+-		assert_eq!(acc.permits.available_permits(), 2);
+-	}
+-
+-	#[test]
+-	fn apply_concurrency_no_op_when_target_zero() {
+-		let acc = Account::new("u".into(), "p".into());
+-		apply_concurrency(&acc, 3);
+-		apply_concurrency(&acc, 0);
+-		assert_eq!(acc.concurrency.load(Ordering::Relaxed), 3);
+-		assert_eq!(acc.permits.available_permits(), 3);
+-	}
+-
+-	#[test]
+-	fn apply_concurrency_clamps_to_max() {
+-		let acc = Account::new("u".into(), "p".into());
+-		apply_concurrency(&acc, MAX_CONCURRENCY + 4);
+-		assert_eq!(acc.concurrency.load(Ordering::Relaxed), MAX_CONCURRENCY);
+-		assert_eq!(acc.permits.available_permits(), MAX_CONCURRENCY);
+-	}
+-
+-	#[test]
+-	fn apply_concurrency_scales_down_while_permit_held_settles_after_drop() {
+-		let acc = Account::new("u".into(), "p".into());
+-		apply_concurrency(&acc, 4);
+-		let held = acc
+-			.permits
+-			.clone()
+-			.try_acquire_owned()
+-			.expect("permit available");
+-		assert_eq!(acc.permits.available_permits(), 3);
+-		apply_concurrency(&acc, 1);
+-		assert_eq!(acc.concurrency.load(Ordering::Relaxed), 1);
+-		assert_eq!(acc.permits.available_permits(), 0);
+-		drop(held);
+-		assert_eq!(acc.permits.available_permits(), 1);
+-	}
+-
+-	#[test]
+-	fn quota_snapshot_soft_limit_re_check_matches_runtime_check() {
+-		fn check(today: u64, max: u64) -> bool {
+-			let snap = QuotaSnapshot {
+-				requests_today: today,
+-				max_requests_per_day: max,
+-				requests_ko_today: 0,
+-				max_requests_ko_per_day: 0,
+-				concurrency: 0,
+-			};
+-			let from_snapshot =
+-				soft_limit_reached(Some(snap.requests_today), Some(snap.max_requests_per_day));
+-			let u = user_with(Some(&today.to_string()), Some(&max.to_string()), None, None);
+-			let from_runtime = soft_limit_reached(
+-				parsed_u64(u.requeststoday.as_deref()),
+-				parsed_u64(u.maxrequestsperday.as_deref()),
+-			);
+-			assert_eq!(from_snapshot, from_runtime);
+-			from_snapshot
+-		}
+-		assert!(!check(9_400, 10_000));
+-		assert!(check(9_500, 10_000));
+-		assert!(check(9_600, 10_000));
+-	}
+-}

@@ -1,0 +1,56 @@
+# romexplorer server install settings, read by scripts/install.sh.
+#
+# `KEY=VALUE` per line, `#` comments, quotes optional -- the same syntax the app itself uses
+# (src/database/env_file.rs), so there is no parser to learn and no YAML to indent wrong.
+#
+# Every value here is optional. Leave a password blank and the installer generates one, which
+# is the recommended way: it prints the console login once at the end and never stores the
+# rest anywhere but the app's own owner-only files.
+#
+# This file is only read on a *first* install. Once setup has run, the settings live in
+# `data/database.env` and this file is not consulted again -- so editing it later
+# changes nothing. To change a password afterwards use the console, or
+# `romexplorer_server reset-admin`.
+
+# --- the console login you will actually sign in with -------------------------------------
+# This is the app-level account (api::auth), not a database account. Blank password = one is
+# generated and printed once when the installer finishes.
+admin_username=admin
+admin_password=
+
+# Extra non-admin accounts, one per line. `upload.<name>=true` also lets that account
+# register files it uploads. Both are optional.
+#user.bob=a-password-for-bob
+#upload.bob=true
+
+# --- the bundled database ------------------------------------------------------------------
+# These are MariaDB accounts, created once on first start and then used by the app to reach
+# its own embedded server. You never type them; they exist because the database needs them.
+# Blank = generated.
+database=romexplorer
+db_root_password=
+db_admin_user=rx_admin
+db_admin_password=
+# The day-to-day account the app connects as. Optional: leave both blank and the app uses
+# the admin account instead. Set both or neither.
+db_app_user=rx_app
+db_app_password=
+
+# Not 3306: the bundled server must never collide with a system-wide MySQL/MariaDB.
+db_port=3307
+
+# Where the database keeps its files. Blank = `data/mariadb` inside the install.
+# Point it at a bigger disk if the catalogue will be large.
+db_datadir=
+
+# --- the REST listener ---------------------------------------------------------------------
+# 127.0.0.1 serves this machine only. Use 0.0.0.0 to serve the network -- the server speaks
+# TLS with a certificate it makes on first start, and redirects plain HTTP from anywhere but
+# this machine, so this is safe to expose on a LAN.
+server_bind=127.0.0.1
+server_port=7337
+
+# Serve the share API to peers, and advertise it over mDNS. Off by default: a client is not
+# a server.
+share_enabled=false
+share_advertise=false

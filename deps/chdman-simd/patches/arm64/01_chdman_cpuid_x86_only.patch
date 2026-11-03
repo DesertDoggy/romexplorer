@@ -1,0 +1,23 @@
+--- a/src/tools/chdman.cpp	2026-10-01 00:36:53.927501039 +0900
++++ b/src/tools/chdman.cpp	2026-10-01 00:36:53.983117540 +0900
+@@ -45,3 +45,5 @@
+ #include <vector>
++#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+ #include <cpuid.h>
++#endif
+ 
+@@ -3564,2 +3566,3 @@
+ 
++#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+ static std::string simd_active_string()
+@@ -3622,2 +3625,10 @@
+ }
++#else
++// Not x86: cpuid/xgetbv do not exist here. AArch64 has NEON as its baseline and
++// chdman-simd adds no runtime-dispatched paths for it, so there is nothing to probe.
++static std::string simd_active_string()
++{
++	return "NEON (arm64 baseline)";
++}
++#endif
+ 

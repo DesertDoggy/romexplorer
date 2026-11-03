@@ -1,0 +1,186 @@
+diff -ru orig/providers/emuready/mod.rs patched/providers/emuready/mod.rs
+--- orig/providers/emuready/mod.rs	2026-09-27 13:44:55.252235500 +0900
++++ patched/providers/emuready/mod.rs	2026-09-27 13:44:55.265237400 +0900
+@@ -4,7 +4,6 @@
+ 	EmuReadyEnvelope, EmuReadyGame, EmuReadyGamesPage, EmuReadySystem,
+ };
+ use anyhow::{Context, anyhow};
+-use entity::sea_orm_active_enums::MetadataProviderEnum;
+ use log::debug;
+ use reqwest::header::HeaderMap;
+ use reqwest::{Client, Method, StatusCode, Url};
+@@ -17,7 +16,6 @@
+ use tower::retry::Retry;
+ use tower::{Service, ServiceBuilder, ServiceExt};
+ 
+-pub mod matching;
+ pub mod model;
+ 
+ pub const API_URL: &str = "https://www.emuready.com/api/mobile/trpc";
+@@ -29,14 +27,12 @@
+ pub struct EmuReadyClient {
+ 	client: Client,
+ 	service: Mutex<RateLimit<Retry<RetryPolicy, Client>>>,
+-	redis_conn: redis::aio::MultiplexedConnection,
+ 	systems_cache: OnceCell<Arc<Vec<EmuReadySystem>>>,
+ }
+ 
+ impl EmuReadyClient {
+ 	pub fn new(
+ 		client: Client,
+-		redis_conn: redis::aio::MultiplexedConnection,
+ 	) -> anyhow::Result<Self> {
+ 		let rate_limit_layer = RateLimitLayer::new(
+ 			RATELIMIT_AMOUNT,
+@@ -57,7 +53,6 @@
+ 		Ok(Self {
+ 			client,
+ 			service: Mutex::new(service),
+-			redis_conn,
+ 			systems_cache: OnceCell::new(),
+ 		})
+ 	}
+@@ -102,6 +97,51 @@
+ 		Ok(env.result.data.json.games)
+ 	}
+ 
++	/// romexplorer addition: one page of every game on a system (`games.get` without a
++	/// search term), for the per-platform bulk sync. The response carries no total, so a
++	/// page shorter than `limit` (max 50) is the last one.
++	pub async fn list_games_page(
++		&self,
++		system_id: &str,
++		page: i64,
++		limit: i64,
++	) -> anyhow::Result<Vec<EmuReadyGame>> {
++		#[derive(Serialize)]
++		struct Input<'a> {
++			#[serde(rename = "systemId")]
++			system_id: &'a str,
++			page: i64,
++			limit: i64,
++		}
++		let payload = Input {
++			system_id,
++			page,
++			limit: limit.clamp(1, SEARCH_LIMIT),
++		};
++		let input = build_trpc_input(&payload)?;
++		let url = build_url("games.get", Some(&input))?;
++		let env = self
++			.execute_get::<EmuReadyEnvelope<EmuReadyGamesPage>>(url, "games_list")
++			.await?;
++		Ok(env.result.data.json.games)
++	}
++
++	/// romexplorer addition: how many games a system has (`pagination.total` of a one-item
++	/// page) -- the cheap "did it change?" check before paging through it.
++	pub async fn count_games(&self, system_id: &str) -> anyhow::Result<Option<i64>> {
++		#[derive(Serialize)]
++		struct Input<'a> {
++			#[serde(rename = "systemId")]
++			system_id: &'a str,
++			page: i64,
++			limit: i64,
++		}
++		let input = build_trpc_input(&Input { system_id, page: 1, limit: 1 })?;
++		let url = build_url("games.get", Some(&input))?;
++		let env = self.execute_get::<EmuReadyEnvelope<EmuReadyGamesPage>>(url, "games_count").await?;
++		Ok(env.result.data.json.pagination.and_then(|p| p.total))
++	}
++
+ 	async fn execute_get<T: DeserializeOwned>(
+ 		&self,
+ 		url: Url,
+@@ -180,71 +220,3 @@
+ 	)?)
+ }
+ 
+-#[async_trait::async_trait]
+-impl crate::providers::MetadataProvider for EmuReadyClient {
+-	fn provider_label(&self) -> &'static str {
+-		"emuready"
+-	}
+-
+-	fn provider_enum(&self) -> MetadataProviderEnum {
+-		MetadataProviderEnum::EmuReady
+-	}
+-
+-	fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+-		&self.redis_conn
+-	}
+-
+-	async fn match_db(self: Arc<Self>, db_conn: &sea_orm::DbConn) -> anyhow::Result<()> {
+-		matching::match_db_to_emuready_entities(self, db_conn).await
+-	}
+-
+-	async fn match_via_sibling_names(
+-		self: Arc<Self>,
+-		db_conn: &sea_orm::DbConn,
+-	) -> anyhow::Result<()> {
+-		crate::providers::drive_cross_match_pipeline(
+-			"emuready",
+-			MetadataProviderEnum::EmuReady,
+-			matching::game::match_game_via_sibling_name_emuready,
+-			self,
+-			db_conn,
+-			crate::providers::DEFAULT_CHUNK_SIZE,
+-		)
+-		.await
+-	}
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-	use super::*;
+-
+-	#[test]
+-	fn build_trpc_input_wraps_payload_in_json_field() {
+-		#[derive(Serialize)]
+-		struct P<'a> {
+-			search: &'a str,
+-		}
+-		let s = build_trpc_input(&P { search: "mario" }).unwrap();
+-		assert_eq!(s, r#"{"json":{"search":"mario"}}"#);
+-	}
+-
+-	#[test]
+-	fn url_for_systems_list_has_no_input_query_param() {
+-		let url = build_url("general.systems", None).unwrap();
+-		assert_eq!(url.path(), "/api/mobile/trpc/general.systems");
+-		assert!(url.query().is_none(), "got: {url}");
+-	}
+-
+-	#[test]
+-	fn url_for_search_includes_url_encoded_input() {
+-		let input = r#"{"json":{"search":"super mario","systemId":"abc","page":1,"limit":50}}"#;
+-		let url = build_url("games.get", Some(input)).unwrap();
+-		assert_eq!(url.path(), "/api/mobile/trpc/games.get");
+-		let query = url.query().expect("expected ?input=...");
+-		assert!(query.starts_with("input="), "got: {query}");
+-		assert!(
+-			query.contains("super+mario") || query.contains("super%20mario"),
+-			"expected encoded space in query, got: {query}"
+-		);
+-	}
+-}
+diff -ru orig/providers/emuready/model.rs patched/providers/emuready/model.rs
+--- orig/providers/emuready/model.rs	2026-09-27 13:44:55.255234800 +0900
++++ patched/providers/emuready/model.rs	2026-09-27 13:44:55.268233600 +0900
+@@ -37,6 +37,16 @@
+ pub struct EmuReadyGamesPage {
+ 	#[serde(default)]
+ 	pub games: Vec<EmuReadyGame>,
++	/// romexplorer addition: `pagination.total` -- how many games match, for a cheap
++	/// change check.
++	#[serde(default)]
++	pub pagination: Option<EmuReadyPagination>,
++}
++
++#[derive(Debug, Clone, Deserialize)]
++pub struct EmuReadyPagination {
++	#[serde(default)]
++	pub total: Option<i64>,
+ }
+ 
+ #[cfg(test)]

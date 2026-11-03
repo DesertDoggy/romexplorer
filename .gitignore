@@ -15,3 +15,42 @@ target/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+.DS_Store
+/app_root_ex/assets/cache
+/app_root_ex/assets/download
+
+# --- build output and machine-local state (restored from the previous repository's rules) ---
+
+/samples/
+*.env
+
+# Sample-based test harness: scratch output, reports and the hash cache. All three can hold
+# real sample file names and content hashes.
+/tests/database/
+/tests/output/
+/tests/results/
+
+# Machine-local runtime state under app_root_ex/: the embedded MariaDB's data dir, downloaded
+# DATs, cached provider responses and downloaded media, plus the server's error log.
+/app_root_ex/data/
+/app_root_ex/assets/media/
+/app_root_ex/*.err
+
+# What scripts/move_libs_to_app_root.sh deploys: native libraries per OS and arch. Named per
+# OS rather than lib/*/ so the tracked lib/LICENSES/ is not caught.
+/app_root_ex/lib/linux/
+/app_root_ex/lib/macos/
+/app_root_ex/lib/windows/
+/app_root_ex/lib/ios/
+/app_root_ex/lib/android/
+
+# Written by scripts/move_libs_to_app_root.sh with absolute, machine-specific paths.
+/.cargo/config.toml
+
+# The GUI's web build (scripts/build_gui_web.sh). dx fingerprints every file name
+# (app-dxh<hash>.css) and never cleans old ones, so tracking it commits a fresh multi-megabyte
+# wasm on every rebuild. A checkout without it still runs; /app/ just says it isn't installed.
+/app_root_ex/assets/gui_web/
+
+# Packages built by scripts/package.sh and scripts/build_release.sh.
+/release/

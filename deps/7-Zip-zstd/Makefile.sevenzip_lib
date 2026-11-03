@@ -1,0 +1,396 @@
+# Makefile.sevenzip_lib -- builds 7z.dll / 7z.so / 7z.dylib: a
+# zip+7z-only archive library (read+write, no other container formats, no encryption)
+# exposing the flat C API in sevenzip_lib.h, statically linking in exactly the 7z/zip
+# handler code and codecs it needs.
+#
+# This file lives in deps/7-Zip-zstd/ and is NEVER included by anything under CPP/ --
+# nothing under CPP/ is modified for this bundle. It reuses CPP/7zip/7zip_gcc.mak's
+# existing per-file compile rules (thousands of them, e.g.
+# "$O/ZipHandler.o: ../../Archive/Zip/ZipHandler.cpp") completely unmodified. Those
+# rules' relative paths only resolve correctly when make's current working directory
+# is CPP/7zip/Bundles/<something>/ (exactly 2 levels below CPP/7zip/) -- so
+# scripts/build_sevenzip_lib.sh invokes this file (via `make -f`) from inside the
+# existing, untouched CPP/7zip/Bundles/Format7zF/ directory, purely as a stable path
+# anchor. The file GROUPS below (COMMON_OBJS, WIN_OBJS, etc.) are copied verbatim from
+# Format7zF's own Arc_gcc.mak for exactly that reason: identical working directory,
+# identical valid relative paths, zero adjustment needed.
+#
+# Difference from Arc_gcc.mak: no ArchiveExports.cpp/DllExports2.cpp (the CLSID/
+# CreateObject COM dispatch) -- sevenzip_lib.cpp directly instantiates
+# NArchive::N7z::CHandler / NArchive::NZip::CHandler (both literally named CHandler in
+# their own namespace) since the format is already known from our own enum at the call
+# site, so the whole "look up a handler by GUID" indirection is unnecessary here.
+
+PROG = 7z
+# DEF_FILE being *defined at all* (not its content) is what makes 7zip_gcc.mak build a
+# shared library instead of an executable -- see its "ifdef DEF_FILE" branch. On
+# non-MinGW targets the file's content isn't used at all (LDFLAGS there is just
+# "-shared -fPIC" regardless); on MinGW it's passed to the linker as a real /DEF file,
+# which is why sevenzip_lib.def exists and lists our actual exported functions (matching
+# Archive2.def's own PRIVATE-per-symbol format), even though every one of those
+# functions is already marked __declspec(dllexport) via SEVENZIP_API in sevenzip_lib.h.
+DEF_FILE = $(USER_DIR)/sevenzip_lib.def
+
+include ../../LzmaDec_gcc.mak
+
+LOCAL_FLAGS_ST =
+MT_OBJS =
+
+ifdef SystemDrive
+IS_MINGW = 1
+else
+ifdef SYSTEMDRIVE
+IS_MINGW = 1
+endif
+endif
+
+ifdef ST_MODE
+LOCAL_FLAGS_ST = -DZ7_ST
+ifdef IS_MINGW
+MT_OBJS = \
+  $O/Threads.o \
+
+endif
+else
+MT_OBJS = \
+  $O/LzFindMt.o \
+  $O/LzFindOpt.o \
+  $O/Threads.o \
+  $O/MemBlocks.o \
+  $O/OutMemStream.o \
+  $O/ProgressMt.o \
+  $O/StreamBinder.o \
+  $O/Synchronization.o \
+  $O/VirtThread.o \
+
+endif
+
+# -- File groups below: copied from ../../CPP/7zip/Bundles/Format7zF/Arc_gcc.mak,
+# trimmed to what a zip+7z-only, no-encryption build needs. Kept as separate named
+# groups (not one flat list) to make it easy to compare back against Arc_gcc.mak if
+# 7-Zip-zstd is ever updated and this file needs re-syncing. --
+
+COMMON_OBJS = \
+  $O/CRC.o \
+  $O/CrcReg.o \
+  $O/DynLimBuf.o \
+  $O/IntToString.o \
+  $O/LzFindPrepare.o \
+  $O/Md5Reg.o \
+  $O/MyMap.o \
+  $O/MyString.o \
+  $O/MyVector.o \
+  $O/MyWindows.o \
+  $O/MyXml.o \
+  $O/NewHandler.o \
+  $O/Sha1Prepare.o \
+  $O/Sha1Reg.o \
+  $O/Sha256Prepare.o \
+  $O/Sha256Reg.o \
+  $O/Sha3Reg.o \
+  $O/Sha512Prepare.o \
+  $O/Sha512Reg.o \
+  $O/StringConvert.o \
+  $O/StringToInt.o \
+  $O/UTFConvert.o \
+  $O/Wildcard.o \
+  $O/XzCrc64Init.o \
+  $O/XzCrc64Reg.o \
+
+WIN_OBJS = \
+  $O/FileDir.o \
+  $O/FileFind.o \
+  $O/FileIO.o \
+  $O/FileName.o \
+  $O/PropVariant.o \
+  $O/PropVariantConv.o \
+  $O/PropVariantUtils.o \
+  $O/System.o \
+  $O/TimeUtils.o \
+  $O/DLL.o \
+
+7ZIP_COMMON_OBJS = \
+  $O/CreateCoder.o \
+  $O/CWrappers.o \
+  $O/InBuffer.o \
+  $O/InOutTempBuffer.o \
+  $O/FilterCoder.o \
+  $O/FileStreams.o \
+  $O/LimitedStreams.o \
+  $O/LockedStream.o \
+  $O/MethodId.o \
+  $O/MethodProps.o \
+  $O/OffsetStream.o \
+  $O/OutBuffer.o \
+  $O/ProgressUtils.o \
+  $O/PropId.o \
+  $O/StreamObjects.o \
+  $O/StreamUtils.o \
+  $O/UniqBlocks.o \
+
+# Shared glue used by multiple archive handlers -- kept in full rather than verifying
+# exactly which subset zip+7z alone touch; low size cost, avoids missing-symbol risk.
+AR_COMMON_OBJS = \
+  $O/CoderMixer2.o \
+  $O/DummyOutStream.o \
+  $O/FindSignature.o \
+  $O/InStreamWithCRC.o \
+  $O/ItemNameUtils.o \
+  $O/MultiStream.o \
+  $O/OutStreamWithCRC.o \
+  $O/OutStreamWithSha1.o \
+  $O/HandlerOut.o \
+  $O/ParseProperties.o \
+
+7Z_OBJS = \
+  $O/7zCompressionMode.o \
+  $O/7zDecode.o \
+  $O/7zEncode.o \
+  $O/7zExtract.o \
+  $O/7zFolderInStream.o \
+  $O/7zHandler.o \
+  $O/7zHandlerOut.o \
+  $O/7zHeader.o \
+  $O/7zIn.o \
+  $O/7zOut.o \
+  $O/7zProperties.o \
+  $O/7zSpecStream.o \
+  $O/7zUpdate.o \
+  $O/7zRegister.o \
+
+ZIP_OBJS = \
+  $O/ZipAddCommon.o \
+  $O/ZipHandler.o \
+  $O/ZipHandlerOut.o \
+  $O/ZipIn.o \
+  $O/ZipItem.o \
+  $O/ZipOut.o \
+  $O/ZipUpdate.o \
+  $O/ZipRegister.o \
+
+# Codec objects: kept broad since *reading* an existing 7z/zip must handle whatever
+# method it already uses, regardless of what sevenzip_create_archive can *write* (see
+# SevenZipMethod in sevenzip_lib.h). Dropped relative to Arc_gcc.mak's full list: only
+# codecs that are unambiguously tied to container formats we don't register at all
+# (Rar's own decoders, Lzms/Lzx/Xpress [[Wim/Cab-only]], Lzh [[standalone Lzh format]],
+# Z/ZDecoder [[standalone .Z format]]). Lzfse is NOT one of these despite living under
+# Compress/ next to genuinely Apfs/Dmg-only codecs -- ZipHandler.cpp itself directly
+# instantiates NCompress::NLzfse::CDecoder for a real zip compression method id,
+# unconditionally unless Z7_ZIP_LZFSE_DISABLE is defined (it isn't here), so it's
+# required for the zip handler to link at all, the same way zip's crypto classes are.
+COMPRESS_OBJS = \
+  $O/Bcj2Coder.o \
+  $O/Bcj2Register.o \
+  $O/BcjCoder.o \
+  $O/BcjRegister.o \
+  $O/BitlDecoder.o \
+  $O/BranchMisc.o \
+  $O/BranchRegister.o \
+  $O/ByteSwap.o \
+  $O/BZip2Crc.o \
+  $O/BZip2Decoder.o \
+  $O/BZip2Encoder.o \
+  $O/BZip2Register.o \
+  $O/CopyCoder.o \
+  $O/CopyRegister.o \
+  $O/Deflate64Register.o \
+  $O/DeflateDecoder.o \
+  $O/DeflateEncoder.o \
+  $O/DeltaFilter.o \
+  $O/ImplodeDecoder.o \
+  $O/LzfseDecoder.o \
+  $O/Lzma2Decoder.o \
+  $O/Lzma2Encoder.o \
+  $O/Lzma2Register.o \
+  $O/LzmaDecoder.o \
+  $O/LzmaEncoder.o \
+  $O/LzmaRegister.o \
+  $O/LzOutWindow.o \
+  $O/PpmdDecoder.o \
+  $O/PpmdEncoder.o \
+  $O/PpmdRegister.o \
+  $O/PpmdZip.o \
+  $O/ShrinkDecoder.o \
+  $O/XzDecoder.o \
+  $O/XzEncoder.o \
+  $O/ZlibDecoder.o \
+  $O/ZlibEncoder.o \
+  $O/ZstdDecoder.o \
+  $O/ZstdEncoder.o \
+  $O/ZstdRegister.o \
+  $O/FastLzma2Register.o \
+
+C_OBJS = \
+  $O/7zBuf2.o \
+  $O/7zCrc.o \
+  $O/7zCrcOpt.o \
+  $O/7zStream.o \
+  $O/Alloc.o \
+  $O/Bcj2.o \
+  $O/Bcj2Enc.o \
+  $O/Blake2s.o \
+  $O/Bra.o \
+  $O/Bra86.o \
+  $O/BraIA64.o \
+  $O/BwtSort.o \
+  $O/CpuArch.o \
+  $O/Delta.o \
+  $O/HuffEnc.o \
+  $O/LzFind.o \
+  $O/Lzma2Dec.o \
+  $O/Lzma2DecMt.o \
+  $O/Lzma2Enc.o \
+  $O/LzmaDec.o \
+  $O/LzmaEnc.o \
+  $O/Md5.o \
+  $O/MtCoder.o \
+  $O/MtDec.o \
+  $O/Ppmd7.o \
+  $O/Ppmd7Dec.o \
+  $O/Ppmd7aDec.o \
+  $O/Ppmd7Enc.o \
+  $O/Ppmd8.o \
+  $O/Ppmd8Dec.o \
+  $O/Ppmd8Enc.o \
+  $O/Sha1.o \
+  $O/Sha1Opt.o \
+  $O/Sha256.o \
+  $O/Sha256Opt.o \
+  $O/Sha3.o \
+  $O/Sha512.o \
+  $O/Sha512Opt.o \
+  $O/Sort.o \
+  $O/SwapBytes.o \
+  $O/Xz.o \
+  $O/XzDec.o \
+  $O/XzEnc.o \
+  $O/XzIn.o \
+  $O/XzCrc64.o \
+  $O/XzCrc64Opt.o \
+
+# 7-Zip ZS: Zstd is the one fork-added codec we support writing (SEVENZIP_METHOD_ZSTD);
+# the others are pulled in only so *reading* an existing archive that used them (Brotli,
+# Lz4, Lz5, Lizard, fast-lzma2) still works, matching "read needs all, write is limited".
+ZSTD_OBJS = $(patsubst ../../../../C/zstd/%.c,$O/%.o,$(wildcard ../../../../C/zstd/*.c))
+BROTLI_OBJS = $(patsubst ../../../../C/brotli/%.c,$O/%.o,$(wildcard ../../../../C/brotli/*.c))
+LIZARD_OBJS = $(patsubst ../../../../C/lizard/%.c,$O/%.o,$(wildcard ../../../../C/lizard/*.c))
+LZ4_OBJS = $(patsubst ../../../../C/lz4/%.c,$O/%.o,$(wildcard ../../../../C/lz4/*.c))
+LZ5_OBJS = $(patsubst ../../../../C/lz5/%.c,$O/%.o,$(wildcard ../../../../C/lz5/*.c))
+FASTLZMA2_OBJS = $(patsubst ../../../../C/fast-lzma2/%.c,$O/%.o,$(wildcard ../../../../C/fast-lzma2/*.c))
+# C/zstdmt is a shared multi-threading wrapper directory covering *several* codecs, not
+# just zstd (brotli-mt_compress.c, lz4-mt_decompress.c, lizard-mt_decompress.c,
+# lz5-mt_decompress.c, zstd's own, ...) -- their non-MT decoders call into these
+# BROTLIMT_*/LZ4MT_*/LIZARDMT_*/LZ5MT_* functions directly, so this is required
+# whenever any of those codecs are built, not optional.
+ZSTDMT_OBJS = $(patsubst ../../../../C/zstdmt/%.c,$O/%.o,$(wildcard ../../../../C/zstdmt/*.c))
+# C/hashes holds raw hash algorithm implementations (xxhash.c, blake2/3, sha3, ...), not
+# just the "*Reg.o" archive-hash-command wrappers (which stay excluded -- confirmed
+# unreferenced by anything here). Needed regardless: LZ4/Lizard's own frame checksums
+# call XXH32/XXH64 directly, so this is required whenever those codecs are built.
+HASHES_OBJS = $(patsubst ../../../../C/hashes/%.c,$O/%.o,$(wildcard ../../../../C/hashes/*.c))
+
+C_OBJS += \
+  $(ZSTD_OBJS) \
+  $(BROTLI_OBJS) \
+  $(LIZARD_OBJS) \
+  $(LZ4_OBJS) \
+  $(LZ5_OBJS) \
+  $(FASTLZMA2_OBJS) \
+  $(ZSTDMT_OBJS) \
+  $(HASHES_OBJS) \
+
+COMPRESS_OBJS += \
+  $O/BrotliDecoder.o \
+  $O/BrotliEncoder.o \
+  $O/BrotliRegister.o \
+  $O/Lz4Decoder.o \
+  $O/Lz4Encoder.o \
+  $O/Lz4Register.o \
+  $O/LizardDecoder.o \
+  $O/LizardEncoder.o \
+  $O/LizardRegister.o \
+  $O/Lz5Decoder.o \
+  $O/Lz5Encoder.o \
+  $O/Lz5Register.o \
+
+# ZIP's own handler code (ZipIn.cpp/ZipHandlerOut.cpp, part of ZIP_OBJS) hard-links
+# these crypto classes directly at compile time -- they're referenced unconditionally
+# in its normal control flow (checking "is this entry encrypted"), not looked up
+# lazily by GUID/name the way most codecs are. So they're required for the link to
+# succeed even though "no encryption" (from our CryptoGetTextPassword always failing)
+# means none of this code ever actually runs: an encrypted zip still fails to open or
+# extract, it just fails via our callback instead of failing to link. 7z's own AES
+# (7zAes.o/7zAesRegister.o) is NOT needed -- 7z's crypto is looked up lazily through
+# CreateCoder by GUID, so it stays truly excluded, unlike ZIP's.
+CRYPTO_OBJS = \
+  $O/Aes.o \
+  $O/AesOpt.o \
+  $O/HmacSha1.o \
+  $O/HmacSha256.o \
+  $O/MyAes.o \
+  $O/MyAesReg.o \
+  $O/Pbkdf2HmacSha1.o \
+  $O/RandGen.o \
+  $O/WzAes.o \
+  $O/ZipCrypto.o \
+  $O/ZipStrong.o \
+
+# Our own wrapper source (sevenzip_lib.cpp, next to this file) plus the small set of
+# Client7z.cpp-style helper objects it needs directly.
+CURRENT_OBJS = \
+  $O/sevenzip_lib.o \
+  $O/zlibng_deflate.o \
+
+ARC_OBJS = \
+  $(LZMA_DEC_OPT_OBJS) \
+  $(C_OBJS) \
+  $(MT_OBJS) \
+  $(COMMON_OBJS) \
+  $(WIN_OBJS) \
+  $(7ZIP_COMMON_OBJS) \
+  $(AR_COMMON_OBJS) \
+  $(7Z_OBJS) \
+  $(ZIP_OBJS) \
+  $(COMPRESS_OBJS) \
+  $(CRYPTO_OBJS) \
+  $(CURRENT_OBJS) \
+
+OBJS = $(ARC_OBJS)
+
+# 7zip_gcc.mak's own "all: $(O) $(PROGPATH) $(STATIC_TARGET)" (its first target) must
+# stay the make's default goal -- so our own rule below is defined AFTER this include,
+# not before it. GNU Make's default goal is whichever target is parsed first across
+# the whole file (includes counted in place), and a rule defined earlier in this file
+# would otherwise silently become the default goal instead, building only
+# sevenzip_lib.o and stopping without ever linking the final library.
+# zlib-ng, appended to the link line for zlibng_deflate.o.
+#
+# The *dynamic* library, with an $ORIGIN rpath so 7z.so finds libz.so sitting beside it
+# wherever the consuming app deploys its libraries (scripts/move_libs_to_app_root.sh puts both
+# in the same directory). Two reasons over the static archive: that archive is not built
+# -fPIC, so it cannot go into a shared object at all; and the app already dlopen()s this same
+# libz.so for CHD's zlib codecs, so linking dynamically keeps one copy of zlib-ng in the
+# process instead of two.
+MY_LIBS += $(ZLIBNG_LIB)
+
+include ../../7zip_gcc.mak
+
+# These sources live in deps/7-Zip-zstd/, outside the 7-Zip tree, and include its headers as
+# "CPP/..." from the tree's root (four levels up from this bundle directory).
+SEVENZIP_ROOT_INC = -I../../../..
+
+$O/sevenzip_lib.o: $(USER_DIR)/sevenzip_lib.cpp
+	$(CXX) $(CXXFLAGS) $(SEVENZIP_ROOT_INC) $<
+
+# Deflate decoding via zlib-ng (deps/7-Zip-zstd/zlibng_deflate.cpp) in place of 7-Zip's own decoder:
+# measured ~667 MB/s against ~205 through this library's extract path. DeflateRegister.o is
+# dropped from COMPRESS_OBJS above so exactly one codec claims method 0x40108; DeflateDecoder.o
+# stays, because Deflate64Register and ZlibDecoder still use it.
+#
+# ZLIBNG_INC / ZLIBNG_LIB come from deps/7-Zip-zstd/scripts/build.sh, which resolves the zlib-ng release
+# tree and links the *dynamic* library with an $ORIGIN rpath, so zlib-ng's shared library must
+# be deployed beside the produced 7z.so (scripts/move_libs_to_app_root.sh does this, under both
+# libz.so and the SONAME libz.so.1). The static archive is not built -fPIC and cannot go into a
+# shared object at all.
+$O/zlibng_deflate.o: $(USER_DIR)/zlibng_deflate.cpp
+	$(CXX) $(CXXFLAGS) $(SEVENZIP_ROOT_INC) -I$(ZLIBNG_INC) $<

@@ -1,0 +1,154 @@
+# RAHasher stream library build. Run from the RALibretro source root (external/RALibretro);
+# U is this directory (deps/RALibretro), which holds our sources and the build output.
+# Usage examples (deps/RALibretro/build_rahasher.sh does this for you):
+#   make -f $DEPS/Makefile.rahasher dynamic U=$DEPS TARGET_PLATFORM=mac TARGET_ARCH=arm64 VERSION=dev
+#   make -f $DEPS/Makefile.rahasher static U=$DEPS TARGET_PLATFORM=linux TARGET_ARCH=x64 VERSION=dev
+
+ROOT := .
+U ?= $(error U (the deps/RALibretro directory) is not set -- run via build_rahasher.sh)
+TARGET_PLATFORM ?= mac
+TARGET_ARCH ?= arm64
+VERSION ?= $(shell date +%Y%m%d)
+BUILD_TYPE ?= dynamic
+BUILD_DIR ?= $(U)/_build/$(TARGET_PLATFORM)/$(TARGET_ARCH)
+RELEASE_BASE ?= $(U)/release/$(TARGET_PLATFORM)/$(TARGET_ARCH)/$(VERSION)
+
+CC ?= gcc
+CXX ?= g++
+AR ?= ar
+
+INCLUDES := -Isrc -I./src/miniz -I./src/rcheevos/include
+BASE_DEFINES := -D_CONSOLE
+CFLAGS := -Wall -O3 -DNDEBUG $(INCLUDES) $(BASE_DEFINES)
+CXXFLAGS := $(CFLAGS) -std=c++23
+LDFLAGS :=
+
+ifeq ($(TARGET_ARCH),x64)
+  CFLAGS += -m64
+  CXXFLAGS += -m64
+  LDFLAGS += -m64
+  CFLAGS += -mavx2
+  CXXFLAGS += -mavx2
+  # AVX2 only: AVX-512 support depends on the CPU that will run the resulting binary,
+  # not on whether the compiler can assemble AVX-512 instructions (most compilers can,
+  # regardless of host CPU). Probing compiler support and enabling it project-wide here
+  # caused STATUS_ILLEGAL_INSTRUCTION crashes on machines without AVX-512 (e.g. all
+  # Intel client chips since 12th-gen "Alder Lake", all AMD chips before Zen 4). AVX2
+  # is supported on effectively all x64 CPUs since ~2013.
+else ifeq ($(TARGET_ARCH),arm64)
+  CFLAGS += -march=armv8-a
+  CXXFLAGS += -march=armv8-a
+  LDFLAGS += -march=armv8-a
+else
+  $(error unsupported TARGET_ARCH=$(TARGET_ARCH))
+endif
+
+ifeq ($(TARGET_PLATFORM),mac)
+  SHARED_EXT := dylib
+  # Without -install_name the dylib's id is the -o path it was linked to
+  # (user/release/mac/arm64/<version>/dynamic/...), a build-tree path that
+  # scripts/package.sh's relocatability gate rightly refuses to ship.
+  SHARED_LDFLAGS := -dynamiclib -install_name @rpath/libRAHasher.dylib
+else ifeq ($(TARGET_PLATFORM),linux)
+  SHARED_EXT := so
+  SHARED_LDFLAGS := -shared
+else ifeq ($(TARGET_PLATFORM),windows)
+  SHARED_EXT := dll
+  SHARED_LDFLAGS := -shared
+  # Statically link the mingw-w64 runtime so libRAHasher.dll has no external
+  # dependency on libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll being
+  # present (or on PATH) on the machine that loads it.
+  LDFLAGS += -static-libgcc -static-libstdc++ -static
+else ifeq ($(TARGET_PLATFORM),iphone)
+  SHARED_EXT := dylib
+  SHARED_LDFLAGS := -dynamiclib
+  CFLAGS += -fPIC
+  CXXFLAGS += -fPIC
+else ifeq ($(TARGET_PLATFORM),android)
+  SHARED_EXT := so
+  SHARED_LDFLAGS := -shared
+  CFLAGS += -fPIC
+  CXXFLAGS += -fPIC
+else
+  $(error unsupported TARGET_PLATFORM=$(TARGET_PLATFORM))
+endif
+
+CFLAGS += -fPIC
+CXXFLAGS += -fPIC
+
+OBJS := \
+  $(BUILD_DIR)/src/components/Logger.o \
+  $(BUILD_DIR)/src/libmincrypt/sha256.o \
+  $(BUILD_DIR)/src/miniz/miniz.o \
+  $(BUILD_DIR)/src/miniz/miniz_tdef.o \
+  $(BUILD_DIR)/src/miniz/miniz_tinfl.o \
+  $(BUILD_DIR)/src/miniz/miniz_zip.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/aes.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/cdreader.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/hash.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/hash_disc.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/hash_encrypted.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/hash_rom.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/hash_zip.o \
+  $(BUILD_DIR)/src/rcheevos/src/rhash/md5.o \
+  $(BUILD_DIR)/src/Hash3DS.o \
+  $(BUILD_DIR)/src/Util.o \
+  $(BUILD_DIR)/user/rahasher_stream.o
+
+SHARED_OUT := $(RELEASE_BASE)/dynamic/libRAHasher.$(SHARED_EXT)
+STATIC_OUT := $(RELEASE_BASE)/static/libRAHasher.a
+BIN_OUT := $(RELEASE_BASE)/bin/rahasher_stream_sample
+INCLUDE_OUT := $(RELEASE_BASE)/include/rahasher_stream.h
+TEST_BIN := $(U)/tests/_build/test_stream_basic
+
+all: dynamic
+
+dynamic: headers $(SHARED_OUT)
+
+static: headers $(STATIC_OUT)
+
+bin: headers $(BIN_OUT)
+
+test: dynamic $(TEST_BIN)
+	DYLD_LIBRARY_PATH="$(RELEASE_BASE)/dynamic" "$(TEST_BIN)"
+
+headers: $(INCLUDE_OUT)
+
+$(INCLUDE_OUT): $(U)/rahasher_stream.h
+	mkdir -p "$(dir $@)"
+	cp "$<" "$@"
+
+$(SHARED_OUT): $(OBJS)
+	mkdir -p "$(dir $@)"
+	$(CXX) $(SHARED_LDFLAGS) -o "$@" $^ $(LDFLAGS)
+
+$(STATIC_OUT): $(OBJS)
+	mkdir -p "$(dir $@)"
+	$(AR) rcs "$@" $^
+
+$(BIN_OUT): $(BUILD_DIR)/user/sample_stream_client.o $(SHARED_OUT)
+	mkdir -p "$(dir $@)"
+	$(CXX) -o "$@" $(BUILD_DIR)/user/sample_stream_client.o -L"$(RELEASE_BASE)/dynamic" -lRAHasher -Wl,-rpath,@loader_path/../dynamic $(LDFLAGS)
+
+$(TEST_BIN): $(U)/tests/test_stream_basic.cpp $(U)/rahasher_stream.h $(SHARED_OUT)
+	mkdir -p "$(dir $@)"
+	$(CXX) $(CXXFLAGS) -o "$@" $(U)/tests/test_stream_basic.cpp -I$(U) -L"$(RELEASE_BASE)/dynamic" -lRAHasher -Wl,-rpath,$(RELEASE_BASE)/dynamic $(LDFLAGS)
+
+# Our own sources, from U rather than the source tree. Listed before the generic rules so
+# make prefers them for $(BUILD_DIR)/user/*.o.
+$(BUILD_DIR)/user/%.o: $(U)/%.cpp
+	mkdir -p "$(dir $@)"
+	$(CXX) $(CXXFLAGS) -I$(U) -c "$<" -o "$@"
+
+$(BUILD_DIR)/%.o: %.cpp
+	mkdir -p "$(dir $@)"
+	$(CXX) $(CXXFLAGS) -c "$<" -o "$@"
+
+$(BUILD_DIR)/%.o: %.c
+	mkdir -p "$(dir $@)"
+	$(CC) $(CFLAGS) -c "$<" -o "$@"
+
+clean:
+	rm -rf $(U)/_build $(U)/release $(U)/tests/_build
+
+.PHONY: all dynamic static bin test headers clean

@@ -1,0 +1,10 @@
+/* Linux export list for the dolphinrvz_streaming target (see dolphinrvz_target.cmake): only
+   the C API is exported; everything else binds locally inside the library -- which is also
+   what makes dolphinrvz_stream.cpp's std::thread::hardware_concurrency override reliably
+   apply to Dolphin's own compressor calls. */
+{
+  global:
+    dolphinrvz_*;
+  local:
+    *;
+};

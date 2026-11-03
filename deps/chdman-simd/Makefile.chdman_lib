@@ -1,0 +1,516 @@
+# Makefile.chdman_lib -- cross-platform shared-library build of chdman.
+#
+# Builds chdman (MAME's CHD manager, with chdman-simd's SIMD/pipeline patches already
+# applied to the source copy this runs against -- see scripts/build_chdman_lib.sh) as a
+# single self-contained shared library (chdman.dll / libchdman.so / libchdman.dylib)
+# exposing the C API in chdman_lib.h, instead of the chdman.exe CLI binary. All
+# dependencies (LZMA, zstd, expat, utf8proc, FLAC, zlib-ng) are compiled from source and
+# statically linked into that one shared library -- nothing else needs to ship alongside
+# it at runtime.
+#
+# Not invoked directly -- scripts/build_chdman_lib.sh copies MAME + chdman-simd's patched
+# sources into a scratch directory, builds zlib-ng there, and invokes this Makefile with
+# PLATFORM/ARCH/CC/CXX/AR/MARCH_EXTRA/ZLIBNG_BUILD already set for the target.
+#
+# Required variables (set by build_chdman_lib.sh):
+#   PLATFORM       windows | linux | mac | android | ios
+#   ARCH           x64 (windows, linux) | arm64 (mac, android, ios)
+#   CC, CXX, AR    toolchain (cross-compiler for android/ios)
+#   ZLIBNG_BUILD   path to a built zlib-ng (ZLIB_COMPAT=ON) tree containing libz.a
+# Optional:
+#   MARCH_EXTRA    extra -m... flags (e.g. sysroot/target flags for cross builds)
+#   HAVE_LZMA_ASM  1 to enable the hand-written x86 LZMA decoder (Windows/uasm only)
+
+ifeq ($(PLATFORM),)
+  $(error PLATFORM not set -- run via scripts/build_chdman_lib.sh)
+endif
+ifeq ($(ARCH),)
+  $(error ARCH not set -- run via scripts/build_chdman_lib.sh)
+endif
+ifeq ($(ZLIBNG_BUILD),)
+  $(error ZLIBNG_BUILD not set -- run via scripts/build_chdman_lib.sh)
+endif
+
+CXX ?= g++
+CC  ?= gcc
+AR  ?= ar
+
+TP       = 3rdparty
+S        = src
+U        = user
+BUILDDIR = build/obj
+UTIL_SHA1_USE_SSE2 ?= 1
+HAVE_LZMA_ASM ?= 0
+
+# ---------------------------------------------------------------------------
+# Per-arch baseline + SIMD opt-in
+# ---------------------------------------------------------------------------
+# x64: SSE2 baseline for portability (runs on all x86-64 CPUs); AVX2/SSE4.x/SHA-NI are
+#   compiled in per-file below and selected at runtime via CPUID dispatch inside
+#   hashing.cpp/chdcodec.cpp (chdman-simd's own patches) -- never assumed present.
+# arm64: NEON is mandatory baseline on AArch64, no extra flag needed. No AVX2-style
+#   runtime dispatch exists for ARM in this codebase; FLAC's ARM NEON intrinsics file
+#   compiles unconditionally (guarded internally by FLAC's own arch #ifdefs).
+ifeq ($(ARCH),x64)
+  MARCH_BASE ?= -march=x86-64 -msse2 -mtune=generic
+  X64 := 1
+else ifeq ($(ARCH),arm64)
+  MARCH_BASE ?=
+  X64 :=
+else
+  $(error unsupported ARCH: $(ARCH) (expected x64 or arm64))
+endif
+
+MARCH_BASE += $(MARCH_EXTRA)
+
+# ---------------------------------------------------------------------------
+# Per-platform OSD source set, defines, output naming, link flags
+# ---------------------------------------------------------------------------
+COMMON_OSD_SRCS = \
+    $(S)/osd/osdcore.cpp \
+    $(S)/osd/strconv.cpp \
+    $(S)/osd/osdsync.cpp
+
+ifeq ($(PLATFORM),windows)
+  OSD_SRCS = $(COMMON_OSD_SRCS) \
+    $(S)/osd/modules/lib/osdlib_win32.cpp \
+    $(S)/osd/windows/winutf8.cpp \
+    $(S)/osd/modules/file/windir.cpp \
+    $(S)/osd/modules/file/winfile.cpp \
+    $(S)/osd/modules/file/winptty.cpp \
+    $(S)/osd/modules/file/winsocket.cpp \
+    $(S)/osd/windows/winutil.cpp
+  PLATFORM_DEFINES = -DOSD_WINDOWS -DX64_WINDOWS_ABI -DUNICODE -D_UNICODE \
+    -D_WIN32_WINNT=0x0501 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -DCRLF=3
+  PLATFORM_INCLUDES = -I$(S)/osd/windows
+  TARGET_NAME = chdman.dll
+  SHARED_FLAG = -shared
+  PLATFORM_LDLIBS = -lws2_32 -lwinmm -ladvapi32 -lshlwapi -lpsapi -liphlpapi -lshell32 -luserenv -lm
+  PLATFORM_CXXDEFS = -DCHDMAN_BUILDING_DLL
+  STATIC_RUNTIME = -static-libgcc -static-libstdc++ -static
+else
+  # linux, mac, android, ios all share the POSIX OSD file set. osdlib_unix.cpp /
+  # osdlib_macosx.cpp are intentionally NOT used -- both unconditionally pull in SDL2,
+  # which chdman (a batch CLI tool) never needs. user/osdlib_posix_min.cpp implements
+  # just the handful of symbols chdman's link graph actually requires (see that file).
+  OSD_SRCS = $(COMMON_OSD_SRCS) \
+    $(U)/osdlib_posix_min.cpp \
+    $(S)/osd/modules/file/posixdir.cpp \
+    $(S)/osd/modules/file/posixfile.cpp \
+    $(S)/osd/modules/file/posixptty.cpp \
+    $(S)/osd/modules/file/posixsocket.cpp
+  PLATFORM_DEFINES = -DCRLF=2
+  PLATFORM_INCLUDES =
+  PLATFORM_CXXDEFS =
+  STATIC_RUNTIME = -static-libgcc -static-libstdc++
+
+  ifeq ($(PLATFORM),linux)
+    TARGET_NAME = libchdman.so
+    SHARED_FLAG = -shared -fPIC -Wl,-z,defs -Wl,--exclude-libs,ALL
+    PLATFORM_LDLIBS = -lpthread -ldl -lm
+  else ifeq ($(PLATFORM),mac)
+    TARGET_NAME = libchdman.dylib
+    SHARED_FLAG = -dynamiclib -install_name @rpath/libchdman.dylib
+    PLATFORM_LDLIBS = -lpthread -ldl
+    STATIC_RUNTIME = -static-libstdc++
+  else ifeq ($(PLATFORM),android)
+    TARGET_NAME = libchdman.so
+    SHARED_FLAG = -shared -fPIC
+    PLATFORM_LDLIBS = -ldl -llog
+    STATIC_RUNTIME = -static-libstdc++
+  else ifeq ($(PLATFORM),ios)
+    TARGET_NAME = libchdman.dylib
+    SHARED_FLAG = -dynamiclib -install_name @rpath/libchdman.dylib
+    PLATFORM_LDLIBS = -lpthread -ldl
+    STATIC_RUNTIME = -static-libstdc++
+  else
+    $(error unsupported PLATFORM: $(PLATFORM))
+  endif
+endif
+
+TARGET = $(TARGET_NAME)
+
+CXXFLAGS = -std=c++17 -O3 -fPIC -fvisibility=hidden $(MARCH_BASE) -g \
+    -DUTIL_SHA1_USE_SSE2=$(UTIL_SHA1_USE_SSE2) -DLSB_FIRST \
+    -DHAVE_LZMA_ASM=$(HAVE_LZMA_ASM) \
+    $(PLATFORM_DEFINES) $(PLATFORM_CXXDEFS) \
+    -I$(S)/emu \
+    -I$(S)/osd \
+    $(PLATFORM_INCLUDES) \
+    -I$(S)/osd/modules/file \
+    -I$(U) \
+    -I$(S)/lib \
+    -I$(S)/lib/util \
+    -I$(TP) \
+    -I$(TP)/lzma/C \
+    -I$(TP)/utf8proc \
+    -I$(TP)/expat/lib \
+    -I$(ZLIBNG_BUILD) \
+    -I$(TP)/zstd/lib \
+    -I$(TP)/flac/include \
+    -I$(TP)/flac/src/libFLAC/include \
+    -DUTF8PROC_STATIC \
+    -DFLAC__NO_DLL \
+    -fpermissive \
+    -Wall -Wextra
+
+EXTRA_CXXFLAGS ?=
+CXXFLAGS += $(EXTRA_CXXFLAGS)
+
+CFLAGS = -O3 -fPIC $(MARCH_BASE) -g \
+    -I$(TP)/lzma/C \
+    -I$(TP)/utf8proc \
+    -I$(TP)/expat/lib \
+    -I$(ZLIBNG_BUILD) \
+    -I$(TP)/zstd/lib \
+    -I$(TP)/flac/include \
+    -I$(TP)/flac/src/libFLAC/include \
+    -DXML_GE=1 -DXML_CONTEXT_BYTES=1024 -DUTF8PROC_STATIC -DZ7_ST \
+    -DZLIB_CONST \
+    -DXXH_NAMESPACE=ZSTD_ -DDEBUGLEVEL=0 -DZSTD_DISABLE_ASM \
+    -DFLAC__NO_DLL -DNDEBUG -DHAVE_CONFIG_H -DENABLE_64_BIT_WORDS=1 \
+    -DOGG_FOUND=0 -DFLAC__HAS_OGG=0 -DHAVE_LROUND=1 \
+    -DHAVE_INTTYPES_H -DHAVE_STDBOOL_H -DHAVE_FSEEKO \
+    -Wall -Wextra
+
+# expat refuses to compile without a declared entropy source (xmlparse.c's #error). Windows
+# gets rand_s automatically; everywhere else /dev/urandom exists (Linux, macOS, Android,
+# iOS). Without this, only a stale xmlparse.o left in BUILDDIR from an earlier build hides
+# the error -- a fresh object dir fails.
+ifneq ($(PLATFORM),windows)
+  CFLAGS += -DXML_DEV_URANDOM
+endif
+
+EXTRA_CFLAGS ?=
+CFLAGS += $(EXTRA_CFLAGS)
+
+# Originally redirected stderr to a log file to keep warnings off the terminal, but that
+# unconditionally caught real compile ERRORS too (confirmed directly: a genuine missing-
+# header error for aes256cbc.cpp was completely invisible at the terminal, discoverable
+# only by manually reading build/build.log afterward -- a real cost to debuggability for
+# a cosmetic benefit). Piping through `tee` instead isn't a safe fix here without bash-
+# specific process substitution (a plain `| tee` pipe would make `make` see tee's exit
+# code instead of the compiler's, silently turning failed compiles into "successful"
+# ones) -- so this is intentionally a no-op: compiler output, warnings included, just
+# goes straight to the terminal like normal.
+WARN_LOG =
+
+comma := ,
+LDFLAGS = $(SHARED_FLAG) $(STATIC_RUNTIME) -s \
+    $(PLATFORM_LDLIBS) \
+    $(if $(filter 1,$(HAVE_LZMA_ASM)),-Wl$(comma)--allow-multiple-definition) \
+    $(ZLIBNG_BUILD)/libz.a
+
+# ---------------------------------------------------------------------------
+# C++ sources
+# ---------------------------------------------------------------------------
+
+# chdman.cpp is compiled with -Dmain=chdman_cli_entry -- see user/chdman_lib.cpp for why:
+# it renames chdman's process entry point to an ordinary callable function without
+# touching the source file, so the library wrapper can invoke it directly.
+MAIN_SRCS = \
+    $(S)/tools/chdman.cpp \
+    $(S)/version.cpp \
+    $(U)/chdman_lib.cpp
+
+# Streaming build (build_chdman_lib.sh's default -- not --nostreaming -- which also applies
+# user/patches/streaming/*.patch to the scratch source): adds chdman_extract_stream and the
+# chdman_reader_* API (user/chdman_stream.cpp, declared in chdman_lib.h under
+# CHDMAN_WITH_STREAMING). Unset/0 = the default build, byte-for-byte as before.
+STREAMING ?= 0
+ifeq ($(STREAMING),1)
+  MAIN_SRCS += $(U)/chdman_stream.cpp
+  CXXFLAGS += -DCHDMAN_WITH_STREAMING
+endif
+
+UTIL_SRCS = \
+    $(S)/lib/util/aes256cbc.cpp \
+    $(S)/lib/util/avhuff.cpp \
+    $(S)/lib/util/aviio.cpp \
+    $(S)/lib/util/bitmap.cpp \
+    $(S)/lib/util/cdrom.cpp \
+    $(S)/lib/util/chd.cpp \
+    $(S)/lib/util/chdcodec.cpp \
+    $(S)/lib/util/corealloc.cpp \
+    $(S)/lib/util/corefile.cpp \
+    $(S)/lib/util/corestr.cpp \
+    $(S)/lib/util/coreutil.cpp \
+    $(S)/lib/util/delegate.cpp \
+    $(S)/lib/util/disasmintf.cpp \
+    $(S)/lib/util/dvdrom.cpp \
+    $(S)/lib/util/dynamicclass.cpp \
+    $(S)/lib/util/flac.cpp \
+    $(S)/lib/util/harddisk.cpp \
+    $(S)/lib/util/hash.cpp \
+    $(S)/lib/util/hashing.cpp \
+    $(S)/lib/util/huffman.cpp \
+    $(S)/lib/util/ioprocs.cpp \
+    $(S)/lib/util/ioprocsfilter.cpp \
+    $(S)/lib/util/jedparse.cpp \
+    $(S)/lib/util/language.cpp \
+    $(S)/lib/util/md5.cpp \
+    $(S)/lib/util/mfpresolve.cpp \
+    $(S)/lib/util/msdib.cpp \
+    $(S)/lib/util/nanosvg.cpp \
+    $(S)/lib/util/opresolv.cpp \
+    $(S)/lib/util/options.cpp \
+    $(S)/lib/util/palette.cpp \
+    $(S)/lib/util/path.cpp \
+    $(S)/lib/util/path_to_regex.cpp \
+    $(S)/lib/util/plaparse.cpp \
+    $(S)/lib/util/png.cpp \
+    $(S)/lib/util/simh_tape_file.cpp \
+    $(S)/lib/util/strformat.cpp \
+    $(S)/lib/util/timeconv.cpp \
+    $(S)/lib/util/unicode.cpp \
+    $(S)/lib/util/unzip.cpp \
+    $(S)/lib/util/un7z.cpp \
+    $(S)/lib/util/vbiparse.cpp \
+    $(S)/lib/util/vecstream.cpp \
+    $(S)/lib/util/wavwrite.cpp \
+    $(S)/lib/util/xmlfile.cpp \
+    $(S)/lib/util/zippath.cpp
+
+# ---------------------------------------------------------------------------
+# C sources -- 3rdparty compiled from source
+# ---------------------------------------------------------------------------
+
+UTF8_CSRCS = $(TP)/utf8proc/utf8proc.c
+
+EXPAT_CSRCS = \
+    $(TP)/expat/lib/xmlparse.c \
+    $(TP)/expat/lib/xmlrole.c \
+    $(TP)/expat/lib/xmltok.c
+
+LZMA_CSRCS = \
+    $(TP)/lzma/C/7zAlloc.c \
+    $(TP)/lzma/C/7zArcIn.c \
+    $(TP)/lzma/C/7zBuf.c \
+    $(TP)/lzma/C/7zBuf2.c \
+    $(TP)/lzma/C/7zCrc.c \
+    $(TP)/lzma/C/7zCrcOpt.c \
+    $(TP)/lzma/C/7zDec.c \
+    $(TP)/lzma/C/7zFile.c \
+    $(TP)/lzma/C/7zStream.c \
+    $(TP)/lzma/C/Aes.c \
+    $(TP)/lzma/C/AesOpt.c \
+    $(TP)/lzma/C/Alloc.c \
+    $(TP)/lzma/C/Bcj2.c \
+    $(TP)/lzma/C/Bra.c \
+    $(TP)/lzma/C/Bra86.c \
+    $(TP)/lzma/C/BraIA64.c \
+    $(TP)/lzma/C/CpuArch.c \
+    $(TP)/lzma/C/Delta.c \
+    $(TP)/lzma/C/LzFind.c \
+    $(TP)/lzma/C/LzFindOpt.c \
+    $(TP)/lzma/C/Lzma2Dec.c \
+    $(TP)/lzma/C/LzmaEnc.c \
+    $(TP)/lzma/C/Ppmd7.c \
+    $(TP)/lzma/C/Ppmd7Dec.c \
+    $(TP)/lzma/C/Sha256.c \
+    $(TP)/lzma/C/Sha256Opt.c \
+    $(TP)/lzma/C/Sort.c
+
+ZSTD_CSRCS = \
+    $(TP)/zstd/lib/compress/hist.c \
+    $(TP)/zstd/lib/common/debug.c \
+    $(TP)/zstd/lib/common/entropy_common.c \
+    $(TP)/zstd/lib/common/error_private.c \
+    $(TP)/zstd/lib/common/fse_decompress.c \
+    $(TP)/zstd/lib/common/pool.c \
+    $(TP)/zstd/lib/common/threading.c \
+    $(TP)/zstd/lib/common/xxhash.c \
+    $(TP)/zstd/lib/common/zstd_common.c \
+    $(TP)/zstd/lib/compress/fse_compress.c \
+    $(TP)/zstd/lib/compress/huf_compress.c \
+    $(TP)/zstd/lib/compress/zstd_compress.c \
+    $(TP)/zstd/lib/compress/zstd_compress_literals.c \
+    $(TP)/zstd/lib/compress/zstd_compress_sequences.c \
+    $(TP)/zstd/lib/compress/zstd_compress_superblock.c \
+    $(TP)/zstd/lib/compress/zstd_double_fast.c \
+    $(TP)/zstd/lib/compress/zstd_fast.c \
+    $(TP)/zstd/lib/compress/zstd_lazy.c \
+    $(TP)/zstd/lib/compress/zstd_ldm.c \
+    $(TP)/zstd/lib/compress/zstdmt_compress.c \
+    $(TP)/zstd/lib/compress/zstd_opt.c \
+    $(TP)/zstd/lib/decompress/huf_decompress.c \
+    $(TP)/zstd/lib/decompress/zstd_ddict.c \
+    $(TP)/zstd/lib/decompress/zstd_decompress.c \
+    $(TP)/zstd/lib/decompress/zstd_decompress_block.c
+
+# Base FLAC sources, always compiled with plain CFLAGS (no arch-specific SIMD flags).
+FLAC_CSRCS_BASE = \
+    $(TP)/flac/src/libFLAC/bitmath.c \
+    $(TP)/flac/src/libFLAC/bitreader.c \
+    $(TP)/flac/src/libFLAC/bitwriter.c \
+    $(TP)/flac/src/libFLAC/crc.c \
+    $(TP)/flac/src/libFLAC/cpu.c \
+    $(TP)/flac/src/libFLAC/fixed.c \
+    $(TP)/flac/src/libFLAC/float.c \
+    $(TP)/flac/src/libFLAC/format.c \
+    $(TP)/flac/src/libFLAC/lpc.c \
+    $(TP)/flac/src/libFLAC/lpc_intrin_neon.c \
+    $(TP)/flac/src/libFLAC/md5.c \
+    $(TP)/flac/src/libFLAC/memory.c \
+    $(TP)/flac/src/libFLAC/stream_decoder.c \
+    $(TP)/flac/src/libFLAC/stream_encoder.c \
+    $(TP)/flac/src/libFLAC/stream_encoder_framing.c \
+    $(TP)/flac/src/libFLAC/window.c
+
+# x86-only FLAC intrinsics -- only compiled (with their required -m... flags) on x64.
+# On arm64 these files are skipped entirely: they use x86-only intrinsic headers
+# (immintrin.h etc.) that don't exist for an AArch64 compiler target.
+FLAC_CSRCS_X86 = \
+    $(TP)/flac/src/libFLAC/fixed_intrin_avx2.c \
+    $(TP)/flac/src/libFLAC/fixed_intrin_sse2.c \
+    $(TP)/flac/src/libFLAC/fixed_intrin_sse42.c \
+    $(TP)/flac/src/libFLAC/fixed_intrin_ssse3.c \
+    $(TP)/flac/src/libFLAC/lpc_intrin_avx2.c \
+    $(TP)/flac/src/libFLAC/lpc_intrin_fma.c \
+    $(TP)/flac/src/libFLAC/lpc_intrin_sse2.c \
+    $(TP)/flac/src/libFLAC/lpc_intrin_sse41.c \
+    $(TP)/flac/src/libFLAC/stream_encoder_intrin_avx2.c \
+    $(TP)/flac/src/libFLAC/stream_encoder_intrin_sse2.c \
+    $(TP)/flac/src/libFLAC/stream_encoder_intrin_ssse3.c
+
+ifeq ($(PLATFORM),windows)
+  FLAC_CSRCS_BASE += $(TP)/flac/src/share/win_utf8_io/win_utf8_io.c
+endif
+
+ifeq ($(X64),1)
+  FLAC_CSRCS = $(FLAC_CSRCS_BASE) $(FLAC_CSRCS_X86)
+else
+  FLAC_CSRCS = $(FLAC_CSRCS_BASE)
+endif
+
+# ---------------------------------------------------------------------------
+# Object lists
+# ---------------------------------------------------------------------------
+
+ALL_SRCS = $(MAIN_SRCS) $(UTIL_SRCS) $(OSD_SRCS)
+CXX_OBJS = $(addprefix $(BUILDDIR)/,$(patsubst %.cpp,%.o,$(ALL_SRCS)))
+
+ALL_CSRCS = $(UTF8_CSRCS) $(EXPAT_CSRCS) $(LZMA_CSRCS) $(ZSTD_CSRCS) $(FLAC_CSRCS)
+C_OBJS    = $(addprefix $(BUILDDIR)/,$(patsubst %.c,%.o,$(ALL_CSRCS)))
+
+ifeq ($(HAVE_LZMA_ASM),1)
+  LZMA_OPT_OBJ   = $(BUILDDIR)/$(TP)/lzma/C/LzmaDec.OPT.o
+  LZMA_ASM_OBJ   = $(BUILDDIR)/$(TP)/lzma/Asm/x86/LzmaDecOpt.o
+  LZFIND_ASM_OBJ = $(BUILDDIR)/$(TP)/lzma/Asm/x86/LzFindOpt.o
+  ASM_ABI = $(if $(filter windows,$(PLATFORM)),,-DABI_LINUX)
+  UASM_BIN ?= uasm
+  # uasm is a native Windows tool -- it doesn't understand MSYS2's /d/... path
+  # notation (silently mangles it, e.g. treating it as a path relative to the current
+  # drive's root instead of an absolute path). BUILDDIR is passed in as an absolute
+  # MSYS2-style path by build_chdman_lib.sh, so $@ needs converting to a native
+  # Windows path right before uasm sees it; $< (a plain relative .asm path within the
+  # scratch source tree) doesn't have this problem.
+  ASM_COMPILE = $(UASM_BIN) -win64 -c $(ASM_ABI) -Fo"$$(cygpath -w '$@')" $<
+  $(info LZMA ASM decoder enabled)
+else
+  LZMA_OPT_OBJ   = $(BUILDDIR)/$(TP)/lzma/C/LzmaDec.o
+  LZMA_ASM_OBJ   =
+  LZFIND_ASM_OBJ =
+  $(info LZMA ASM decoder disabled - C fallback)
+endif
+
+OBJS = $(CXX_OBJS) $(LZMA_OPT_OBJ) $(LZMA_ASM_OBJ) $(LZFIND_ASM_OBJ) $(C_OBJS)
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+
+.PHONY: all clean
+
+all: $(TARGET)
+	@echo "Build complete: $(TARGET)"
+	@echo "Warnings saved to: $(LOG)"
+
+$(TARGET): $(OBJS)
+	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
+
+# chdman.cpp's main() -> chdman_cli_entry, and its osd_get_command_line() call ->
+# chdman_lib_get_command_line(): see user/chdman_lib.cpp for why (the latter works around
+# osd_get_command_line ignoring its own argc/argv and re-fetching the real OS process
+# command line on Windows, which is wrong once chdman is a library call inside another
+# process).
+$(BUILDDIR)/$(S)/tools/chdman.o: $(S)/tools/chdman.cpp
+	@mkdir -p $(dir $@) $(dir $(LOG))
+	$(CXX) $(CXXFLAGS) -Dmain=chdman_cli_entry -Dosd_get_command_line=chdman_lib_get_command_line -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/%.o: %.cpp
+	@mkdir -p $(dir $@) $(dir $(LOG))
+	$(CXX) $(CXXFLAGS) -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/%.o: %.c
+	@mkdir -p $(dir $@) $(dir $(LOG))
+	$(CC) $(CFLAGS) -c $< -o $@ $(WARN_LOG)
+
+# ---------------------------------------------------------------------------
+# Per-file SIMD overrides (x64 only) -- compile with required ISA flags so runtime
+# dispatch paths are compiled in even though MARCH_BASE is SSE2-only. Each function is
+# guarded by CPUID/cpu-detection checks at runtime, so it's only called when the running
+# CPU confirms support -- never assumed present just because it was compiled in.
+# ---------------------------------------------------------------------------
+
+ifeq ($(X64),1)
+
+$(BUILDDIR)/$(S)/lib/util/hashing.o: $(S)/lib/util/hashing.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -mssse3 -mavx2 -msha -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/fixed_intrin_avx2.o: $(TP)/flac/src/libFLAC/fixed_intrin_avx2.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -mavx2 -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/lpc_intrin_avx2.o: $(TP)/flac/src/libFLAC/lpc_intrin_avx2.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -mavx2 -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/stream_encoder_intrin_avx2.o: $(TP)/flac/src/libFLAC/stream_encoder_intrin_avx2.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -mavx2 -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/lpc_intrin_fma.o: $(TP)/flac/src/libFLAC/lpc_intrin_fma.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -mavx2 -mfma -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/fixed_intrin_sse42.o: $(TP)/flac/src/libFLAC/fixed_intrin_sse42.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -msse4.2 -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/lpc_intrin_sse41.o: $(TP)/flac/src/libFLAC/lpc_intrin_sse41.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -msse4.1 -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/fixed_intrin_ssse3.o: $(TP)/flac/src/libFLAC/fixed_intrin_ssse3.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -mssse3 -c $< -o $@ $(WARN_LOG)
+
+$(BUILDDIR)/$(TP)/flac/src/libFLAC/stream_encoder_intrin_ssse3.o: $(TP)/flac/src/libFLAC/stream_encoder_intrin_ssse3.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -mssse3 -c $< -o $@ $(WARN_LOG)
+
+endif
+
+# LzmaDec.c -- ASM path (Windows/uasm only) or C fallback
+ifeq ($(HAVE_LZMA_ASM),1)
+$(LZMA_OPT_OBJ): $(TP)/lzma/C/LzmaDec.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DZ7_LZMA_DEC_OPT -c $< -o $@ $(WARN_LOG)
+
+$(LZMA_ASM_OBJ): $(TP)/lzma/Asm/x86/LzmaDecOpt.asm
+	@mkdir -p $(dir $@)
+	$(ASM_COMPILE)
+
+$(LZFIND_ASM_OBJ): $(TP)/lzma/Asm/x86/LzFindOpt.asm
+	@mkdir -p $(dir $@)
+	$(ASM_COMPILE)
+else
+$(LZMA_OPT_OBJ): $(TP)/lzma/C/LzmaDec.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@ $(WARN_LOG)
+endif
+
+clean:
+	rm -rf $(BUILDDIR) $(TARGET)

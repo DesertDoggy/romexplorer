@@ -1,0 +1,39 @@
+--- a/user/scripts/build_mariadb_server.sh
++++ b/user/scripts/build_mariadb_server.sh
+@@ -381,6 +381,36 @@
+         cp -R "${stage_dir}/include/." "${out_include}/"
+     fi
+ 
++    # share/ -- the bootstrap SQL, the English error messages and the charset definitions.
++    # mariadbd cannot create a database without these, so a release tree that omits them is
++    # not usable by a consumer even though bin/ and shared/ look complete. Until now the only
++    # copy lived in ${stage_dir}, which is under user/_build (scratch) and which each build
++    # deletes before it starts -- so whether a consumer found share/ depended on whether it
++    # looked before the next build ran. On Windows it reliably did not.
++    #
++    # Curated for the same reason BIN_KEEP_LIST is: MariaDB installs ~25 localisations of
++    # errmsg.sys, and the server is always started with --lc-messages-dir pointing here and
++    # --character-set-server=utf8mb4, so English plus the charsets is what actually gets read.
++    if [ -d "${stage_dir}/share" ]; then
++        out_share="${out_base}/share"
++        mkdir -p "${out_share}"
++        find "${stage_dir}/share" -maxdepth 1 -type f -name '*.sql' -exec cp -f {} "${out_share}/" \;
++        for sub in english charsets; do
++            if [ -d "${stage_dir}/share/${sub}" ]; then
++                mkdir -p "${out_share}/${sub}"
++                cp -R "${stage_dir}/share/${sub}/." "${out_share}/${sub}/"
++            fi
++        done
++        if [ ! -f "${out_share}/english/errmsg.sys" ]; then
++            log_line ERROR "share/english/errmsg.sys missing from ${stage_dir}/share -- the server will refuse to start."
++            return 1
++        fi
++        log_line INFO "share/ collected ($(find "${out_share}" -type f | wc -l) files)"
++    else
++        log_line ERROR "No share/ in ${stage_dir} -- cmake --install did not produce it."
++        return 1
++    fi
++
+     {
+         echo "timestamp=${TIMESTAMP}"
+         echo "platform=${platform_name}"

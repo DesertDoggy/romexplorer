@@ -1,0 +1,86 @@
+/* Big Picture mode (screens/bigpicture.rs): full screen, big covers, sized for a thumb or a
+   controller. Layouts: `layout-auto` follows the screen (one column in portrait, one row in
+   landscape), `layout-single` the same at any size, `layout-multi` a grid with the focused
+   item's details on the right when there is room. */
+.bp { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-size: 16px; overflow: hidden; }
+.bp-top { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.bp-tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+.bp-tabs button { background: none; border: 0; color: var(--dim); font-size: 15px; padding: 10px 14px; border-radius: 8px; white-space: nowrap; cursor: pointer; }
+.bp-tabs button.active { color: var(--fg); background: var(--hover); box-shadow: inset 0 -3px 0 var(--acc); }
+.bp-btn { background: var(--hover); border: 1px solid var(--line); color: var(--fg); font-size: 15px; padding: 9px 14px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+.bp-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.bp-search { flex: 1; max-width: 420px; font-size: 16px; padding: 9px 12px; border-radius: 8px; }
+.bp-body { flex: 1; min-height: 0; display: flex; }
+.bp-items { flex: 1; min-width: 0; overflow: auto; padding: 8px 12px 24px; scroll-padding: 24px; }
+.bp-empty { padding: 40px; text-align: center; }
+.bp [data-nav]:focus, .bp button:focus-visible, #ctxmenu div:focus { outline: 4px solid var(--acc); outline-offset: 2px; }
+#ctxmenu div:focus { background: var(--hover); }
+
+/* A cover. */
+.bp-card { position: relative; display: flex; flex-direction: column; gap: 6px; border-radius: 10px; padding: 6px; cursor: pointer; background: var(--panel); border: 1px solid var(--line); }
+.bp-art { position: relative; aspect-ratio: 3 / 4; border-radius: 6px; overflow: hidden; background: #0d0f12; display: flex; align-items: center; justify-content: center; }
+.bp-art img { width: 100%; height: 100%; object-fit: contain; }
+.bp-noart { font-size: 48px; color: var(--dim); }
+.bp-start { position: absolute; right: 8px; bottom: 8px; width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--acc); color: #0b1220; font-size: 20px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+.bp-name { font-weight: 600; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.bp-sub { color: var(--dim); font-size: 13px; }
+.bp-inline-details { display: none; font-size: 14px; }
+.bp-more { min-height: 120px; border-radius: 10px; border: 1px dashed var(--line); background: none; color: var(--dim); font-size: 15px; cursor: pointer; }
+
+/* The details panel. */
+.bp-details { display: none; width: 340px; flex: none; overflow: auto; padding: 16px; border-left: 1px solid var(--line); background: var(--panel); }
+.bp-details h2 { margin: 0 0 4px; font-size: 20px; }
+.bp .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 12px 0; }
+.bp-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+.bp-choice { background: var(--hover); border: 1px solid var(--line); color: var(--fg); font-size: 15px; padding: 10px 16px; border-radius: 8px; cursor: pointer; text-align: left; }
+.bp-choice.active { border-color: var(--acc); }
+.bp-choice.primary { background: var(--acc); color: #0b1220; border-color: var(--acc); font-weight: 600; }
+
+/* Grid: several per row; on a large screen the focused item's details on the right. */
+.layout-multi .bp-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; align-content: start; }
+@media (min-width: 900px) { .layout-multi .bp-details { display: block; } }
+
+/* One column (portrait): each cover with its details beside it, Start right of the name. */
+.layout-single .bp-items, .layout-auto .bp-items { display: flex; flex-direction: column; gap: 12px; }
+.layout-single .bp-card, .layout-auto .bp-card { flex-direction: row; align-items: flex-start; }
+.layout-single .bp-art, .layout-auto .bp-art { width: 38vw; max-width: 260px; flex: none; position: static; }
+.layout-single .bp-meta, .layout-auto .bp-meta { flex: 1; min-width: 0; padding: 4px 64px 4px 6px; }
+.layout-single .bp-start, .layout-auto .bp-start { top: 12px; right: 12px; bottom: auto; }
+.layout-single .bp-name, .layout-auto .bp-name { font-size: 18px; -webkit-line-clamp: 3; }
+.layout-single .bp-inline-details, .layout-auto .bp-inline-details { display: block; margin-top: 8px; }
+.layout-single .bp-more, .layout-auto .bp-more { min-height: 60px; }
+
+/* One row (landscape): a strip of big covers, the focused one's details filling the rest. */
+@media (orientation: landscape) {
+  .layout-single .bp-body, .layout-auto .bp-body { flex-direction: column; }
+  .layout-single .bp-items, .layout-auto .bp-items { flex: none; flex-direction: row; overflow-x: auto; overflow-y: hidden; height: 52vh; align-items: stretch; }
+  .layout-single .bp-card, .layout-auto .bp-card { flex-direction: column; flex: none; width: calc((52vh - 70px) * 0.75); }
+  .layout-single .bp-art, .layout-auto .bp-art { width: 100%; max-width: none; position: relative; flex: 1; aspect-ratio: auto; }
+  .layout-single .bp-meta, .layout-auto .bp-meta { padding: 0; flex: none; }
+  .layout-single .bp-name, .layout-auto .bp-name { font-size: 15px; -webkit-line-clamp: 1; }
+  .layout-single .bp-start, .layout-auto .bp-start { top: auto; right: 8px; bottom: 8px; }
+  .layout-single .bp-inline-details, .layout-auto .bp-inline-details { display: none; }
+  .layout-single .bp-more, .layout-auto .bp-more { flex: none; width: 160px; }
+  .layout-single .bp-details, .layout-auto .bp-details { display: block; width: auto; flex: 1; border-left: 0; border-top: 1px solid var(--line); }
+}
+
+/* Pages: cross-platform game, title, release. */
+.bp-page { flex: 1; overflow: auto; padding: 16px 20px 40px; }
+.bp-hero { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.bp-hero-art { width: min(320px, 40vw); aspect-ratio: 3 / 4; border-radius: 10px; overflow: hidden; background: #0d0f12; display: flex; align-items: center; justify-content: center; }
+.bp-hero-art img { width: 100%; height: 100%; object-fit: contain; }
+.bp-hero-meta { flex: 1; min-width: 260px; }
+.bp-hero-meta h1 { margin: 0 0 6px; font-size: 26px; }
+.bp-shelf { margin-top: 22px; }
+.bp-shelf h3 { margin: 0 0 8px; font-size: 18px; }
+.bp-row { display: flex; gap: 12px; overflow-x: auto; padding: 6px 4px 12px; }
+.bp-row .bp-card { flex: none; width: 170px; }
+
+/* Sheets (filter, settings) inside the app's modal. */
+.bp-sheet { display: flex; flex-direction: column; gap: 8px; min-width: min(420px, 86vw); }
+.bp-sheet h4 { margin: 10px 0 0; }
+.bp-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; max-height: 50vh; overflow: auto; }
+.bp-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
+#modal, #submodal { z-index: 30; }
+#ctxmenu { z-index: 40; font-size: 16px; }
+.bp ~ #ctxmenu div, .bp #ctxmenu div { padding: 10px 14px; }

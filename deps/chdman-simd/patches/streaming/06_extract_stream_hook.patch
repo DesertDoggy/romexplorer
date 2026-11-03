@@ -1,0 +1,33 @@
+--- a/src/tools/chdman.cpp	2026-09-22 13:30:54.543720462 +0900
++++ b/src/tools/chdman.cpp	2026-09-22 13:31:53.497690537 +0900
+@@ -45,6 +45,8 @@
+ #include <vector>
+ #include <cpuid.h>
+ 
++#include "chdman_stream_hook.h" // romexplorer streaming build: user/patches/streaming/06
++
+ using util::string_format;
+ 
+ 
+@@ -2739,7 +2741,9 @@
+ 				report_error(1, "Error reading CHD file (%s): %s", *params.find(OPTION_INPUT)->second, err.message());
+ 
+ 			// write to the output
+-			auto const [writerr, count] = write(*output_file, &buffer[0], bytes_to_read);
++			if (!chdman_stream::emit(*output_file_str->second, offset - input_start, &buffer[0], bytes_to_read))
++				report_error(1, "Extraction stopped by stream consumer");
++			auto const [writerr, count] = chdman_stream::write_enabled() ? write(*output_file, &buffer[0], bytes_to_read) : chdman_stream::skipped_write(bytes_to_read);
+ 			if (writerr)
+ 				report_error(1, "Error writing to file; check disk space (%s)", *output_file_str->second);
+ 
+@@ -3143,7 +3147,9 @@
+ 				if (bufferoffs == buffer.size() || frame == actualframes - 1)
+ 				{
+ 					output_bin_file->seek(outputoffs, SEEK_SET);
+-					auto const [writerr, byteswritten] = write(*output_bin_file, &buffer[0], bufferoffs);
++					if (!chdman_stream::emit(trackbin_name, outputoffs, &buffer[0], bufferoffs))
++						report_error(1, "Extraction stopped by stream consumer");
++					auto const [writerr, byteswritten] = chdman_stream::write_enabled() ? write(*output_bin_file, &buffer[0], bufferoffs) : chdman_stream::skipped_write(bufferoffs);
+ 					if (writerr)
+ 						report_error(1, "Error writing frame %d to file (%s): %s\n", frame, *output_file_str->second, "Write error");
+ 					outputoffs += bufferoffs;

@@ -1,0 +1,60 @@
+[submodule "external/zlib-ng"]
+	path = external/zlib-ng
+	url = https://github.com/zlib-ng/zlib-ng
+[submodule "external/openssl"]
+	path = external/openssl
+	url = https://github.com/openssl/openssl
+[submodule "external/mariadb-server"]
+	path = external/mariadb-server
+	url = https://github.com/MariaDB/server
+	# Our patches (deps/mariadb-server/patches/) are applied to the checkout at build time.
+	ignore = dirty
+[submodule "external/mariadb-connector-c"]
+	path = external/mariadb-connector-c
+	url = https://github.com/mariadb-corporation/mariadb-connector-c
+[submodule "external/chdman-simd"]
+	path = external/chdman-simd
+	url = https://github.com/grouik1er-coder/chdman-simd
+[submodule "external/7-Zip-zstd"]
+	path = external/7-Zip-zstd
+	url = https://github.com/mcmilk/7-Zip-zstd
+	# Our patches (deps/7-Zip-zstd/patches/) are applied to the checkout at build time.
+	ignore = dirty
+[submodule "external/RALibretro"]
+	path = external/RALibretro
+	url = https://github.com/RetroAchievements/RALibretro
+	# Our patches (deps/RALibretro/patches/) are applied to the checkout at build time.
+	ignore = dirty
+[submodule "external/dolphin"]
+	path = external/dolphin
+	url = https://github.com/dolphin-emu/dolphin
+[submodule "external/mame"]
+	path = external/mame
+	url = https://github.com/mamedev/mame
+[submodule "external/playmatch"]
+	path = external/playmatch
+	url = https://github.com/RetroRealm/playmatch
+[submodule "external/libchdr"]
+	path = external/libchdr
+	url = https://github.com/rtissera/libchdr
+[submodule "external/libxaac"]
+	path = external/libxaac
+	url = https://github.com/ittiam-systems/libxaac
+[submodule "external/cemu"]
+	path = external/cemu
+	url = https://github.com/cemu-project/Cemu
+[submodule "external/ZArchive"]
+	path = external/ZArchive
+	url = https://github.com/Exzap/ZArchive
+[submodule "external/zstd"]
+	path = external/zstd
+	url = https://github.com/facebook/zstd
+[submodule "external/fmt"]
+	path = external/fmt
+	url = https://github.com/fmtlib/fmt
+[submodule "external/extract-xiso"]
+	path = external/extract-xiso
+	url = https://github.com/XboxDev/extract-xiso
+[submodule "external/beetle-psx-libretro"]
+	path = external/beetle-psx-libretro
+	url = https://github.com/libretro/beetle-psx-libretro

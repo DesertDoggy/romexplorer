@@ -1,0 +1,10 @@
+[OK] CPP/7zip/Archive/IArchive.h contains: IArchiveExtractCallbackData2
+[OK] CPP/7zip/Archive/IArchive.h contains: IArchiveExtractCallbackDataFile2
+[OK] CPP/7zip/Archive/IArchive.h contains: NDataAction
+[OK] CPP/7zip/Archive/7z/7zExtract.cpp contains: DataCallback
+[OK] CPP/7zip/Archive/7z/7zExtract.cpp contains: DataFileCallback
+[OK] CPP/7zip/Archive/7z/7zExtract.cpp contains: StopByDataCallback
+[OK] CPP/7zip/Archive/7z/7zExtract.cpp contains: OnFileBegin(
+[OK] CPP/7zip/Archive/7z/7zExtract.cpp contains: OnFileEnd(
+[OK] CPP/7zip/Archive/7z/7zExtract.cpp contains: OnData(
+[INFO] source hook checks passed

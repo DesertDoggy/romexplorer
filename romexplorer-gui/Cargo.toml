@@ -1,0 +1,48 @@
+[package]
+name = "romexplorer-gui"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "romexplorer's app GUI (Dioxus): desktop, web and mobile from one codebase, talking to a romexplorer server over its REST API."
+
+[dependencies]
+dioxus = { version = "0.7", features = ["router"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The server's own request/response types, for screens that deserialise straight into them.
+romexplorer-types = { path = "../romexplorer-types" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
+
+# `local` only. tower/axum are already in the lock file (the backend crate's own server uses
+# them); naming them here adds nothing to the dependency graph.
+romexplorer = { path = "..", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+axum = { version = "0.8", optional = true }
+
+# Native REST builds (mobile) pin the server's self-signed certificate. The web build leaves
+# TLS to the browser and never compiles rustls.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+romexplorer-types = { path = "../romexplorer-types", features = ["pinning", "private-files"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
+
+[features]
+default = ["desktop"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop", "local"]
+# Non-wasm, but MariaDB doesn't run on a phone (docs/plan/gui.md), so mobile stays a REST
+# client like the web build -- which is why `local` is its own feature rather than a
+# `cfg(not(target_arch = "wasm32"))`.
+mobile = ["dioxus/mobile"]
+# This machine's own database, reached in-process instead of over a socket. Pulls in the
+# whole backend crate, so it is desktop-only: `romexplorer` needs sqlx/MariaDB/libloading
+# and a C build.rs, and builds for neither wasm32 nor Android/iOS.
+local = ["dep:romexplorer", "dep:tokio", "dep:tower", "dep:axum"]
+
+[dev-dependencies]
+# A lazily-connecting pool for testing the in-process backend without a database. Already in
+# the lock file through the backend crate.
+sqlx = { version = "0.9", default-features = false, features = ["mysql", "runtime-tokio"] }
