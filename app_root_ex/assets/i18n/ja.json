@@ -2807,5 +2807,10 @@
   "{n} selected release(s)": "選択したリリース{n}件",
   "asks the in-app AI which version to play, for every game of this set": "このセットの全ゲームについて、どのバージョンを遊ぶべきかアプリ内AIに聞きます",
   "choose a set": "セットを選んでください",
-  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "毎回、回答が保存されていないゲームだけを1本につき1回、有料で質問します。請求はプロバイダーからあなたのAPIキーに対して行われます。プロバイダー側で予算か利用上限を設定してください（リンクは設定 › AIにあります）。"
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "毎回、回答が保存されていないゲームだけを1本につき1回、有料で質問します。請求はプロバイダーからあなたのAPIキーに対して行われます。プロバイダー側で予算か利用上限を設定してください（リンクは設定 › AIにあります）。",
+  "paste answer from clipboard": "クリップボードの回答を貼り付け",
+  "saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)": "ブラウザーでコピーした回答を、最後に開いたサイトの回答として保存します（ほかのサイトにするときは下の貼り付け欄で選びます）",
+  "saved as an answer from {site}": "{site} の回答として保存しました",
+  "the clipboard is empty": "クリップボードが空です",
+  "could not read the clipboard here: paste the answer into the box": "ここではクリップボードを読めません。回答を欄に貼り付けてください"
 }

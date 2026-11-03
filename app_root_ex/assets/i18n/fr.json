@@ -2625,5 +2625,10 @@
   "{n} selected release(s)": "{n} version(s) sélectionnée(s)",
   "asks the in-app AI which version to play, for every game of this set": "demande à l'IA de l'application quelle version jouer, pour chaque jeu de cet ensemble",
   "choose a set": "choisissez un ensemble",
-  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Chaque exécution ne demande que pour les jeux de l'ensemble sans réponse enregistrée, une question payante chacun, facturée par le fournisseur sur votre propre clé API. Fixez un budget ou une limite de dépenses chez le fournisseur (les liens sont dans Config › IA)."
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Chaque exécution ne demande que pour les jeux de l'ensemble sans réponse enregistrée, une question payante chacun, facturée par le fournisseur sur votre propre clé API. Fixez un budget ou une limite de dépenses chez le fournisseur (les liens sont dans Config › IA).",
+  "paste answer from clipboard": "coller la réponse du presse-papiers",
+  "saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)": "enregistre la réponse copiée dans le navigateur, comme venant du dernier site ouvert (la zone de collage ci-dessous permet d'en choisir un autre)",
+  "saved as an answer from {site}": "enregistrée comme réponse de {site}",
+  "the clipboard is empty": "le presse-papiers est vide",
+  "could not read the clipboard here: paste the answer into the box": "impossible de lire le presse-papiers ici : collez la réponse dans la zone"
 }

@@ -2625,5 +2625,10 @@
   "{n} selected release(s)": "{n} uscite selezionate",
   "asks the in-app AI which version to play, for every game of this set": "chiede all'IA dell'app quale versione giocare, per ogni gioco di questo set",
   "choose a set": "scegli un set",
-  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Ogni esecuzione chiede solo per i giochi del set senza risposta salvata, una domanda a pagamento ciascuno, addebitata dal fornitore sulla tua chiave API. Imposta un budget o un limite di spesa presso il fornitore (i link sono in Config › IA)."
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Ogni esecuzione chiede solo per i giochi del set senza risposta salvata, una domanda a pagamento ciascuno, addebitata dal fornitore sulla tua chiave API. Imposta un budget o un limite di spesa presso il fornitore (i link sono in Config › IA).",
+  "paste answer from clipboard": "incolla la risposta dagli appunti",
+  "saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)": "salva la risposta copiata nel browser, come proveniente dall'ultimo sito aperto (la casella qui sotto permette di sceglierne un altro)",
+  "saved as an answer from {site}": "salvata come risposta di {site}",
+  "the clipboard is empty": "gli appunti sono vuoti",
+  "could not read the clipboard here: paste the answer into the box": "impossibile leggere gli appunti qui: incolla la risposta nella casella"
 }

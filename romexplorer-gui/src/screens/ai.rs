@@ -466,21 +466,40 @@ pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
             }
         });
     };
+    let save = move |text: String, from: String| {
+        spawn(async move {
+            match api::post(&format!("/api/v1/catalog/definitive/{head}/paste"), json!({ "lang": state::ui_language(), "site": from, "answer": text })).await {
+                Ok(_) => {
+                    let label = AI_SITES.iter().find(|(id, _)| *id == from).map_or(from.as_str(), |(_, l)| *l).to_string();
+                    ui::toast(state::trf("saved as an answer from {site}", &[("site", &label)]), false);
+                    pasted.set(String::new());
+                    mode.set("");
+                    answer.restart();
+                }
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
     let save_paste = move |_| {
         let text = pasted().trim().to_string();
         if text.is_empty() {
             ui::toast(state::tr("nothing pasted"), true);
             return;
         }
+        save(text, site());
+    };
+    // One click: what was copied in the browser, from the site whose link was opened last.
+    let mut paste_open = use_signal(|| false);
+    let from_clipboard = move |_| {
         spawn(async move {
-            match api::post(&format!("/api/v1/catalog/definitive/{head}/paste"), json!({ "lang": state::ui_language(), "site": site(), "answer": text })).await {
-                Ok(_) => {
-                    ui::toast(state::tr("saved"), false);
-                    pasted.set(String::new());
-                    mode.set("");
-                    answer.restart();
+            let read = document::eval("try { return await navigator.clipboard.readText(); } catch (e) { return null; }").await.ok();
+            match read.as_ref().map(|v| v.as_str().map(|s| s.trim().to_string())) {
+                Some(Some(text)) if !text.is_empty() => save(text, site()),
+                Some(Some(_)) => ui::toast(state::tr("the clipboard is empty"), true),
+                _ => {
+                    paste_open.set(true);
+                    ui::toast(state::tr("could not read the clipboard here: paste the answer into the box"), true);
                 }
-                Err(e) => ui::toast(e.message, true),
             }
         });
     };
@@ -553,8 +572,10 @@ pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
                 }
                 " "
                 a { class: "link", href: "{s(&v, \"google_url\")}", target: "_blank", rel: "noopener", {state::tr("search")} }
+                " "
+                button { class: "btn small", r#type: "button", title: state::tr("saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)"), onclick: from_clipboard, {state::tr("paste answer from clipboard")} }
             }
-            details { style: "margin-top:6px",
+            details { style: "margin-top:6px", open: paste_open(),
                 summary { {state::tr("Paste an answer from the browser")} }
                 textarea { rows: "6", style: "width:100%", placeholder: state::tr("Paste the whole answer, starting with its RANK: line"), value: "{pasted}", oninput: move |e| pasted.set(e.value()) }
                 div { class: "toolbar",

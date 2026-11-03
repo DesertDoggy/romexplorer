@@ -2625,5 +2625,10 @@
   "{n} selected release(s)": "{n} ausgewählte Veröffentlichung(en)",
   "asks the in-app AI which version to play, for every game of this set": "fragt die KI der App, welche Version zu spielen ist, für jedes Spiel dieses Sets",
   "choose a set": "wähle ein Set",
-  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Jeder Lauf fragt nur nach Spielen des Sets ohne gespeicherte Antwort, eine kostenpflichtige Frage je Spiel, abgerechnet vom Anbieter über deinen eigenen API-Schlüssel. Lege beim Anbieter ein Budget oder Ausgabenlimit fest (Links unter Konfig › KI)."
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Jeder Lauf fragt nur nach Spielen des Sets ohne gespeicherte Antwort, eine kostenpflichtige Frage je Spiel, abgerechnet vom Anbieter über deinen eigenen API-Schlüssel. Lege beim Anbieter ein Budget oder Ausgabenlimit fest (Links unter Konfig › KI).",
+  "paste answer from clipboard": "Antwort aus der Zwischenablage einfügen",
+  "saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)": "speichert die im Browser kopierte Antwort als Antwort der zuletzt geöffneten Seite (im Einfügefeld unten lässt sich eine andere wählen)",
+  "saved as an answer from {site}": "als Antwort von {site} gespeichert",
+  "the clipboard is empty": "die Zwischenablage ist leer",
+  "could not read the clipboard here: paste the answer into the box": "die Zwischenablage kann hier nicht gelesen werden: füge die Antwort ins Feld ein"
 }

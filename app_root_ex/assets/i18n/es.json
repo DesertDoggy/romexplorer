@@ -2625,5 +2625,10 @@
   "{n} selected release(s)": "{n} lanzamiento(s) seleccionado(s)",
   "asks the in-app AI which version to play, for every game of this set": "pregunta a la IA de la aplicación qué versión jugar, para cada juego de este conjunto",
   "choose a set": "elige un conjunto",
-  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Cada ejecución pregunta solo por los juegos del conjunto sin respuesta guardada, una pregunta de pago cada uno, facturada por el proveedor a tu propia clave API. Fija un presupuesto o límite de gasto en el proveedor (los enlaces están en Config › IA)."
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Cada ejecución pregunta solo por los juegos del conjunto sin respuesta guardada, una pregunta de pago cada uno, facturada por el proveedor a tu propia clave API. Fija un presupuesto o límite de gasto en el proveedor (los enlaces están en Config › IA).",
+  "paste answer from clipboard": "pegar la respuesta del portapapeles",
+  "saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)": "guarda la respuesta que copiaste en el navegador, como del último sitio abierto (el cuadro de pegado de abajo permite elegir otro)",
+  "saved as an answer from {site}": "guardada como respuesta de {site}",
+  "the clipboard is empty": "el portapapeles está vacío",
+  "could not read the clipboard here: paste the answer into the box": "no se puede leer el portapapeles aquí: pega la respuesta en el cuadro"
 }

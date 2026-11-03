@@ -2625,5 +2625,10 @@
   "{n} selected release(s)": "선택한 릴리스 {n}개",
   "asks the in-app AI which version to play, for every game of this set": "이 세트의 모든 게임에 대해 어떤 버전을 플레이할지 앱 내 AI에게 묻습니다",
   "choose a set": "세트를 선택하세요",
-  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "실행할 때마다 답변이 저장되지 않은 세트의 게임만 게임당 유료 질문 1회로 묻습니다. 요금은 제공자가 사용자 본인의 API 키로 청구합니다. 제공자 쪽에서 예산이나 지출 한도를 설정하세요(링크는 설정 › AI에 있습니다)."
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "실행할 때마다 답변이 저장되지 않은 세트의 게임만 게임당 유료 질문 1회로 묻습니다. 요금은 제공자가 사용자 본인의 API 키로 청구합니다. 제공자 쪽에서 예산이나 지출 한도를 설정하세요(링크는 설정 › AI에 있습니다).",
+  "paste answer from clipboard": "클립보드의 답변 붙여넣기",
+  "saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)": "브라우저에서 복사한 답변을 마지막으로 연 사이트의 답변으로 저장합니다(다른 사이트는 아래 붙여넣기 칸에서 고릅니다)",
+  "saved as an answer from {site}": "{site}의 답변으로 저장했습니다",
+  "the clipboard is empty": "클립보드가 비어 있습니다",
+  "could not read the clipboard here: paste the answer into the box": "여기서는 클립보드를 읽을 수 없습니다. 답변을 칸에 붙여넣으세요"
 }

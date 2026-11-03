@@ -3758,7 +3758,8 @@ async function familyAiPanel(box, head, req) {
     ${a ? `<div style="white-space:pre-wrap;font-size:13px">${esc(a.answer)}</div>` : `<p class="muted">${tr('No AI answer saved for this game yet. Ask the in-app AI, or ask in the browser and paste the answer below.')}</p>`}
     ${sources}${meta}${v.error ? `<div class="muted">${esc(v.error)}</div>` : ''}
     ${buttons.length ? `<div class="toolbar" style="margin-top:6px">${buttons.join(' ')}</div>` : ''}
-    <div class="toolbar" style="margin-top:6px"><span class="muted" title="${esc(tr('opens the question in the browser, signed in as you'))}">${tr('Ask:')}</span> ${links} <a class="link" href="${esc(v.google_url)}" target="_blank" rel="noopener">${tr('search')}</a></div>
+    <div class="toolbar" style="margin-top:6px"><span class="muted" title="${esc(tr('opens the question in the browser, signed in as you'))}">${tr('Ask:')}</span> ${links} <a class="link" href="${esc(v.google_url)}" target="_blank" rel="noopener">${tr('search')}</a>
+      <button class="btn small" id="fa-clip" title="${esc(tr('saves the answer you copied in the browser, as from the site you last opened (the paste box below picks another)'))}">${tr('paste answer from clipboard')}</button></div>
     <details style="margin-top:6px"><summary>${tr('Paste an answer from the browser')}</summary>
       <textarea id="fa-paste" rows="6" style="width:100%" placeholder="${esc(tr('Paste the whole answer, starting with its RANK: line'))}"></textarea>
       <div class="toolbar"><label>${tr('from')} <select id="fa-site">${Object.entries(AI_SITE_LABELS).map(([id, l]) => `<option value="${id}" ${id === lastSite ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
@@ -3773,10 +3774,24 @@ async function familyAiPanel(box, head, req) {
       box.querySelector('h2').insertAdjacentHTML('beforeend', ` <span class="muted">${tr('asking…')}</span>`); familyAiPanel(box, head, { [b.dataset.fa]: true });
     }
   };
+  const savePasted = async (answer, site) => {
+    try { await api('/api/v1/catalog/definitive/' + head + '/paste', { method: 'POST', body: { lang: uiLanguage, site, answer } }); setPref('ai_last_site', site); toast(trf('saved as an answer from {site}', { site: AI_SITE_LABELS[site] || site })); familyAiPanel(box, head, {}); } catch (e) { toast(e.message, true); }
+  };
   box.querySelector('#fa-save').onclick = async () => {
-    const answer = box.querySelector('#fa-paste').value.trim(); const site = box.querySelector('#fa-site').value;
+    const answer = box.querySelector('#fa-paste').value.trim();
     if (!answer) return toast(tr('nothing pasted'), true);
-    try { await api('/api/v1/catalog/definitive/' + head + '/paste', { method: 'POST', body: { lang: uiLanguage, site, answer } }); setPref('ai_last_site', site); toast(tr('saved')); familyAiPanel(box, head, {}); } catch (e) { toast(e.message, true); }
+    await savePasted(answer, box.querySelector('#fa-site').value);
+  };
+  // One click: what was copied in the browser, from the site whose link was opened last.
+  box.querySelector('#fa-clip').onclick = async () => {
+    let answer = '';
+    try { answer = ((await navigator.clipboard.readText()) || '').trim(); } catch (e) {
+      // No clipboard access here (a plain-http console, or permission refused): the paste box instead.
+      box.querySelector('details').open = true; box.querySelector('#fa-paste').focus();
+      return toast(tr('could not read the clipboard here: paste the answer into the box'), true);
+    }
+    if (!answer) return toast(tr('the clipboard is empty'), true);
+    await savePasted(answer, pref('ai_last_site', (v.ask_links[0] || {}).id || 'google'));
   };
 }
 async function showFamily(id) {
