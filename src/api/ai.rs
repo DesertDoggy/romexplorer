@@ -305,6 +305,9 @@ fn default_source() -> String {
 impl Answer {
     /// Its entry in `ai_source_priority`: `api:<provider>` or `browser:<site>`.
     pub fn source_key(&self) -> String {
+        if self.source == "bundled" {
+            return "bundled".to_string();
+        }
         format!("{}:{}", self.source, self.provider)
     }
 }
@@ -315,9 +318,17 @@ impl Answer {
 /// newest first. Unset: curated first, then newest first.
 pub const KEY_SOURCE_PRIORITY: &str = "ai_source_priority";
 
+/// `true`: the AI ratings that ship with the app (`assets/definitive_ai.json`) are not used
+/// ("clear" of the `bundled` source; they cannot be deleted, only turned off).
+pub const KEY_BUNDLED_OFF: &str = "ai_bundled_off";
+
+pub async fn bundled_on(app: &App) -> bool {
+    db_settings::get::<bool>(&app.pool, KEY_BUNDLED_OFF).await.ok().flatten() != Some(true)
+}
+
 /// Every entry `ai_source_priority` can hold, in the default order.
 pub fn source_keys() -> Vec<String> {
-    let mut out = vec!["curated".to_string()];
+    let mut out = vec!["curated".to_string(), "bundled".to_string()];
     out.extend(PROVIDERS.iter().map(|p| format!("api:{p}")));
     out.extend(ASK_LINKS.iter().map(|(id, _)| format!("browser:{id}")));
     out
@@ -626,6 +637,9 @@ pub struct Overview {
     /// `ai_source_priority` as set (empty: the default), and every entry it can hold.
     pub source_priority: Vec<String>,
     pub source_keys: Vec<String>,
+    /// The AI ratings that ship with the app, and whether they are used.
+    pub bundled_count: u64,
+    pub bundled_on: bool,
 }
 
 pub async fn overview(app: &App) -> Result<Overview> {
@@ -645,6 +659,8 @@ pub async fn overview(app: &App) -> Result<Overview> {
         stats: stats(app).await?,
         source_priority: db_settings::get::<Vec<String>>(&app.pool, KEY_SOURCE_PRIORITY).await.ok().flatten().unwrap_or_default(),
         source_keys: source_keys(),
+        bundled_count: super::definitive::bundled().len() as u64,
+        bundled_on: bundled_on(app).await,
     })
 }
 
@@ -705,6 +721,11 @@ pub struct ClearRequest {
 }
 
 pub async fn clear(app: &App, req: &ClearRequest) -> Result<u64> {
+    // The bundled ratings ship with the app: clearing them turns them off.
+    if req.source.as_deref().map(str::trim) == Some("bundled") {
+        db_settings::set(&app.pool, KEY_BUNDLED_OFF, &true).await?;
+        return Ok(super::definitive::bundled().len() as u64);
+    }
     let mut sql = "DELETE FROM ai_answers WHERE 1 = 1".to_string();
     if req.keep_pinned {
         sql.push_str(" AND pinned = FALSE");

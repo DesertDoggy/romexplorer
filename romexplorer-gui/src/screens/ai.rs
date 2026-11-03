@@ -373,6 +373,31 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
                 input { r#type: "file", accept: ".json,application/json", onchange: move |e| chosen.set(e.files().into_iter().next()) }
                 button { class: "btn", r#type: "button", onclick: import, {state::tr("import JSON")} }
             }
+            div { class: "toolbar", style: "margin-top:8px",
+                span {
+                    {state::trf("Bundled AI ratings: {n}", &[("n", &u(&o, "bundled_count").to_string())])}
+                    " "
+                    Html { html: if api::b(&o, "bundled_on") { crate::html::badge(&state::tr("in use"), "ok") } else { crate::html::badge(&state::tr("off"), "dim") } }
+                }
+                if !api::b(&o, "bundled_on") {
+                    button { class: "btn small", r#type: "button",
+                        onclick: move |_| { spawn(async move { match api::delete("/api/v1/settings/ai_bundled_off").await { Ok(_) => on_change.call(()), Err(e) => ui::toast(e.message, true) } }); },
+                        {state::tr("use them again")}
+                    }
+                }
+                span { class: "grow" }
+                button { class: "btn", r#type: "button", title: state::tr("your API answers about Definitive families with two versions or more, in the shape of the bundled ratings file"),
+                    onclick: move |_| {
+                        spawn(async move {
+                            match api::get("/api/v1/ai/bundled-export").await {
+                                Ok(file) => super::data::save_text(&serde_json::to_string_pretty(&file).unwrap_or_default(), "definitive_ai.json", "application/json").await,
+                                Err(e) => ui::toast(e.message, true),
+                            }
+                        });
+                    },
+                    {state::tr("export as bundled ratings")}
+                }
+            }
         }
     }
 }
@@ -392,6 +417,9 @@ pub fn source_label(key: &str) -> String {
     if key == "curated" {
         return state::tr("curated note");
     }
+    if key == "bundled" {
+        return state::tr("bundled AI");
+    }
     let (src, who) = key.split_once(':').unwrap_or((key, ""));
     if src == "api" {
         state::trf("{provider} API", &[("provider", provider_label(who))])
@@ -406,7 +434,7 @@ pub fn ai_rank_badge(rank: &str, source: &str) -> String {
     let rank = if rank == "none" { state::tr("none") } else { rank.to_string() };
     format!(
         r#"<span class="badge" style="border:1px dashed currentColor;background:transparent" title="{}">{} · {}</span>"#,
-        crate::html::esc(&state::tr("AI rank: information only; the Definitive filter uses the curated notes")),
+        crate::html::esc(&state::tr("AI rank: the rank filter counts it only when \"rank from\" includes AI")),
         crate::html::esc(&state::trf("AI {rank}", &[("rank", &rank)])),
         crate::html::esc(&source_label(source))
     )
@@ -456,7 +484,8 @@ pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
     let lang = s(&v, "lang");
     let links = api::arr(&v, "ask_links").to_vec();
     let pinned = saved.as_ref().is_some_and(|x| api::b(x, "pinned"));
-    let saved_id = saved.as_ref().map(|x| u(x, "id"));
+    let saved_id = saved.as_ref().filter(|x| s(x, "source") != "bundled").map(|x| u(x, "id"));
+    let newer = super::definitive::newer_version_badge(v.get("newer_version"));
     let is_api = saved.as_ref().is_some_and(|x| s(x, "source") == "api");
     let ask = move |m: &'static str| {
         spawn(async move {
@@ -505,7 +534,7 @@ pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
     };
     rsx! {
         div { class: "card",
-            h2 { "{title} " Html { html: rank_html } }
+            h2 { "{title} " Html { html: format!("{rank_html}{newer}") } }
             if saved.is_none() {
                 if let Some(o) = &other {
                     div { class: "muted", {state::trf("Saved in {language}.", &[("language", &state::language_native(&s(o, "lang")))])} }

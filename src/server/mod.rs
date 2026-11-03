@@ -2129,6 +2129,10 @@ async fn version_group_reroll(State(s): State<Shared>, Path(key): Path<String>) 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+async fn ai_bundled_export(State(s): State<Shared>) -> ApiResult<serde_json::Value> {
+    Ok(Json(api::definitive::bundled_export(&s.app).await?))
+}
+
 async fn definitive_batch_estimate(State(s): State<Shared>, Json(req): Json<romexplorer_types::jobs::AiBatchRateRequest>) -> ApiResult<api::definitive::BatchEstimate> {
     Ok(Json(api::definitive::batch_estimate(&s.app, &req).await?))
 }
@@ -2591,6 +2595,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/ai", get(ai_overview))
         .route("/api/v1/ai/clear", post(ai_clear))
         .route("/api/v1/ai/export", get(ai_export))
+        .route("/api/v1/ai/bundled-export", get(ai_bundled_export))
         .route("/api/v1/ai/import", post(ai_import))
         .route("/api/v1/ai/test/{provider}", post(ai_test))
         .route("/api/v1/ai/answers/{id}/pin", axum::routing::put(ai_pin))

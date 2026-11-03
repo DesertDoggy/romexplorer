@@ -3685,6 +3685,21 @@ async function showCrossplatform() {
 const RELATIONS = ['port', 'remaster', 'remake', 'edition', 'expansion', 'standalone', 'dlc', 'mod', 'bundle'];
 // A version note's text in the UI language, else English.
 function noteText(note, field) { const t = (note && note[field]) || {}; return t[uiLanguage] || t.en || ''; }
+// The rank filter's options and its source (the app's RANK_FILTERS): which ranks count.
+function rankFilters() {
+  return [
+    { key: 'noted', label: tr('version note'), type: 'select', options: () => `<option value="">${tr('no filter')}</option><option value="S">${tr('rank S')}</option><option value="A">${tr('rank A and above')}</option><option value="B">${tr('rank B and above')}</option>` },
+    { key: 'rank_source', label: tr('rank from'), type: 'select', options: () => `<option value="">${tr('curated notes only')}</option><option value="bundled">${tr('curated + bundled AI')}</option><option value="all">${tr('curated + all AI (bundled and your own answers)')}</option>` },
+    { key: 'skip_newer', label: tr('skip ranks with a newer version'), type: 'check' },
+  ];
+}
+function rankFilterParams(st) { return { noted: st.filters.noted, rank_source: st.filters.rank_source, skip_newer: st.filters.skip_newer === 'true' || null }; }
+// A rank and where it came from: the curated badge, or the dashed AI one.
+function sourcedRankBadge(rank, source) { return !rank ? '' : (!source || source === 'curated' ? rankBadge(rank) : aiRankBadge(rank, source)); }
+// A version of the family came out after the rating.
+function newerVersionBadge(n) {
+  return n ? ` <span class="badge warn" title="${esc(trf('{name}, released {date}', { name: n.name, date: n.date }))}">${tr('New version since rating')}</span>` : '';
+}
 function rankBadge(rank) {
   const tip = { S: tr('S: the older version is strongly recommended'), A: tr('A: which version is better depends on preference') }[rank] || tr('B: an older version has content the latest lacks; the latest is still the better one');
   return `<span class="badge ${{ S: 'bad', A: 'warn' }[rank] || 'dim'}" title="${esc(tip)}">${esc(trf('note {rank}', { rank }))}</span>`;
@@ -3703,14 +3718,14 @@ async function showDefinitive() {
       { key: 'other', label: tr('base game / definitive version'), render: r => same(r) ? `<span class="muted">${tr('(the same)')}</span>` : sideLink(r.other) },
       { key: 'other_platforms', label: tr('its platform'), render: r => same(r) ? '' : platformsHtml(r.other.platforms) },
       { key: 'members', label: tr('versions'), sort: 'members', cls: 'num' },
-      { key: 'note_rank', label: tr('note'), render: r => r.note_rank ? rankBadge(r.note_rank) : '' },
+      { key: 'note_rank', label: tr('note'), render: r => sourcedRankBadge(r.note_rank, r.note_source) + newerVersionBadge(r.newer_version) },
     ],
     filters: [
       { key: 'lead', label: tr('show'), type: 'select', options: () => `<option value="">${tr('definitive version')}</option><option value="base">${tr('base game')}</option>` },
-      { key: 'noted', label: tr('version note'), type: 'select', options: () => `<option value="">${tr('no filter')}</option><option value="S">${tr('rank S')}</option><option value="A">${tr('rank A and above')}</option><option value="B">${tr('rank B and above')}</option>` },
+      ...rankFilters(),
       platformFilter(),
     ].concat(displayFilters()),
-    fetch: st => api('/api/v1/catalog/definitive' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, lead: st.filters.lead, noted: st.filters.noted }, Object.fromEntries(DISPLAY_KEYS.filter(k => st.filters[k]).map(k => [k, st.filters[k]]))))),
+    fetch: st => api('/api/v1/catalog/definitive' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, lead: st.filters.lead }, rankFilterParams(st), Object.fromEntries(DISPLAY_KEYS.filter(k => st.filters[k]).map(k => [k, st.filters[k]]))))),
     rowLink: r => 'collection/definitive/' + r.id,
     isLocal: r => r.local_games > 0 ? 'local' : '',
     // Into a set as the game's definitive version: copy_definitive decides which release.
@@ -3718,7 +3733,7 @@ async function showDefinitive() {
     selection: { key: r => r.id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ family_ids: ids }, done); } }, { label: tr('batch rate with AI…'), run: async (ids) => { aiBatchDialog({ title_ids: ids }, trf('{n} selected games', { n: ids.length })); } }] },
     gridCard: (r, mode) => {
       const dual = mode === 'dual' && !same(r);
-      return { title: r.lead.name, media: r.lead.cover_media_id, media2: dual ? r.other.cover_media_id : null, dual: dual ? twoCoverLayout : '', local: r.local_games > 0 ? 'local' : '', chips: r.note_rank ? rankBadge(r.note_rank) : '', sub: platformsHtml(r.lead.platforms) + (same(r) ? '' : `<div class="muted">${esc(r.other.name)}</div>`) };
+      return { title: r.lead.name, media: r.lead.cover_media_id, media2: dual ? r.other.cover_media_id : null, dual: dual ? twoCoverLayout : '', local: r.local_games > 0 ? 'local' : '', chips: sourcedRankBadge(r.note_rank, r.note_source) + newerVersionBadge(r.newer_version), sub: platformsHtml(r.lead.platforms) + (same(r) ? '' : `<div class="muted">${esc(r.other.name)}</div>`) };
     },
   });
 }
@@ -3782,12 +3797,13 @@ const AI_SITE_LABELS = { google: 'Google AI Mode', claude: 'Claude', chatgpt: 'C
 function aiSourceLabel(key) {
   if (!key) return '';
   if (key === 'curated') return tr('curated note');
+  if (key === 'bundled') return tr('bundled AI');
   const [src, who] = key.split(':');
   return src === 'api' ? trf('{provider} API', { provider: AI_PROVIDER_LABELS[who] || who }) : trf('{site} (browser)', { site: AI_SITE_LABELS[who] || who });
 }
 // The AI's rank: dashed, so it never reads as the curated rank badge.
 function aiRankBadge(rank, source) {
-  return `<span class="badge" style="border:1px dashed currentColor;background:transparent" title="${esc(tr('AI rank: information only; the Definitive filter uses the curated notes'))}">${esc(trf('AI {rank}', { rank: rank === 'none' ? tr('none') : rank }))} · ${esc(aiSourceLabel(source))}</span>`;
+  return `<span class="badge" style="border:1px dashed currentColor;background:transparent" title="${esc(tr('AI rank: the rank filter counts it only when "rank from" includes AI'))}">${esc(trf('AI {rank}', { rank: rank === 'none' ? tr('none') : rank }))} · ${esc(aiSourceLabel(source))}</span>`;
 }
 // Collection › Definitive › a family (the app's FamilyAi): which version to play, from the
 // in-app AI or an answer pasted from the browser. Opening the page shows only what is saved;
@@ -3806,10 +3822,10 @@ async function familyAiPanel(box, head, req) {
   if (!v.answer && !v.other_language) buttons.push(`<button class="btn small primary" data-fa="ask" title="${esc(tr('asks the in-app AI (Config › AI); each question costs a little'))}">${tr('Ask the AI')}</button>`);
   if (!v.answer && v.other_language) buttons.push(`<button class="btn small primary" data-fa="ask">${esc(trf('Ask in {language}', { language: langNative(v.lang) }))}</button>`);
   if (v.answer && v.answer.source === 'api' && !v.answer.pinned) buttons.push(`<button class="btn small" data-fa="again" title="${esc(tr('asks the AI again and replaces this answer'))}">${tr('Ask again')}</button>`);
-  if (v.answer) buttons.push(`<button class="btn small" data-fa="pin" title="${esc(tr('a pinned answer is kept: never asked again, expired or cleared with the cache'))}">${v.answer.pinned ? tr('unpin') : tr('pin')}</button>`);
+  if (v.answer && v.answer.source !== 'bundled') buttons.push(`<button class="btn small" data-fa="pin" title="${esc(tr('a pinned answer is kept: never asked again, expired or cleared with the cache'))}">${v.answer.pinned ? tr('unpin') : tr('pin')}</button>`);
   const lastSite = pref('ai_last_site', (v.ask_links[0] || {}).id || 'google');
   const links = (v.ask_links || []).map((l, i) => `<a class="btn small${i === 0 ? ' primary' : ''}" data-site="${esc(l.id)}" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join(' ');
-  box.innerHTML = `<h2>${tr('Which version to play')} ${shown}</h2>${other}
+  box.innerHTML = `<h2>${tr('Which version to play')} ${shown}${newerVersionBadge(v.newer_version)}</h2>${other}
     ${a ? `<div style="white-space:pre-wrap;font-size:13px">${esc(a.answer)}</div>` : `<p class="muted">${tr('No AI answer saved for this game yet. Ask the in-app AI, or ask in the browser and paste the answer below.')}</p>`}
     ${sources}${meta}${v.error ? `<div class="muted">${esc(v.error)}</div>` : ''}
     ${buttons.length ? `<div class="toolbar" style="margin-top:6px">${buttons.join(' ')}</div>` : ''}
@@ -4289,8 +4305,8 @@ async function showSet(id) {
     // No kinds default: a set holds what was put in it, hacks included.
     filters: [platformFilter(), viewFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
       // The grid's D/C/T/R badge sits on the cover, so it is shown on request.
-      { key: 'type_badges', label: tr('entry type on covers'), type: 'check' }]),
-    fetch: st => (showTypes = !!st.filters.type_badges && st.filters.type_badges !== 'false', api('/api/v1/sets/' + id + '/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds, view: st.filters.view, source: st.filters.source }, facetParams(st)))).then(page => { for (const r of page.items || []) rowsById.set(r.id, r); return page; })),
+      { key: 'type_badges', label: tr('entry type on covers'), type: 'check' }]).concat(rankFilters()),
+    fetch: st => (showTypes = !!st.filters.type_badges && st.filters.type_badges !== 'false', api('/api/v1/sets/' + id + '/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds, view: st.filters.view, source: st.filters.source }, rankFilterParams(st), facetParams(st)))).then(page => { for (const r of page.items || []) rowsById.set(r.id, r); return page; })),
     selection: { key: r => r.id, actions: [{ label: tr('remove from this set'), run: async (ids, done) => {
       if (!confirm(trf('Remove {n} release(s) from this set? (the releases themselves are untouched)', { n: ids.length }))) return;
       try { const r = await api('/api/v1/sets/' + id + '/remove', { method: 'POST', body: { release_ids: ids } }); toast(trf('{n} release(s) removed from the set', { n: r.removed })); done(); refreshHead(); } catch (err) { toast(err.message, true); }
@@ -6030,6 +6046,14 @@ async function showAiPage() {
   };
   cache.querySelector('#aiexport').onclick = async () => {
     try { const list = await api('/api/v1/ai/export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(list, null, 1)], { type: 'application/json' })); a.download = 'romexplorer-ai-answers.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); } catch (e) { toast(e.message, true); }
+  };
+  cache.insertAdjacentHTML('beforeend', `<div class="toolbar" style="margin-top:8px"><span>${esc(trf('Bundled AI ratings: {n}', { n: o.bundled_count }))} ${o.bundled_on ? badge(tr('in use'), 'ok') : badge(tr('off'), 'dim')}</span>
+    ${o.bundled_on ? '' : `<button class="btn small" type="button" id="aibundledon">${tr('use them again')}</button>`}
+    <span class="grow"></span><button class="btn" type="button" id="aibundledexport" title="${esc(tr('your API answers about Definitive families with two versions or more, in the shape of the bundled ratings file'))}">${tr('export as bundled ratings')}</button></div>`);
+  const bundledOn = cache.querySelector('#aibundledon');
+  if (bundledOn) bundledOn.onclick = async () => { try { await api('/api/v1/settings/ai_bundled_off', { method: 'DELETE' }); showAiPage(); } catch (e) { toast(e.message, true); } };
+  cache.querySelector('#aibundledexport').onclick = async () => {
+    try { const file = await api('/api/v1/ai/bundled-export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' })); a.download = 'definitive_ai.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); } catch (e) { toast(e.message, true); }
   };
   cache.querySelector('#aiimport').onclick = async () => {
     const file = cache.querySelector('#aiimportfile').files[0];

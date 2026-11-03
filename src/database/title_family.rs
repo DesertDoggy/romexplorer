@@ -89,6 +89,8 @@ pub struct GameIndex {
     pub id: u32,
     pub game_type: &'static str,
     pub first_year: Option<u16>,
+    /// `first_release_date` as a day.
+    pub first_release: Option<chrono::NaiveDate>,
     pub platforms: Vec<u16>,
     /// (related game, relation) -- see `igdb_game_relations`.
     pub relations: Vec<(u32, &'static str)>,
@@ -106,11 +108,12 @@ pub fn index_of(game: &IgdbGame) -> GameIndex {
     }
     relations.sort_unstable();
     relations.dedup();
-    let first_year = game.first_release_date.and_then(|t| chrono::DateTime::from_timestamp(t, 0)).map(|d| chrono::Datelike::year(&d)).filter(|y| (1950..=2200).contains(y)).map(|y| y as u16);
+    let first_day = game.first_release_date.and_then(|t| chrono::DateTime::from_timestamp(t, 0)).map(|d| d.date_naive()).filter(|d| (1950..=2200).contains(&chrono::Datelike::year(d)));
+    let first_year = first_day.map(|d| chrono::Datelike::year(&d) as u16);
     let mut platforms: Vec<u16> = game.platforms.iter().flatten().filter(|p| **p > 0 && **p < 2048).map(|p| *p as u16).collect();
     platforms.sort_unstable();
     platforms.dedup();
-    GameIndex { id: game.id as u32, game_type: super::providers::metadata::igdb_category(game), first_year, platforms, relations }
+    GameIndex { id: game.id as u32, game_type: super::providers::metadata::igdb_category(game), first_year, first_release: first_day, platforms, relations }
 }
 
 /// Writes the index rows of `games` (their `igdb_games` row must exist).
@@ -128,9 +131,10 @@ pub async fn write_index(pool: &MySqlPool, games: &[GameIndex]) -> Result<(), Da
         }
         for g in chunk {
             let platforms = g.platforms.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
-            sqlx::query("UPDATE igdb_games SET game_type = ?, first_year = ?, platforms = ?, relations_read = TRUE WHERE provider_id = ?")
+            sqlx::query("UPDATE igdb_games SET game_type = ?, first_year = ?, first_release = ?, platforms = ?, relations_read = TRUE, release_read = TRUE WHERE provider_id = ?")
                 .bind(g.game_type)
                 .bind(g.first_year)
+                .bind(g.first_release)
                 .bind(platforms.get(..platforms.len().min(512)))
                 .bind(g.id)
                 .execute(&mut *tx)
@@ -151,6 +155,54 @@ pub async fn index_cached(pool: &MySqlPool, provider_id: &str, raw: &serde_json:
             Ok(())
         }
     }
+}
+
+/// Reads the first-release day of every cached IGDB game indexed before it was kept
+/// (`release_read`), a raw file at a time. Only that column: the rest of the index stands.
+pub async fn backfill_release_dates(pool: &MySqlPool, progress: &Progress) -> Result<u64, DatabaseError> {
+    let rows = sqlx::query("SELECT provider_id, raw_response_path FROM igdb_games WHERE release_read = FALSE AND relations_read = TRUE AND deleted = FALSE AND raw_response_path IS NOT NULL ORDER BY raw_response_path")
+        .fetch_all(pool)
+        .await?;
+    let total = rows.len() as u64;
+    let mut by_file: BTreeMap<String, HashSet<u32>> = BTreeMap::new();
+    for r in &rows {
+        by_file.entry(r.try_get("raw_response_path")?).or_default().insert(r.try_get::<u32, _>("provider_id")?);
+    }
+    let mut done = 0u64;
+    let mut found: Vec<(u32, Option<chrono::NaiveDate>)> = Vec::new();
+    let flush = |found: Vec<(u32, Option<chrono::NaiveDate>)>| async move {
+        let mut tx = pool.begin().await?;
+        for (id, day) in found {
+            sqlx::query("UPDATE igdb_games SET first_release = ?, release_read = TRUE WHERE provider_id = ?").bind(day).bind(id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok::<(), DatabaseError>(())
+    };
+    for (path, wanted) in by_file {
+        progress.report(done, Some(total), &format!("families: reading release dates {done} of {total}")).await;
+        let games: Vec<IgdbGame> = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .map(|v| match v {
+                serde_json::Value::Array(a) => a.into_iter().filter_map(|g| serde_json::from_value(g).ok()).collect(),
+                other => serde_json::from_value(other).ok().into_iter().collect(),
+            })
+            .unwrap_or_default();
+        let mut seen: HashSet<u32> = HashSet::new();
+        for g in games.iter().filter(|g| wanted.contains(&(g.id as u32))) {
+            seen.insert(g.id as u32);
+            found.push((g.id as u32, index_of(g).first_release));
+        }
+        for id in wanted.difference(&seen) {
+            found.push((*id, None));
+        }
+        done += wanted.len() as u64;
+        if found.len() >= 1000 {
+            flush(std::mem::take(&mut found)).await?;
+        }
+    }
+    flush(found).await?;
+    Ok(total)
 }
 
 /// Reads the index out of every cached IGDB game not read yet, a raw file at a time.
@@ -182,7 +234,7 @@ pub async fn backfill_index(pool: &MySqlPool, progress: &Progress) -> Result<u64
         }
         // A file that does not hold the game says nothing more next time: marked read empty.
         for id in wanted.difference(&found) {
-            batch.push(GameIndex { id: *id, game_type: "base_game", first_year: None, platforms: Vec::new(), relations: Vec::new() });
+            batch.push(GameIndex { id: *id, game_type: "base_game", first_year: None, first_release: None, platforms: Vec::new(), relations: Vec::new() });
         }
         done += wanted.len() as u64;
         if batch.len() >= 500 {
@@ -982,6 +1034,7 @@ pub async fn run_versions(pool: &MySqlPool, clients: Option<&ProviderClients>, s
     let slice = |base: u64, span: u64| progress.set_inner_frame(Some(super::jobs::Frame { base, span, whole: 100 }));
     slice(0, 30);
     let mut s = FamilySummary { games_read: backfill_index(pool, progress).await?, ..Default::default() };
+    backfill_release_dates(pool, progress).await?;
     slice(30, 5);
     progress.force(0, None, &format!("families: sorting games into ports, remakes and add-ons ({} IGDB game(s) read)", s.games_read)).await;
     s.categories = refresh_categories(pool).await?;

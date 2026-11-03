@@ -253,6 +253,7 @@ const ADMIN: &[Rule] = &[
     ("GET", "/api/v1/ai"),
     ("POST", "/api/v1/ai/clear"),
     ("GET", "/api/v1/ai/export"),
+    ("GET", "/api/v1/ai/bundled-export"),
     ("POST", "/api/v1/ai/import"),
     ("POST", "/api/v1/ai/test/{provider}"),
     ("PUT", "/api/v1/ai/answers/{id}/pin"),

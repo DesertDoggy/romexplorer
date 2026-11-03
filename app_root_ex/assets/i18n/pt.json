@@ -2661,5 +2661,19 @@
   "This title is a minor version of": "Este título é uma versão menor de",
   "Same version set as": "Mesmo conjunto de versões que",
   "hide minor versions": "ocultar versões menores",
-  "one of each version group": "uma de cada conjunto de versões"
+  "one of each version group": "uma de cada conjunto de versões",
+  "rank from": "posição segundo",
+  "curated notes only": "só notas curadas",
+  "curated + bundled AI": "curadas + IA incluída",
+  "curated + all AI (bundled and your own answers)": "curadas + toda a IA (incluída e as suas respostas)",
+  "skip ranks with a newer version": "ignorar posições com uma versão mais recente",
+  "{name}, released {date}": "{name}, lançado a {date}",
+  "New version since rating": "Nova versão desde a avaliação",
+  "bundled AI": "IA incluída",
+  "AI rank: the rank filter counts it only when \"rank from\" includes AI": "Posição da IA: o filtro só a conta quando «posição segundo» inclui a IA",
+  "Bundled AI ratings: {n}": "Avaliações de IA incluídas: {n}",
+  "in use": "em uso",
+  "use them again": "voltar a usá-las",
+  "export as bundled ratings": "exportar como avaliações incluídas",
+  "your API answers about Definitive families with two versions or more, in the shape of the bundled ratings file": "as suas respostas de API sobre famílias Definitivas com duas ou mais versões, no formato do ficheiro de avaliações incluídas"
 }

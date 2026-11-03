@@ -2661,5 +2661,19 @@
   "This title is a minor version of": "이 타이틀의 상위판",
   "Same version set as": "같은 버전 세트의 타이틀",
   "hide minor versions": "하위판 숨기기",
-  "one of each version group": "버전 세트마다 하나"
+  "one of each version group": "버전 세트마다 하나",
+  "rank from": "랭크 출처",
+  "curated notes only": "큐레이션 노트만",
+  "curated + bundled AI": "큐레이션 + 내장 AI",
+  "curated + all AI (bundled and your own answers)": "큐레이션 + 모든 AI(내장과 내 답변)",
+  "skip ranks with a newer version": "평가 후 새 버전이 나온 랭크 제외",
+  "{name}, released {date}": "{name}({date} 발매)",
+  "New version since rating": "평가 후 새 버전 있음",
+  "bundled AI": "내장 AI",
+  "AI rank: the rank filter counts it only when \"rank from\" includes AI": "AI 랭크: '랭크 출처'에 AI를 포함할 때만 필터에 씁니다",
+  "Bundled AI ratings: {n}": "내장 AI 평가: {n}개",
+  "in use": "사용 중",
+  "use them again": "다시 사용",
+  "export as bundled ratings": "내장 평가 형식으로 내보내기",
+  "your API answers about Definitive families with two versions or more, in the shape of the bundled ratings file": "버전이 둘 이상인 결정판 패밀리에 대한 API 답변을 내장 평가 파일 형식으로 내보냅니다"
 }

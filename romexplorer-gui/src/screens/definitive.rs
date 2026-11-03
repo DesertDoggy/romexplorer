@@ -27,6 +27,45 @@ pub fn note_text(note: &Value, field: &str) -> String {
 }
 
 /// A note's rank as a badge: S red, A yellow, B grey.
+/// The rank filter's options and its source (the console's `rankFilters`): which ranks count.
+pub fn rank_filters() -> Vec<Filter> {
+    vec![
+        Filter::Select {
+            key: "noted",
+            label: state::tr("version note"),
+            options: Rc::new(|| vec![(String::new(), state::tr("no filter")), ("S".into(), state::tr("rank S")), ("A".into(), state::tr("rank A and above")), ("B".into(), state::tr("rank B and above"))]),
+        },
+        Filter::Select {
+            key: "rank_source",
+            label: state::tr("rank from"),
+            options: Rc::new(|| vec![(String::new(), state::tr("curated notes only")), ("bundled".into(), state::tr("curated + bundled AI")), ("all".into(), state::tr("curated + all AI (bundled and your own answers)"))]),
+        },
+        Filter::Check { key: "skip_newer", label: state::tr("skip ranks with a newer version"), off: String::new() },
+    ]
+}
+
+/// The query parameters of [`rank_filters`].
+pub fn rank_filter_params(q: &crate::components::Query) -> Vec<(&'static str, String)> {
+    vec![("noted", q.f("noted")), ("rank_source", q.f("rank_source")), ("skip_newer", if q.f("skip_newer") == "true" { "true".into() } else { String::new() })]
+}
+
+/// A rank and where it came from: the curated badge, or the dashed AI one.
+pub fn sourced_rank_badge(rank: Option<String>, source: Option<String>) -> String {
+    match (rank, source) {
+        (Some(r), Some(src)) if src != "curated" => super::ai::ai_rank_badge(&r, &src),
+        (Some(r), _) => rank_badge(&r),
+        _ => String::new(),
+    }
+}
+
+/// A version of the family came out after the rating.
+pub fn newer_version_badge(n: Option<&Value>) -> String {
+    match n.filter(|n| !n.is_null()) {
+        Some(n) => format!(r#" <span class="badge warn" title="{}">{}</span>"#, esc(&state::trf("{name}, released {date}", &[("name", &s(n, "name")), ("date", &s(n, "date"))])), esc(&state::tr("New version since rating"))),
+        None => String::new(),
+    }
+}
+
 pub fn rank_badge(rank: &str) -> String {
     let (cls, tip) = match rank {
         "S" => ("bad", state::tr("S: the older version is strongly recommended")),
@@ -54,25 +93,22 @@ fn definitive_spec() -> GridSpec {
         Column::render("other", &state::tr("base game / definitive version"), |r| if u(&r["lead"], "title_id") == u(&r["other"], "title_id") { rsx! { span { class: "muted", {state::tr("(the same)")} } } } else { side_link(r, "other") }),
         Column::html("other_platforms", &state::tr("its platform"), |r| if u(&r["lead"], "title_id") == u(&r["other"], "title_id") { String::new() } else { platforms_html(&s(&r["other"], "platforms")) }),
         Column::text("members", &state::tr("versions")).sort("members").num(),
-        Column::html("note_rank", &state::tr("note"), |r| api::so(r, "note_rank").map(|k| rank_badge(&k)).unwrap_or_default()),
+        Column::html("note_rank", &state::tr("note"), |r| format!("{}{}", sourced_rank_badge(api::so(r, "note_rank"), api::so(r, "note_source")), newer_version_badge(r.get("newer_version")))),
     ];
     let mut spec = GridSpec::new("definitive", columns, |q| async move {
         let mut p = q.base();
-        p.extend([("platforms", q.f("platform")), ("lead", q.f("lead")), ("noted", q.f("noted"))]);
+        p.extend([("platforms", q.f("platform")), ("lead", q.f("lead"))]);
+        p.extend(rank_filter_params(&q));
         p.extend(super::common::DISPLAY_KEYS.iter().map(|k| (*k, q.f(k))));
         api::get(&format!("/api/v1/catalog/definitive{}", api::qs(&p))).await
     })
     .filters(
         vec![
             Filter::Select { key: "lead", label: state::tr("show"), options: Rc::new(|| vec![(String::new(), state::tr("definitive version")), ("base".into(), state::tr("base game"))]) },
-            Filter::Select {
-                key: "noted",
-                label: state::tr("version note"),
-                options: Rc::new(|| vec![(String::new(), state::tr("no filter")), ("S".into(), state::tr("rank S")), ("A".into(), state::tr("rank A and above")), ("B".into(), state::tr("rank B and above"))]),
-            },
-            super::common::platform_filter(),
         ]
         .into_iter()
+        .chain(rank_filters())
+        .chain([super::common::platform_filter()])
         .chain(super::common::display_filters())
         .collect(),
     )
@@ -110,7 +146,7 @@ fn definitive_spec() -> GridSpec {
             media2: if dual { api::uo(other, "cover_media_id") } else { None },
             dual: if dual { two_cover_layout() } else { String::new() },
             held: if u(r, "local_games") > 0 { "local" } else { "" },
-            chips: api::so(r, "note_rank").map(|k| rank_badge(&k)).unwrap_or_default(),
+            chips: format!("{}{}", sourced_rank_badge(api::so(r, "note_rank"), api::so(r, "note_source")), newer_version_badge(r.get("newer_version"))),
             sub,
             ..Default::default()
         }

@@ -33,6 +33,10 @@ replacing a build.
 - "Batch rate with AI" asks about many games as one job: the selected games on the Definitive tab,
   or a set's selected rows or the whole set. It shows the number of questions and an approximate
   cost first, skips games already answered, and can be scheduled for a set.
+- AI ratings now ship with the app ("bundled AI"). The rank filter on the Definitive tab and a
+  set's page can include them, or your own answers too; the curated notes still come first.
+- A rank made before a newer version of the game came out is marked "New version since rating",
+  and the filter can skip such ranks.
 
 **Titles: minor versions and version sets**
 - "Hide minor versions" leaves out a game where a fuller edition covers it on the same platform

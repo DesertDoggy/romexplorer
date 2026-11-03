@@ -26,6 +26,10 @@ pub struct VersionNote {
     /// Why, per UI language.
     #[serde(default)]
     pub note: BTreeMap<String, String>,
+    /// When the note was last edited (YYYY-MM-DD): a version of the family that came out
+    /// later is flagged.
+    #[serde(default)]
+    pub date: String,
 }
 
 #[derive(Deserialize)]
@@ -67,8 +71,13 @@ pub struct DefinitiveRow {
     pub members: u32,
     /// Copies of the leading title held here.
     pub local_games: u64,
-    /// The base game has a version note; its rank.
+    /// The base game's rank: its version note's, or (with `rank_source`) an AI rating's.
     pub note_rank: Option<String>,
+    /// Where `note_rank` came from: `curated`, `bundled`, `api:<provider>`, `browser:<site>`.
+    pub note_source: Option<String>,
+    /// When it was rated, and a version of the family that came out after that.
+    pub rated_on: Option<String>,
+    pub newer_version: Option<NewerVersion>,
 }
 
 fn lead_is_base(q: &ListQuery) -> Result<bool> {
@@ -161,8 +170,16 @@ pub async fn list(app: &App, q: &ListQuery) -> Result<Page<DefinitiveRow>> {
             chosen.join(",")
         ));
     }
+    let mode = rank_source(q)?;
+    let mut rank_by_game = ranks(app, mode).await?;
+    if q.skip_newer {
+        let dates: HashMap<u64, Option<String>> = rank_by_game.iter().map(|(i, r)| (*i, r.date.clone())).collect();
+        let newer = newer_versions(app, &dates).await?;
+        rank_by_game.retain(|i, _| !newer.contains_key(i));
+    }
     if let Some(min) = note_floor(q)? {
-        body.push_str(&format!(" AND EXISTS (SELECT 1 FROM title_provider_links ln WHERE ln.title_id = t.id AND ln.provider = 'igdb' AND ln.deleted = FALSE AND ln.provider_id IN ({}))", noted_ids(min)));
+        let ids = if mode == RankSource::Curated && !q.skip_newer { noted_ids(min) } else { ranked_ids(&rank_by_game, min) };
+        body.push_str(&format!(" AND EXISTS (SELECT 1 FROM title_provider_links ln WHERE ln.title_id = t.id AND ln.provider = 'igdb' AND ln.deleted = FALSE AND ln.provider_id IN ({ids}))"));
     }
     let (display, display_binds) = catalog::title_display_filters(q, "d.id")?;
     body.push_str(&display);
@@ -181,7 +198,12 @@ pub async fn list(app: &App, q: &ListQuery) -> Result<Page<DefinitiveRow>> {
     ids.sort_unstable();
     ids.dedup();
     let sides = sides(app, &ids).await?;
-    let notes_by_head = head_notes(pool, &pairs.iter().map(|(h, _, _)| *h).collect::<Vec<_>>()).await?;
+    let ranks_by_head = head_ranks(pool, &pairs.iter().map(|(h, _, _)| *h).collect::<Vec<_>>(), &rank_by_game).await?;
+    let newer_by_head: HashMap<u64, NewerVersion> = {
+        let dates: HashMap<u64, Option<String>> = ranks_by_head.values().map(|(game, r)| (*game, r.date.clone())).collect();
+        let newer = newer_versions(app, &dates).await?;
+        ranks_by_head.iter().filter_map(|(head, (game, _))| newer.get(game).map(|n| (*head, n.clone()))).collect()
+    };
     let local = local_games(pool, &ids).await?;
     let held = holds(pool, &pairs.iter().map(|(h, d, _)| (*h, *d)).collect::<Vec<_>>()).await?;
     let items = pairs
@@ -193,7 +215,7 @@ pub async fn list(app: &App, q: &ListQuery) -> Result<Page<DefinitiveRow>> {
             }
             let b = sides.get(&head).cloned().unwrap_or_default();
             let (lead, other) = if base_leads { (b, d) } else { (d, b) };
-            DefinitiveRow { id: head, local_games: local.get(&lead.title_id).copied().unwrap_or(0), lead, other, definitive_title_id: def, base_title_id: head, members, note_rank: notes_by_head.get(&head).map(|n| n.rank.clone()) }
+            DefinitiveRow { id: head, local_games: local.get(&lead.title_id).copied().unwrap_or(0), lead, other, definitive_title_id: def, base_title_id: head, members, note_rank: ranks_by_head.get(&head).map(|r| r.1.rank.clone()), note_source: ranks_by_head.get(&head).map(|r| r.1.source.clone()), rated_on: ranks_by_head.get(&head).and_then(|r| r.1.date.clone()), newer_version: newer_by_head.get(&head).cloned() }
         })
         .collect();
     Ok(Page { items, total: total.max(0) as u64, limit, offset })
@@ -257,6 +279,22 @@ async fn holds(pool: &sqlx::MySqlPool, pairs: &[(u64, u64)]) -> Result<HashMap<(
             .await?;
         if let Some(n) = name {
             out.insert((*head, *def), n);
+        }
+    }
+    Ok(out)
+}
+
+/// The rank of each family head's IGDB game, from `ranks`: (game, rating).
+async fn head_ranks(pool: &sqlx::MySqlPool, heads: &[u64], ranks: &HashMap<u64, Rated>) -> Result<HashMap<u64, (u64, Rated)>> {
+    let mut out = HashMap::new();
+    if heads.is_empty() || ranks.is_empty() {
+        return Ok(out);
+    }
+    let sql = format!("SELECT title_id, provider_id FROM title_provider_links WHERE provider = 'igdb' AND deleted = FALSE AND title_id IN ({})", heads.iter().map(u64::to_string).collect::<Vec<_>>().join(","));
+    for r in sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await? {
+        let game: Option<u64> = r.try_get::<String, _>("provider_id")?.parse().ok();
+        if let Some((g, found)) = game.and_then(|g| ranks.get(&g).map(|f| (g, f))) {
+            out.insert(r.try_get("title_id")?, (g, found.clone()));
         }
     }
     Ok(out)
@@ -403,6 +441,9 @@ pub struct AskAnswer {
     pub rank: Option<String>,
     /// `curated`, or the AI answer's source.
     pub rank_source: Option<String>,
+    /// When the shown rank was rated, and a version of the family that came out after that.
+    pub rated_on: Option<String>,
+    pub newer_version: Option<NewerVersion>,
     #[serde(flatten)]
     pub result: super::ai::Lookup,
 }
@@ -456,6 +497,21 @@ pub async fn ask(app: &App, title_id: u64, req: &AskRequest) -> Result<AskAnswer
         super::ai::Spend::Never
     };
     let mut result = super::ai::lookup(app, ASK_PURPOSE, &subject, Some(lang), &q, spend).await?;
+    // The bundled rating, where the source order puts it first (or nothing else is saved).
+    if let Some(b) = subject.strip_prefix("igdb:").and_then(|i| i.parse::<u64>().ok()).and_then(|i| bundled().get(&i)) {
+        if spend == super::ai::Spend::Never && super::ai::bundled_on(app).await {
+            let priority = super::ai::source_priority(app).await?;
+            let better = match &result.answer {
+                None => true,
+                Some(a) => super::ai::rank_of(&priority, "bundled") < super::ai::rank_of(&priority, &a.source_key()),
+            };
+            if better {
+                result.answer = Some(bundled_answer(&subject, lang, &asked, b));
+                result.other_language = None;
+                result.cached = true;
+            }
+        }
+    }
     let mut ai_rank = None;
     for a in [result.answer.as_mut(), result.other_language.as_mut()].into_iter().flatten() {
         let (rank, text) = split_rank(&a.answer);
@@ -480,8 +536,17 @@ pub async fn ask(app: &App, title_id: u64, req: &AskRequest) -> Result<AskAnswer
         (None, Some(a), Some(src)) => (Some(a.clone()), Some(src.clone())),
         _ => (None, None),
     };
+    let rated_on = match rank_source.as_deref() {
+        Some("curated") => fam.note.as_ref().map(|n| n.date.chars().take(10).collect::<String>()).filter(|d| !d.is_empty()),
+        Some(_) => result.answer.as_ref().or(result.other_language.as_ref()).and_then(|a| a.created_at.as_ref()).map(|d| d.chars().take(10).collect()),
+        None => None,
+    };
+    let newer_version = match subject.strip_prefix("igdb:").and_then(|i| i.parse::<u64>().ok()) {
+        Some(game) if rated_on.is_some() => newer_versions(app, &HashMap::from([(game, rated_on.clone())])).await?.remove(&game),
+        _ => None,
+    };
     let google_url = reqwest::Url::parse_with_params("https://www.google.com/search", &[("q", q.as_str())]).map(|u| u.to_string()).unwrap_or_default();
-    Ok(AskAnswer { google_url, ask_links: super::ai::ask_links(&asked, &super::ai::ask_first(app).await?), question: asked, provider: super::ai::provider(app).await?, lang: lang.to_string(), ai_rank, ai_source, rank, rank_source, result })
+    Ok(AskAnswer { google_url, ask_links: super::ai::ask_links(&asked, &super::ai::ask_first(app).await?), question: asked, provider: super::ai::provider(app).await?, lang: lang.to_string(), ai_rank, ai_source, rank, rank_source, rated_on, newer_version, result })
 }
 
 /// The family `title_id` is in, its `ai_answers` subject (the base game's IGDB id, so the
@@ -737,6 +802,237 @@ pub async fn batch_rate(app: &App, req: &AiBatchRateRequest, progress: &Progress
     Ok(s)
 }
 
+// ---------------------------------------------------------------------------
+// AI ratings: bundled with the app, and the rank each family gets
+// ---------------------------------------------------------------------------
+
+/// An AI rating that ships with the app (`assets/definitive_ai.json`), by the base game's IGDB
+/// id: the family question's answer, rank and text per language.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BundledRating {
+    /// S, A, B or none.
+    pub rank: String,
+    /// The answer without its RANK line, per UI language (`en` is the fallback).
+    #[serde(default)]
+    pub text: BTreeMap<String, String>,
+    #[serde(default)]
+    pub model: String,
+    /// When it was asked (YYYY-MM-DD).
+    #[serde(default)]
+    pub date: String,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+struct BundledFile {
+    #[serde(default, rename = "_", skip_serializing_if = "String::is_empty")]
+    about: String,
+    #[serde(default)]
+    ratings: BTreeMap<String, BundledRating>,
+}
+
+const BUNDLED_ABOUT: &str = "AI ratings for Collection > Definitive that ship with the app (source \"bundled AI\"), by the base game's IGDB id: the family question's rank (S, A, B, none), its text per UI language without the RANK line, the model and the date asked. Information only; the curated notes come first. No game names: the id says which game.";
+
+/// The bundled AI ratings, by IGDB id.
+pub fn bundled() -> &'static HashMap<u64, BundledRating> {
+    static RATINGS: std::sync::OnceLock<HashMap<u64, BundledRating>> = std::sync::OnceLock::new();
+    RATINGS.get_or_init(|| {
+        let file: BundledFile = serde_json::from_str(include_str!("../../app_root_ex/assets/definitive_ai.json")).expect("definitive_ai.json parses");
+        file.ratings.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect()
+    })
+}
+
+/// A bundled rating as a saved answer, in `lang` (else English, else any).
+fn bundled_answer(subject: &str, lang: &str, question: &str, r: &BundledRating) -> super::ai::Answer {
+    let (text_lang, text) = r.text.get_key_value(lang).or_else(|| r.text.get_key_value("en")).or_else(|| r.text.iter().next()).map(|(l, t)| (l.clone(), t.clone())).unwrap_or_else(|| (lang.to_string(), String::new()));
+    super::ai::Answer {
+        id: 0,
+        purpose: ASK_PURPOSE.to_string(),
+        subject_key: subject.to_string(),
+        lang: text_lang,
+        provider: String::new(),
+        source: "bundled".into(),
+        pasted_at: None,
+        model: r.model.clone(),
+        prompt: question.to_string(),
+        answer: format!("RANK: {}\n{text}", r.rank),
+        sources: Vec::new(),
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: None,
+        created_at: (!r.date.is_empty()).then(|| r.date.clone()),
+        pinned: false,
+    }
+}
+
+/// `rank_source`: which ranks the Definitive filter and a set's filter go by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RankSource {
+    /// The curated notes only (the default).
+    Curated,
+    /// And the bundled AI ratings.
+    Bundled,
+    /// And the user's own saved answers (API and pasted).
+    All,
+}
+
+pub fn rank_source(q: &ListQuery) -> Result<RankSource> {
+    match q.rank_source.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("curated") {
+        "curated" => Ok(RankSource::Curated),
+        "bundled" => Ok(RankSource::Bundled),
+        "all" => Ok(RankSource::All),
+        other => Err(Error::invalid(format!("rank_source must be curated, bundled or all, not {other:?}"))),
+    }
+}
+
+/// The rank each IGDB game has, and where it came from: the curated note first, then the
+/// sources `mode` allows in the user's source order (`ai_source_priority`), newest first
+/// among equals. `none` ranks are kept (a source can say so).
+pub async fn ranks(app: &App, mode: RankSource) -> Result<HashMap<u64, Rated>> {
+    let day = |d: &str| (!d.is_empty()).then(|| d.chars().take(10).collect::<String>());
+    let mut out: HashMap<u64, Rated> = notes().iter().map(|(id, n)| (*id, Rated { rank: n.rank.clone(), source: "curated".to_string(), date: day(&n.date) })).collect();
+    if mode == RankSource::Curated {
+        return Ok(out);
+    }
+    let priority = super::ai::source_priority(app).await?;
+    let mut best: HashMap<u64, (usize, Rated)> = HashMap::new();
+    let mut offer = |id: u64, rated: Rated| {
+        let at = super::ai::rank_of(&priority, &rated.source);
+        match best.get(&id) {
+            Some((b, _)) if *b <= at => {}
+            _ => {
+                best.insert(id, (at, rated));
+            }
+        }
+    };
+    if mode == RankSource::All {
+        let rows = sqlx::query("SELECT subject_key, CAST(source AS CHAR) AS source, provider, answer, DATE_FORMAT(created_at, '%Y-%m-%d') AS day FROM ai_answers WHERE purpose = ? AND subject_key LIKE 'igdb:%' ORDER BY created_at DESC, id DESC")
+            .bind(ASK_PURPOSE)
+            .fetch_all(&app.pool)
+            .await?;
+        for r in rows {
+            let subject: String = r.try_get("subject_key")?;
+            let Some(id) = subject.strip_prefix("igdb:").and_then(|i| i.parse::<u64>().ok()) else { continue };
+            let answer: String = r.try_get("answer")?;
+            if let (Some(rank), _) = split_rank(&answer) {
+                let source = format!("{}:{}", r.try_get::<String, _>("source")?, r.try_get::<String, _>("provider")?);
+                offer(id, Rated { rank, source, date: r.try_get("day")? });
+            }
+        }
+    }
+    if super::ai::bundled_on(app).await {
+        for (id, b) in bundled() {
+            offer(*id, Rated { rank: b.rank.clone(), source: "bundled".to_string(), date: day(&b.date) });
+        }
+    }
+    for (id, (_, rated)) in best {
+        out.entry(id).or_insert(rated);
+    }
+    Ok(out)
+}
+
+/// A family's rank and where it came from.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Rated {
+    pub rank: String,
+    /// `curated`, `bundled`, `api:<provider>`, `browser:<site>`.
+    pub source: String,
+    /// When it was rated (YYYY-MM-DD), if known.
+    pub date: Option<String>,
+}
+
+/// A version of the family that came out after its rating.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct NewerVersion {
+    pub name: String,
+    pub date: String,
+}
+
+/// For each IGDB game rated on a known day, the newest version of its family that IGDB says
+/// came out after that day (`igdb_games.first_release`, any platform).
+pub async fn newer_versions(app: &App, rated: &HashMap<u64, Option<String>>) -> Result<HashMap<u64, NewerVersion>> {
+    let ids: Vec<u64> = rated.iter().filter(|(_, d)| d.is_some()).map(|(i, _)| *i).collect();
+    let mut out: HashMap<u64, NewerVersion> = HashMap::new();
+    for chunk in ids.chunks(500) {
+        let list = chunk.iter().map(|i| format!("'{i}'")).collect::<Vec<_>>().join(",");
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT DISTINCT l.provider_id AS game, g.title AS name, DATE_FORMAT(g.first_release, '%Y-%m-%d') AS day FROM title_provider_links l \
+             JOIN title t ON t.id = l.title_id AND t.deleted = FALSE \
+             JOIN title m ON COALESCE(m.family_root_id, m.id) = COALESCE(t.family_root_id, t.id) AND m.deleted = FALSE \
+             JOIN title_provider_links lm ON lm.title_id = m.id AND lm.provider = 'igdb' AND lm.deleted = FALSE \
+             JOIN igdb_games g ON g.provider_id = CAST(lm.provider_id AS UNSIGNED) AND g.first_release IS NOT NULL \
+             WHERE l.provider = 'igdb' AND l.deleted = FALSE AND l.provider_id IN ({list})"
+        )))
+        .fetch_all(&app.pool)
+        .await?;
+        for r in rows {
+            let game: Option<u64> = r.try_get::<String, _>("game")?.parse().ok();
+            let (Some(game), Some(day)) = (game, r.try_get::<Option<String>, _>("day")?) else { continue };
+            let Some(Some(rated_on)) = rated.get(&game) else { continue };
+            if day.as_str() > rated_on.as_str() && out.get(&game).is_none_or(|n| day > n.date) {
+                out.insert(game, NewerVersion { name: r.try_get::<Option<String>, _>("name")?.unwrap_or_default(), date: day });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The IGDB ids ranked `NOTE_RANKS[floor]` or above by `ranks`, quoted for SQL (`'0'` when none).
+pub fn ranked_ids(ranks: &HashMap<u64, Rated>, floor: usize) -> String {
+    let mut ids: Vec<u64> = ranks.iter().filter(|(_, r)| NOTE_RANKS.iter().position(|x| *x == r.rank).is_some_and(|i| i <= floor)).map(|(id, _)| *id).collect();
+    ids.sort_unstable();
+    if ids.is_empty() {
+        return "'0'".to_string();
+    }
+    ids.iter().map(|i| format!("'{i}'")).collect::<Vec<_>>().join(",")
+}
+
+/// `noted` as a floor (public for a set's release list).
+pub fn rank_floor(q: &ListQuery) -> Result<Option<usize>> {
+    note_floor(q)
+}
+
+/// `GET /ai/bundled-export`: the user's saved API answers to the family question, in the
+/// bundled file's shape -- the newest per language, for games whose family has two versions
+/// or more. What a maintainer puts in `assets/definitive_ai.json`.
+pub async fn bundled_export(app: &App) -> Result<serde_json::Value> {
+    let rows = sqlx::query(
+        "SELECT a.subject_key, a.lang, a.model, a.answer, DATE_FORMAT(a.created_at, '%Y-%m-%d') AS day FROM ai_answers a \
+         WHERE a.purpose = ? AND a.source = 'api' AND a.subject_key LIKE 'igdb:%' ORDER BY a.created_at DESC, a.id DESC",
+    )
+    .bind(ASK_PURPOSE)
+    .fetch_all(&app.pool)
+    .await?;
+    // Games whose family has two versions or more.
+    let multi: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT l.provider_id FROM title_provider_links l JOIN title t ON t.id = l.title_id AND t.deleted = FALSE \
+         JOIN title_families f ON f.root_title_id = COALESCE(t.family_root_id, t.id) WHERE l.provider = 'igdb' AND l.deleted = FALSE AND f.members >= 2",
+    )
+    .fetch_all(&app.pool)
+    .await?
+    .into_iter()
+    .collect();
+    let mut ratings: BTreeMap<u64, BundledRating> = BTreeMap::new();
+    for r in rows {
+        let subject: String = r.try_get("subject_key")?;
+        let Some(id) = subject.strip_prefix("igdb:").filter(|i| multi.contains(*i)).and_then(|i| i.parse::<u64>().ok()) else { continue };
+        let lang: String = r.try_get("lang")?;
+        let (rank, text) = split_rank(&r.try_get::<String, _>("answer")?);
+        let Some(rank) = rank else { continue };
+        let e = ratings.entry(id).or_insert_with(|| BundledRating { rank: rank.clone(), text: BTreeMap::new(), model: String::new(), date: String::new() });
+        if e.model.is_empty() {
+            e.model = r.try_get("model")?;
+            e.date = r.try_get::<Option<String>, _>("day")?.unwrap_or_default();
+        }
+        // English decides the rank when there is one; the newest of each language its text.
+        if lang == "en" && !e.text.contains_key("en") {
+            e.rank = rank;
+        }
+        e.text.entry(lang).or_insert(text);
+    }
+    let file = BundledFile { about: BUNDLED_ABOUT.to_string(), ratings: ratings.into_iter().map(|(k, v)| (k.to_string(), v)).collect() };
+    serde_json::to_value(file).map_err(|e| Error::internal(e.to_string()))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MoveRequest {
     pub title_id: u64,
@@ -798,6 +1094,14 @@ pub fn refresh_all_later(app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bundled_ratings_parse_and_rank_like_notes() {
+        for (id, r) in bundled() {
+            assert!(["S", "A", "B", "none"].contains(&r.rank.as_str()), "{id}: rank {}", r.rank);
+            assert!(r.text.contains_key("en"), "{id}: every rating has English text");
+        }
+    }
 
     #[test]
     fn the_ai_rank_is_read_from_the_first_line() {

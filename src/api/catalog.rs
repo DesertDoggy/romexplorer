@@ -109,8 +109,15 @@ pub struct ListQuery {
     pub view: Option<String>,
     /// Definitive tab: which version leads a row, `definitive` (default) or `base`.
     pub lead: Option<String>,
-    /// Definitive tab: only games with a version note of this rank or above (`S`, `A`, `B`).
+    /// Definitive tab and a set's releases: only games with a version note of this rank or
+    /// above (`S`, `A`, `B`).
     pub noted: Option<String>,
+    /// Which ranks `noted` goes by: `curated` (default), `bundled` (and the AI ratings that ship
+    /// with the app), `all` (and the user's own saved AI answers).
+    pub rank_source: Option<String>,
+    /// With `noted`: leave out ranks made before a version of the family came out.
+    #[serde(default)]
+    pub skip_newer: bool,
     /// Major genre name (one of `ra_genre::MAJOR_GENRES`), or several comma-separated: the
     /// title has a genre that is it or sits under it (`genre_major_logic`: or by default).
     pub genre_major: Option<String>,
@@ -2591,6 +2598,27 @@ pub async fn releases(app: &App, q: &ListQuery) -> Result<Page<ReleaseRow>> {
     }
     if q.material.is_some() || (q.title_id.is_none() && q.set_id.is_none()) {
         body.push_str(&material_clause(q.material.as_deref())?);
+    }
+    // A set's rank filter: releases whose family's game is ranked that high.
+    if let Some(min) = super::definitive::rank_floor(q)? {
+        let mut ranked = super::definitive::ranks(app, super::definitive::rank_source(q)?).await?;
+        if q.skip_newer {
+            let dates: HashMap<u64, Option<String>> = ranked.iter().map(|(i, r)| (*i, r.date.clone())).collect();
+            let newer = super::definitive::newer_versions(app, &dates).await?;
+            ranked.retain(|i, _| !newer.contains_key(i));
+        }
+        body.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM title_releases trn JOIN title tn ON tn.id = trn.title_id JOIN title_provider_links ln ON ln.title_id = COALESCE(tn.family_root_id, tn.id) AND ln.provider = 'igdb' AND ln.deleted = FALSE WHERE trn.release_id = r.id AND ln.provider_id IN ({}))",
+            super::definitive::ranked_ids(&ranked, min)
+        ));
+    }
+    if q.hide_minor {
+        let v = crate::database::versions::view(&app.pool).await?;
+        if !v.minor_releases.is_empty() {
+            let mut ids: Vec<u64> = v.minor_releases.iter().copied().collect();
+            ids.sort_unstable();
+            body.push_str(&format!(" AND r.id NOT IN ({})", ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
+        }
     }
     if let Some(platform) = q.addons_for {
         // The add-on's DAT may name no platform (3DS DLC comes that way): 0 goes with any.

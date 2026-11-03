@@ -2843,5 +2843,19 @@
   "This title is a minor version of": "このタイトルの上位版",
   "Same version set as": "同じバージョンセットのタイトル",
   "hide minor versions": "下位版を隠す",
-  "one of each version group": "バージョンセットから 1 つ"
+  "one of each version group": "バージョンセットから 1 つ",
+  "rank from": "ランクの出典",
+  "curated notes only": "キュレーション注記のみ",
+  "curated + bundled AI": "キュレーション + 同梱 AI",
+  "curated + all AI (bundled and your own answers)": "キュレーション + すべての AI（同梱と自分の回答）",
+  "skip ranks with a newer version": "評価後に新版が出たものを除く",
+  "{name}, released {date}": "{name}（{date} 発売）",
+  "New version since rating": "評価後に新版あり",
+  "bundled AI": "同梱 AI",
+  "AI rank: the rank filter counts it only when \"rank from\" includes AI": "AI のランク: 「ランクの出典」に AI を含めたときだけ絞り込みに使います",
+  "Bundled AI ratings: {n}": "同梱の AI 評価: {n} 件",
+  "in use": "使用中",
+  "use them again": "再び使う",
+  "export as bundled ratings": "同梱評価の形式で書き出し",
+  "your API answers about Definitive families with two versions or more, in the shape of the bundled ratings file": "バージョンが 2 つ以上ある決定版ファミリーへの API の回答を、同梱評価ファイルの形式で書き出します"
 }

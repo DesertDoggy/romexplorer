@@ -827,6 +827,7 @@ fn SetPage(id: u64) -> Element {
         filters.extend(common::facet_filters());
         // The grid's D/C/T/R badge sits on the cover, so it is shown on request.
         filters.push(Filter::Check { key: "type_badges", label: state::tr("entry type on covers"), off: String::new() });
+        filters.extend(super::definitive::rank_filters());
         // Every row loaded, by id: what the selection's entries are (`common::set_rows_body`).
         let by_id: Rc<std::cell::RefCell<std::collections::HashMap<u64, Value>>> = Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
         let (by_id_fetch, by_id_add, by_id_menu) = (by_id.clone(), by_id.clone(), by_id.clone());
@@ -836,6 +837,7 @@ fn SetPage(id: u64) -> Element {
             async move {
                 let mut p = q.base();
                 p.extend([("platforms", q.f("platform")), ("kinds", q.f("kinds")), ("view", q.f("view"))]);
+                p.extend(super::definitive::rank_filter_params(&q));
                 p.extend(common::facet_params(&q));
                 let mut v = api::get(&format!("/api/v1/sets/{id}/releases{}", api::qs(&p))).await?;
                 // The cards read the toggle off each row.
