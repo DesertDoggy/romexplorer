@@ -3673,7 +3673,7 @@ function memberBadges(r) {
 // "Batch rate with AI": the family question for every family of a selection, as a job. The
 // dialog shows what it would ask and cost first, and starts only once the warning is ticked.
 // scope: { title_ids } (Definitive rows), { release_ids } (a set's rows) or { set_id }.
-const AI_BATCH_WARNING = "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).";
+const AI_BATCH_WARNING = "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Create a dedicated project (or workspace) for romexplorer with the provider, with its own API key, and set a budget or spending limit on it (Config › AI has the links).";
 async function aiBatchDialog(scope, what) {
   const box = openModal(`<h2>${trf('Batch rate with AI: {what}', { what: esc(what) })}</h2><div data-est class="muted">${tr('loading…')}</div>
     <div class="kv" style="grid-template-columns:max-content 1fr; gap:6px 10px; margin-top:8px">
@@ -3718,7 +3718,7 @@ async function aiBatchDialog(scope, what) {
 async function aiCostWarningOk() {
   let seen = null; try { seen = await api('/api/v1/settings/ai_cost_warning_seen'); } catch (e) {}
   if (seen && seen.value === true) return true;
-  if (!confirm(tr("Asking the AI uses your own API key, and the provider bills you for it. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). The author of this software is not responsible for any charges. Tip: create a separate API key for romexplorer and set a budget or spending limit for it with the provider (Config › AI has the links)."))) return false;
+  if (!confirm(tr("Asking the AI uses your own API key, and the provider bills you for it. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). The author of this software is not responsible for any charges. Tip: create a dedicated project (or workspace) for romexplorer with the provider, with its own API key, and set a budget or spending limit on it (Config › AI has the links)."))) return false;
   try { await api('/api/v1/settings/ai_cost_warning_seen', { method: 'PUT', body: 'true', headers: { 'Content-Type': 'application/json' } }); } catch (e) {}
   return true;
 }
@@ -5114,7 +5114,7 @@ async function showSchedules() {
         <label title="${tr('A due run waits until no other job is queued or running.')}"><span>${tr('run only when idle')}</span><input type="checkbox" name="when_idle" checked></label>
         <button class="btn primary">${tr('save')}</button><button class="btn" type="button" id="schreset">${tr('clear')}</button>
       </form>
-      <p class="notice" data-s="aibatch">${tr('Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).')}</p>
+      <p class="notice" data-s="aibatch">${tr('Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Use a dedicated project (or workspace) at the provider with a budget or spending limit (Config › AI has the links).')}</p>
       <p class="bad" data-s="dbopt" style="display:none">${tr('Scheduling this is almost never right: it repeatedly destroys the records that let moved and renamed files be recognised, and the &quot;missing, but found elsewhere&quot; hint with them. Prefer running it by hand when the database is actually too large.')}</p></div>
     <div class="card"><h2>${trf('Schedules ({n})', { n: list.length })}</h2><table class="grid"><thead><tr><th>${tr('name')}</th><th>${tr('job')}</th><th>${tr('mode')}</th><th>${tr('trigger')}</th><th>${tr('next fixed')}</th><th>${tr('next check')}</th><th>${tr('last run')}</th><th>${tr('last check')}</th><th></th></tr></thead><tbody>
       ${list.map(x => `<tr><td>${esc(x.name)} ${x.enabled ? '' : badge(tr('disabled'), 'dim')} ${x.when_idle ? badge(tr('when idle'), 'dim') : ''}</td><td>${esc(describe(x.target))}</td><td>${esc(x.mode)}</td><td>${esc(x.trigger)} <span class="muted">${esc([when(x.fixed_every_n, x.fixed_unit), when(x.check_every_n, x.check_unit)].filter(Boolean).join(' / '))}</span></td><td>${fmtDate(x.next_fixed_at)}</td><td>${fmtDate(x.next_check_at)}</td><td>${fmtDate(x.last_run_at)} ${x.last_job_id ? `<span class="muted">#${x.last_job_id}</span>` : ''}</td><td class="muted" style="white-space:normal;max-width:260px">${fmtDate(x.last_check_at)} ${esc(x.last_check_result || '')}</td><td><button class="btn small" data-run="${x.id}">${tr('run now')}</button> <button class="btn small" data-edit="${x.id}">${tr('edit')}</button> <button class="btn small danger" data-del="${x.id}">${tr('delete')}</button></td></tr>`).join('') || `<tr><td colspan="9" class="muted">${tr('none yet')}</td></tr>`}
@@ -5935,7 +5935,7 @@ async function showAiPage() {
   const keys = document.getElementById('ai-keys');
   keys.onsaved = () => showAiPage();
   await showCredentials(keys, 'ai');
-  keys.insertAdjacentHTML('beforeend', `<p class="notice">${tr('Create a separate API key (or project) just for romexplorer, and set a budget or spending limit for it with the provider, so a mistake or a long batch cannot run up a large bill.')}</p>
+  keys.insertAdjacentHTML('beforeend', `<p class="notice">${tr('Create a dedicated project (or workspace) just for romexplorer with the provider, with its own API key, and set a budget or spending limit on it, so a mistake or a long batch cannot run up a large bill.')}</p>
     <div class="toolbar">${AI_LIMIT_LINKS.map(([id, url]) => `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${esc(trf('{provider}: billing and limits', { provider: AI_PROVIDER_LABELS[id] }))}</a>`).join(' · ')}</div>`);
   keys.insertAdjacentHTML('beforeend', `<div class="toolbar">${o.providers.map(p => `<button class="btn small" type="button" data-test="${p.id}" title="${esc(tr('asks a one-word question with this key and model'))}">${esc(trf('test {provider}', { provider: AI_PROVIDER_LABELS[p.id] }))}</button>`).join(' ')}</div>`);
   for (const b of keys.querySelectorAll('[data-test]')) b.onclick = async () => {

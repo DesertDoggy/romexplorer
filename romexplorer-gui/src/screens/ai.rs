@@ -45,7 +45,7 @@ pub fn ConfigAi() -> Element {
         div { class: "card",
             super::data::Credentials { on_change: move |_| overview.restart(), scope: "ai".to_string() }
             AiTests { o: o.clone() }
-            p { class: "notice", {state::tr("Create a separate API key (or project) just for romexplorer, and set a budget or spending limit for it with the provider, so a mistake or a long batch cannot run up a large bill.")} }
+            p { class: "notice", {state::tr("Create a dedicated project (or workspace) just for romexplorer with the provider, with its own API key, and set a budget or spending limit on it, so a mistake or a long batch cannot run up a large bill.")} }
             div { class: "toolbar",
                 for (i, (id, url)) in AI_LIMIT_LINKS.iter().enumerate() {
                     if i > 0 { " · " }
@@ -418,7 +418,7 @@ pub async fn cost_warning_ok() -> bool {
     if api::get("/api/v1/settings/ai_cost_warning_seen").await.ok().and_then(|v| v.get("value").and_then(Value::as_bool)) == Some(true) {
         return true;
     }
-    if !ui::confirm(&state::tr("Asking the AI uses your own API key, and the provider bills you for it. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). The author of this software is not responsible for any charges. Tip: create a separate API key for romexplorer and set a budget or spending limit for it with the provider (Config › AI has the links).")).await {
+    if !ui::confirm(&state::tr("Asking the AI uses your own API key, and the provider bills you for it. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). The author of this software is not responsible for any charges. Tip: create a dedicated project (or workspace) for romexplorer with the provider, with its own API key, and set a budget or spending limit on it (Config › AI has the links).")).await {
         return false;
     }
     let _ = api::put("/api/v1/settings/ai_cost_warning_seen", json!(true)).await;
@@ -594,7 +594,7 @@ pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
 }
 
 /// The batch dialog's warning (the console's `AI_BATCH_WARNING`).
-const AI_BATCH_WARNING: &str = "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).";
+const AI_BATCH_WARNING: &str = "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Create a dedicated project (or workspace) for romexplorer with the provider, with its own API key, and set a budget or spending limit on it (Config › AI has the links).";
 
 /// "Batch rate with AI" (the console's `aiBatchDialog`): the family question for every family
 /// of `scope` (`title_ids`, `release_ids` or `set_id`), as an `ai_batch_rate` job. Shows what

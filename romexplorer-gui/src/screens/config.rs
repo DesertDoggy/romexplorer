@@ -1045,7 +1045,7 @@ pub fn ConfigSchedules() -> Element {
                 Explain { {state::tr("Reads held files back and compares one quick hash. Worth scheduling: it is read-only, and running it often and briefly sweeps the collection oldest-first. Set the size of a run under Jobs.")} }
             }
             if jt == "ai_batch_rate" {
-                p { class: "notice", {state::tr("Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).")} }
+                p { class: "notice", {state::tr("Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Use a dedicated project (or workspace) at the provider with a budget or spending limit (Config › AI has the links).")} }
             }
             if jt == "db_optimize" {
                 p { class: "bad", {state::tr("Scheduling this is almost never right: it repeatedly destroys the records that let moved and renamed files be recognised, and the \"missing, but found elsewhere\" hint with them. Prefer running it by hand when the database is actually too large.")} }
