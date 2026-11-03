@@ -2576,5 +2576,9 @@
   "The Perplexity model asked. Unset: sonar.": "물어볼 Perplexity 모델입니다. 설정하지 않으면 sonar입니다.",
   "Which link of the Ask menu comes first: google (default; Google AI Mode) | claude | chatgpt | perplexity. The links open in the browser with your own sign-in, at no cost to this app.": "Ask 메뉴에서 맨 앞에 오는 링크: google(기본값, Google AI 모드) | claude | chatgpt | perplexity. 링크는 자신의 계정으로 브라우저에서 열리므로 이 앱에서는 비용이 들지 않습니다.",
   "Saved AI answers older than this many days are asked again (pinned ones never). Unset or 0 (default): kept until you ask again or clear them.": "저장된 AI 답변 중 이 일수보다 오래된 것은 다시 묻습니다(고정한 것은 제외). 설정하지 않거나 0(기본값)이면 다시 묻거나 지울 때까지 유지합니다.",
-  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "AI 대략 비용에 쓰는 단가(100만 토큰당 미국 달러): {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. 내장 표 위에 덮어쓰며, 일치하는 앞부분이 가장 긴 것이 쓰입니다."
+  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "AI 대략 비용에 쓰는 단가(100만 토큰당 미국 달러): {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. 내장 표 위에 덮어쓰며, 일치하는 앞부분이 가장 긴 것이 쓰입니다.",
+  "A serial in the file name, per platform:": "파일 이름의 시리얼 사용(플랫폼별):",
+  "(as above)": "(위 설정대로)",
+  "use it": "사용",
+  "don't use it": "사용 안 함"
 }

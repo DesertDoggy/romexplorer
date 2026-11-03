@@ -4770,10 +4770,23 @@ function settingEditor(key, value) {
       // The same list as the app's SERIAL_MATCH (romexplorer-gui/src/screens/settings.rs).
       const items = [['cia', '.cia (3DS)', true], ['xiso', '.xiso (Xbox)', true], ['wua', '.wua (Wii U)', true], ['zar', '.zar (Xbox 360)', true], ['vpk', '.vpk (Vita)', true], ['vita_folder', tr('Vita app folders'), true], ['nsp', tr('.nsp / .nsz (Switch; by the ticket or the [title id] in the name)'), true], ['pkg', tr('.pkg (PS3, PSP, Vita; No-Intro hashes these)'), false], ['psv', tr('.psv and game-card images (Vita)'), false], ['ps_disc', tr('PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)'), false], ['manifest', tr('the serial in a manifest this app wrote'), true], ['file_name', tr('a serial in the file name'), false]];
       current = {}; for (const [k, , d] of items) current[k] = typeof (value || {})[k] === 'boolean' ? value[k] : d;
+      current.file_name_platforms = Object.assign({}, (value || {}).file_name_platforms || {});
       box.appendChild(el(`<div class="muted">${tr('Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.')}</div>`));
       const row = el('<div class="radios"></div>');
       for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); l.firstElementChild.onchange = e => { current[k] = e.target.checked; }; row.appendChild(l); }
       box.appendChild(row);
+      // Per platform, a serial in the file name or not; "(as above)" follows the file name box.
+      // The same platforms as the app's SERIAL_FILE_NAME_PLATFORMS (IGDB ids).
+      box.appendChild(el(`<div class="muted">${tr('A serial in the file name, per platform:')}</div>`));
+      const per = el('<table class="grid"><tbody></tbody></table>');
+      for (const id of [37, 137, 41, 11, 12, 46, 7, 8, 9, 38, 30009, 130]) {
+        const name = (vocab.platforms.find(p => p.id === id) || {}).name || ('#' + id);
+        const cur = typeof current.file_name_platforms[id] === 'boolean' ? String(current.file_name_platforms[id]) : '';
+        const tr_ = el(`<tr><td>${esc(platformLabel(name))}</td><td></td></tr>`);
+        tr_.lastElementChild.appendChild(pulldown([['', tr('(as above)')], ['true', tr('use it')], ['false', tr("don't use it")]], cur, v => { if (v === '') delete current.file_name_platforms[id]; else current.file_name_platforms[id] = v === 'true'; }));
+        per.tBodies[0].appendChild(tr_);
+      }
+      box.appendChild(per);
       return { el: box, get };
     }
     case 'copy_folder_scheme': current = value || 'es'; box.appendChild(el(`<div class="muted">${tr('How a copy names its destination subdirectories. Per-platform custom names are set under Config › Copy in the desktop app.')}</div>`)); box.appendChild(radios(key, [['es', tr('snes — EmulationStation / RetroArch short name (default)')], ['slug', tr('snes — the IGDB slug RomM matches folders against')], ['display', 'Super Nintendo Entertainment System'], ['dat', tr('Nintendo - Super Nintendo Entertainment System (DAT spelling)')], ['custom', tr('whatever is set per platform')]], current, v => { current = v; })); return { el: box, get };

@@ -2576,5 +2576,9 @@
   "The Perplexity model asked. Unset: sonar.": "Il modello Perplexity interrogato. Non impostato: sonar.",
   "Which link of the Ask menu comes first: google (default; Google AI Mode) | claude | chatgpt | perplexity. The links open in the browser with your own sign-in, at no cost to this app.": "Quale link del menu Chiedi viene per primo: google (predefinito; modalità IA di Google) | claude | chatgpt | perplexity. I link si aprono nel browser con il tuo account, senza costi per questa app.",
   "Saved AI answers older than this many days are asked again (pinned ones never). Unset or 0 (default): kept until you ask again or clear them.": "Le risposte IA salvate più vecchie di questi giorni vengono richieste di nuovo (mai quelle fissate). Non impostato o 0 (predefinito): restano finché non chiedi di nuovo o le cancelli.",
-  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "Prezzi per il costo approssimativo dell'IA, in dollari USA per milione di token: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Sovrapposti alla tabella integrata; vince il prefisso corrispondente più lungo."
+  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "Prezzi per il costo approssimativo dell'IA, in dollari USA per milione di token: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Sovrapposti alla tabella integrata; vince il prefisso corrispondente più lungo.",
+  "A serial in the file name, per platform:": "Un seriale nel nome del file, per piattaforma:",
+  "(as above)": "(come sopra)",
+  "use it": "usarlo",
+  "don't use it": "non usarlo"
 }

@@ -2758,5 +2758,9 @@
   "The Perplexity model asked. Unset: sonar.": "問い合わせる Perplexity のモデル。未設定なら sonar です。",
   "Which link of the Ask menu comes first: google (default; Google AI Mode) | claude | chatgpt | perplexity. The links open in the browser with your own sign-in, at no cost to this app.": "Ask メニューで先頭に来るリンク: google（既定。Google の AI モード）| claude | chatgpt | perplexity。リンクは自分のアカウントでブラウザーに開くので、このアプリでは費用がかかりません。",
   "Saved AI answers older than this many days are asked again (pinned ones never). Unset or 0 (default): kept until you ask again or clear them.": "保存した AI の回答のうち、この日数より古いものは聞き直します（ピン留めしたものは除く）。未設定または 0（既定）なら、聞き直すか削除するまで残します。",
-  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "AI の概算費用に使う単価（100 万トークンあたりの米ドル）: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}。内蔵の表に上書きします。一致する先頭が最も長いものが使われます。"
+  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "AI の概算費用に使う単価（100 万トークンあたりの米ドル）: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}。内蔵の表に上書きします。一致する先頭が最も長いものが使われます。",
+  "A serial in the file name, per platform:": "ファイル名のシリアルを使うか（プラットフォームごと）:",
+  "(as above)": "（上の設定どおり）",
+  "use it": "使う",
+  "don't use it": "使わない"
 }

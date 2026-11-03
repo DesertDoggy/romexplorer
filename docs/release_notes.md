@@ -43,6 +43,8 @@ replacing a build.
 **Hash match**
 - A hash match with only Hasheous on also fetches IGDB data and art for what it matched, as
   with PlayMatch.
+- Settings › serial_match sets per platform whether a serial in the file name counts. A
+  platform left as it is follows the file name box.
 
 **Merge review**
 - The Gemini answer, and Ask Google, come back in the UI language.

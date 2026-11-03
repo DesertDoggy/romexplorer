@@ -427,7 +427,7 @@ pub const KNOWN_KEYS: [(&str, &str); 93] = [
     (KEY_SCAN_HASHES, "Which hashes a file scan computes: object of crc32|xxh3_128|md5|sha1|sha256|ra_hash -> true/false. Default: everything except sha256. ra_hash needs a resolvable RetroAchievements console id and is skipped when there is none."),
     (KEY_SCAN_PARALLEL, "How many files a scan hashes at the same time, by size: small up to 16 MiB, medium 16 MiB to 1 GiB, large 1 GiB and up. Auto picks from the disk, memory and cores (a spinning disk gets one big read at a time). Custom sets any size yourself, 1-64; a size left empty stays on auto. Only the reading and hashing run in parallel -- results are recorded one file at a time, in order. Drive says what the disk is (SSD / NVMe, HDD, network share) when detection gets it wrong; auto's numbers follow it. A ZFS pool counts as SSD when all its data disks are."),
     (KEY_COPY_PARALLEL, "How many files a copy works on at the same time, by the same sizes as scan_parallel_files. Auto takes the slower of the source and destination disks, and fewer when the copy converts (CHD / RVZ / zip / 7z compress on several threads of their own)."),
-    (KEY_SERIAL_MATCH, "Lenient matching: formats no DAT hashes can be matched by their serial instead, and the link is marked as a serial match. {\"cia\", \"xiso\", \"wua\", \"zar\", \"vpk\", \"vita_folder\" (Vita app folders), \"nsp\" (Switch .nsp/.nsz, by the ticket or the [title id] in the name): true/false (default true), \"pkg\" (PS3, PSP and Vita packages), \"psv\" (Vita .psv and game-card images), \"ps_disc\" (PS1, PS2 and PS3 discs, PS3 game folders): true/false (default false, since DATs hash these), \"manifest\": use the serial in the romexplorer.json a copy here wrote (default true), \"file_name\": also use a serial spelled in the file name (default false)}."),
+    (KEY_SERIAL_MATCH, "Lenient matching: formats no DAT hashes can be matched by their serial instead, and the link is marked as a serial match. {\"cia\", \"xiso\", \"wua\", \"zar\", \"vpk\", \"vita_folder\" (Vita app folders), \"nsp\" (Switch .nsp/.nsz, by the ticket or the [title id] in the name): true/false (default true), \"pkg\" (PS3, PSP and Vita packages), \"psv\" (Vita .psv and game-card images), \"ps_disc\" (PS1, PS2 and PS3 discs, PS3 game folders): true/false (default false, since DATs hash these), \"manifest\": use the serial in the romexplorer.json a copy here wrote (default true), \"file_name\": also use a serial spelled in the file name (default false), \"file_name_platforms\": {\"<platform id>\": true/false} to choose that per platform (a platform not listed follows file_name)}."),
     (KEY_SCAN_PKG_TITLES, "Read the title and version of PS3 and PSP .pkg files from inside the package (true | false; default false). Their PARAM.SFO is encrypted with keys every package tool carries; Vita packages need no key and are always read."),
     (KEY_SCAN_HEURISTICS, "Which detection heuristics a scan may use: {\"ext\": true, \"path\": true}. ext guesses the platform from the file extension, path from the directory names above it."),
     (KEY_PROVIDER_PRIORITY, "Ordered list of provider names: which provider's data wins and the query order."),
@@ -903,19 +903,35 @@ pub async fn apply_scan_pkg_titles(pool: &MySqlPool) -> Result<bool, DatabaseErr
     Ok(on)
 }
 
+/// The platforms [`KEY_SERIAL_MATCH`]'s `file_name_platforms` can set one by one (IGDB ids):
+/// those a serial-matched format is on -- 3DS and New 3DS, Wii U, Xbox and Xbox 360, Vita,
+/// PS1 / PS2 / PS3, PSP and its PS1 classics, Switch. Both settings forms list these.
+pub const SERIAL_FILE_NAME_PLATFORMS: [u16; 12] = [37, 137, 41, 11, 12, 46, 7, 8, 9, 38, 30009, 130];
+
 /// [`KEY_SERIAL_MATCH`] as stored, with its defaults filled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerialMatch {
     /// The formats in [`SERIAL_MATCH_FORMATS`] that are on.
     pub formats: Vec<&'static str>,
     pub manifest: bool,
+    /// Use a serial in the file name: the default for a platform not in
+    /// `file_name_platforms` (the one setting from before it was per platform).
     pub file_name: bool,
+    /// Per platform (IGDB id): use a serial in the file name or not.
+    pub file_name_platforms: std::collections::BTreeMap<u16, bool>,
 }
 
 impl SerialMatch {
     pub fn from_value(v: &serde_json::Value) -> Self {
         let on = |key: &str, default: bool| v.get(key).and_then(|b| b.as_bool()).unwrap_or(default);
-        Self { formats: SERIAL_MATCH_FORMATS.iter().filter(|(f, d)| on(f, *d)).map(|(f, _)| *f).collect(), manifest: on("manifest", true), file_name: on("file_name", false) }
+        let file_name_platforms = v.get("file_name_platforms").and_then(|m| m.as_object()).into_iter().flatten().filter_map(|(id, on)| Some((id.parse().ok()?, on.as_bool()?))).collect();
+        Self { formats: SERIAL_MATCH_FORMATS.iter().filter(|(f, d)| on(f, *d)).map(|(f, _)| *f).collect(), manifest: on("manifest", true), file_name: on("file_name", false), file_name_platforms }
+    }
+
+    /// Whether a serial in the file name counts for a file of `platform`: its own choice,
+    /// else the default (`file_name`).
+    pub fn file_name_for(&self, platform: crate::common::models::Platform) -> bool {
+        self.file_name_platforms.get(&platform.igdb_id()).copied().unwrap_or(self.file_name)
     }
 }
 

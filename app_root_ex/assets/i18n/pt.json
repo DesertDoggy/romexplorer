@@ -2576,5 +2576,9 @@
   "The Perplexity model asked. Unset: sonar.": "O modelo Perplexity perguntado. Sem definição: sonar.",
   "Which link of the Ask menu comes first: google (default; Google AI Mode) | claude | chatgpt | perplexity. The links open in the browser with your own sign-in, at no cost to this app.": "Que ligação do menu Perguntar vem primeiro: google (predefinição; modo IA da Google) | claude | chatgpt | perplexity. As ligações abrem no navegador com a sua conta, sem custo para esta aplicação.",
   "Saved AI answers older than this many days are asked again (pinned ones never). Unset or 0 (default): kept until you ask again or clear them.": "As respostas de IA guardadas com mais destes dias são perguntadas de novo (nunca as fixadas). Sem definição ou 0 (predefinição): mantidas até perguntar de novo ou as apagar.",
-  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "Preços para o custo aproximado da IA, em dólares americanos por milhão de tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Aplicados sobre a tabela incorporada; ganha o prefixo correspondente mais longo."
+  "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins.": "Preços para o custo aproximado da IA, em dólares americanos por milhão de tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Aplicados sobre a tabela incorporada; ganha o prefixo correspondente mais longo.",
+  "A serial in the file name, per platform:": "Um número de série no nome do ficheiro, por plataforma:",
+  "(as above)": "(como acima)",
+  "use it": "usar",
+  "don't use it": "não usar"
 }

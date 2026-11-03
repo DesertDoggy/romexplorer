@@ -122,6 +122,9 @@ const SERIAL_MATCH: &[(&str, bool, &str)] = &[
     ("manifest", true, "the serial in a manifest this app wrote"),
     ("file_name", false, "a serial in the file name"),
 ];
+/// `serial_match.file_name_platforms`: the platforms that can be set one by one (IGDB ids,
+/// `database::settings::SERIAL_FILE_NAME_PLATFORMS`; the console lists the same).
+const SERIAL_FILE_NAME_PLATFORMS: &[u16] = &[37, 137, 41, 11, 12, 46, 7, 8, 9, 38, 30009, 130];
 const QUICK_HASHES: &[&str] = &["xxh3_128", "crc32", "md5", "sha1", "sha256"];
 
 const SPELL: [(&str, &str); 3] = [("US", "USA"), ("EU", "EUR"), ("JP", "JPN")];
@@ -280,6 +283,7 @@ fn initial(key: &str, value: &Value) -> Value {
             for (name, def, _) in SERIAL_MATCH {
                 m.insert(name.to_string(), json!(value.get(name).and_then(Value::as_bool).unwrap_or(*def)));
             }
+            m.insert("file_name_platforms".to_string(), value.get("file_name_platforms").filter(|v| v.is_object()).cloned().unwrap_or_else(|| json!({})));
             Value::Object(m)
         }
         k if BOOL_KEYS.iter().any(|(b, ..)| *b == k) => {
@@ -975,6 +979,42 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
             div { class: "radios",
                 for (name, _, label) in SERIAL_MATCH {
                     label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {state::tr(label)}" }
+                }
+            }
+            // The console's same table: per platform, a serial in the file name or not; a
+            // platform left at "(as above)" follows the file name box.
+            {muted("A serial in the file name, per platform:")}
+            table { class: "grid",
+                for id in SERIAL_FILE_NAME_PLATFORMS {
+                    {
+                        let key = id.to_string();
+                        let chosen = match v.pointer(&format!("/file_name_platforms/{id}")).and_then(Value::as_bool) {
+                            Some(true) => "true",
+                            Some(false) => "false",
+                            None => "",
+                        };
+                        rsx! {
+                            tr {
+                                td { "{state::platform_name(*id as u64)}" }
+                                td {
+                                    select { value: "{chosen}",
+                                        onchange: move |e| {
+                                            let mut m = cur();
+                                            if !m["file_name_platforms"].is_object() { m["file_name_platforms"] = json!({}); }
+                                            match e.value().as_str() {
+                                                "" => { if let Some(o) = m["file_name_platforms"].as_object_mut() { o.remove(&key); } }
+                                                on => m["file_name_platforms"][&key] = json!(on == "true"),
+                                            }
+                                            cur.set(m);
+                                        },
+                                        option { value: "", selected: chosen.is_empty(), {state::tr("(as above)")} }
+                                        option { value: "true", selected: chosen == "true", {state::tr("use it")} }
+                                        option { value: "false", selected: chosen == "false", {state::tr("don't use it")} }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         },

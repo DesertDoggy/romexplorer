@@ -132,7 +132,7 @@ pub fn usable_serials(path: &Path, platform: Platform, cfg: &SerialMatch) -> Vec
             SerialOrigin::Manifest => cfg.manifest,
             // An NSP holds no title id outside its encrypted NCAs unless it carries a ticket,
             // so the `[0100…]` its dumper put in the name is what there is.
-            SerialOrigin::FileName => cfg.file_name || (format == "nsp" && f.serial.len() == 16),
+            SerialOrigin::FileName => cfg.file_name_for(guess) || (format == "nsp" && f.serial.len() == 16),
         })
         .collect();
     found.sort_by_key(|f| f.origin);

@@ -278,8 +278,20 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
             let keys: Vec<&str> = db_settings::SERIAL_MATCH_FORMATS.iter().map(|(f, _)| *f).chain(["manifest", "file_name"]).collect();
             let map = value.as_object().ok_or_else(|| Error::invalid(format!("serial_match must be an object {{{}: bool}}", keys.join(", "))))?;
             for (key, on) in map {
+                if key == "file_name_platforms" {
+                    let per = on.as_object().ok_or_else(|| Error::invalid("serial_match: file_name_platforms must be an object {platform id: bool}"))?;
+                    for (id, on) in per {
+                        if !id.parse::<u16>().is_ok_and(|id| db_settings::SERIAL_FILE_NAME_PLATFORMS.contains(&id)) {
+                            return Err(Error::invalid(format!("serial_match: file_name_platforms: {id} is not a platform matched by serial")));
+                        }
+                        if !on.is_boolean() {
+                            return Err(Error::invalid(format!("serial_match: file_name_platforms: {id} must be true or false")));
+                        }
+                    }
+                    continue;
+                }
                 if !keys.contains(&key.as_str()) {
-                    return Err(Error::invalid(format!("serial_match: {key} must be one of {}", keys.join(", "))));
+                    return Err(Error::invalid(format!("serial_match: {key} must be one of {}, file_name_platforms", keys.join(", "))));
                 }
                 if !on.is_boolean() {
                     return Err(Error::invalid(format!("serial_match: {key} must be true or false")));

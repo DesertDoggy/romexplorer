@@ -166,7 +166,7 @@ fn the_setting_decides_which_serials_may_be_used() {
     let dir = TempDir::new("setting");
     let xiso = dir.0.join("Game (USA) (XX-007).xiso");
     image(&xiso, 0, &[Node::File("default.xbe", xbe(XBOX_ID))]);
-    let all = SerialMatch { formats: vec!["cia", "xiso", "wua", "zar"], manifest: true, file_name: true };
+    let all = SerialMatch { formats: vec!["cia", "xiso", "wua", "zar"], manifest: true, file_name: true, file_name_platforms: Default::default() };
     let got: Vec<String> = usable_serials(&xiso, Platform::Xbox, &all).into_iter().map(|f| f.serial).collect();
     assert_eq!(got, ["XX-004", "58580004", "XX-007"], "header serials before the file name's");
 
@@ -177,7 +177,15 @@ fn the_setting_decides_which_serials_may_be_used() {
     // An unknown platform is taken from the format.
     assert_eq!(usable_serials(&xiso, Platform::Unknown, &no_names).len(), 2);
 
-    assert_eq!(SerialMatch::from_value(&serde_json::Value::Null), SerialMatch { formats: vec!["cia", "xiso", "wua", "zar", "vpk", "vita_folder", "nsp"], manifest: true, file_name: false });
+    assert_eq!(SerialMatch::from_value(&serde_json::Value::Null), SerialMatch { formats: vec!["cia", "xiso", "wua", "zar", "vpk", "vita_folder", "nsp"], manifest: true, file_name: false, file_name_platforms: Default::default() });
+    // Per platform: a platform's own choice wins, the rest follow file_name.
+    let per = SerialMatch::from_value(&serde_json::json!({ "file_name": true, "file_name_platforms": { "41": false, "12": true } }));
+    assert!(!per.file_name_for(romexplorer::common::models::Platform::WiiU));
+    assert!(per.file_name_for(romexplorer::common::models::Platform::Xbox360));
+    assert!(per.file_name_for(romexplorer::common::models::Platform::Nintendo3ds), "not listed: the default");
+    // ...and it is what usable_serials goes by: Xbox off here although the default is on.
+    let xbox_off = SerialMatch { file_name_platforms: [(Platform::Xbox.igdb_id(), false)].into_iter().collect(), ..all.clone() };
+    assert_eq!(usable_serials(&xiso, Platform::Xbox, &xbox_off).len(), 2);
     assert_eq!(SerialMatch::from_value(&serde_json::json!({"zar": false, "file_name": true})).formats, ["cia", "xiso", "wua", "vpk", "vita_folder", "nsp"]);
     assert_eq!(SerialMatch::from_value(&serde_json::json!({"pkg": true, "ps_disc": true})).formats, ["cia", "xiso", "wua", "zar", "vpk", "vita_folder", "nsp", "pkg", "ps_disc"]);
 }
