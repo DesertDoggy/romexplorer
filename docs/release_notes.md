@@ -1,4 +1,4 @@
-# romexplorer 0.8.0 (alpha)
+# romexplorer 0.2.0 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
 replacing a build.
@@ -23,7 +23,7 @@ replacing a build.
   can be cleared (all or one feature, pinned ones kept if you like), exported and imported
   as JSON.
 
-# romexplorer 0.7.1 (alpha)
+# romexplorer 0.1.8 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
 replacing a build.
