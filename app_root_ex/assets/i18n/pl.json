@@ -2514,5 +2514,17 @@
   ".psv and game-card images (Vita)": ".psv i obrazy kart z grą (Vita)",
   "PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)": "płyty PS1, PS2 i PS3, foldery gier PS3 (Redump ma ich hashe)",
   "Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.": "Pliki, których nie dopasował żaden hash z DAT, są dopasowywane po numerze seryjnym z nagłówka. Formaty, które DAT hashuje, są domyślnie wyłączone.",
-  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz (Switch; po tickecie lub [title id] w nazwie)"
+  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz (Switch; po tickecie lub [title id] w nazwie)",
+  "Use the media files already in this folder?": "Użyć plików multimedialnych, które już są w tym folderze?",
+  "The media folder already holds art, probably from an earlier install. Yes: provider syncs take those files as they are and download only what is missing. No: everything is downloaded again; the old files are left where they are.": "Folder multimediów zawiera już grafiki, prawdopodobnie z wcześniejszej instalacji. Tak: synchronizacje dostawców przejmą te pliki bez zmian i pobiorą tylko to, czego brakuje. Nie: wszystko zostanie pobrane od nowa; stare pliki zostaną tam, gdzie są.",
+  "Change it any time under Config › Settings (media_reuse_existing).": "Można to zmienić w dowolnej chwili w Config › Settings (media_reuse_existing).",
+  "Yes (recommended)": "Tak (zalecane)",
+  "take art already in the media folder instead of downloading it again (default)": "brać grafiki już obecne w folderze multimediów zamiast pobierać je ponownie (domyślnie)",
+  "always download": "zawsze pobierać",
+  "When art a provider sync would download is already at its place in the media folder -- left there by an earlier install, say after starting over with a new database -- record that file instead of downloading it again (true | false; default true). Checked per provider and per picture, so what is missing still downloads. Your own uploads are not found this way.": "Gdy grafika, którą pobrałaby synchronizacja dostawcy, jest już na swoim miejscu w folderze multimediów -- zostawiona przez wcześniejszą instalację, np. po starcie od nowa z nową bazą danych -- ten plik zostaje zapisany zamiast ponownego pobierania (true | false; domyślnie true). Sprawdzane osobno dla każdego dostawcy i obrazu, więc brakujące nadal są pobierane. Własne przesłane pliki nie są w ten sposób odnajdywane.",
+  "No.": "Nr",
+  "run next": "uruchom jako następne",
+  "Starts after the job running in its lane; jobs in other lanes are not affected.": "Rusza po zadaniu, które działa na jego torze; zadania na innych torach się nie zmieniają.",
+  "#{id} runs next in its lane (position {n})": "#{id} uruchomi się jako następne na swoim torze (pozycja {n})",
+  "{n} job(s) moved to the front of their lanes": "Przeniesiono {n} zadań na początek ich torów"
 }

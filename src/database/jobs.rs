@@ -30,7 +30,9 @@ pub async fn enqueue(pool: &MySqlPool, job_type: JobType, payload: serde_json::V
 /// [`lane_of`] / the worker), so a page the user just opened isn't queued behind a bulk sync.
 pub async fn enqueue_with_priority(pool: &MySqlPool, job_type: JobType, payload: serde_json::Value, priority: u16) -> Result<u64, DatabaseError> {
     let result = sqlx::query("INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)").bind(job_type.name()).bind(payload).bind(priority).execute(pool).await?;
-    Ok(result.last_insert_id())
+    let id = result.last_insert_id();
+    set_queue_order(pool, id).await?;
+    Ok(id)
 }
 
 /// Queues a job that waits its turn (migration 0051): it starts only when nothing is running
@@ -38,14 +40,23 @@ pub async fn enqueue_with_priority(pool: &MySqlPool, job_type: JobType, payload:
 /// after another instead of side by side in their lanes.
 pub async fn enqueue_in_turn(pool: &MySqlPool, job_type: JobType, payload: serde_json::Value) -> Result<u64, DatabaseError> {
     let result = sqlx::query("INSERT INTO jobs (job_type, payload, priority, in_turn) VALUES (?, ?, 0, TRUE)").bind(job_type.name()).bind(payload).execute(pool).await?;
-    Ok(result.last_insert_id())
+    let id = result.last_insert_id();
+    set_queue_order(pool, id).await?;
+    Ok(id)
+}
+
+/// A new job's place in its lane: its id (migration 0077). "Run next" ([`run_next`]) is
+/// what moves it.
+async fn set_queue_order(pool: &MySqlPool, id: u64) -> Result<(), DatabaseError> {
+    sqlx::query("UPDATE jobs SET queue_order = id WHERE id = ? AND queue_order IS NULL").bind(id).execute(pool).await?;
+    Ok(())
 }
 
 /// Claims up to `limit` pending jobs of `job_type` (oldest first), marking them
 /// `in_progress` and bumping `attempts`.
 pub async fn claim(pool: &MySqlPool, job_type: JobType, limit: u32) -> Result<Vec<Job>, DatabaseError> {
     let mut tx = pool.begin().await?;
-    let rows = sqlx::query("SELECT id, payload, attempts FROM jobs WHERE job_type = ? AND status = 'pending' ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED")
+    let rows = sqlx::query("SELECT id, payload, attempts FROM jobs WHERE job_type = ? AND status = 'pending' ORDER BY COALESCE(queue_order, id), id LIMIT ? FOR UPDATE SKIP LOCKED")
         .bind(job_type.name())
         .bind(limit)
         .fetch_all(&mut *tx)
@@ -591,6 +602,24 @@ pub async fn clear(pool: &MySqlPool, statuses: &[&str], ids: Option<&[u64]>) -> 
     Ok(removed)
 }
 
+/// How many jobs the log holds by state, and the highest id: logged when the worker starts.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Census {
+    pub finished: u64,
+    pub pending: u64,
+    pub running: u64,
+    pub max_id: Option<u64>,
+}
+
+pub async fn census(pool: &MySqlPool) -> Result<Census, DatabaseError> {
+    let row = sqlx::query(
+        "SELECT CAST(COALESCE(SUM(status IN ('done', 'failed', 'cancelled')), 0) AS UNSIGNED) AS finished, CAST(COALESCE(SUM(status = 'pending'), 0) AS UNSIGNED) AS pending, CAST(COALESCE(SUM(status = 'in_progress'), 0) AS UNSIGNED) AS running, MAX(id) AS max_id FROM jobs",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(Census { finished: row.try_get("finished")?, pending: row.try_get("pending")?, running: row.try_get("running")?, max_id: row.try_get("max_id")? })
+}
+
 /// Whether any job is waiting or running: what a "run only when idle" schedule waits out.
 pub async fn queue_busy(pool: &MySqlPool) -> Result<bool, DatabaseError> {
     Ok(sqlx::query("SELECT 1 FROM jobs WHERE status IN ('pending', 'in_progress') LIMIT 1").fetch_optional(pool).await?.is_some())
@@ -682,9 +711,10 @@ pub async fn peek_pending(pool: &MySqlPool, limit: u32) -> Result<Vec<JobRow>, D
     rows.iter().map(row_to_job).collect()
 }
 
-/// The oldest pending job of every lane group (job type x priority x provider x the hash
+/// The first pending job of every lane group (job type x priority x provider x the hash
 /// match service flags -- everything `lane_of` and the `:fast` slot depend on), highest
-/// priority then oldest first. What the scheduler starts from: unlike a fixed-size
+/// priority then first in line. "First" is the lowest `queue_order` (migration 0077): the
+/// oldest, unless "Run next" ([`run_next`]) moved a job ahead. What the scheduler starts from: unlike a fixed-size
 /// `peek_pending` window, a job whose lane is idle is always seen, however many jobs are
 /// queued in busy lanes ahead of it.
 ///
@@ -692,16 +722,16 @@ pub async fn peek_pending(pool: &MySqlPool, limit: u32) -> Result<Vec<JobRow>, D
 /// lane group would hide the ordinary jobs behind it, which are the very jobs it waits for.
 pub async fn peek_lane_heads(pool: &MySqlPool) -> Result<Vec<JobRow>, DatabaseError> {
     let sql = format!(
-        "{JOB_SELECT} WHERE id IN (SELECT MIN(id) FROM jobs WHERE status = 'pending' AND in_turn = FALSE          GROUP BY job_type, priority, LOWER(JSON_VALUE(payload, '$.provider')), JSON_VALUE(payload, '$.to_hasheous'), JSON_VALUE(payload, '$.to_playmatch'))          ORDER BY priority DESC, id"
+        "{JOB_SELECT} WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY job_type, priority, LOWER(JSON_VALUE(payload, '$.provider')), JSON_VALUE(payload, '$.to_hasheous'), JSON_VALUE(payload, '$.to_playmatch') ORDER BY {QUEUE_ORDER}) AS n FROM jobs WHERE status = 'pending' AND in_turn = FALSE) heads WHERE n = 1) ORDER BY priority DESC, {QUEUE_ORDER}"
     );
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?;
     rows.iter().map(row_to_job).collect()
 }
 
-/// The oldest pending job that waits its turn, if any. The worker starts it only when
+/// The first pending job that waits its turn (lowest `queue_order`), if any. The worker starts it only when
 /// nothing is running (`enqueue_in_turn`).
 pub async fn peek_next_in_turn(pool: &MySqlPool) -> Result<Option<JobRow>, DatabaseError> {
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!("{JOB_SELECT} WHERE status = 'pending' AND in_turn = TRUE ORDER BY id LIMIT 1"))).fetch_optional(pool).await?;
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!("{JOB_SELECT} WHERE status = 'pending' AND in_turn = TRUE ORDER BY {QUEUE_ORDER} LIMIT 1"))).fetch_optional(pool).await?;
     row.as_ref().map(row_to_job).transpose()
 }
 
@@ -712,6 +742,75 @@ pub async fn claim_by_id(pool: &MySqlPool, id: u64) -> Result<Option<Job>, Datab
         return Ok(None);
     }
     Ok(get(pool, id).await?.map(|r| Job { id: r.id, job_type: r.job_type, payload: r.payload, attempts: r.attempts }))
+}
+
+/// A job's place in line: `queue_order`, falling back to the id for a row written before
+/// migration 0077's backfill could reach it, then the id to break a tie.
+const QUEUE_ORDER: &str = "COALESCE(queue_order, id), id";
+
+/// "Run next": pending job `id` moves to the front of its lane -- ahead of every other job
+/// waiting in the same lane ([`lane_of`] and the `:fast` slot) with the same `in_turn`
+/// flag -- so it starts as soon as the one running there finishes. A running job is never
+/// touched, and other lanes are not affected. `None` when `id` is not pending.
+///
+/// `ids` together (a selection) keep their relative order: they are moved last first, so
+/// the first of them ends up in front.
+pub async fn run_next(pool: &MySqlPool, ids: &[u64]) -> Result<Vec<(u64, Option<u64>)>, DatabaseError> {
+    let mut wanted: Vec<JobRow> = Vec::new();
+    for id in ids {
+        if let Some(row) = get(pool, *id).await?.filter(|r| r.status == "pending") {
+            wanted.push(row);
+        }
+    }
+    // Their order in line as it is now, so moving them one by one, last first, keeps it.
+    let mut order: Vec<(i64, u64)> = Vec::new();
+    for row in &wanted {
+        let q: Option<i64> = sqlx::query_scalar("SELECT queue_order FROM jobs WHERE id = ?").bind(row.id).fetch_one(pool).await?;
+        order.push((q.unwrap_or(row.id as i64), row.id));
+    }
+    order.sort();
+    for (_, id) in order.iter().rev() {
+        let Some(row) = wanted.iter().find(|r| r.id == *id) else { continue };
+        let lowest = lane_peers(pool, row).await?.into_iter().map(|(_, q)| q).min();
+        if let Some(lowest) = lowest {
+            sqlx::query("UPDATE jobs SET queue_order = ? WHERE id = ? AND status = 'pending'").bind(lowest - 1).bind(row.id).execute(pool).await?;
+        }
+    }
+    let mut out = Vec::new();
+    for id in ids {
+        out.push((*id, position_in_lane(pool, *id).await?));
+    }
+    Ok(out)
+}
+
+/// Where pending job `id` stands among the jobs waiting in its lane: 1 = starts next. `None`
+/// when it is not pending.
+pub async fn position_in_lane(pool: &MySqlPool, id: u64) -> Result<Option<u64>, DatabaseError> {
+    let Some(row) = get(pool, id).await?.filter(|r| r.status == "pending") else { return Ok(None) };
+    let mut peers = lane_peers(pool, &row).await?;
+    peers.sort_by_key(|(peer, q)| (*q, *peer));
+    Ok(peers.iter().position(|(peer, _)| *peer == id).map(|i| i as u64 + 1))
+}
+
+/// Every pending job in `row`'s lane (same lane name and `in_turn` flag, `row` included),
+/// with its place in line.
+async fn lane_peers(pool: &MySqlPool, row: &JobRow) -> Result<Vec<(u64, i64)>, DatabaseError> {
+    let rows = sqlx::query("SELECT id, job_type, payload, priority, COALESCE(queue_order, id) AS q FROM jobs WHERE status = 'pending' AND in_turn = ?").bind(row.in_turn).fetch_all(pool).await?;
+    let mut out = Vec::new();
+    for r in rows {
+        let type_name: String = r.try_get("job_type")?;
+        let Some(job_type) = JobType::from_name(&type_name) else { continue };
+        let payload: serde_json::Value = r.try_get("payload")?;
+        let priority: u16 = r.try_get("priority")?;
+        let mut lane = lane_of(job_type, &payload);
+        if priority > 0 {
+            lane.push_str(":fast");
+        }
+        if lane == row.lane {
+            out.push((r.try_get("id")?, r.try_get("q")?));
+        }
+    }
+    Ok(out)
 }
 
 pub const STATUSES: [&str; 5] = ["pending", "in_progress", "done", "failed", "cancelled"];

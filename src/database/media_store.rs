@@ -503,6 +503,27 @@ pub async fn store_bytes(pool: &MySqlPool, roots: &Roots, placement: &Placement,
 /// File extension for downloaded or uploaded media, from the URL / file name, else the
 /// Content-Type, else `jpg`.
 pub fn extension_for(name: &str, content_type: Option<&str>) -> &'static str {
+    if let Some(ext) = known_extension(name) {
+        return ext;
+    }
+    match content_type.unwrap_or("") {
+        ct if ct.contains("png") => "png",
+        ct if ct.contains("webp") => "webp",
+        ct if ct.contains("gif") => "gif",
+        ct if ct.contains("avif") => "avif",
+        ct if ct.contains("svg") => "svg",
+        ct if ct.contains("mp4") => "mp4",
+        ct if ct.contains("webm") => "webm",
+        ct if ct.contains("mpeg") => "mp3",
+        ct if ct.contains("ogg") => "ogg",
+        ct if ct.contains("flac") => "flac",
+        _ => "jpg",
+    }
+}
+
+/// The extension a URL or file name spells, when it is one media is stored as; `None` when
+/// it names none (only the response's Content-Type could say).
+pub fn known_extension(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     let lower = lower.split(['?', '#']).next().unwrap_or("");
     const KNOWN: [(&str, &str); 14] = [
@@ -522,25 +543,117 @@ pub fn extension_for(name: &str, content_type: Option<&str>) -> &'static str {
         (".wav", "wav"),
     ];
     if let Some((_, ext)) = KNOWN.iter().find(|(suffix, _)| lower.ends_with(suffix)) {
-        return ext;
+        return Some(ext);
     }
-    if let Some((_, ext)) = KNOWN.iter().find(|(suffix, _)| lower.contains(suffix)) {
-        return ext;
-    }
-    match content_type.unwrap_or("") {
-        ct if ct.contains("png") => "png",
-        ct if ct.contains("webp") => "webp",
-        ct if ct.contains("gif") => "gif",
-        ct if ct.contains("avif") => "avif",
-        ct if ct.contains("svg") => "svg",
-        ct if ct.contains("mp4") => "mp4",
-        ct if ct.contains("webm") => "webm",
-        ct if ct.contains("mpeg") => "mp3",
-        ct if ct.contains("ogg") => "ogg",
-        ct if ct.contains("flac") => "flac",
-        _ => "jpg",
+    KNOWN.iter().find(|(suffix, _)| lower.contains(suffix)).map(|(_, ext)| *ext)
+}
+
+/// Every extension a role's files are stored with ([`ext_allowed`]), most common first.
+pub fn role_extensions(role: RootRole) -> &'static [&'static str] {
+    match role {
+        RootRole::Video => &["mp4", "webm", "mkv"],
+        RootRole::Audio => &["mp3", "ogg", "flac", "wav"],
+        _ => &["jpg", "png", "webp", "gif", "avif", "svg"],
     }
 }
+
+/// Whether `bytes` start the way a file of `ext` does: enough to tell a real picture or
+/// video from an empty file or an HTML error page saved under a picture's name.
+pub fn looks_like(ext: &str, bytes: &[u8]) -> bool {
+    let at = |offset: usize, magic: &[u8]| bytes.len() >= offset + magic.len() && &bytes[offset..offset + magic.len()] == magic;
+    match ext {
+        "png" => at(0, b"\x89PNG\r\n\x1a\n"),
+        "jpg" => at(0, &[0xFF, 0xD8, 0xFF]),
+        "gif" => at(0, b"GIF8"),
+        "webp" => at(0, b"RIFF") && at(8, b"WEBP"),
+        "avif" | "mp4" => at(4, b"ftyp"),
+        "webm" | "mkv" => at(0, &[0x1A, 0x45, 0xDF, 0xA3]),
+        "svg" => String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]).contains("<svg"),
+        "mp3" => at(0, b"ID3") || (bytes.len() > 1 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0),
+        "ogg" => at(0, b"OggS"),
+        "flac" => at(0, b"fLaC"),
+        "wav" => at(0, b"RIFF") && at(8, b"WAVE"),
+        _ => !bytes.is_empty(),
+    }
+}
+
+/// Media reuse (`media_reuse_existing`): the file a download would land on is already
+/// there, from an earlier install whose database is gone (a fresh database pointed at the
+/// old media folder). If no live row claims it and it looks like what the slot holds, it is
+/// recorded as it is and returned instead of being downloaded again -- and instead of the
+/// download being written beside it as `box_front_2.jpg`.
+///
+/// Per provider and per slot: the name is the slot's own ([`plain_rel`]), so only what that
+/// provider would have written there is taken, and a slot with no file still downloads.
+/// List types (screenshots, videos, fan art) are named after the URL's own file name, so the
+/// same check finds them. `exts` are the extensions to try: the URL's, or every one of the
+/// role's when the URL names none.
+///
+/// Not covered: the user's own uploads (`user/release/<id>/...`: the folder is a row id,
+/// which a new database numbers differently), and files from before the media layout, which
+/// rows held by absolute path in a different tree.
+pub async fn adopt_existing(pool: &MySqlPool, roots: &Roots, placement: &Placement, meta: &NewMedia<'_>, exts: &[&str]) -> Result<Option<Stored>, DatabaseError> {
+    let (root_role, root) = roots.write_root(placement.role);
+    for ext in exts {
+        let rel = plain_rel(placement, ext);
+        let path = join_rel(root, &rel);
+        if !path.is_file() {
+            continue;
+        }
+        let claimed = sqlx::query("SELECT 1 FROM media WHERE root_role = ? AND path = ? AND deleted = FALSE LIMIT 1").bind(root_role.name()).bind(&rel).fetch_optional(pool).await?.is_some();
+        if claimed {
+            continue;
+        }
+        let bytes = tokio::fs::read(&path).await?;
+        if !looks_like(ext, &bytes) || bytes.is_empty() {
+            continue;
+        }
+        let sha1 = sha1_bytes(&bytes);
+        // The same picture already on record elsewhere: that row is it, as `store_bytes`
+        // would have found after downloading.
+        if let Some(row) = sqlx::query("SELECT id, path, root_role FROM media WHERE content_sha1 = ? AND media_type = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(&sha1).bind(meta.media_type).fetch_optional(pool).await? {
+            let media_id: u64 = row.try_get("id")?;
+            let found = roots.resolve(row.try_get::<Option<String>, _>("root_role")?.as_deref(), &row.try_get::<String, _>("path")?);
+            return Ok(Some(Stored { media_id, path: found, bytes: bytes.len() as u64, fresh: false }));
+        }
+        let result = sqlx::query("INSERT INTO media (media_type, sub_category, path, root_role, content_sha1, bytes, source, provider_id, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(meta.media_type)
+            .bind(meta.sub_category)
+            .bind(&rel)
+            .bind(root_role.name())
+            .bind(&sha1)
+            .bind(bytes.len() as u64)
+            .bind(meta.source)
+            .bind(meta.provider_id)
+            .bind(meta.source_url)
+            .execute(pool)
+            .await?;
+        log::debug!("media reuse: took {} as it is", path.display());
+        return Ok(Some(Stored { media_id: result.last_insert_id(), path, bytes: bytes.len() as u64, fresh: false }));
+    }
+    Ok(None)
+}
+
+/// Whether any media root (configured, or the app's own media dir) holds at least one file,
+/// leaving out the thumbnail cache: the first-run question about reusing them is only worth
+/// asking when there is something to reuse.
+pub fn roots_hold_files(roots: &Roots) -> bool {
+    fn any_file(dir: &Path, depth: u32) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else { return false };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_file() {
+                return true;
+            }
+            if kind.is_dir() && depth < 8 && entry.file_name() != "_cache" && any_file(&entry.path(), depth + 1) {
+                return true;
+            }
+        }
+        false
+    }
+    roots.image.iter().chain(&roots.video).chain(&roots.audio).chain(std::iter::once(&roots.app)).any(|root| any_file(root, 0))
+}
+
 
 pub fn mime_for(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
@@ -999,5 +1112,40 @@ mod tests {
         assert_eq!(extension_for("https://x/y/image", Some("image/webp")), "webp");
         assert_eq!(extension_for("track.flac", None), "flac");
         assert!(ext_allowed(RootRole::Image, "png") && !ext_allowed(RootRole::Image, "mp4") && ext_allowed(RootRole::Audio, "ogg"));
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    #[test]
+    fn known_extension_only_answers_for_a_name_that_spells_one() {
+        assert_eq!(known_extension("https://example.invalid/a/b/box.PNG?x=1"), Some("png"));
+        assert_eq!(known_extension("https://example.invalid/t_cover_big/abc.jpeg"), Some("jpg"));
+        assert_eq!(known_extension("https://example.invalid/image/12345"), None);
+        // extension_for still falls back to the Content-Type, then jpg.
+        assert_eq!(extension_for("https://example.invalid/image/12345", Some("image/webp")), "webp");
+        assert_eq!(extension_for("https://example.invalid/image/12345", None), "jpg");
+    }
+
+    #[test]
+    fn looks_like_tells_pictures_from_leftovers() {
+        assert!(looks_like("png", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"));
+        assert!(looks_like("jpg", &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]));
+        assert!(looks_like("webp", b"RIFF\0\0\0\0WEBPVP8 "));
+        assert!(looks_like("mp4", b"\0\0\0\x18ftypmp42"));
+        assert!(!looks_like("jpg", b"<!DOCTYPE html><html>"), "an error page saved as a picture");
+        assert!(!looks_like("png", b""), "an empty file");
+        assert!(!looks_like("png", &[0xFF, 0xD8, 0xFF]), "a jpeg under a png name");
+    }
+
+    #[test]
+    fn every_role_extension_is_allowed_for_its_role() {
+        for role in [RootRole::Image, RootRole::Video, RootRole::Audio] {
+            for ext in role_extensions(role) {
+                assert!(ext_allowed(role, ext), "{ext} for {}", role.name());
+            }
+        }
     }
 }

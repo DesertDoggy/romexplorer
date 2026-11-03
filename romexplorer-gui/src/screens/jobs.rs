@@ -178,9 +178,29 @@ fn vocab_list(path: &str) -> Vec<String> {
     state::vocab().pointer(path).and_then(|p| p.as_array()).into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect()
 }
 
-/// A jobs row's buttons (the console's `jobActions`): retry a failed or cancelled job, cancel
-/// a waiting or running one, and for a finished one with a result (a scan's errors and
-/// warnings, say) open it.
+/// "Run next" (the console's `runNextJobs`): pending jobs to the front of their lanes,
+/// keeping their order among themselves. `true` when it went through.
+pub async fn run_next_jobs(ids: Vec<u64>) -> bool {
+    match api::post("/api/v1/jobs/run-next", json!({ "ids": ids })).await {
+        Ok(r) => {
+            let moved: Vec<&Value> = r.get("positions").and_then(Value::as_array).into_iter().flatten().filter(|p| p.get("position").is_some_and(|v| !v.is_null())).collect();
+            if let [one] = moved.as_slice() {
+                ui::toast(state::trf("#{id} runs next in its lane (position {n})", &[("id", &u(one, "id").to_string()), ("n", &u(one, "position").to_string())]), false);
+            } else {
+                ui::toast(state::trf("{n} job(s) moved to the front of their lanes", &[("n", &moved.len().to_string())]), false);
+            }
+            true
+        }
+        Err(e) => {
+            ui::toast(e.message, true);
+            false
+        }
+    }
+}
+
+/// A jobs row's buttons (the console's `jobActions`): retry a failed or cancelled job, run a
+/// waiting one next, cancel a waiting or running one, and for a finished one with a result
+/// (a scan's errors and warnings, say) open it.
 pub fn job_actions(j: &Value, reload: Signal<u64>) -> Element {
     let id = u(j, "id");
     let st = s(j, "status");
@@ -196,6 +216,13 @@ pub fn job_actions(j: &Value, reload: Signal<u64>) -> Element {
         "pending" | "in_progress" => {
             let running = st == "in_progress";
             rsx! {
+                if !running {
+                    button { class: "btn small", title: state::tr("Starts after the job running in its lane; jobs in other lanes are not affected."),
+                        onclick: move |_| { spawn(async move { if run_next_jobs(vec![id]).await { bump(reload); } }); },
+                        {state::tr("run next")}
+                    }
+                    " "
+                }
                 button { class: "btn small danger",
                     onclick: move |_| {
                         spawn(async move {
@@ -273,8 +300,9 @@ pub fn Jobs() -> Element {
     });
     let spec = use_hook(move || {
         let columns = vec![
-            Column::text("id", &state::tr("id")).num(),
+            Column::text("no", &state::tr("No.")).num(),
             Column::text("job_type", &state::tr("type")),
+            Column::text("id", &state::tr("id")).num(),
             Column::html("lane", &state::tr("lane"), |j| {
                 let lane = s(j, "lane");
                 match lane.strip_prefix("provider:") {
@@ -311,7 +339,14 @@ pub fn Jobs() -> Element {
         ];
         let mut spec = GridSpec::new("jobs", columns, |q| async move {
             let p = vec![("job_type", q.f("job_type")), ("status", q.f("status")), ("limit", q.limit.to_string()), ("offset", q.offset.to_string())];
-            api::get(&format!("/api/v1/jobs{}", api::qs(&p))).await
+            // No.: the row's place in the list as shown, counted across pages.
+            let mut page = api::get(&format!("/api/v1/jobs{}", api::qs(&p))).await?;
+            if let Some(jobs) = page.get_mut("jobs").and_then(Value::as_array_mut) {
+                for (i, j) in jobs.iter_mut().enumerate() {
+                    j["no"] = json!(q.offset + i as u64 + 1);
+                }
+            }
+            Ok(page)
         })
         .filters(vec![
             Filter::Select {
@@ -336,7 +371,13 @@ pub fn Jobs() -> Element {
         spec.search = false;
         // By status: finished jobs only. A selection also removes a job that never started
         // and asks a running one to stop (it stays, cancelled, until cleared).
-        let spec = spec.select(|j| u(j, "id"), vec![crate::components::SelAction::new(&state::tr("clear selected from the list"), |ids| async move { clear_jobs(json!({ "ids": ids })).await })]);
+        let spec = spec.select(
+            |j| u(j, "id"),
+            vec![
+                crate::components::SelAction::new(&state::tr("run next"), |ids| async move { run_next_jobs(ids).await }),
+                crate::components::SelAction::new(&state::tr("clear selected from the list"), |ids| async move { clear_jobs(json!({ "ids": ids })).await }),
+            ],
+        );
         Spec(Rc::new(spec))
     });
     let dat_plats = super::widgets::use_dat_platforms();

@@ -453,6 +453,19 @@ async fn store_url_placed(
         let bytes = row.try_get::<Option<u64>, _>("bytes")?.unwrap_or_else(|| std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
         return Ok((MediaRecord { media_id, path, bytes, fresh: false }, linked));
     }
+    // Already on disk at the slot's own name (an earlier install's media folder under a new
+    // database): take that file rather than download it again (`media_store::adopt_existing`).
+    if super::super::settings::media_reuse_existing(pool).await? {
+        let exts: Vec<&str> = match media_store::known_extension(url) {
+            Some(ext) => vec![ext],
+            None => media_store::role_extensions(placement.role).to_vec(),
+        };
+        let meta = NewMedia { media_type, sub_category, source, provider_id, source_url: Some(url), ext: exts[0], own_row: false, on_existing: media_store::OnExisting::ReplaceRetired };
+        if let Some(adopted) = media_store::adopt_existing(pool, &roots, &placement, &meta, &exts).await? {
+            let linked = media_store::link_placed(pool, adopted.media_id, targets, group.as_ref(), media_type, sub_category).await?;
+            return Ok((MediaRecord { media_id: adopted.media_id, path: adopted.path, bytes: adopted.bytes, fresh: false }, linked));
+        }
+    }
     let (bytes, content_type) = match prefetched {
         Some((bytes, content_type)) => (bytes, content_type),
         None => {

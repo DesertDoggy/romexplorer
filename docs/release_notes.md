@@ -1,3 +1,41 @@
+# romexplorer 0.7.1 (alpha)
+
+Alpha: the database schema may change between releases with no upgrade path. Back up before
+replacing a build.
+
+## Changes
+
+**Media**
+- After starting over with a new database, provider syncs take the art already in the media
+  folder instead of downloading it again. Only what is missing downloads. The first start
+  asks whether to do this; Settings › media_reuse_existing changes it later.
+
+**Jobs**
+- The jobs list starts with a No. column, then the type and the ID.
+- A waiting job has a Run next button, also for a selection: it starts as soon as the job
+  running in its lane is done. Other lanes are not affected.
+
+**Hash match**
+- A hash match with only Hasheous on also fetches IGDB data and art for what it matched, as
+  with PlayMatch.
+
+**Merge review**
+- The Gemini answer, and Ask Google, come back in the UI language.
+- When the lookup fails, the message says why: a certificate or a timeout, the model, and
+  the quota that ran out. A key with no free quota for the model says so.
+- If the model list can't be read, Gemini is still asked; on a quota error the next Flash
+  model is tried once.
+
+**Definitive and Crossplat**
+- Only titles with an IGDB id are listed. Wii U titles named by their title id no longer show
+  in Definitive.
+
+## Bug fixes
+
+**Collection**
+- The Definitive tab's search found only the leading title's own name. It now finds a family
+  by any version's name, including localized and alternative names.
+
 # romexplorer 0.1.7 (alpha)
 
 Alpha: the database schema may change between 0.1.x releases with no upgrade path. Back up

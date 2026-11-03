@@ -1139,6 +1139,10 @@ async fn share_export(State(s): State<Shared>, Path(table): Path<String>, Query(
     Ok(Json(api::sync::export(&s.app, &table, after.as_deref(), q.limit.unwrap_or(2_000), false).await?))
 }
 
+async fn media_reuse_prompt(State(s): State<Shared>) -> ApiResult<api::media::ReusePrompt> {
+    Ok(Json(api::media::reuse_prompt(&s.app).await?))
+}
+
 // -- sources: the servers and peers this machine syncs FROM --------------------------------
 
 /// The options and the warning travel with the value so the first-run prompt, the console
@@ -1500,14 +1504,17 @@ async fn review_merges(State(s): State<Shared>, Query(q): Query<api::catalog::Li
 async fn review_merge_action(State(s): State<Shared>, Path((key, action)): Path<(String, String)>, body: Option<Json<api::review::ApplyRequest>>) -> ApiResult<Value> {
     match action.as_str() {
         "apply" => {
-            let req = body.map(|Json(b)| b).unwrap_or(api::review::ApplyRequest { option: 0 });
+            let req = body.map(|Json(b)| b).unwrap_or_default();
             Ok(Json(serde_json::to_value(api::review::apply(&s.app, &key, &req).await?).unwrap_or_default()))
         }
         "dismiss" => {
             api::review::dismiss(&s.app, &key).await?;
             Ok(Json(json!({ "dismissed": key })))
         }
-        "lookup" => Ok(Json(serde_json::to_value(api::review::lookup(&s.app, &key).await?).unwrap_or_default())),
+        "lookup" => {
+            let lang = body.and_then(|Json(b)| b.lang);
+            Ok(Json(serde_json::to_value(api::review::lookup(&s.app, &key, lang.as_deref()).await?).unwrap_or_default()))
+        }
         _ => Err(Error::invalid("action must be apply, dismiss or lookup").into()),
     }
 }
@@ -1969,6 +1976,14 @@ async fn jobs_counts(State(s): State<Shared>) -> ApiResult<Vec<api::jobs::Status
 
 async fn jobs_get(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<crate::database::jobs::JobRow> {
     Ok(Json(api::jobs::get(&s.app, id).await?))
+}
+
+async fn jobs_run_next(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<api::jobs::RunNextPosition> {
+    Ok(Json(api::jobs::run_next_one(&s.app, id).await?))
+}
+
+async fn jobs_run_next_many(State(s): State<Shared>, Json(request): Json<api::jobs::RunNextRequest>) -> ApiResult<api::jobs::RunNextResult> {
+    Ok(Json(api::jobs::run_next(&s.app, &request.ids).await?))
 }
 
 async fn jobs_retry(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<crate::database::jobs::JobRow> {
@@ -2504,6 +2519,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/{id}/file", get(audio_file))
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
         .route("/api/v1/media/strip", get(media_strip))
+        .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/media/remote/{id}", get(media_remote))
         .route("/api/v1/server", get(server_info))
         .route("/api/v1/server/ports", axum::routing::put(server_ports_put))
@@ -2606,6 +2622,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/jobs/counts", get(jobs_counts))
         .route("/api/v1/jobs/{id}", get(jobs_get))
         .route("/api/v1/jobs/{id}/retry", post(jobs_retry))
+        .route("/api/v1/jobs/{id}/run-next", post(jobs_run_next))
+        .route("/api/v1/jobs/run-next", post(jobs_run_next_many))
         .route("/api/v1/jobs/{id}/cancel", post(jobs_cancel))
         .route("/api/v1/schedules", get(schedules_list).post(schedules_create))
         .route("/api/v1/schedules/{id}", get(schedules_get).put(schedules_update).delete(schedules_delete))

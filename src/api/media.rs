@@ -21,6 +21,28 @@ async fn roots(app: &App) -> Result<Roots> {
     Ok(Roots::load(&app.pool, &app.paths.media_dir()).await?)
 }
 
+/// Whether to ask "use the media files already in this folder?" (`media_reuse_existing`):
+/// never answered, no media on record yet, and the media folder(s) already hold files --
+/// an earlier install's art under a new database. Both front ends ask once at first run and
+/// answer by saving the setting.
+#[derive(Debug, Serialize)]
+pub struct ReusePrompt {
+    pub ask: bool,
+}
+
+pub async fn reuse_prompt(app: &App) -> Result<ReusePrompt> {
+    if settings::get::<bool>(&app.pool, settings::KEY_MEDIA_REUSE_EXISTING).await?.is_some() {
+        return Ok(ReusePrompt { ask: false });
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media").fetch_one(&app.pool).await?;
+    if rows > 0 {
+        return Ok(ReusePrompt { ask: false });
+    }
+    let roots = roots(app).await?;
+    let ask = tokio::task::spawn_blocking(move || media_store::roots_hold_files(&roots)).await.map_err(|e| Error::internal(e.to_string()))?;
+    Ok(ReusePrompt { ask })
+}
+
 /// The file to stream for media `id`: full size (through the cache tiers), or with
 /// `thumb` a grid thumbnail in `format` (default: the `media_thumb_format` setting). A
 /// source that can't be thumbnailed (video, SVG, ...) is served full size.

@@ -2696,5 +2696,17 @@
   ".psv and game-card images (Vita)": "Vita の .psv とゲームカードイメージ",
   "PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)": "PS1・PS2・PS3 のディスクと PS3 のゲームフォルダ（Redump にハッシュあり）",
   "Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.": "DAT のハッシュで照合できなかったファイルを、ヘッダーのシリアルで照合します。DAT にハッシュがある形式は既定でオフです。",
-  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz（Switch。チケットか、名前の [タイトルID] で照合）"
+  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz（Switch。チケットか、名前の [タイトルID] で照合）",
+  "Use the media files already in this folder?": "このフォルダーにあるメディアファイルを使いますか？",
+  "The media folder already holds art, probably from an earlier install. Yes: provider syncs take those files as they are and download only what is missing. No: everything is downloaded again; the old files are left where they are.": "メディアフォルダーには、以前のインストールで保存したと思われるアートがすでにあります。「はい」を選ぶと、プロバイダー同期はそのファイルをそのまま使い、足りない分だけをダウンロードします。「いいえ」を選ぶと、すべてをダウンロードし直します。古いファイルはそのまま残ります。",
+  "Change it any time under Config › Settings (media_reuse_existing).": "あとから Config › Settings（media_reuse_existing）でいつでも変更できます。",
+  "Yes (recommended)": "はい（推奨）",
+  "take art already in the media folder instead of downloading it again (default)": "メディアフォルダーにあるアートを使い、ダウンロードし直さない（既定）",
+  "always download": "常にダウンロードする",
+  "When art a provider sync would download is already at its place in the media folder -- left there by an earlier install, say after starting over with a new database -- record that file instead of downloading it again (true | false; default true). Checked per provider and per picture, so what is missing still downloads. Your own uploads are not found this way.": "プロバイダー同期でダウンロードするアートが、メディアフォルダーの所定の場所にすでにある場合（新しいデータベースでやり直したときなど、以前のインストールが残したもの）、ダウンロードし直さずにそのファイルを記録します（true | false、既定 true）。プロバイダーごと、画像ごとに確認するので、足りないものはダウンロードされます。自分でアップロードしたファイルは対象外です。",
+  "No.": "No.",
+  "run next": "次に実行",
+  "Starts after the job running in its lane; jobs in other lanes are not affected.": "同じレーンで実行中のジョブが終わると開始します。ほかのレーンのジョブには影響しません。",
+  "#{id} runs next in its lane (position {n})": "#{id} をレーン内で次に実行します（{n} 番目）",
+  "{n} job(s) moved to the front of their lanes": "{n} 件のジョブをレーンの先頭に移しました"
 }

@@ -2444,7 +2444,24 @@ function askLanguage() {
     <div class="langpick">${uiLanguages.map(c => `<button class="btn" data-lang="${esc(c)}"><span class="flag">${langFlag(c)}</span> ${esc(langNative(c))} <span class="muted">${esc(c.toUpperCase())}</span></button>`).join('')}</div>
     <p class="muted">${tr('Change it any time from the language menu at the top right, or under Config › Settings.')}</p>`);
   modalPinned = true;
-  for (const b of box.querySelectorAll('[data-lang]')) b.onclick = () => { closeModal(); setUiLanguage(b.dataset.lang); };
+  for (const b of box.querySelectorAll('[data-lang]')) b.onclick = async () => { closeModal(); await setUiLanguage(b.dataset.lang); askMediaReuse(); };
+}
+// First run, after the language: the media folder already holds art (an earlier install's,
+// under a new database). Asked once; the answer is media_reuse_existing. The app asks the
+// same (screens/mode.rs ask_media_reuse).
+async function askMediaReuse() {
+  if (consoleRefused) return;
+  let p; try { p = await api('/api/v1/media/reuse_prompt'); } catch (e) { return; }
+  if (!p.ask) return;
+  const box = openModal(`<h2>${tr('Use the media files already in this folder?')}</h2>
+    <p>${tr('The media folder already holds art, probably from an earlier install. Yes: provider syncs take those files as they are and download only what is missing. No: everything is downloaded again; the old files are left where they are.')}</p>
+    <p class="muted">${tr('Change it any time under Config › Settings (media_reuse_existing).')}</p>
+    <div class="toolbar"><span class="grow"></span><button class="btn" data-reuse="false">${tr('No')}</button><button class="btn primary" data-reuse="true">${tr('Yes (recommended)')}</button></div>`);
+  modalPinned = true;
+  for (const b of box.querySelectorAll('[data-reuse]')) b.onclick = async () => {
+    closeModal();
+    try { await api('/api/v1/settings/media_reuse_existing', { method: 'PUT', body: b.dataset.reuse, headers: { 'Content-Type': 'application/json' } }); await loadUiSettings(); } catch (e) { toast(e.message, true); }
+  };
 }
 // Default view per list (Config > Settings > view_defaults); a view picked on a page lasts
 // until the page is reloaded.
@@ -3112,7 +3129,7 @@ async function showMergeReview() {
       q.nav.append(no);
       if (it.can_look_up) {
         const look = host.querySelector('#rv-look');
-        api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/lookup', { method: 'POST', body: {} }).then(v => {
+        api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/lookup', { method: 'POST', body: { lang: uiLanguage } }).then(v => {
           look.innerHTML = `<h3>${tr('What differs')}</h3>${v.answer ? `<div style="white-space:pre-wrap;font-size:13px">${esc(v.answer)}</div>` : ''}
             ${v.sources && v.sources.length ? `<div class="muted" style="font-size:12px;margin-top:4px">${tr('sources:')} ${v.sources.map(s => `<a class="link" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`).join(' ')}</div>` : ''}
             ${v.error ? `<div class="muted">${esc(v.error)}</div>` : ''}
@@ -4657,7 +4674,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -4669,6 +4686,7 @@ function settingEditor(key, value) {
         copy_decide_on_copy: [false, tr('every copy opens its format section expanded and editable'), tr('use the copy defaults (default)')],
         media_export_prefer_region: [true, tr("exported art: the release's own region first, whatever the provider order (default)"), tr('exported art follows the provider order')],
         scan_pkg_titles: [false, tr('read the title inside PS3 and PSP .pkg files'), tr('name them from the content id only (default)')],
+        media_reuse_existing: [true, tr('take art already in the media folder instead of downloading it again (default)'), tr('always download')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));
@@ -5351,8 +5369,9 @@ async function showJobs() {
   };
   const grid = makeGrid(document.getElementById('grid'), {
     columns: [
-      { key: 'id', label: tr('id'), cls: 'num' },
+      { key: 'no', label: tr('No.'), cls: 'num' },
       { key: 'job_type', label: tr('type') },
+      { key: 'id', label: tr('id'), cls: 'num' },
       { key: 'lane', label: tr('lane'), render: j => j.lane.startsWith('provider:') ? providerIcon(j.lane.slice(9)) + esc(j.lane.slice(9)) : badge(j.lane, 'dim') },
       { key: 'status', label: tr('status'), render: j => badge(j.status + (j.cancel_requested ? ' ' + tr('(cancelling)') : ''), { pending: 'warn', in_progress: 'warn', done: 'ok', failed: 'bad', cancelled: 'dim' }[j.status]) + (j.in_turn && j.status === 'pending' ? ' ' + `<span title="${tr('queued: starts when nothing else is running or waiting')}">${badge(tr('in turn'), 'dim')}</span>` : '') },
       { key: 'x', label: tr('action'), render: jobActions },
@@ -5368,8 +5387,9 @@ async function showJobs() {
       { key: 'job_type', label: tr('type'), type: 'select', options: () => `<option value="">${tr('all types')}</option>` + vocab.jobs.job_types.map(t => `<option>${t}</option>`).join('') },
       { key: 'status', label: tr('status'), type: 'select', options: () => `<option value="">${tr('all statuses')}</option>` + vocab.jobs.statuses.map(t => `<option>${t}</option>`).join('') },
     ],
-    fetch: st => api('/api/v1/jobs' + qs({ job_type: st.filters.job_type, status: st.filters.status, limit: st.limit, offset: st.offset })),
-    selection: { key: j => j.id, actions: [{ label: tr('clear selected from the list'), run: async (ids, done) => { await clearJobs({ ids }); done(); } }] },
+    // No.: the row's place in the list as shown, counted across pages.
+    fetch: st => api('/api/v1/jobs' + qs({ job_type: st.filters.job_type, status: st.filters.status, limit: st.limit, offset: st.offset })).then(r => { (r.jobs || []).forEach((j, i) => { j.no = st.offset + i + 1; }); return r; }),
+    selection: { key: j => j.id, actions: [{ label: tr('run next'), run: async (ids, done) => { await runNextJobs(ids); done(); } }, { label: tr('clear selected from the list'), run: async (ids, done) => { await clearJobs({ ids }); done(); } }] },
   });
   // By status: finished jobs only. A selection also removes a job that never started and asks
   // a running one to stop (it stays, cancelled, until cleared).
@@ -5530,11 +5550,24 @@ async function cancelJob(id, running) {
   if (running && !confirm(trf('Cancel running job #{id}? It stops within a few seconds; work already saved stays, the rest is redone by a later run.', { id }))) return;
   try { const r = await api('/api/v1/jobs/' + id + '/cancel', { method: 'POST' }); toast(r.outcome === 'cancelled' ? trf('cancelled #{id}', { id }) : trf('cancelling #{id}…', { id })); route(); } catch (err) { toast(err.message, true); }
 }
-// A jobs row's buttons: retry a failed or cancelled job, cancel a waiting or running one, and
-// for a finished one with a result (a scan's errors and warnings, say) open it.
+// "Run next": pending jobs to the front of their lanes (the app's run_next_jobs). Selected
+// jobs keep their order among themselves.
+async function runNextJobs(ids) {
+  try {
+    const r = await api('/api/v1/jobs/run-next', { method: 'POST', body: { ids } });
+    const moved = r.positions.filter(p => p.position != null);
+    if (moved.length === 1) toast(trf('#{id} runs next in its lane (position {n})', { id: moved[0].id, n: moved[0].position }));
+    else toast(trf('{n} job(s) moved to the front of their lanes', { n: moved.length }));
+    route();
+  } catch (err) { toast(err.message, true); }
+}
+// A jobs row's buttons: retry a failed or cancelled job, run a waiting one next, cancel a
+// waiting or running one, and for a finished one with a result (a scan's errors and
+// warnings, say) open it.
 function jobActions(j) {
   const finished = ['done', 'failed', 'cancelled'].includes(j.status);
-  const main = (j.status === 'failed' || j.status === 'cancelled') ? `<button class="btn small" onclick="retryJob(${j.id})">${tr('retry')}</button>` : (j.status === 'pending' || j.status === 'in_progress') ? `<button class="btn small danger" onclick="cancelJob(${j.id}, ${j.status === 'in_progress'})">${tr('cancel')}</button>` : '';
+  const next = j.status === 'pending' ? `<button class="btn small" title="${esc(tr('Starts after the job running in its lane; jobs in other lanes are not affected.'))}" onclick="runNextJobs([${j.id}])">${tr('run next')}</button> ` : '';
+  const main = (j.status === 'failed' || j.status === 'cancelled') ? `<button class="btn small" onclick="retryJob(${j.id})">${tr('retry')}</button>` : (j.status === 'pending' || j.status === 'in_progress') ? `${next}<button class="btn small danger" onclick="cancelJob(${j.id}, ${j.status === 'in_progress'})">${tr('cancel')}</button>` : '';
   const result = finished && j.result ? ` <button class="btn small" onclick="showJobResult(${j.id})">${tr('result')}</button>` : '';
   return main + result;
 }
@@ -5777,7 +5810,7 @@ async function showDbTable(table) {
   await loadUiSettings();
   refreshHeader(); setInterval(refreshHeader, 15000);
   route();
-  if (!uiLanguageChosen && !consoleRefused) askLanguage();
+  if (!uiLanguageChosen && !consoleRefused) askLanguage(); else askMediaReuse();
 })();
 
 // ---------------------------------------------------------------------------

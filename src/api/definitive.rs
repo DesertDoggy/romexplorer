@@ -96,7 +96,14 @@ fn noted_ids(floor: usize) -> String {
     ids.iter().map(|i| format!("'{i}'")).collect::<Vec<_>>().join(",")
 }
 
-/// The Definitive list. Filters: `search` (either title's name), `platforms` (a version on
+/// At most this many titles match a Definitive search (a one-letter search would otherwise
+/// hand the list query every title there is).
+const SEARCH_CAP: u32 = 20_000;
+
+/// The Definitive list: family heads, and titles of a family of one, that have an IGDB id --
+/// a title without one (a Wii U title still named by its hex title id, say) has no family to
+/// show and is left to the Titles list, as in Crossplat. Filters: `search` (any version's
+/// name, localized or alternative, like the Titles list), `platforms` (a version on
 /// one of them), `noted` (the base game has a version note of that rank or above), `lead` (definitive | base).
 /// Sort: name (the leading title's, default) | base (the base game's) | members.
 pub async fn list(app: &App, q: &ListQuery) -> Result<Page<DefinitiveRow>> {
@@ -107,16 +114,42 @@ pub async fn list(app: &App, q: &ListQuery) -> Result<Page<DefinitiveRow>> {
     let mut body = format!(
         "FROM title t LEFT JOIN title_families f ON f.root_title_id = t.id JOIN title d ON d.id = COALESCE(f.definitive_title_id, t.id) \
          WHERE t.deleted = FALSE AND (t.family_root_id IS NULL OR t.family_root_id = t.id) \
+           AND EXISTS (SELECT 1 FROM title_provider_links li WHERE li.title_id = t.id AND li.provider = 'igdb' AND li.deleted = FALSE AND li.provider_id REGEXP '^[0-9]+$') \
            AND (f.root_title_id IS NOT NULL OR (t.family_root_id IS NULL AND t.category IN ({MEMBER_CATEGORIES}) \
                 AND NOT EXISTS (SELECT 1 FROM title_bundle_games bx WHERE bx.bundle_title_id = t.id) \
                 AND EXISTS (SELECT 1 FROM title_releases trx JOIN `release` rx ON rx.id = trx.release_id AND rx.deleted = FALSE AND rx.material IS NULL WHERE trx.title_id = t.id AND {retail})))"
     );
     let mut binds: Vec<Bind> = Vec::new();
     if let Some(s) = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        body.push_str(" AND (t.name LIKE ? OR d.name LIKE ? OR EXISTS (SELECT 1 FROM title_locales tls WHERE tls.title_id IN (t.id, d.id) AND tls.name LIKE ?))");
-        for _ in 0..3 {
-            binds.push(Bind::Str(like_pattern(s)));
+        // Matched like the Titles list (its own name, localized and alternative names, the
+        // name dictionary's other-language versions), over every version of a family -- the
+        // row shows display names and finds its family by any member. Looked up once here and
+        // handed to both queries as ids, rather than as LIKEs correlated into the count and the
+        // page over every title.
+        let (cond, pats) = crate::database::dictionary::search_condition(
+            pool,
+            s,
+            &["m.name LIKE ?", "m.norm_name LIKE ?", "EXISTS (SELECT 1 FROM title_locales tls WHERE tls.title_id = m.id AND tls.name LIKE ?)", "EXISTS (SELECT 1 FROM title_alt_names tan WHERE tan.title_id = m.id AND tan.name LIKE ?)"],
+            like_pattern(s),
+        )
+        .await?;
+        let mut found = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT m.id, COALESCE(m.family_root_id, m.id) AS root FROM title m WHERE m.deleted = FALSE AND {cond} LIMIT {SEARCH_CAP}")));
+        for p in &pats {
+            found = found.bind(p);
         }
+        let mut ids: Vec<u64> = Vec::new();
+        for r in found.fetch_all(pool).await? {
+            ids.push(r.try_get("id")?);
+            ids.push(r.try_get("root")?);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.is_empty() {
+            let (limit, offset) = clamp_page(q.limit, q.offset);
+            return Ok(Page { items: Vec::new(), total: 0, limit, offset });
+        }
+        let list = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        body.push_str(&format!(" AND (t.id IN ({list}) OR d.id IN ({list}))"));
     }
     let chosen: Vec<String> = catalog::chosen_platforms(q).into_iter().flatten().map(|p| p.to_string()).collect();
     if !chosen.is_empty() {

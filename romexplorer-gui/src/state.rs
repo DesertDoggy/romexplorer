@@ -132,6 +132,12 @@ pub async fn reload_settings() {
     }
 }
 
+/// The UI language code (`ui_language`: en, ja, fr, ...), for a request whose answer should
+/// come back in it (Merge review's lookup).
+pub fn ui_language() -> String {
+    with_data(|d| d.settings.iter().find(|s| s.get("key").and_then(|k| k.as_str()) == Some("ui_language")).and_then(|s| s.get("value")).and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_else(|| "en".to_string())
+}
+
 async fn load_i18n(settings: &[Value]) -> Value {
     let lang = settings.iter().find(|s| s.get("key").and_then(|k| k.as_str()) == Some("ui_language")).and_then(|s| s.get("value")).and_then(|v| v.as_str()).unwrap_or("en").to_string();
     // English too: keyed text (tab explanations) is only in the language files.

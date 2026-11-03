@@ -306,6 +306,9 @@ pub async fn clear(app: &App, request: &ClearRequest) -> Result<ClearResult> {
         }
     }
     let kept = request.ids.as_ref().map_or(0, |ids| (ids.len() as u64).saturating_sub(removed));
+    // With the census the worker logs at start, this tells a clear that did not last from
+    // jobs that are simply new.
+    log::info!("jobs cleared from the log: {removed} removed ({:?}{})", statuses, if request.ids.is_some() { ", selected rows" } else { "" });
     Ok(ClearResult { removed, kept })
 }
 
@@ -375,6 +378,45 @@ pub async fn retry(app: &App, id: u64) -> Result<JobRow> {
         return Err(Error::conflict(format!("job {id} is {}, only failed or cancelled jobs can be retried", job.status)));
     }
     get(app, id).await
+}
+
+/// `POST /api/v1/jobs/run-next`: the jobs to move to the front of their lanes.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RunNextRequest {
+    pub ids: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunNextResult {
+    /// Per job asked for: where it now stands in its lane (1 = starts next), `None` when it
+    /// was not pending (running or finished jobs are never moved).
+    pub positions: Vec<RunNextPosition>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunNextPosition {
+    pub id: u64,
+    pub position: Option<u64>,
+}
+
+/// "Run next": pending jobs to the front of their lanes, keeping the order among them. They
+/// start after the job running in their lane; jobs in other lanes are not affected.
+pub async fn run_next(app: &App, ids: &[u64]) -> Result<RunNextResult> {
+    if ids.is_empty() {
+        return Err(Error::invalid("no jobs given"));
+    }
+    let moved = db_jobs::run_next(&app.pool, ids).await?;
+    Ok(RunNextResult { positions: moved.into_iter().map(|(id, position)| RunNextPosition { id, position }).collect() })
+}
+
+/// One job's "Run next"; a job that is not pending is a conflict.
+pub async fn run_next_one(app: &App, id: u64) -> Result<RunNextPosition> {
+    let job = get(app, id).await?;
+    if job.status != "pending" {
+        return Err(Error::conflict(format!("job {id} is {}, only a pending job can be moved", job.status)));
+    }
+    let result = run_next(app, &[id]).await?;
+    Ok(result.positions.into_iter().next().unwrap_or(RunNextPosition { id, position: None }))
 }
 
 /// Cancels a job: a pending one never runs; a running one is flagged and the worker aborts

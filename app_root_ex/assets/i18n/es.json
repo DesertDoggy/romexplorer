@@ -2514,5 +2514,17 @@
   ".psv and game-card images (Vita)": ".psv e imágenes de tarjeta (Vita)",
   "PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)": "discos de PS1, PS2 y PS3, carpetas de juegos de PS3 (Redump tiene sus hashes)",
   "Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.": "Los archivos que ningún hash de DAT reconoció se emparejan por el serial de su cabecera. Los formatos que un DAT tiene con hash están desactivados por defecto.",
-  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz (Switch; por el ticket o el [title id] del nombre)"
+  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz (Switch; por el ticket o el [title id] del nombre)",
+  "Use the media files already in this folder?": "¿Usar los archivos multimedia que ya están en esta carpeta?",
+  "The media folder already holds art, probably from an earlier install. Yes: provider syncs take those files as they are and download only what is missing. No: everything is downloaded again; the old files are left where they are.": "La carpeta de medios ya contiene ilustraciones, probablemente de una instalación anterior. Sí: las sincronizaciones de proveedores usan esos archivos tal como están y solo descargan lo que falta. No: se vuelve a descargar todo; los archivos antiguos se quedan donde están.",
+  "Change it any time under Config › Settings (media_reuse_existing).": "Puede cambiarse cuando quiera en Config › Settings (media_reuse_existing).",
+  "Yes (recommended)": "Sí (recomendado)",
+  "take art already in the media folder instead of downloading it again (default)": "usar las ilustraciones que ya están en la carpeta de medios en lugar de volver a descargarlas (predeterminado)",
+  "always download": "descargar siempre",
+  "When art a provider sync would download is already at its place in the media folder -- left there by an earlier install, say after starting over with a new database -- record that file instead of downloading it again (true | false; default true). Checked per provider and per picture, so what is missing still downloads. Your own uploads are not found this way.": "Cuando una ilustración que una sincronización de proveedor descargaría ya está en su lugar en la carpeta de medios -- dejada allí por una instalación anterior, por ejemplo tras empezar de nuevo con otra base de datos --, se registra ese archivo en lugar de volver a descargarlo (true | false; predeterminado true). Se comprueba por proveedor y por imagen, así que lo que falta se sigue descargando. Sus propias subidas no se encuentran de esta forma.",
+  "No.": "N.º",
+  "run next": "ejecutar a continuación",
+  "Starts after the job running in its lane; jobs in other lanes are not affected.": "Empieza después del trabajo que se está ejecutando en su carril; los trabajos de otros carriles no se ven afectados.",
+  "#{id} runs next in its lane (position {n})": "#{id} se ejecuta a continuación en su carril (posición {n})",
+  "{n} job(s) moved to the front of their lanes": "{n} trabajo(s) movido(s) al principio de su carril"
 }

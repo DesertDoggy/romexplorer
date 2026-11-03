@@ -39,7 +39,7 @@ const EDITORS: &[&str] = &[
     "grid_media_type", "hasheous_parallel_downloads", "playmatch_batch_size", "media_cache_tier1_max_mb", "media_cache_tier2_max_mb", "media_thumb_px", "media_thumb_quality",
     "ra_include_beaten_default", "allow_remote_launch", "release_edition_order", "release_kinds_default", "release_unlicensed", "ra_base_filter_default", "ra_source_default", "view_defaults",
     "media_thumb_format", "temp_dir_margin", "title_display_mode", "metadata_source_priority", "ui_colors", "ui_icons",
-    "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles",
+    "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
     "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
@@ -102,6 +102,7 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
     ("copy_lossy_warning", true, "ask before choosing a lossy output: wua, zar, xiso (default)", "don't ask"),
     ("media_export_prefer_region", true, "exported art: the release's own region first, whatever the provider order (default)", "exported art follows the provider order"),
     ("scan_pkg_titles", false, "read the title inside PS3 and PSP .pkg files", "name them from the content id only (default)"),
+    ("media_reuse_existing", true, "take art already in the media folder instead of downloading it again (default)", "always download"),
 ];
 
 /// Hashes a file scan can compute, in the order they are shown. Default: all but sha256.

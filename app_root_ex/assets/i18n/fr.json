@@ -2514,5 +2514,17 @@
   ".psv and game-card images (Vita)": ".psv et images de cartes de jeu (Vita)",
   "PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)": "disques PS1, PS2 et PS3, dossiers de jeux PS3 (Redump en a les hashes)",
   "Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.": "Les fichiers qu'aucun hash de DAT n'a reconnus sont associés par le numéro de série de leur en-tête. Les formats qu'un DAT hache sont désactivés par défaut.",
-  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz (Switch ; par le ticket ou le [title id] du nom)"
+  ".nsp / .nsz (Switch; by the ticket or the [title id] in the name)": ".nsp / .nsz (Switch ; par le ticket ou le [title id] du nom)",
+  "Use the media files already in this folder?": "Utiliser les fichiers médias déjà présents dans ce dossier ?",
+  "The media folder already holds art, probably from an earlier install. Yes: provider syncs take those files as they are and download only what is missing. No: everything is downloaded again; the old files are left where they are.": "Le dossier des médias contient déjà des illustrations, probablement d'une installation précédente. Oui : les synchronisations des fournisseurs reprennent ces fichiers tels quels et ne téléchargent que ce qui manque. Non : tout est téléchargé à nouveau ; les anciens fichiers restent où ils sont.",
+  "Change it any time under Config › Settings (media_reuse_existing).": "Modifiable à tout moment dans Config › Settings (media_reuse_existing).",
+  "Yes (recommended)": "Oui (recommandé)",
+  "take art already in the media folder instead of downloading it again (default)": "reprendre les illustrations déjà présentes dans le dossier des médias au lieu de les retélécharger (par défaut)",
+  "always download": "toujours télécharger",
+  "When art a provider sync would download is already at its place in the media folder -- left there by an earlier install, say after starting over with a new database -- record that file instead of downloading it again (true | false; default true). Checked per provider and per picture, so what is missing still downloads. Your own uploads are not found this way.": "Quand une illustration qu'une synchronisation de fournisseur téléchargerait est déjà à sa place dans le dossier des médias -- laissée là par une installation précédente, par exemple après être reparti d'une nouvelle base de données --, ce fichier est enregistré au lieu d'être retéléchargé (true | false ; true par défaut). Vérifié par fournisseur et par image : ce qui manque est quand même téléchargé. Vos propres envois ne sont pas retrouvés ainsi.",
+  "No.": "N°",
+  "run next": "exécuter ensuite",
+  "Starts after the job running in its lane; jobs in other lanes are not affected.": "Démarre après la tâche en cours dans sa voie ; les tâches des autres voies ne sont pas concernées.",
+  "#{id} runs next in its lane (position {n})": "#{id} passe en tête de sa voie (position {n})",
+  "{n} job(s) moved to the front of their lanes": "{n} tâche(s) placée(s) en tête de leur voie"
 }

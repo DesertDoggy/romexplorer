@@ -228,9 +228,47 @@ pub async fn maybe_first_run() {
 async fn ask_mode() {
     let Ok(m) = api::get_as::<ModeView>("/api/v1/mode").await else { return };
     if m.chosen {
+        ask_media_reuse().await;
         return;
     }
     ui::open_modal(move || rsx! { FirstRunDialog { view: m.clone() } });
+}
+
+/// First run, after the mode: the media folder already holds art (an earlier install's,
+/// under a new database). Asked once; the answer is `media_reuse_existing`. The console asks
+/// the same (`askMediaReuse`).
+async fn ask_media_reuse() {
+    if !api::is_admin() {
+        return;
+    }
+    let Ok(v) = api::get("/api/v1/media/reuse_prompt").await else { return };
+    if !v.get("ask").and_then(Value::as_bool).unwrap_or(false) {
+        return;
+    }
+    ui::open_pinned_modal(|| rsx! { MediaReuseDialog {} });
+}
+
+#[component]
+fn MediaReuseDialog() -> Element {
+    let answer = |yes: bool| {
+        ui::close_modal();
+        spawn_forever(async move {
+            match api::put("/api/v1/settings/media_reuse_existing", serde_json::json!(yes)).await {
+                Ok(_) => state::reload_settings().await,
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
+    rsx! {
+        h2 { {state::tr("Use the media files already in this folder?")} }
+        p { {state::tr("The media folder already holds art, probably from an earlier install. Yes: provider syncs take those files as they are and download only what is missing. No: everything is downloaded again; the old files are left where they are.")} }
+        p { class: "muted", {state::tr("Change it any time under Config › Settings (media_reuse_existing).")} }
+        div { class: "fsfoot",
+            span { class: "grow" }
+            button { r#type: "button", class: "btn", onclick: move |_| answer(false), {state::tr("No")} }
+            button { r#type: "button", class: "btn primary", onclick: move |_| answer(true), {state::tr("Yes (recommended)")} }
+        }
+    }
 }
 
 #[component]
@@ -244,9 +282,9 @@ fn FirstRunDialog(view: ModeView) -> Element {
         details { summary { {state::tr("changing this later")} } p { class: "muted", style: "white-space:pre-wrap", "{view.switch_warning}" } }
         div { class: "fsfoot",
             span { class: "grow" }
-            button { r#type: "button", class: "btn", onclick: move |_| ui::close_modal(), {state::tr("later")} }
+            button { r#type: "button", class: "btn", onclick: move |_| { ui::close_modal(); spawn_forever(ask_media_reuse()); }, {state::tr("later")} }
             button { r#type: "button", class: "btn primary",
-                onclick: move |_| { ui::close_modal(); apply_mode(selected(), v.clone(), true, || {}); },
+                onclick: move |_| { ui::close_modal(); apply_mode(selected(), v.clone(), true, || { spawn_forever(ask_media_reuse()); }); },
                 {state::tr("choose")}
             }
         }

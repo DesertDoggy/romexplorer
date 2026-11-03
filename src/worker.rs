@@ -96,6 +96,12 @@ pub async fn run_scheduler(worker: Arc<Worker>, options: WorkerOptions, mut stop
     // Held while this worker lives, so a job it claimed is known to have a task behind it
     // (`jobs::release_orphans`, `jobs::cancel`).
     let mut alive = jobs::hold_worker_lock(&pool).await;
+    // What the job log holds as the worker starts: if jobs the user cleared show up again
+    // after a restart, this line says whether they are really back in this database.
+    match jobs::census(&pool).await {
+        Ok(c) => log::info!("worker start: job log has {} finished, {} pending, {} running; highest id {}", c.finished, c.pending, c.running, c.max_id.map_or("none".to_string(), |id| id.to_string())),
+        Err(e) => log::warn!("worker start: could not count the job log: {e}"),
+    }
     loop {
         if *stop.borrow() {
             break;

@@ -188,7 +188,7 @@ pub async fn suggestions(app: &App, q: &SuggestionsQuery) -> Result<SuggestionsP
 /// through Merge review's own path (`review::apply`), which keeps each title's IGDB game.
 pub async fn resolve_suggestion(app: &App, igdb_id: &str, accept: bool) -> Result<Option<u64>> {
     if accept {
-        Ok(super::review::apply(app, igdb_id, &super::review::ApplyRequest { option: 0 }).await?.title_ids.first().copied())
+        Ok(super::review::apply(app, igdb_id, &super::review::ApplyRequest::default()).await?.title_ids.first().copied())
     } else {
         super::review::dismiss(app, igdb_id).await?;
         Ok(None)
@@ -234,7 +234,7 @@ pub async fn resolve_suggestions(app: &App, req: &BulkSuggestions) -> Result<tit
     };
     let mut out = title_merge::BulkResolved::default();
     for id in &ids {
-        match super::review::apply(app, id, &super::review::ApplyRequest { option: 0 }).await {
+        match super::review::apply(app, id, &super::review::ApplyRequest::default()).await {
             Ok(_) => out.resolved += 1,
             Err(e) => out.failed.push(format!("{id}: {}", e.message)),
         }

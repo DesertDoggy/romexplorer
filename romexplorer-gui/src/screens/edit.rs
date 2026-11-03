@@ -729,7 +729,7 @@ fn ReviewTitleCard(title: serde_json::Value) -> Element {
 /// set, and Ask Google either way. Asked when the card opens; nothing is stored.
 #[component]
 fn LookupPanel(lookup: String) -> Element {
-    let answer = use_resource(use_reactive!(|lookup| async move { api::post(&format!("/api/v1/review/merges/{}/lookup", api::encode(&lookup)), json!({})).await }));
+    let answer = use_resource(use_reactive!(|lookup| async move { api::post(&format!("/api/v1/review/merges/{}/lookup", api::encode(&lookup)), json!({ "lang": state::ui_language() })).await }));
     let a = answer.read().clone();
     rsx! {
         div { class: "card", style: "margin:8px 0",

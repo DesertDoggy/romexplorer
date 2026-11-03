@@ -1960,9 +1960,11 @@ mod dat_resolve_tests {
 /// that hashes like a DAT line reuses the DAT's own `content` row (`upsert_content`);
 /// (2) `to_hasheous` looks every still-unlinked game's content up on Hasheous (single-hash
 /// API, so one request per content, serial in the `provider:hasheous` lane), skipping
-/// content already looked up within `cache_ttl_days`; (3) `to_playmatch` collects every
-/// cross-reference id Hasheous reported and enqueues **one** `provider_query` per provider
-/// carrying the whole id list, which that provider's lane then fetches in list requests.
+/// content already looked up within `cache_ttl_days`, and `to_playmatch` asks PlayMatch;
+/// (3) with either of the two on, the cross-reference ids the services reported become
+/// **one** `provider_query` per provider carrying the whole id list (that provider's lane
+/// fetches them in list requests), and every searchable provider gets a by-name job for the
+/// matched titles still without a link to it.
 pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate::database::jobs::Progress) -> Result<MatchSummary> {
     use crate::database::jobs as db_jobs;
     use crate::database::providers::raw_store::RawStore;
@@ -2405,54 +2407,54 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             }
         }
 
-        if req.to_playmatch {
-            // Follow-ups: one by-id job per provider with the ids every service reported...
-            for (provider, ids) in cross_refs {
-                if ids.is_empty() || matches!(provider, Provider::Hasheous | Provider::PlayMatch) {
-                    continue;
-                }
-                if !app.clients().is_available(provider) {
-                    log::info!("hash_match: {} cross-refs ({} ids) skipped, client unavailable", provider.name(), ids.len());
-                    continue;
-                }
-                summary.followup_ids += ids.len() as u64;
-                let request = super::jobs::JobRequest::ProviderQuery(super::jobs::ProviderQueryRequest { provider: provider.name().to_string(), name: None, content_id: None, provider_id: None, provider_ids: Some(ids), title_ids: None, platform: None });
-                db_jobs::enqueue(pool, request.job_type(), request.payload()).await?;
-                summary.followups_enqueued += 1;
+        // Follow-ups, whichever hash service matched (Hasheous alone too, so its matches also
+        // get IGDB data and art): one by-id job per provider with the ids every service
+        // reported...
+        for (provider, ids) in cross_refs {
+            if ids.is_empty() || matches!(provider, Provider::Hasheous | Provider::PlayMatch) {
+                continue;
             }
-            // ...and a by-name job per searchable provider for the titles still without a
-            // link to it (no hash service had that id) -- the worker looks each up by the
-            // title's own name + platform.
-            let mut title_ids: Vec<u64> = Vec::new();
-            let mut seen_titles: std::collections::HashSet<u64> = std::collections::HashSet::new();
-            let n_targets = targets.len() as u64;
-            for (i, game_id) in targets.iter().enumerate() {
-                progress.report(i as u64, Some(n_targets.max(1)), &format!("follow-ups: titles of game {} of {n_targets}", i + 1)).await;
-                let rows = sqlx::query("SELECT DISTINCT tr.title_id FROM local_release_games lrg JOIN title_releases tr ON tr.release_id = lrg.release_id WHERE lrg.game_id = ?").bind(game_id).fetch_all(pool).await?;
-                for r in rows {
-                    let id: u64 = r.try_get("title_id")?;
-                    if seen_titles.insert(id) {
-                        title_ids.push(id);
-                    }
+            if !app.clients().is_available(provider) {
+                log::info!("hash_match: {} cross-refs ({} ids) skipped, client unavailable", provider.name(), ids.len());
+                continue;
+            }
+            summary.followup_ids += ids.len() as u64;
+            let request = super::jobs::JobRequest::ProviderQuery(super::jobs::ProviderQueryRequest { provider: provider.name().to_string(), name: None, content_id: None, provider_id: None, provider_ids: Some(ids), title_ids: None, platform: None });
+            db_jobs::enqueue(pool, request.job_type(), request.payload()).await?;
+            summary.followups_enqueued += 1;
+        }
+        // ...and a by-name job per searchable provider for the titles still without a
+        // link to it (no hash service had that id) -- the worker looks each up by the
+        // title's own name + platform.
+        let mut title_ids: Vec<u64> = Vec::new();
+        let mut seen_titles: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let n_targets = targets.len() as u64;
+        for (i, game_id) in targets.iter().enumerate() {
+            progress.report(i as u64, Some(n_targets.max(1)), &format!("follow-ups: titles of game {} of {n_targets}", i + 1)).await;
+            let rows = sqlx::query("SELECT DISTINCT tr.title_id FROM local_release_games lrg JOIN title_releases tr ON tr.release_id = lrg.release_id WHERE lrg.game_id = ?").bind(game_id).fetch_all(pool).await?;
+            for r in rows {
+                let id: u64 = r.try_get("title_id")?;
+                if seen_titles.insert(id) {
+                    title_ids.push(id);
                 }
             }
-            for provider in Provider::ALL.into_iter().filter(|p| super::links::searchable(*p) && app.clients().is_available(*p)) {
-                let mut missing: Vec<u64> = Vec::new();
-                let n_titles = title_ids.len() as u64;
-                for (i, title_id) in title_ids.iter().enumerate() {
-                    progress.report(i as u64, Some(n_titles.max(1)), &format!("follow-ups: titles without {}, {} of {n_titles}", provider.name(), i + 1)).await;
-                    if !super::links::title_has_provider(pool, *title_id, provider).await? {
-                        missing.push(*title_id);
-                    }
+        }
+        for provider in Provider::ALL.into_iter().filter(|p| super::links::searchable(*p) && app.clients().is_available(*p)) {
+            let mut missing: Vec<u64> = Vec::new();
+            let n_titles = title_ids.len() as u64;
+            for (i, title_id) in title_ids.iter().enumerate() {
+                progress.report(i as u64, Some(n_titles.max(1)), &format!("follow-ups: titles without {}, {} of {n_titles}", provider.name(), i + 1)).await;
+                if !super::links::title_has_provider(pool, *title_id, provider).await? {
+                    missing.push(*title_id);
                 }
-                if missing.is_empty() {
-                    continue;
-                }
-                summary.name_followup_titles += missing.len() as u64;
-                let request = super::jobs::JobRequest::ProviderQuery(super::jobs::ProviderQueryRequest { provider: provider.name().to_string(), name: None, content_id: None, provider_id: None, provider_ids: None, title_ids: Some(missing), platform: None });
-                db_jobs::enqueue(pool, request.job_type(), request.payload()).await?;
-                summary.followups_enqueued += 1;
             }
+            if missing.is_empty() {
+                continue;
+            }
+            summary.name_followup_titles += missing.len() as u64;
+            let request = super::jobs::JobRequest::ProviderQuery(super::jobs::ProviderQueryRequest { provider: provider.name().to_string(), name: None, content_id: None, provider_id: None, provider_ids: None, title_ids: Some(missing), platform: None });
+            db_jobs::enqueue(pool, request.job_type(), request.payload()).await?;
+            summary.followups_enqueued += 1;
         }
     }
     // A match gives a rom its platform (above); its files' contents, and what is inside

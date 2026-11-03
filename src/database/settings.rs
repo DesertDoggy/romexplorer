@@ -187,6 +187,10 @@ pub const KEY_MEDIA_SYNC_AFTER_PULL: &str = "media_sync_after_pull";
 pub const KEY_MEDIA_PROVIDER_FALLBACK: &str = "media_provider_fallback";
 /// Searches also try the other script's names from the name dictionary (`dictionary`).
 pub const KEY_SEARCH_TRANSLATIONS: &str = "search_translations";
+/// A provider download whose file is already at its place in the media folder (left by an
+/// earlier install whose database is gone) takes that file instead of downloading again
+/// (bool, default true). Unset also means the first-run question was never answered.
+pub const KEY_MEDIA_REUSE_EXISTING: &str = "media_reuse_existing";
 /// Edit › Merge review's order: `regional` (default) | `english`.
 pub const KEY_MERGE_REVIEW_ORDER: &str = "merge_review_order";
 /// The Gemini model Merge review's lookups use; unset picks the newest Flash the key lists.
@@ -374,7 +378,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 84] = [
+pub const KNOWN_KEYS: [(&str, &str); 85] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -394,6 +398,7 @@ pub const KNOWN_KEYS: [(&str, &str); 84] = [
     (KEY_GEMINI_MODEL, "The Gemini model Merge review asks about International and Director's Cut releases (with a Gemini API key under Data › Providers). Unset: the newest Flash model the key can use."),
     (KEY_SEARCH_TRANSLATIONS, "Searches also look for a name's other-language versions from the name dictionary (Edit › Name dictionary): a search in Japanese finds the English name and the other way round (true | false; default true)."),
     (KEY_MEDIA_PROVIDER_FALLBACK, "While the main server is offline, fetch art from the provider's own URL (true | false; default true). While the server is up, it does every provider fetch itself and this machine takes the result from it; off means this machine never calls a provider for art at all."),
+    (KEY_MEDIA_REUSE_EXISTING, "When art a provider sync would download is already at its place in the media folder -- left there by an earlier install, say after starting over with a new database -- record that file instead of downloading it again (true | false; default true). Checked per provider and per picture, so what is missing still downloads. Your own uploads are not found this way."),
     (KEY_MEDIA_DOWNLOAD, "Which media a provider sync downloads: {\"igdb\": {\"box\": false, \"screenshot\": true}, ...}. Unlisted, box and cover are on and everything else is off. Files you add yourself (upload or URL) are never blocked."),
     (KEY_MEDIA_LIST_CAP, "How many screenshots / fan art images are taken per game from one provider (1-50, default 6)."),
     ("media_export_priority", "Export artwork: per slot (box, title, snap, logo), whose picture an emulator gets, best first -- \"manual\" is your own. Unset: box manual, thegamesdb, screenscraper, mobygames, retroachievements, igdb, steamgriddb; title manual, thegamesdb, screenscraper, retroachievements; snap the same plus igdb; logo manual, steamgriddb, thegamesdb, screenscraper."),
@@ -610,6 +615,10 @@ pub async fn media_sync_after_pull(pool: &MySqlPool) -> Result<bool, DatabaseErr
 
 pub async fn search_translations(pool: &MySqlPool) -> Result<bool, DatabaseError> {
     Ok(get::<bool>(pool, KEY_SEARCH_TRANSLATIONS).await?.unwrap_or(true))
+}
+
+pub async fn media_reuse_existing(pool: &MySqlPool) -> Result<bool, DatabaseError> {
+    Ok(get::<bool>(pool, KEY_MEDIA_REUSE_EXISTING).await?.unwrap_or(true))
 }
 
 pub async fn media_provider_fallback(pool: &MySqlPool) -> Result<bool, DatabaseError> {

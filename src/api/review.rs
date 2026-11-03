@@ -250,11 +250,14 @@ pub async fn merge_item(app: &App, key: &str) -> Result<Option<MergeItem>> {
     }))
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ApplyRequest {
     /// Which of the suggestion's options (0 for the IGDB-game kind's merge).
     #[serde(default)]
     pub option: usize,
+    /// `lookup`: the UI language the answer should come back in (en, ja, fr, ...).
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -400,6 +403,21 @@ lazy_static::lazy_static! {
 
 const GEMINI: &str = "https://generativelanguage.googleapis.com/v1beta";
 
+/// The model asked when the key's model list cannot be read (a TLS-intercepting proxy, a
+/// timeout): a recent stable Flash. `gemini_model` overrides it like it overrides the list.
+const FALLBACK_FLASH: &str = "gemini-2.5-flash";
+
+/// The UI languages, as the name a prompt asks for an answer in.
+const LANGUAGES: [(&str, &str); 9] = [("en", "English"), ("ja", "Japanese"), ("fr", "French"), ("es", "Spanish"), ("it", "Italian"), ("pt", "European Portuguese"), ("de", "German"), ("ko", "Korean"), ("pl", "Polish")];
+
+/// "Answer in <Language>." for UI language `lang`, `None` for one this app does not have.
+/// The question itself stays English, which searches better; names stay as written.
+pub fn language_line(lang: Option<&str>) -> Option<String> {
+    let lang = lang?.trim().to_ascii_lowercase();
+    let code = lang.split(['-', '_']).next().unwrap_or("");
+    LANGUAGES.iter().find(|(c, _)| *c == code).map(|(_, name)| format!("Answer in {name}."))
+}
+
 /// The question a variant suggestion asks: what differs between the Japanese original, the
 /// foreign release and the variant, and which of the two the variant is closer to.
 fn question(variant: &str, platform: &str, original: &str, foreign: &[(String, String)], variant_name: &str) -> String {
@@ -410,9 +428,20 @@ fn question(variant: &str, platform: &str, original: &str, foreign: &[(String, S
     )
 }
 
-fn search_urls(q: &str) -> (String, String) {
+/// The question with the answer language's line under it: what Gemini and Google's AI Mode
+/// are asked.
+pub fn with_language(q: &str, lang: Option<&str>) -> String {
+    match language_line(lang) {
+        Some(line) => format!("{q}\n{line}"),
+        None => q.to_string(),
+    }
+}
+
+/// The plain search (the bare question: a search engine does better without an instruction
+/// in it) and AI Mode (`asked`, with the answer language).
+fn search_urls(q: &str, asked: &str) -> (String, String) {
     let google = reqwest::Url::parse_with_params("https://www.google.com/search", &[("q", q)]).map(|u| u.to_string()).unwrap_or_default();
-    let ai = reqwest::Url::parse_with_params("https://www.google.com/search", &[("q", q), ("udm", "50")]).map(|u| u.to_string()).unwrap_or_default();
+    let ai = reqwest::Url::parse_with_params("https://www.google.com/search", &[("q", asked), ("udm", "50")]).map(|u| u.to_string()).unwrap_or_default();
     (google, ai)
 }
 
@@ -422,41 +451,150 @@ async fn gemini_key(app: &App) -> Option<String> {
     creds.get("gemini_api_key").map(str::to_string)
 }
 
-/// The newest stable Flash model the key can use for `generateContent` (the setting
-/// `gemini_model` overrides). Google renames these often; asking the API beats a fixed id.
-async fn pick_model(app: &App, key: &str) -> std::result::Result<String, String> {
+/// An error with every cause under it ("error sending request: ...: invalid peer
+/// certificate: UnknownIssuer"), so a certificate, a timeout or a DNS failure says so
+/// instead of hiding behind the outermost message.
+pub fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        let text = s.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = s.source();
+    }
+    out
+}
+
+/// What went wrong with a request to Gemini.
+#[derive(Debug, Clone, PartialEq)]
+enum AskError {
+    /// The request never got an answer.
+    Send(String),
+    /// Google said no; `quota` for a 429 (resource exhausted).
+    Refused { message: String, quota: bool },
+    Other(String),
+}
+
+impl AskError {
+    fn message(&self) -> String {
+        match self {
+            Self::Send(message) | Self::Refused { message, .. } | Self::Other(message) => message.clone(),
+        }
+    }
+}
+
+fn send_error(e: reqwest::Error) -> AskError {
+    AskError::Send(error_chain(&e))
+}
+
+/// Google's error body as a message: the model, `error.message`, and what `error.details`
+/// adds (the quota metric and its limit). A limit of 0 is a key without free quota for that
+/// model, which is worth saying in so many words.
+fn refusal(status: reqwest::StatusCode, model: &str, v: &serde_json::Value) -> AskError {
+    let error = &v["error"];
+    let base = error["message"].as_str().map(str::to_string).unwrap_or_else(|| format!("Gemini answered {status}"));
+    let mut notes: Vec<String> = Vec::new();
+    let mut limit_zero = base.contains("limit: 0");
+    for d in error["details"].as_array().into_iter().flatten() {
+        for violation in d["violations"].as_array().into_iter().flatten() {
+            let metric = violation["quotaMetric"].as_str().or_else(|| violation["quotaId"].as_str()).unwrap_or("");
+            let limit = violation["quotaValue"].as_str().map(str::to_string).or_else(|| violation["quotaValue"].as_u64().map(|n| n.to_string()));
+            if limit.as_deref() == Some("0") {
+                limit_zero = true;
+            }
+            let text = match (metric, limit) {
+                ("", None) => continue,
+                (m, Some(l)) => format!("{m} (limit {l})"),
+                (m, None) => m.to_string(),
+            };
+            if !notes.contains(&text) {
+                notes.push(text);
+            }
+        }
+        if let Some(reason) = d["reason"].as_str() {
+            if !notes.iter().any(|n| n == reason) {
+                notes.push(reason.to_string());
+            }
+        }
+    }
+    let quota = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+    if quota && limit_zero {
+        return AskError::Refused { message: format!("this key has no free quota for {model} (limit 0) - use Ask Google, or a key with billing"), quota };
+    }
+    let mut message = format!("{model}: {base}");
+    if !notes.is_empty() {
+        message.push_str(&format!(" [{}]", notes.join("; ")));
+    }
+    AskError::Refused { message, quota }
+}
+
+/// The Flash models to ask, best first: the `gemini_model` setting alone when set; else the
+/// model that last answered in this process, then the newest stable Flash models the key can
+/// use for `generateContent` (Google renames these often; asking the API beats a fixed id).
+/// When the list cannot be read, [`FALLBACK_FLASH`] -- the question is still worth asking.
+async fn candidate_models(app: &App, key: &str) -> Vec<String> {
     if let Some(m) = db_settings::get::<String>(&app.pool, db_settings::KEY_GEMINI_MODEL).await.ok().flatten().filter(|m| !m.trim().is_empty()) {
-        return Ok(m.trim().trim_start_matches("models/").to_string());
+        return vec![m.trim().trim_start_matches("models/").to_string()];
     }
-    if let Some(m) = MODEL.lock().ok().and_then(|m| m.clone()) {
-        return Ok(m);
+    let mut out: Vec<String> = MODEL.lock().ok().and_then(|m| m.clone()).into_iter().collect();
+    match list_flash_models(app, key).await {
+        Ok(list) => out.extend(list),
+        Err(e) => log::info!("gemini: could not list models ({}), asking {FALLBACK_FLASH}", e.message()),
     }
-    let list: serde_json::Value = app.http.get(format!("{GEMINI}/models?pageSize=1000")).header("x-goog-api-key", key).timeout(Duration::from_secs(20)).send().await.map_err(|e| e.to_string())?.error_for_status().map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    if out.is_empty() {
+        out.push(FALLBACK_FLASH.to_string());
+    }
+    let mut seen = HashSet::new();
+    out.retain(|m| seen.insert(m.clone()));
+    out
+}
+
+async fn list_flash_models(app: &App, key: &str) -> std::result::Result<Vec<String>, AskError> {
+    let send = || app.http.get(format!("{GEMINI}/models?pageSize=1000")).header("x-goog-api-key", key).timeout(Duration::from_secs(20)).send();
+    // Once more on a timeout: a slow first connection is common, a second rarely is.
+    let resp = match send().await {
+        Err(e) if e.is_timeout() => send().await.map_err(send_error)?,
+        other => other.map_err(send_error)?,
+    };
+    let status = resp.status();
+    let list: serde_json::Value = resp.json().await.map_err(|e| AskError::Other(error_chain(&e)))?;
+    if !status.is_success() {
+        return Err(refusal(status, "models", &list));
+    }
+    Ok(rank_flash_models(&list))
+}
+
+/// The usable Flash models of a `models` list, best first: stable before preview, newest
+/// version first, the plain name before a dated one.
+fn rank_flash_models(list: &serde_json::Value) -> Vec<String> {
     let version = |name: &str| -> Vec<u32> { name.split(|c: char| !c.is_ascii_digit()).filter_map(|d| d.parse().ok()).take(2).collect() };
-    let best = list["models"]
+    let mut models: Vec<String> = list["models"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|m| m["supportedGenerationMethods"].as_array().is_some_and(|a| a.iter().any(|x| x == "generateContent")))
         .filter_map(|m| m["name"].as_str().map(|n| n.trim_start_matches("models/").to_string()))
         .filter(|n| n.starts_with("gemini-") && n.contains("flash") && !["lite", "image", "tts", "live", "audio", "exp", "thinking", "embedding"].iter().any(|w| n.contains(w)))
-        .max_by_key(|n| (!n.contains("preview"), version(n), std::cmp::Reverse(n.len())))
-        .ok_or_else(|| "this key lists no Gemini Flash model".to_string())?;
-    if let Ok(mut m) = MODEL.lock() {
-        *m = Some(best.clone());
-    }
-    Ok(best)
+        .collect();
+    models.sort_by_key(|n| std::cmp::Reverse((!n.contains("preview"), version(n), std::cmp::Reverse(n.len()))));
+    models
 }
 
-/// Asks Gemini, with Google Search to ground the answer.
-async fn ask_gemini(app: &App, key: &str, q: &str) -> std::result::Result<(String, String, Vec<LookupSource>), String> {
-    let model = pick_model(app, key).await?;
+/// Asks one model, with Google Search to ground the answer. A timeout is tried once more.
+async fn ask_model(app: &App, key: &str, model: &str, q: &str) -> std::result::Result<(String, Vec<LookupSource>), AskError> {
     let body = serde_json::json!({ "contents": [{ "parts": [{ "text": q }] }], "tools": [{ "google_search": {} }] });
-    let resp = app.http.post(format!("{GEMINI}/models/{model}:generateContent")).header("x-goog-api-key", key).json(&body).timeout(Duration::from_secs(60)).send().await.map_err(|e| e.to_string())?;
+    let send = || app.http.post(format!("{GEMINI}/models/{model}:generateContent")).header("x-goog-api-key", key).json(&body).timeout(Duration::from_secs(60)).send();
+    let resp = match send().await {
+        Err(e) if e.is_timeout() => send().await.map_err(send_error)?,
+        other => other.map_err(send_error)?,
+    };
     let status = resp.status();
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let v: serde_json::Value = resp.json().await.map_err(|e| AskError::Other(format!("{model}: {}", error_chain(&e))))?;
     if !status.is_success() {
-        return Err(v["error"]["message"].as_str().map(str::to_string).unwrap_or_else(|| format!("Gemini answered {status}")));
+        return Err(refusal(status, model, &v));
     }
     let candidate = &v["candidates"][0];
     let text: String = candidate["content"]["parts"].as_array().into_iter().flatten().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("");
@@ -469,15 +607,40 @@ async fn ask_gemini(app: &App, key: &str, q: &str) -> std::result::Result<(Strin
         .filter(|s| seen.insert(s.url.clone()))
         .collect();
     if text.trim().is_empty() {
-        return Err("Gemini gave no answer".into());
+        return Err(AskError::Other(format!("{model} gave no answer")));
     }
-    Ok((model, text, sources))
+    Ok((text, sources))
+}
+
+/// Asks Gemini: the best Flash model, and on a quota refusal (429) the next one, once. The
+/// model that answered is kept for the rest of the process.
+async fn ask_gemini(app: &App, key: &str, q: &str) -> std::result::Result<(String, String, Vec<LookupSource>), String> {
+    let models = candidate_models(app, key).await;
+    let mut last: Option<AskError> = None;
+    for (n, model) in models.iter().enumerate().take(2) {
+        match ask_model(app, key, model, q).await {
+            Ok((text, sources)) => {
+                if let Ok(mut m) = MODEL.lock() {
+                    *m = Some(model.clone());
+                }
+                return Ok((model.clone(), text, sources));
+            }
+            Err(e @ AskError::Refused { quota: true, .. }) if n == 0 => {
+                log::info!("gemini: {} -- trying the next Flash model", e.message());
+                last = Some(e);
+            }
+            Err(e) => return Err(e.message()),
+        }
+    }
+    Err(last.map(|e| e.message()).unwrap_or_else(|| "no Gemini model to ask".to_string()))
 }
 
 /// What the web says about an International / Director's Cut suggestion. Always the question
-/// and its Google links; Gemini's answer too when a key is set.
-pub async fn lookup(app: &App, key: &str) -> Result<LookupAnswer> {
-    if let Some((at, a)) = ANSWERS.lock().ok().and_then(|m| m.get(key).cloned()) {
+/// and its Google links; Gemini's answer too when a key is set. `lang` is the UI language the
+/// answer should come back in ([`language_line`]).
+pub async fn lookup(app: &App, key: &str, lang: Option<&str>) -> Result<LookupAnswer> {
+    let cache_key = format!("{key}\u{1f}{}", lang.unwrap_or(""));
+    if let Some((at, a)) = ANSWERS.lock().ok().and_then(|m| m.get(&cache_key).cloned()) {
         if at.elapsed() < Duration::from_secs(3600) {
             return Ok(a);
         }
@@ -502,11 +665,12 @@ pub async fn lookup(app: &App, key: &str) -> Result<LookupAnswer> {
     foreign_names.truncate(2);
     let platform = variants.first().and_then(|id| item.releases.get(id)).and_then(|r| r.platform.clone()).unwrap_or_default();
     let q = question(&variant, &platform, &jp.first().map(name).unwrap_or_default(), &foreign_names, &variants.first().map(name).unwrap_or_default());
-    let (google_url, ai_mode_url) = search_urls(&q);
-    let mut answer = LookupAnswer { question: q.clone(), google_url, ai_mode_url, ..Default::default() };
+    let asked = with_language(&q, lang);
+    let (google_url, ai_mode_url) = search_urls(&q, &asked);
+    let mut answer = LookupAnswer { question: asked.clone(), google_url, ai_mode_url, ..Default::default() };
     match gemini_key(app).await {
         None => answer.error = Some("no Gemini API key set (provider credentials): use Ask Google".into()),
-        Some(k) => match ask_gemini(app, &k, &q).await {
+        Some(k) => match ask_gemini(app, &k, &asked).await {
             Ok((model, text, sources)) => {
                 answer.model = Some(model);
                 answer.answer = Some(text);
@@ -517,7 +681,7 @@ pub async fn lookup(app: &App, key: &str) -> Result<LookupAnswer> {
     }
     if answer.answer.is_some() {
         if let Ok(mut m) = ANSWERS.lock() {
-            m.insert(key.to_string(), (Instant::now(), answer.clone()));
+            m.insert(cache_key, (Instant::now(), answer.clone()));
         }
     }
     Ok(answer)
@@ -616,8 +780,49 @@ mod tests {
     fn the_question_names_every_version() {
         let q = question("Director's Cut", "PlayStation 2", "Fuga Saga", &[("Fuga Saga".into(), "US".into())], "Fuga Saga - Director's Cut");
         assert!(q.contains("Japanese original \"Fuga Saga\"") && q.contains("\"Fuga Saga\" (US)") && q.contains("(Director's Cut)"), "{q}");
-        let (google, ai) = search_urls("a b");
+        let (google, ai) = search_urls("a b", "a b");
         assert_eq!(google, "https://www.google.com/search?q=a+b");
         assert!(ai.ends_with("&udm=50"));
+    }
+
+    #[test]
+    fn the_answer_language_is_one_line_under_the_question() {
+        assert_eq!(language_line(Some("ja")).as_deref(), Some("Answer in Japanese."));
+        assert_eq!(language_line(Some("pt")).as_deref(), Some("Answer in European Portuguese."));
+        assert_eq!(language_line(Some("de-DE")).as_deref(), Some("Answer in German."));
+        assert_eq!(language_line(Some("xx")), None);
+        assert_eq!(language_line(None), None);
+        for code in ["en", "ja", "fr", "es", "it", "pt", "de", "ko", "pl"] {
+            assert!(language_line(Some(code)).is_some(), "{code}");
+        }
+        let asked = with_language("What differs?", Some("ko"));
+        assert_eq!(asked, "What differs?\nAnswer in Korean.");
+        assert_eq!(with_language("What differs?", None), "What differs?");
+        // The plain search keeps the bare question; AI Mode gets the language line.
+        let (google, ai) = search_urls("What differs?", &asked);
+        assert!(!google.contains("Korean") && ai.contains("Korean") && ai.ends_with("&udm=50"), "{google} {ai}");
+    }
+
+    #[test]
+    fn a_key_without_free_quota_is_named_as_such() {
+        let body = serde_json::json!({ "error": { "code": 429, "message": "You exceeded your current quota.", "details": [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{ "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests", "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "0" }] }] } });
+        let e = refusal(reqwest::StatusCode::TOO_MANY_REQUESTS, "gemini-x-flash", &body);
+        assert!(matches!(&e, AskError::Refused { quota: true, .. }), "{e:?}");
+        assert!(e.message().contains("no free quota for gemini-x-flash (limit 0)"), "{}", e.message());
+        let other = serde_json::json!({ "error": { "code": 403, "message": "API key not valid.", "details": [{ "reason": "API_KEY_INVALID" }] } });
+        let e = refusal(reqwest::StatusCode::FORBIDDEN, "gemini-x-flash", &other);
+        assert_eq!(e.message(), "gemini-x-flash: API key not valid. [API_KEY_INVALID]");
+    }
+
+    #[test]
+    fn flash_models_rank_stable_and_newest_first() {
+        let list = serde_json::json!({ "models": [
+            { "name": "models/gemini-1-flash", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-2-flash", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-3-flash-preview", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-2-flash-lite", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-2-pro", "supportedGenerationMethods": ["generateContent"] },
+        ] });
+        assert_eq!(rank_flash_models(&list), vec!["gemini-2-flash", "gemini-1-flash", "gemini-3-flash-preview"]);
     }
 }
