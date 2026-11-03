@@ -1,4 +1,245 @@
 {
-  "_": "Version notes for Collection > Definitive: games whose latest version may have less content than an earlier one. Keyed by the base game's IGDB id, in id order. rank: S = the older version is strongly recommended, A = depends on preference, B = the latest lacks some content but is still the better version. recommend / note: the UI's text per language (en is the fallback). No game names: the id says which game.",
-  "notes": {}
+  "_": "Version notes for Collection > Definitive: games whose latest version may have less content than an earlier one. Keyed by the base game's IGDB id, in id order. rank: S = the older version is strongly recommended, A = depends on preference, B = the latest lacks some content but is still the better version. recommend / note: the UI's text per language (en is the fallback). No game names: the id says which game. date: when the note was last edited (YYYY-MM-DD); a version of the family that came out later is flagged.",
+  "notes": {
+    "385": {
+      "rank": "S",
+      "recommend": {
+        "en": "PSP Anniversary Edition.",
+        "ja": "PSP 版がおすすめです。"
+      },
+      "note": {
+        "en": "The Pixel Remaster has none of their bonus dungeons: Soul of Chaos (GBA, PSP) and Labyrinth of Time (PSP). The PSP version also has redrawn 2D art.",
+        "ja": "ピクセルリマスターには、GBA 版・PSP 版の追加ダンジョン「ソウル・オブ・カオス」と、PSP 版の「時の迷宮」がありません。PSP 版はグラフィックも描き直されています。"
+      },
+      "date": "2026-11-03"
+    },
+    "396": {
+      "rank": "B",
+      "recommend": {
+        "en": "The WonderSwan Color remake (2002, Japan only) is also an option.",
+        "ja": "ワンダースワンカラー版「魔界塔士 サ・ガ」（2002 年）も選択肢です。"
+      },
+      "note": {
+        "en": "It has color graphics. The Game Boy original in the Collection is monochrome.",
+        "ja": "カラーで遊べます。コレクション版はゲームボーイ版そのままのモノクロです。"
+      },
+      "date": "2026-11-03"
+    },
+    "398": {
+      "rank": "B",
+      "recommend": {
+        "en": "The original PS2 release (2006) is also an option.",
+        "ja": "PS2 のオリジナル版（2006 年）も選択肢です。"
+      },
+      "note": {
+        "en": "The original has one shared License Board where every character can learn everything. The Zodiac Age replaces it with 12 job boards but adds Trial Mode, speed-up and better balance.",
+        "ja": "オリジナル版はライセンスボードが 1 つで、誰でもすべてを覚えられます。ザ ゾディアック エイジでは 12 種のジョブ別ボードに変わりましたが、トライアルモードやハイスピードモードが加わり、バランスも良くなっています。"
+      },
+      "date": "2026-11-03"
+    },
+    "403": {
+      "rank": "S",
+      "recommend": {
+        "en": "Play the DS remake, Goddess of Destiny (2009, Japan only).",
+        "ja": "DS 版「サガ2秘宝伝説 GODDESS OF DESTINY」（2009 年）がおすすめです。"
+      },
+      "note": {
+        "en": "A full remake with added story scenes and characters and a reworked system. The Collection is only the Game Boy version.",
+        "ja": "イベントやキャラクターが追加され、システムも作り直されたフルリメイクです。コレクション版はゲームボーイ版そのままです。"
+      },
+      "date": "2026-11-03"
+    },
+    "410": {
+      "rank": "S",
+      "recommend": {
+        "en": "Play the DS remake, Shadow or Light (2011, Japan only).",
+        "ja": "DS 版「サガ3時空の覇者 Shadow or Light」（2011 年）がおすすめです。"
+      },
+      "note": {
+        "en": "A full remake with a remade story and systems. The Collection is only the Game Boy version.",
+        "ja": "物語とシステムを作り直したフルリメイクです。コレクション版はゲームボーイ版そのままです。"
+      },
+      "date": "2026-11-03"
+    },
+    "419": {
+      "rank": "S",
+      "recommend": {
+        "en": "Play the GBA version, or the older mobile / Steam version if you already own it.",
+        "ja": "GBA 版がおすすめです。以前のスマホ版・Steam 版を持っていれば、そちらでもかまいません。"
+      },
+      "note": {
+        "en": "The Pixel Remaster lacks four jobs (Gladiator, Cannoneer, Oracle, Necromancer) and the Sealed Temple and Cloister of the Dead bonus dungeons. The older mobile / Steam version has them too, but is no longer sold.",
+        "ja": "ピクセルリマスターには、GBA 版の追加ジョブ 4 種（剣闘士・砲撃士・予言士・ネクロマンサー）と追加ダンジョン 2 つがありません。以前のスマホ版・Steam 版にもありますが、販売は終了しています。"
+      },
+      "date": "2026-11-03"
+    },
+    "425": {
+      "rank": "B",
+      "recommend": {
+        "en": "The original PC version (2000) is also an option.",
+        "ja": "2000 年の PC 版も選択肢です。"
+      },
+      "note": {
+        "en": "It includes Chocobo World, the PocketStation minigame, which the Remastered leaves out. The Remastered gives its items to Rinoa's ability instead and has sharper characters, speed-up and battle toggles.",
+        "ja": "ポケットステーション用のミニゲーム「チョコボワールド」が入っています。リマスター版にはありませんが、その報酬アイテムはリノアのアビリティで手に入ります。リマスター版はキャラクターが高精細になり、倍速などの機能も付いています。"
+      },
+      "date": "2026-11-03"
+    },
+    "426": {
+      "rank": "S",
+      "recommend": {
+        "en": "Play the GBA version, or the older mobile / Steam version if you already own it.",
+        "ja": "GBA 版がおすすめです。以前のスマホ版・Steam 版を持っていれば、そちらでもかまいません。"
+      },
+      "note": {
+        "en": "The Pixel Remaster lacks the Dragon's Den and Soul Shrine bonus dungeons and four espers (Leviathan, Gilgamesh, Cactuar, Diabolos). The older mobile / Steam version has them too, but is no longer sold.",
+        "ja": "ピクセルリマスターには、追加ダンジョン「竜の巣」「魂の祠」と、追加の幻獣 4 体（リヴァイアサン・ギルガメッシュ・サボテンダー・ディアボロス）がありません。以前のスマホ版・Steam 版にもありますが、販売は終了しています。"
+      },
+      "date": "2026-11-03"
+    },
+    "427": {
+      "rank": "B",
+      "recommend": {
+        "en": "The remaster of the original (PC, PS4, Switch, Xbox One, smartphones) is also an option.",
+        "ja": "オリジナル版のリマスター（PC・PS4・Switch・Xbox One・スマートフォン）も選択肢です。"
+      },
+      "note": {
+        "en": "The remaster is based on the International version, so it has the content added there. It tells the whole story in one game; the remake splits it into three, and the third is not out yet. It also has turn-based command battles instead of the remake's action combat. The remake has far higher-quality graphics and retells some events.",
+        "ja": "このリマスターはインターナショナル版のリマスターでもあります。日本ではインターナショナル版でしか遊べなかった追加要素も入っています。1 本で物語を最後まで遊べます。リメイクは 3 部作に分かれていて、第 3 部はまだ発売されていません。戦闘はリメイクのアクションではなく、コマンド式です。グラフィックはリメイクのほうがはるかに高画質で、一部の展開も変わっています。"
+      },
+      "date": "2026-11-03"
+    },
+    "1818": {
+      "rank": "B",
+      "recommend": {
+        "en": "The 3DS (2013) or PS1 (2000) version is also an option.",
+        "ja": "3DS 版（2013 年）か PS1 版（2000 年）も選択肢です。"
+      },
+      "note": {
+        "en": "Reimagined cuts three story episodes, plus the casino, Monster Park and the Immigrant Town. It is otherwise mostly an upgrade, with new episodes and much faster pacing.",
+        "ja": "Reimagined では 3 つのエピソードと、カジノ・モンスターパーク・移民の町が削られています。それ以外はほぼ上位版で、新しいエピソードが加わり、テンポも大きく良くなっています。"
+      },
+      "date": "2026-11-03"
+    },
+    "1819": {
+      "rank": "B",
+      "recommend": {
+        "en": "Outside Japan, the PS2 version (2005, the US/EU release) is also an option.",
+        "ja": "海外版では、PS2 版（2005 年の北米・欧州版）も選択肢です。"
+      },
+      "note": {
+        "en": "Non-Japan releases only. The US/EU PS2 release has an orchestral soundtrack, but the US/EU 3DS release uses synth music. The 3DS adds two party members and new scenes.",
+        "ja": "海外版のみの話です。北米・欧州の PS2 版はオーケストラ音源ですが、北米・欧州の 3DS 版はシンセ音源です。3DS 版は仲間 2 人と新しいイベントが追加されています。"
+      },
+      "date": "2026-11-03"
+    },
+    "11311": {
+      "rank": "A",
+      "recommend": {
+        "en": "The WonderSwan Color version (2001, Japan only), an upgraded version of the Super Famicom original, is also an option.",
+        "ja": "スーパーファミコン版を強化したワンダースワンカラー版（2001 年）も選択肢です。"
+      },
+      "note": {
+        "en": "It keeps the original's pixel art and gameplay, adds a new scenario and lets you collect all ten Destiny Stones. The latest version is not fully high-definition, and its gameplay was substantially reworked, so which to play depends on preference.",
+        "ja": "オリジナルのドット絵と遊び方のまま、新しいシナリオが加わり、10 個すべてのデスティニーストーンを集められます。最新版は完全な HD ではなく、ゲームの内容も大きく作り直されているので、どちらを選ぶかは好みによります。"
+      },
+      "date": "2026-11-03"
+    },
+    "11312": {
+      "rank": "B",
+      "recommend": {
+        "en": "The remaster (2016), a complete upgrade of the original game, is also an option.",
+        "ja": "オリジナル版を全面的に強化したリマスター版（2016 年）も選択肢です。"
+      },
+      "note": {
+        "en": "It keeps the pixel art and the original's more detailed systems, such as eight separate defence types, and has its own extra dungeon. The 3D remake has a different extra dungeon instead.",
+        "ja": "ドット絵。防御の種類が 8 つに分かれているなど、オリジナルの細かいシステムが残っています。独自の追加ダンジョンもあります（3D リメイクの追加ダンジョンは別のものです）。"
+      },
+      "date": "2026-11-03"
+    },
+    "11313": {
+      "rank": "B",
+      "recommend": {
+        "en": "The remaster (2019), a complete upgrade of the original game, is also an option.",
+        "ja": "オリジナル版を全面的に強化したリマスター版（2019 年）も選択肢です。"
+      },
+      "note": {
+        "en": "It keeps the pixel art and Commander Mode, where the leader commands from the back row. The 3D remake removes Commander Mode.",
+        "ja": "ドット絵。主人公が後列から指揮する「コマンダーモード」があります。3D リメイクではコマンダーモードがなくなりました。"
+      },
+      "date": "2026-11-03"
+    },
+    "16474": {
+      "rank": "S",
+      "recommend": {
+        "en": "The PSP Anniversary Edition or the GBA version.",
+        "ja": "PSP 版か GBA 版がおすすめです。"
+      },
+      "note": {
+        "en": "The Pixel Remaster lacks the Soul of Rebirth bonus scenario (GBA, PSP) and the Arcane Labyrinth (PSP).",
+        "ja": "ピクセルリマスターには、GBA 版・PSP 版の追加シナリオ「ソウル・オブ・リバース」と、PSP 版の「秘紋の迷宮」がありません。"
+      },
+      "date": "2026-11-03"
+    },
+    "16587": {
+      "rank": "S",
+      "recommend": {
+        "en": "Play the PSP Complete Collection or the GBA version.",
+        "ja": "PSP 版（コンプリートコレクション）か GBA 版がおすすめです。"
+      },
+      "note": {
+        "en": "The Pixel Remaster lacks the Lunar Ruins bonus dungeon and the late-game party changes (GBA, PSP). The PSP version has updated pixel graphics and includes the sequel The After Years and the Interlude chapter.",
+        "ja": "ピクセルリマスターには、GBA 版・PSP 版の追加ダンジョン「月の遺跡」と終盤のパーティー入れ替えがありません。PSP 版は高解像度で描き直したドット絵で、続編の「ジ・アフター -月の帰還-」と「インタールード」も入っています。"
+      },
+      "date": "2026-11-03"
+    },
+    "77234": {
+      "rank": "A",
+      "recommend": {
+        "en": "The DS 3D remake (also on PSP, mobile and Steam) is worth considering.",
+        "ja": "DS 版の 3D リメイク（PSP 版・スマホ版・Steam 版もあります）も選択肢です。"
+      },
+      "note": {
+        "en": "The 3D remake gives the party named characters with their own story scenes, rebalances the jobs and adds bonus content. The Pixel Remaster keeps the Famicom original's pixel look while adding QoL features, so it comes down to preference.",
+        "ja": "3D リメイクでは仲間に名前と個別のストーリーがあり、ジョブのバランスも調整され、追加要素もあります。ピクセルリマスターはファミコン版のドット絵の雰囲気のまま、遊びやすくなっています。どちらを選ぶかは好みです。"
+      },
+      "date": "2026-11-03"
+    },
+    "145497": {
+      "rank": "B",
+      "recommend": {
+        "en": "The Super Famicom original (1995) is also an option.",
+        "ja": "スーパーファミコン版（1995 年）も選択肢です。"
+      },
+      "note": {
+        "en": "The original lets monsters join the party after battles (the DS lets only a few slimes join), and it has the original pixel art.",
+        "ja": "スーパーファミコン版では戦闘後にモンスターが仲間になります（DS 版で仲間になるのは一部のスライムだけです）。グラフィックもオリジナルのドット絵です。"
+      },
+      "date": "2026-11-03"
+    },
+    "205589": {
+      "rank": "B",
+      "recommend": {
+        "en": "The Super Famicom or Game Boy Color version is also an option.",
+        "ja": "スーパーファミコン版かゲームボーイカラー版も選択肢です。"
+      },
+      "note": {
+        "en": "Both have the Treasures n' Trapdoors board game (sugoroku), which the HD-2D remake leaves out. The Game Boy Color version has more content, including monster medals and an extra dungeon. The Super Famicom version has the higher-quality graphics.",
+        "ja": "どちらにも HD-2D 版にはない「すごろく場」があります。ゲームボーイカラー版にはモンスターメダルや追加ダンジョンなど、より多くの要素があります。グラフィックはスーパーファミコン版のほうが高画質です。"
+      },
+      "date": "2026-11-03"
+    },
+    "393025": {
+      "rank": "B",
+      "recommend": {
+        "en": "The remaster of the original (PC, PS4, Switch, Xbox One, smartphones) is also an option.",
+        "ja": "オリジナル版のリマスター（PC・PS4・Switch・Xbox One・スマートフォン）も選択肢です。"
+      },
+      "note": {
+        "en": "The remaster is based on the International version, so it has the content added there. It tells the whole story in one game; the remake splits it into three, and the third is not out yet. It also has turn-based command battles instead of the remake's action combat. The remake has far higher-quality graphics and retells some events.",
+        "ja": "このリマスターはインターナショナル版のリマスターでもあります。日本ではインターナショナル版でしか遊べなかった追加要素も入っています。1 本で物語を最後まで遊べます。リメイクは 3 部作に分かれていて、第 3 部はまだ発売されていません。戦闘はリメイクのアクションではなく、コマンド式です。グラフィックはリメイクのほうがはるかに高画質で、一部の展開も変わっています。"
+      },
+      "date": "2026-11-03"
+    }
+  }
 }
