@@ -1,0 +1,40 @@
+diff --git a/vio/viosslfactories.c b/vio/viosslfactories.c
+index cdf6dfba7f4..e6bbc552f1f 100644
+--- a/vio/viosslfactories.c
++++ b/vio/viosslfactories.c
+@@ -72,20 +72,25 @@ static EVP_PKEY *vio_keygen()
+ static X509 *vio_gencert(EVP_PKEY *pkey)
+ {
+   X509 *x;
+-  X509_NAME *name;
++  X509_NAME *name= NULL;
+ 
+   if (!(x= X509_new()))
+     goto err;
+ 
+   if (!X509_set_version(x, X509_VERSION_3))
+     goto err;
+-  if (!(name= X509_get_subject_name(x)))
++  /* OpenSSL 4 returns a const subject name; build the name separately. */
++  if (!(name= X509_NAME_new()))
+     goto err;
+   if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+          (uchar*)STRING_WITH_LEN("MariaDB Server"), -1, 0))
+     goto err;
++  if (!X509_set_subject_name(x, name))
++    goto err;
+   if (!X509_set_issuer_name(x, name))
+     goto err;
++  X509_NAME_free(name);
++  name= NULL;
+   if (!X509_gmtime_adj(X509_get_notBefore(x), 0))
+     goto err;
+   if (!X509_gmtime_adj(X509_get_notAfter(x), 60*60*24*365*10))
+@@ -98,6 +103,7 @@ static X509 *vio_gencert(EVP_PKEY *pkey)
+   return x;
+ 
+ err:
++  X509_NAME_free(name);
+   X509_free(x);
+   return NULL;
+ }

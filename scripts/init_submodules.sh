@@ -17,9 +17,9 @@ for d in external/dolphin external/RALibretro; do
   git -C "$d" submodule update --init --recursive
 done
 
-# mariadb-server: libmariadb, plus wolfssl, which the Windows build falls back to (its CMake
-# doesn't take our OpenSSL there). Stop its CMake from fetching the rest at configure time.
-git -C external/mariadb-server submodule update --init libmariadb extra/wolfssl/wolfssl
+# mariadb-server: libmariadb only (TLS is our own OpenSSL, so no bundled wolfssl). Stop its
+# CMake from fetching the rest at configure time.
+git -C external/mariadb-server submodule update --init libmariadb
 git -C external/mariadb-server config cmake.update-submodules no
 
 git submodule status

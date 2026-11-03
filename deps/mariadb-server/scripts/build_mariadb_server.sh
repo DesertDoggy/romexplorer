@@ -263,7 +263,7 @@ apply_patches() {
             (cd "${ROOT_DIR}" && patch -p1 -N -f < "${p}")
             log_line INFO "Applied patch: ${name}"
         else
-            log_line ERROR "Patch ${name} does not apply (forward or reverse) -- this tree's client/CMakeLists.txt may have changed upstream. Manual merge needed."
+            log_line ERROR "Patch ${name} does not apply (forward or reverse) -- the files it touches may have changed upstream. Manual merge needed."
             return 1
         fi
     done
@@ -698,9 +698,17 @@ msvc_batch() {
     win_b_build=$(cygpath -w "${b_build}")
     tmp_bat=$(mktemp --suffix=.bat)
     win_tmp_bat=$(cygpath -w "${tmp_bat}")
+    # The build runs mariadbd.exe itself (bootstrapping the initial database), and it links our
+    # OpenSSL DLLs: without their directory on PATH it dies with 0xc0000135 (DLL not found).
+    ssl_dll_dir=""
+    for tok in ${b_defs}; do
+        case "${tok}" in
+            -DOPENSSL_CRYPTO_LIBRARY=*) v="${tok#*=}"; ssl_dll_dir=";${v%\\*}" ;;
+        esac
+    done
     {
         echo "@echo off"
-        echo "set \"PATH=C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Windows\\System32\\OpenSSH;${bison_dir};${vs_cmake_dir};${vs_ninja_dir}\""
+        echo "set \"PATH=C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Windows\\System32\\OpenSSH;${bison_dir};${vs_cmake_dir};${vs_ninja_dir}${ssl_dll_dir}\""
         # TMP/TEMP overridden to an ordinary disk-backed directory: cl.exe writes scratch
         # files there during compilation, and this call's own ambient TMP/TEMP -- unlike PATH,
         # not touched by the reset above -- can be pointed anywhere by the calling environment
