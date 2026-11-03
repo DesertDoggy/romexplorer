@@ -24,6 +24,10 @@ endif()
 target_include_directories(exiso PRIVATE "${EXISO_ROOT}" "${CMAKE_CURRENT_SOURCE_DIR}")
 # extract-xiso picks its platform from these, as its own CMakeLists does (__LINUX__, ...).
 string(TOUPPER "__${CMAKE_SYSTEM_NAME}__" _target_os)
+# Android is Linux to it: bionic has the off64_t / lseek64 / stat64 its Linux branch uses.
+if(ANDROID)
+  set(_target_os "__LINUX__")
+endif()
 target_compile_definitions(exiso PRIVATE ${_target_os})
 if(NOT MSVC)
   # Its K&R-era style: unused results, sign mismatches. Not ours to fix.
@@ -31,7 +35,10 @@ if(NOT MSVC)
 endif()
 if(CMAKE_SYSTEM_NAME MATCHES "Linux|Android")
   target_link_options(exiso PRIVATE -Wl,--no-undefined)
-  target_link_libraries(exiso PRIVATE pthread)
+  # Android's libc has pthreads built in; there is no libpthread to link.
+  if(NOT ANDROID)
+    target_link_libraries(exiso PRIVATE pthread)
+  endif()
 endif()
 if(MINGW)
   target_link_options(exiso PRIVATE -static -static-libgcc)

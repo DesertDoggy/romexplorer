@@ -3,7 +3,8 @@
 # then the Dioxus app with `dx`, then the APK again with those libraries inside it.
 #
 # Usage: scripts/build_chdlite_android.sh [--natives] [--release] [--check]
-#   --natives   first build zlib-ng, chdman-simd and dolphin for android/arm64
+#   --natives   first build every native library chdlite uses (zlib-ng, chdman-simd, dolphin,
+#               cemu, extract-xiso, beetle-psx-libretro) for android/arm64
 #               (scripts/build_native_deps.sh --only ...) and deploy them to
 #               app_root_ex/lib/android/arm64/. Needed once, and after a native change.
 #   --release   a release APK (`dx bundle`); signing comes from Dioxus.toml's
@@ -24,8 +25,6 @@
 # The APK ends up under target/dx/chdlite-gui/<debug|release>/android/app/app/build/outputs/.
 # Sideload it (`adb install -r <apk>`). On first start chdlite asks for All files access.
 #
-# Not built for Android yet: cemuwua, exiso and psxpbp (their build scripts have no android
-# arm). Without them the app says so for Wii U, Xbox and PBP inputs and converts the rest.
 
 set -euo pipefail
 
@@ -104,7 +103,7 @@ fi
 # --- native libraries ---------------------------------------------------------------------------
 LIB_DIR="$ROOT_DIR/app_root_ex/lib/android/arm64"
 if [[ "$NATIVES" -eq 1 ]]; then
-    bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,chdman-simd,dolphin android arm64
+    bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,chdman-simd,dolphin,cemu,extract-xiso,beetle-psx-libretro android arm64
 fi
 for lib in libchdman.so libdolphinrvz.so; do
     [[ -f "$LIB_DIR/$lib" ]] || echo "warning: $LIB_DIR/$lib is not built (run with --natives); the APK can't convert without it" >&2
@@ -146,7 +145,8 @@ if [[ "$copied" -gt 0 ]]; then
     TASK=assembleDebug
     [[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease
     if [[ "$WINDOWS" -eq 1 ]]; then
-        (cd "$PROJECT" && cmd //c gradlew.bat "$TASK")
+        # Run by path: `cmd //c gradlew.bat` from Git Bash did not find it in the current folder.
+        (cd "$PROJECT" && ./gradlew.bat "$TASK")
     else
         (cd "$PROJECT" && sh ./gradlew "$TASK")
     fi

@@ -67,7 +67,10 @@ static STARTUP: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static STARTUP_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // On Android `main` is called from inside the app's process with no command line, and
+    // reading the arguments crashed there (std's argv is not set up). Nothing is dropped on
+    // an Android app or started as a worker, so there are none to read.
+    let args: Vec<String> = if cfg!(target_os = "android") { Vec::new() } else { std::env::args().skip(1).collect() };
     if args.first().map(String::as_str) == Some(WORKER_FLAG) {
         std::process::exit(batch::worker_main(args.get(1).map(String::as_str).unwrap_or("")));
     }

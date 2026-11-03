@@ -56,7 +56,8 @@ case "$platform" in
   windows) lib_name="exiso.dll"; system_name="Windows" ;;
   mac) lib_name="libexiso.dylib"; system_name="Darwin" ;;
   linux) lib_name="libexiso.so"; system_name="Linux" ;;
-  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows)" >&2; exit 2 ;;
+  android) lib_name="libexiso.so"; system_name="Android" ;;
+  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows | android)" >&2; exit 2 ;;
 esac
 
 command -v cmake >/dev/null 2>&1 || { echo "[ERROR] cmake was not found." >&2; exit 2; }
@@ -68,9 +69,16 @@ trap 'rm -rf "$build_dir"' EXIT
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
   "-DEXISO_ROOT=$src_root")
+if [[ "$platform" == "android" ]]; then
+  # The NDK's toolchain file picks the compiler, sysroot and ABI itself.
+  [[ -n "${ANDROID_NDK_HOME:-}" ]] || { echo "[ERROR] ANDROID_NDK_HOME is not set." >&2; exit 2; }
+  [[ "$arch" == "arm64" ]] || { echo "[ERROR] android: only arm64 is built." >&2; exit 2; }
+  cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26)
+else
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
+fi
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
-if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
+if [[ "$platform" != "android" ]] && [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
   cmake_args+=("-DCMAKE_SYSTEM_NAME=$system_name" "-DCMAKE_SYSTEM_PROCESSOR=$processor")
   [[ "$platform" == "mac" ]] && cmake_args+=("-DCMAKE_OSX_ARCHITECTURES=$([[ "$arch" == "arm64" ]] && echo arm64 || echo x86_64)")
 fi

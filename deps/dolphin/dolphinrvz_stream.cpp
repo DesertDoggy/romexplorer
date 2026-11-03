@@ -32,13 +32,14 @@
 // this shared library bind to this definition at link time, so dolphinrvz_set_compress_threads
 // can choose the count without touching Dolphin's source. Hidden, so it never interposes on
 // other libraries in the process. MSVC's is inline and calls into its runtime DLL, so there the
-// setting is ignored.
+// setting is ignored. So it is on Android, where the NDK links libc++ in statically
+// (-static-libstdc++): its own definition is in the same link and the two collide.
 namespace
 {
 std::atomic<unsigned int> g_compress_threads{0};
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__ANDROID__)
 #include <unistd.h>
 
 __attribute__((visibility("hidden"))) unsigned int std::thread::hardware_concurrency() noexcept
@@ -48,6 +49,23 @@ __attribute__((visibility("hidden"))) unsigned int std::thread::hardware_concurr
         return forced;
     const long online = sysconf(_SC_NPROCESSORS_ONLN);
     return online > 0 ? static_cast<unsigned int>(online) : 0;
+}
+#endif
+
+#if defined(__ANDROID__)
+// Dolphin's Android input backend (InputCommon/ControllerInterface/Android) hands devices to its
+// Java UI through this; Source/Android/jni defines it and is not part of this library. Only that
+// UI calls the JNI entry point that uses it, so here it never runs -- but Android's loader binds
+// every symbol at dlopen, so it has to exist.
+#include <jni.h>
+#include <memory>
+namespace ciface::Core
+{
+class Device;
+}
+jobject CoreDeviceToJava(JNIEnv*, std::shared_ptr<ciface::Core::Device>)
+{
+    return nullptr;
 }
 #endif
 

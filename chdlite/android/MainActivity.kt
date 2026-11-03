@@ -30,6 +30,8 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.KeyEvent
+import android.view.View
+import android.view.WindowInsets
 
 // The generated classes refer to BuildConfig in this package. Must match Dioxus.toml's
 // `[bundle] identifier`.
@@ -41,6 +43,23 @@ class MainActivity : WryActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Targeting Android 15 draws the app edge to edge, under the status and navigation
+        // bars: without this the top bar sat under the clock. The page keeps the system's
+        // default inset handling; only the content is moved in by the bars and any cutout.
+        // Behind the bars: the page's own background (app.css), so the light status-bar icons
+        // stay readable.
+        window.decorView.setBackgroundColor(0xFF14161B.toInt())
+        window.decorView.setOnApplyWindowInsetsListener { view, insets ->
+            val content = findViewById<View>(android.R.id.content)
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                content.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            } else {
+                @Suppress("DEPRECATION")
+                content.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+            }
+            view.onApplyWindowInsets(insets)
+        }
         // Android 13+: without this the run's notification is not shown (the service still runs).
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {

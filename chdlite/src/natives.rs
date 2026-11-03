@@ -38,6 +38,13 @@ fn link_apk_libraries() -> Result<(), String> {
     if std::env::var_os(EXE_ROOT_OVERRIDE_ENV).is_some() {
         return Ok(());
     }
+    // Android has no /tmp and sets no TMPDIR, so chdman could not make its temporary folder
+    // and CD CHD creation failed ("cannot create a temporary directory"). One in the app's own
+    // storage, emptied at each start.
+    let tmp = crate::android::files_dir().join("tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|err| format!("{}: {err}", tmp.display()))?;
+    std::env::set_var("TMPDIR", &tmp);
     let Some(source) = crate::android::native_lib_dir() else {
         return Err("cannot find the app's native library folder".to_string());
     };
