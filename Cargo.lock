@@ -785,6 +785,8 @@ dependencies = [
  "dioxus",
  "futures-util",
  "image",
+ "jni 0.21.1",
+ "ndk-context",
  "num_cpus",
  "rfd",
  "romexplorer",

@@ -5,6 +5,12 @@
 //! `bundled-natives` feature) carries the libraries inside the executable instead; this
 //! unpacks them once into the user's cache and points romexplorer's loader there through
 //! `ROMEXPLORER_EXE_ROOT`, which `native_lib::exe_root()` checks before anything else.
+//!
+//! On Android the libraries are in the APK, which the system extracts into the app's flat
+//! native library directory (`lib/arm64/`). That folder is read-only and has no
+//! `<os>/<arch>/` levels, so the app's files directory gets a `natives/lib/android/arm64/`
+//! of symlinks into it, and the root points there. `dlopen` follows a symlink to its real
+//! path, which is the one place an Android app is allowed to load its own code from.
 
 #[cfg(feature = "bundled-natives")]
 mod bundled {
@@ -14,9 +20,49 @@ mod bundled {
 /// Call once, first thing in `main`, before any thread exists (it may set an environment
 /// variable).
 pub fn ensure() -> Result<(), String> {
-    #[cfg(feature = "bundled-natives")]
+    #[cfg(target_os = "android")]
+    link_apk_libraries()?;
+    #[cfg(all(feature = "bundled-natives", not(target_os = "android")))]
     unpack()?;
     Ok(())
+}
+
+/// The libraries romexplorer looks for, under the names it looks for them.
+#[cfg(target_os = "android")]
+const APK_LIBRARIES: [&str; 6] = ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so"];
+
+#[cfg(target_os = "android")]
+fn link_apk_libraries() -> Result<(), String> {
+    use romexplorer::rom::native_lib::{arch_dir_name, os_dir_name, EXE_ROOT_OVERRIDE_ENV};
+
+    if std::env::var_os(EXE_ROOT_OVERRIDE_ENV).is_some() {
+        return Ok(());
+    }
+    let Some(source) = crate::android::native_lib_dir() else {
+        return Err("cannot find the app's native library folder".to_string());
+    };
+    let root = crate::android::files_dir().join("natives");
+    let dir = root.join("lib").join(os_dir_name()).join(arch_dir_name());
+    std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    let mut missing = Vec::new();
+    for name in APK_LIBRARIES {
+        let target = source.join(name);
+        let link = dir.join(name);
+        // Relinked every start: an update installs the APK under a new path.
+        let _ = std::fs::remove_file(&link);
+        if !target.is_file() {
+            missing.push(name);
+            continue;
+        }
+        std::os::unix::fs::symlink(&target, &link).map_err(|err| format!("{}: {err}", link.display()))?;
+    }
+    std::env::set_var(EXE_ROOT_OVERRIDE_ENV, &root);
+    // chdman and dolphinrvz are what chdlite is for; the rest only cover some inputs, and
+    // the job that needs one says so.
+    match missing.iter().filter(|name| **name == "libchdman.so" || **name == "libdolphinrvz.so").count() {
+        0 => Ok(()),
+        _ => Err(format!("not in this APK: {}", missing.join(", "))),
+    }
 }
 
 #[cfg(feature = "bundled-natives")]

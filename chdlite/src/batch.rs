@@ -6,6 +6,10 @@
 //! executable started with `--job <spec>`; it reports on stdout, one JSON [`WorkerLine`] per
 //! line. Killing a worker is also the only way to stop a CHD creation part-way, which is why
 //! the GUI uses workers even for a single file.
+//!
+//! Android has no executable to start again (an app is a library inside the system's own
+//! process), so there every job runs in this process, one file at a time. Cancel then stops
+//! everything but a CHD creation, which finishes its file first.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -22,6 +26,9 @@ use crate::job::{remove_outputs, run_one, Event, JobSpec, Mode};
 use crate::settings::Settings;
 
 pub const WORKER_FLAG: &str = "--job";
+
+/// Whether this platform can run a job in a worker process (see the module comment).
+pub const CAN_SPAWN_WORKERS: bool = !cfg!(target_os = "android");
 
 #[derive(Debug, Serialize, Deserialize)]
 enum WorkerLine {
@@ -53,8 +60,8 @@ pub struct Batch {
 /// own (which, for a conversion, starts and supervises a worker process).
 pub fn run(batch: &Batch, cancel: &AtomicBool, on_event: &(dyn Fn(BatchEvent) + Sync)) -> usize {
     // Reading a header takes no time and its output is meant to be read in order.
-    let (concurrent, threads) = if batch.mode == Mode::Read { (1, 0) } else { batch.settings.jobs.plan(batch.inputs.len()) };
-    let workers = batch.mode != Mode::Read && (batch.always_workers || concurrent > 1);
+    let (concurrent, threads) = if batch.mode == Mode::Read || !CAN_SPAWN_WORKERS { (1, 0) } else { batch.settings.jobs.plan(batch.inputs.len()) };
+    let workers = CAN_SPAWN_WORKERS && batch.mode != Mode::Read && (batch.always_workers || concurrent > 1);
     let spec = |index: usize| JobSpec {
         mode: batch.mode,
         input: batch.inputs[index].clone(),

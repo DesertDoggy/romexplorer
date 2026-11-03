@@ -61,3 +61,47 @@ input[type=text], input[type=number], select { flex: 1; min-width: 0; background
 .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; flex: 1; }
 .checks label { width: auto !important; color: #e6e8ee; display: flex; align-items: center; gap: 4px; }
 .note { color: #8a90a0; font-size: 12px; }
+
+/* ---- Android (class "android" on .app, set only there). Desktop never matches these. ----
+   Portrait: top bar, the modes 2x2 across the width, output, progress + Cancel, the log in
+   the rest. Landscape: the 2x2 grid on the left sized to the height, everything else in the
+   right column. While a run goes, the grid shrinks to one dimmed row of four so the log gets
+   the room. Overlays here (.sheet, .browser, .confirm) exist only on Android. */
+.app.android { padding: 8px 10px 10px; gap: 8px; }
+.app.android .modes { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.app.android .mode img { width: min(100%, 34vh); margin: 0 auto; }
+.app.android .access { flex-wrap: wrap; background: #2a1d12; border: 1px solid #6b4a1f; border-radius: 8px; padding: 8px 10px; }
+.app.android .access span { flex: 1; min-width: 200px; color: #f0d9b5; font-size: 13px; }
+.app.android button, .app.android input, .app.android select { min-height: 40px; }
+.app.android .mode { min-height: 0; }
+.app.android .log { min-height: 60px; }
+
+@media (orientation: landscape) {
+    .app.android:not(.running) { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto auto auto auto minmax(0, 1fr); column-gap: 12px; row-gap: 8px; }
+    .app.android:not(.running) > * { grid-column: 2; }
+    .app.android:not(.running) > .modes { grid-column: 1; grid-row: 1 / -1; align-self: center; }
+    .app.android:not(.running) > .log { grid-row: -2; }
+    .app.android:not(.running) .mode img { width: calc((100vh - 90px) / 2); }
+}
+
+.app.android.running .modes { grid-template-columns: repeat(4, 52px); justify-content: center; opacity: .5; }
+.app.android.running .mode { padding: 3px; border-radius: 10px; }
+.app.android.running .mode img { width: 100%; border-radius: 7px; }
+.app.android.running .mode span { display: none; }
+
+/* The controller's focus, visible on everything it can reach. */
+.app.android :focus-visible { outline: 3px solid #1fc8ff; outline-offset: 2px; }
+.app.android .mode:focus-visible { outline-offset: 0; }
+.app.android .log:focus-visible { outline-offset: -3px; }
+
+.sheet { width: min(320px, 90vw); }
+.sheet button { width: 100%; padding: 10px 12px; }
+.browser { width: min(640px, 96vw); height: 92vh; }
+.browser .where { color: #8a90a0; font-size: 12px; word-break: break-all; }
+.browser .entries { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; background: #0f1115; border: 1px solid #262a33; border-radius: 8px; padding: 4px; }
+.browser .entry { text-align: left; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 9px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.browser .entry.dir { color: #e6e8ee; }
+.browser .entry.file { color: #aab0bf; }
+.browser .entry.picked { background: #1a2233; border-color: #2f6fed; color: #fff; }
+.browser .entry.up { color: #8a90a0; }
+.confirm p { margin: 0; color: #aab0bf; }

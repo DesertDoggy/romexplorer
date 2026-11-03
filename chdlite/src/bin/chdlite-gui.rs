@@ -2,6 +2,11 @@
 //!
 //! Everything it does goes through [`chdlite::batch`], always as worker processes, so Cancel
 //! can stop a CHD creation part-way (chdman itself has no cancel hook).
+//!
+//! The same window is the Android app (`dx build --android`, see `chdlite/Dioxus.toml`), with
+//! the differences kept behind `cfg(target_os = "android")`: no drag and drop, so a mode opens
+//! a sheet and an in-app file browser (`src/gui/android.rs`); Cancel asks first; a controller
+//! moves the focus; and a run holds a foreground service so Android does not stop it.
 
 // No console window behind the GUI in a release build; a debug build keeps one for panics.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -15,14 +20,23 @@ use dioxus::desktop::{use_asset_handler, Config, LogicalSize, WindowBuilder};
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 
-use chdlite::batch::{self, Batch, BatchEvent, WORKER_FLAG};
+use chdlite::batch::{self, Batch, BatchEvent, CAN_SPAWN_WORKERS, WORKER_FLAG};
 use chdlite::classify::{expand, lossy_targets};
 use chdlite::job::Mode;
 use chdlite::settings::{CompMode, Jobs, LitePreset, Settings, CD_CODECS, CUE_STYLES, DVD_CODECS, GDROM_SHEETS, HASHES, MAX_CODECS, RVZ_BLOCKS, RVZ_CODECS};
 
+#[cfg(target_os = "android")]
+#[path = "../gui/android.rs"]
+mod android_ui;
+#[cfg(target_os = "android")]
+use android_ui::{Browse, Browser, ConfirmCancel, ModeSheet, Purpose};
+
+const ANDROID: bool = cfg!(target_os = "android");
+
 // Compiled in rather than shipped beside the executable, for the reason romexplorer-gui
 // gives: `asset!()` needs `dx build`, and this is built with plain cargo.
 const APP_CSS: &str = include_str!("../../assets/app.css");
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 const ART: [(&str, &[u8]); 4] = [
     ("lite.png", include_bytes!("../../assets/lite.png")),
@@ -62,7 +76,11 @@ fn main() {
     }
     *STARTUP.lock().unwrap() = args.iter().map(PathBuf::from).filter(|path| path.exists()).collect();
 
+    #[allow(unused_mut)]
     let mut window = WindowBuilder::new().with_title("chdlite").with_inner_size(LogicalSize::new(560.0, 760.0)).with_min_inner_size(LogicalSize::new(420.0, 520.0));
+    // Android draws the launcher icon itself and keeps the webview's data in the app's own
+    // folder.
+    #[cfg(not(target_os = "android"))]
     if let Ok(decoded) = image::load_from_memory(ICON_PNG) {
         let rgba = decoded.to_rgba8();
         let (width, height) = rgba.dimensions();
@@ -72,11 +90,9 @@ fn main() {
     }
     // WebView2's own data (cache, local storage) beside the executable too, not in
     // %LOCALAPPDATA%, so deleting the folder leaves nothing behind.
-    let cfg = Config::new()
-        .with_menu(None)
-        .with_window(window)
-        .with_background_color((0x14, 0x16, 0x1b, 0xff))
-        .with_data_directory(chdlite::settings::data_dir().join("webview"));
+    let cfg = Config::new().with_menu(None).with_window(window).with_background_color((0x14, 0x16, 0x1b, 0xff));
+    #[cfg(not(target_os = "android"))]
+    let cfg = cfg.with_data_directory(chdlite::settings::data_dir().join("webview"));
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 }
 
@@ -118,12 +134,22 @@ fn dropped(event: &DragEvent) -> Vec<PathBuf> {
 fn App() -> Element {
     let mut mode = use_signal(|| Mode::Lite);
     let mut settings = use_signal(Settings::load);
-    let mut log = use_signal(|| vec![line("muted", "Pick a mode, then drop files or folders anywhere in this window.")]);
+    let mut log = use_signal(|| vec![line("muted", if ANDROID { "Tap a mode, then choose files or a folder." } else { "Pick a mode, then drop files or folders anywhere in this window." })]);
     let mut run = use_signal(Run::default);
     let mut running = use_signal(|| false);
     let mut show_settings = use_signal(|| false);
     let mut over = use_signal(|| None::<Mode>);
     let mut over_zone = use_signal(|| false);
+    // Android: the sheet under a tapped mode, the file browser, Cancel's question, and whether
+    // All files access has been granted.
+    #[cfg(target_os = "android")]
+    let mut sheet = use_signal(|| None::<Mode>);
+    #[cfg(target_os = "android")]
+    let mut browse = use_signal(|| None::<Browse>);
+    #[cfg(target_os = "android")]
+    let mut confirm_cancel = use_signal(|| false);
+    #[cfg(target_os = "android")]
+    let mut file_access = use_signal(chdlite::android::has_file_access);
 
     use_asset_handler("art", |request, responder| {
         let name = request.uri().path().rsplit('/').next().unwrap_or("");
@@ -149,6 +175,8 @@ fn App() -> Element {
         running.set(true);
         CANCEL.store(false, Ordering::Relaxed);
         let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true };
+        #[cfg(target_os = "android")]
+        chdlite::android::run_started(&format!("{} · {} file{}", with.label(), batch.inputs.len(), if batch.inputs.len() == 1 { "" } else { "s" }));
         std::thread::spawn(move || {
             let failed = batch::run(&batch, &CANCEL, &|event| EVENTS.lock().unwrap().push(Ui::Batch(event)));
             EVENTS.lock().unwrap().push(Ui::Done { failed });
@@ -183,6 +211,12 @@ fn App() -> Element {
         }
         let startup = std::mem::take(&mut *STARTUP.lock().unwrap());
         start(Mode::Lite, startup);
+        #[cfg(target_os = "android")]
+        if !file_access() {
+            log.write().push(line("err", "chdlite needs All files access to read and write disc images: tap Allow above."));
+        }
+        #[cfg(target_os = "android")]
+        let mut tick = 0u32;
         loop {
             let events = std::mem::take(&mut *EVENTS.lock().unwrap());
             for event in events {
@@ -224,12 +258,62 @@ fn App() -> Element {
                     }
                     Ui::Done { failed } => {
                         running.set(false);
+                        #[cfg(target_os = "android")]
+                        chdlite::android::run_finished();
                         let total = run.read().names.len();
                         log.write().push(if failed == 0 { line("ok", format!("Done: {total} of {total}.")) } else { line("err", format!("Completed with errors: {failed} of {total} failed.")) });
                     }
                 }
             }
+            // The notification's progress about once a second, and whether access was
+            // granted in the system screen meanwhile.
+            #[cfg(target_os = "android")]
+            {
+                tick = tick.wrapping_add(1);
+                if *running.peek() && tick % 12 == 0 {
+                    let run = run.peek();
+                    chdlite::android::run_progress(run.overall(), &format!("{} of {} done", run.done, run.names.len()));
+                }
+                if !*file_access.peek() && tick % 20 == 0 && chdlite::android::has_file_access() {
+                    file_access.set(true);
+                }
+            }
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        }
+    });
+
+    // The controller and the Back key: what is on top closes first.
+    #[cfg(target_os = "android")]
+    use_future(move || async move {
+        let mut keys = document::eval(android_ui::NAV_JS);
+        while let Ok(key) = keys.recv::<String>().await {
+            let overlay = confirm_cancel() || asking.peek().is_some() || show_settings() || browse.peek().is_some() || sheet.peek().is_some();
+            match key.as_str() {
+                "back" => {
+                    if confirm_cancel() {
+                        confirm_cancel.set(false);
+                    } else if asking.peek().is_some() {
+                        asking.set(None);
+                        log.write().push(line("muted", "Not converted."));
+                    } else if show_settings() {
+                        show_settings.set(false);
+                    } else if browse.peek().is_some() {
+                        let stays = browse.write().as_mut().is_some_and(|b| b.back());
+                        if !stays {
+                            browse.set(None);
+                        }
+                    } else if sheet.peek().is_some() {
+                        sheet.set(None);
+                    } else {
+                        chdlite::android::leave();
+                    }
+                }
+                "settings" if !overlay => show_settings.set(true),
+                "console" if !overlay => {
+                    let _ = document::eval("const l = document.getElementById('log'); if (l) l.focus();");
+                }
+                _ => {}
+            }
         }
     });
 
@@ -246,11 +330,64 @@ fn App() -> Element {
     let status = if snapshot.names.is_empty() { String::new() } else { format!("{:.0}%  ·  {}/{}", overall, snapshot.done, snapshot.names.len()) };
     let output_dir = settings().output.dir.clone();
 
+    #[cfg(target_os = "android")]
+    let needs_access = !file_access();
+    #[cfg(not(target_os = "android"))]
+    let needs_access = false;
+
+    // The sheet, the file browser and Cancel's question, drawn over everything else.
+    #[cfg(target_os = "android")]
+    let android_overlays = rsx! {
+        if let Some(with) = sheet() {
+            ModeSheet {
+                mode: with,
+                on_pick: move |pick| {
+                    sheet.set(None);
+                    if let Some(pick) = pick {
+                        browse.set(Some(Browse::new(Purpose::Run(with, pick))));
+                    }
+                },
+            }
+        }
+        Browser {
+            state: browse,
+            on_done: move |paths: Option<Vec<PathBuf>>| {
+                let purpose = browse.peek().as_ref().map(|b| b.purpose);
+                browse.set(None);
+                let (Some(purpose), Some(paths)) = (purpose, paths) else { return };
+                match purpose {
+                    Purpose::Run(with, _) => start(with, paths),
+                    Purpose::Output => {
+                        if let Some(dir) = paths.first() {
+                            settings.write().output.dir = dir.to_string_lossy().into_owned();
+                            if let Err(err) = settings.read().save() {
+                                log.write().push(line("err", format!("Settings not saved: {err}")));
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        if confirm_cancel() {
+            ConfirmCancel {
+                on_answer: move |stop: bool| {
+                    confirm_cancel.set(false);
+                    if stop {
+                        CANCEL.store(true, Ordering::Relaxed);
+                    }
+                },
+            }
+        }
+    };
+    #[cfg(not(target_os = "android"))]
+    let android_overlays = rsx! {};
+
     rsx! {
         document::Title { "chdlite" }
         document::Style { {APP_CSS} }
         div {
-            class: "app",
+            class: if ANDROID { "app android" } else { "app" },
+            class: if ANDROID && running() { "running" },
             // Anywhere in the window is a drop target for the selected mode.
             ondragover: move |event| event.prevent_default(),
             ondrop: move |event| {
@@ -265,6 +402,21 @@ fn App() -> Element {
                 span { class: "spacer" }
                 button { onclick: move |_| show_settings.set(true), "⚙ Settings" }
             }
+            if needs_access {
+                div { class: "row access",
+                    span { "chdlite needs All files access to read and write disc images on your storage and SD card." }
+                    button {
+                        class: "primary",
+                        onclick: move |_| {
+                            #[cfg(target_os = "android")]
+                            if let Err(err) = chdlite::android::request_file_access() {
+                                log.write().push(line("err", format!("Could not open the access screen: {err}")));
+                            }
+                        },
+                        "Allow"
+                    }
+                }
+            }
             div { class: "modes",
                 for (m, art, label, tip) in MODES {
                     button {
@@ -272,7 +424,11 @@ fn App() -> Element {
                         class: if m == current { "mode active" } else { "mode" },
                         class: if over() == Some(m) { "over" },
                         title: "{tip}",
-                        onclick: move |_| mode.set(m),
+                        onclick: move |_| {
+                            mode.set(m);
+                            #[cfg(target_os = "android")]
+                            sheet.set(Some(m));
+                        },
                         ondragover: move |event| { event.prevent_default(); event.stop_propagation(); over.set(Some(m)); },
                         ondragleave: move |_| over.set(None),
                         // Dropping straight onto a mode selects it and runs it.
@@ -288,19 +444,23 @@ fn App() -> Element {
                 }
             }
             div { class: "hint", "{hint}" }
-            div {
-                class: if over_zone() { "drop over" } else { "drop" },
-                ondragover: move |event| { event.prevent_default(); over_zone.set(true); },
-                ondragleave: move |_| over_zone.set(false),
-                onclick: move |_| {
-                    spawn(async move {
-                        if let Some(files) = rfd::AsyncFileDialog::new().set_title("Choose files").pick_files().await {
-                            start(mode(), files.iter().map(|f| f.path().to_path_buf()).collect());
-                        }
-                    });
-                },
-                b { "Drop files or folders here" }
-                "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO — or click to choose files"
+            // Android has no drag and drop: a mode's sheet does this zone's job.
+            if !ANDROID {
+                div {
+                    class: if over_zone() { "drop over" } else { "drop" },
+                    ondragover: move |event| { event.prevent_default(); over_zone.set(true); },
+                    ondragleave: move |_| over_zone.set(false),
+                    onclick: move |_| {
+                        #[cfg(not(target_os = "android"))]
+                        spawn(async move {
+                            if let Some(files) = rfd::AsyncFileDialog::new().set_title("Choose files").pick_files().await {
+                                start(mode(), files.iter().map(|f| f.path().to_path_buf()).collect());
+                            }
+                        });
+                    },
+                    b { "Drop files or folders here" }
+                    "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO — or click to choose files"
+                }
             }
             div { class: "row",
                 label { "Output" }
@@ -313,12 +473,15 @@ fn App() -> Element {
                 }
                 button {
                     onclick: move |_| {
+                        #[cfg(not(target_os = "android"))]
                         spawn(async move {
                             if let Some(folder) = rfd::AsyncFileDialog::new().set_title("Output folder").pick_folder().await {
                                 settings.write().output.dir = folder.path().to_string_lossy().into_owned();
                                 let _ = settings.read().save();
                             }
                         });
+                        #[cfg(target_os = "android")]
+                        browse.set(Some(Browse::new(Purpose::Output)));
                     },
                     "Open…"
                 }
@@ -326,9 +489,22 @@ fn App() -> Element {
             div { class: "row",
                 div { class: "bar", style: "flex:1", div { style: "width:{overall}%" } }
                 span { class: "status", "{status}" }
-                button { class: "danger", disabled: !running(), onclick: move |_| CANCEL.store(true, Ordering::Relaxed), "Cancel" }
+                button {
+                    class: "danger",
+                    disabled: !running(),
+                    onclick: move |_| {
+                        // Android asks first: a stray tap or button press would throw away
+                        // a long run.
+                        #[cfg(target_os = "android")]
+                        confirm_cancel.set(true);
+                        #[cfg(not(target_os = "android"))]
+                        CANCEL.store(true, Ordering::Relaxed);
+                    },
+                    "Cancel"
+                }
             }
-            div { class: "log", id: "log",
+            // Focusable on Android, where Select moves the focus here and the D-pad scrolls it.
+            div { class: "log", id: "log", tabindex: if ANDROID { "0" },
                 for (index, entry) in log().into_iter().enumerate() {
                     div { key: "{index}", class: "{entry.class}", "{entry.text}" }
                 }
@@ -376,6 +552,7 @@ fn App() -> Element {
                     },
                 }
             }
+            {android_overlays}
         }
     }
 }
@@ -574,19 +751,22 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                             }
                             input { r#type: "number", min: "1", max: "256", disabled: !threads_custom, value: "{cores}", oninput: move |event| draft.write().jobs.threads = number(&event.value()).max(1) }
                         }
-                        div { class: "row",
-                            label { "Files at once" }
-                            select {
-                                onchange: move |event| draft.write().jobs.concurrent_files = if event.value() == "custom" { auto_files as u32 } else { 0 },
-                                option { value: "auto", selected: !files_custom, "Auto ({auto_files} here)" }
-                                option { value: "custom", selected: files_custom, "Custom" }
+                        // Android runs one file at a time (see `batch`), so it has no such setting.
+                        if CAN_SPAWN_WORKERS {
+                            div { class: "row",
+                                label { "Files at once" }
+                                select {
+                                    onchange: move |event| draft.write().jobs.concurrent_files = if event.value() == "custom" { auto_files as u32 } else { 0 },
+                                    option { value: "auto", selected: !files_custom, "Auto ({auto_files} here)" }
+                                    option { value: "custom", selected: files_custom, "Custom" }
+                                }
+                                input { r#type: "number", min: "1", max: "16", disabled: !files_custom, value: if files_custom { "{s.jobs.concurrent_files}" } else { "{auto_files}" }, oninput: move |event| draft.write().jobs.concurrent_files = number(&event.value()).clamp(1, 16) }
                             }
-                            input { r#type: "number", min: "1", max: "16", disabled: !files_custom, value: if files_custom { "{s.jobs.concurrent_files}" } else { "{auto_files}" }, oninput: move |event| draft.write().jobs.concurrent_files = number(&event.value()).clamp(1, 16) }
-                        }
-                        div { class: "note",
-                            "Dropped files are converted this many at a time, each in its own process, with the threads shared between them. "
-                            "Auto: a quarter of the threads, at most 4 — chdman and Dolphin already use every thread they get for one file, so more files at once mostly fills the gaps where a file is reading or finishing. "
-                            "More helps with many small images; on a hard disk, fewer is faster."
+                            div { class: "note",
+                                "Dropped files are converted this many at a time, each in its own process, with the threads shared between them. "
+                                "Auto: a quarter of the threads, at most 4 — chdman and Dolphin already use every thread they get for one file, so more files at once mostly fills the gaps where a file is reading or finishing. "
+                                "More helps with many small images; on a hard disk, fewer is faster."
+                            }
                         }
                     }
                 }

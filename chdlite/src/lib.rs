@@ -4,8 +4,11 @@
 //! wants (CD CHD, GD-ROM CHD, DVD CHD, or RVZ for GameCube/Wii), [`job`] runs one input
 //! through `romexplorer::rom`'s chdman and Dolphin wrappers, and [`batch`] runs many, several
 //! at a time. [`cli`] is the console front end shared by the `chdlite`, `chdcomp`, `chdread`
-//! and `chdhash` binaries; the GUI (`chdlite-gui`) drives [`batch`] directly.
+//! and `chdhash` binaries; the GUI (`chdlite-gui`) drives [`batch`] directly. On Android the
+//! GUI is the whole app, and `android` is its bridge to the Java side.
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod batch;
 pub mod classify;
 pub mod cli;

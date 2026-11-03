@@ -4,6 +4,10 @@
 //! executable. Only where that folder cannot be written to (or inside a macOS `.app` bundle,
 //! whose signature a write would break) does it fall back to the per-user directories. Every
 //! field has a default, so a missing or partial file is never an error.
+//!
+//! On Android there is no folder beside an executable: everything is in the app's own files
+//! directory (`Context.getFilesDir()`), which only chdlite can see and which uninstalling
+//! removes.
 
 use std::path::{Path, PathBuf};
 
@@ -202,6 +206,9 @@ impl Settings {
     /// Where the settings file is (or would be written): beside the executable, unless that
     /// folder is not writable (see [`portable_dir`]).
     pub fn path() -> PathBuf {
+        if let Some(dir) = android_files_dir() {
+            return dir.join(FILE_NAME);
+        }
         if let Some(beside) = exe_dir().map(|dir| dir.join(FILE_NAME)).filter(|path| path.is_file()) {
             return beside;
         }
@@ -250,6 +257,17 @@ impl Settings {
     }
 }
 
+/// The Android app's files directory, where its settings and data live; `None` elsewhere.
+#[cfg(target_os = "android")]
+fn android_files_dir() -> Option<PathBuf> {
+    Some(crate::android::files_dir())
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_files_dir() -> Option<PathBuf> {
+    None
+}
+
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
 }
@@ -271,6 +289,9 @@ pub fn portable_dir() -> Option<PathBuf> {
 /// the GUI's webview data): `chdlite-data` beside the executable, or the per-user cache
 /// directory when that folder is not writable.
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = android_files_dir() {
+        return dir;
+    }
     match portable_dir() {
         Some(dir) => dir.join("chdlite-data"),
         None => user_dir(DirKind::Cache).join("chdlite"),

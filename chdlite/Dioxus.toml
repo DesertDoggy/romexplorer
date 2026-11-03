@@ -1,0 +1,21 @@
+# Read by `dx` only, for the Android app (scripts/build_chdlite_android.sh). The desktop GUI
+# is built with plain cargo and never looks at this file.
+
+[application]
+name = "chdlite"
+# Both replace dx's generated ones; see the comments at the top of each.
+android_manifest = "android/AndroidManifest.xml"
+android_main_activity = "android/MainActivity.kt"
+
+[bundle]
+# Also hard-coded in android/MainActivity.kt (`typealias BuildConfig`).
+identifier = "com.desertdoggy.chdlite"
+publisher = "DesertDoggy"
+icon = ["assets/icon.png"]
+
+[android]
+# All files access (MANAGE_EXTERNAL_STORAGE) is Android 11; android/MainActivity.kt asks for
+# the old storage permission below that.
+min_sdk = 26
+target_sdk = 35
+compile_sdk = 35

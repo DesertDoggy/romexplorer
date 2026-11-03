@@ -23,7 +23,8 @@ chdlite は romexplorer とは別にリリースされます。このノート�
   `chdlite`、`chdcomp`、`chdread`、`chdhash`。すべての設定はオプションでも指定できます（`--help`）。
 - これまでどおり複数ファイルを同時に変換します（ファイルごとにワーカープロセス）。ウィンドウの
   Cancel で CHD 作成を途中で止められるようになりました。
-- Windows x64 / arm64、Linux x64 / arm64、macOS arm64 向けビルド。Windows の GUI は単一ファイルです。
+- **Android 版。** 同じ 4 つのモードを Android（arm64）のアプリで使えます。タッチでもコントローラーでも操作でき、モードを選んでからファイルかフォルダーを指定します。変換はバックグラウンドでも続き、進み具合は通知に出ます。
+- Windows x64 / arm64、Linux x64 / arm64、macOS arm64、Android arm64 向けビルド。Windows の GUI は単一ファイルです。
 
 ## バグ修正
 

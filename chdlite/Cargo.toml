@@ -47,13 +47,24 @@ toml = "0.8"
 num_cpus = "1"
 zstd = { version = "0.13", optional = true }
 
+# "desktop" on Android too: dioxus' `mobile` feature is the same dioxus-desktop crate (tao +
+# wry), only with a different `launch!` macro config, which this crate does not use.
 dioxus = { version = "0.7", features = ["desktop"], optional = true }
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 # Decodes the embedded PNG for the window icon; already in the lock file through romexplorer.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 # The batch runs on romexplorer's `Multiple`, which schedules on tokio.
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# rfd has no Android backend; the Android GUI has its own file browser instead.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
+
+# The Android app's own directories, All files access and the foreground service are Java
+# APIs (src/android.rs). Both are already in the lock file through dioxus-desktop.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [build-dependencies]
 zstd = "0.13"

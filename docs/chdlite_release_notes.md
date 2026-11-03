@@ -23,8 +23,11 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
   thing: `chdlite`, `chdcomp`, `chdread`, `chdhash`. Every option is also a flag (`--help`).
 - Several files are converted at once, as before, each in its own worker process, and
   Cancel in the window now stops a CHD creation part-way.
-- Builds for Windows x64 / arm64, Linux x64 / arm64 and macOS arm64. On Windows the GUI is a
-  single file.
+- **Android.** The same four modes as an Android app (arm64), for touch or a controller: tap
+  a mode, then choose files or a folder. A run keeps going in the background and shows its
+  progress in a notification.
+- Builds for Windows x64 / arm64, Linux x64 / arm64, macOS arm64 and Android arm64. On
+  Windows the GUI is a single file.
 
 ## Bug fixes
 
