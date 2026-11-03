@@ -29,6 +29,7 @@ pub mod sheets;
 mod sources;
 mod status;
 mod titles;
+pub mod versions;
 mod users;
 pub mod widgets;
 

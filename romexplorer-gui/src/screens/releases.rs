@@ -29,11 +29,13 @@ fn releases_spec() -> GridSpec {
                 o
             }),
         },
+        Filter::Check { key: "hide_minor", label: state::tr("hide minor versions"), off: String::new() },
     ];
     filters.extend(common::facet_filters());
     GridSpec::new("releases", release_columns(), |q| async move {
         let mut p = q.base();
-        p.extend([("platforms", q.f("platform")), ("kinds", common::kinds(&q)), ("material", q.f("material")), ("view", q.f("view")), ("source", q.f("source"))]);
+        let hide_minor = if q.f("hide_minor") == "true" { "true".to_string() } else { String::new() };
+        p.extend([("platforms", q.f("platform")), ("kinds", common::kinds(&q)), ("material", q.f("material")), ("view", q.f("view")), ("source", q.f("source")), ("hide_minor", hide_minor)]);
         p.extend(common::facet_params(&q));
         api::get(&format!("/api/v1/catalog/releases{}", api::qs(&p))).await
     })

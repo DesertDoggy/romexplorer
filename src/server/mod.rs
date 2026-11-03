@@ -2106,6 +2106,29 @@ async fn definitive_ask(State(s): State<Shared>, Path(id): Path<u64>, body: Opti
     Ok(Json(api::definitive::ask(&s.app, id, &req).await?))
 }
 
+async fn title_versions(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<api::versions::VersionInfo> {
+    Ok(Json(api::versions::info(&s.app, id).await?))
+}
+
+async fn title_versions_add(State(s): State<Shared>, Path(id): Path<u64>, Json(req): Json<api::versions::RelationRequest>) -> ApiResult<api::versions::VersionInfo> {
+    Ok(Json(api::versions::add_relation(&s.app, id, &req).await?))
+}
+
+async fn title_versions_delete(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<serde_json::Value> {
+    api::versions::delete_relation(&s.app, id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn version_group_pick(State(s): State<Shared>, Path(key): Path<String>, Json(req): Json<api::versions::PickRequest>) -> ApiResult<serde_json::Value> {
+    api::versions::pick(&s.app, &key, &req).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn version_group_reroll(State(s): State<Shared>, Path(key): Path<String>) -> ApiResult<serde_json::Value> {
+    api::versions::reroll(&s.app, &key).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn definitive_batch_estimate(State(s): State<Shared>, Json(req): Json<romexplorer_types::jobs::AiBatchRateRequest>) -> ApiResult<api::definitive::BatchEstimate> {
     Ok(Json(api::definitive::batch_estimate(&s.app, &req).await?))
 }
@@ -2694,6 +2717,10 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/catalog/definitive/batch-estimate", post(definitive_batch_estimate))
         .route("/api/v1/catalog/titles/{id}/basegame", post(title_basegame_set).delete(title_basegame_reset))
         .route("/api/v1/catalog/titles/{id}", get(catalog_title))
+        .route("/api/v1/catalog/titles/{id}/versions", get(title_versions).post(title_versions_add))
+        .route("/api/v1/catalog/titles/versions/relations/{id}", delete(title_versions_delete))
+        .route("/api/v1/catalog/version-groups/{key}/pick", axum::routing::put(version_group_pick))
+        .route("/api/v1/catalog/version-groups/{key}/reroll", post(version_group_reroll))
         .route("/api/v1/catalog/releases", get(catalog_releases))
         .route("/api/v1/catalog/patches", get(catalog_patches))
         .route("/api/v1/catalog/bios", get(catalog_bios))

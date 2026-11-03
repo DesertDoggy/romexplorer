@@ -149,6 +149,15 @@ pub struct ListQuery {
     pub display_res: Option<String>,
     pub display_scan: Option<String>,
     pub display_state: Option<String>,
+    /// Titles / releases: leave out minor versions -- a title a fuller edition covers on its
+    /// platforms and regions, a release a fuller release of its title covers
+    /// (`database::versions`).
+    #[serde(default)]
+    pub hide_minor: bool,
+    /// Titles: one version of each version set (`database::versions`): the held one, the
+    /// user's pick, else a stable random one.
+    #[serde(default)]
+    pub one_per_group: bool,
     pub sort: Option<String>,
     #[serde(default)]
     pub desc: bool,
@@ -219,6 +228,16 @@ pub struct TitleRow {
     pub display_widescreen: Option<String>,
     pub display_modes: Option<String>,
     pub display_refresh: Option<String>,
+    /// With `one_per_group`: the version set the row stands for, and how many of its
+    /// versions are not listed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_group: Option<VersionGroupBadge>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionGroupBadge {
+    pub key: String,
+    pub hidden: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1704,6 +1723,7 @@ fn row_to_title(row: &MySqlRow) -> Result<TitleRow> {
         display_widescreen: None,
         display_modes: None,
         display_refresh: None,
+        version_group: None,
     })
 }
 
@@ -1916,6 +1936,14 @@ pub async fn titles(app: &App, q: &ListQuery) -> Result<Page<TitleRow>> {
         t.display_name = names.get(&(t.id, t.top_release_id)).cloned().unwrap_or_else(|| t.name.clone());
     }
     fill_title_display(&app.pool, &mut page.items).await?;
+    if q.one_per_group {
+        let v = crate::database::versions::view(&app.pool).await?;
+        for t in &mut page.items {
+            if let Some(g) = v.group_of.get(&t.id).and_then(|k| v.groups.get(k)) {
+                t.version_group = Some(VersionGroupBadge { key: g.key.clone(), hidden: g.variants.len().saturating_sub(1) as u64 });
+            }
+        }
+    }
     Ok(page)
 }
 
@@ -2022,6 +2050,21 @@ async fn title_list_body(app: &App, q: &ListQuery, binds: &mut Vec<Bind>) -> Res
     let (display_conds, display_binds) = title_display_filters(q, "t.id")?;
     body.push_str(&display_conds);
     binds.extend(display_binds.into_iter().map(Bind::Str));
+    if q.hide_minor || q.one_per_group {
+        let v = crate::database::versions::view(&app.pool).await?;
+        let mut hidden: Vec<u64> = Vec::new();
+        if q.hide_minor {
+            hidden.extend(v.minor_titles.iter().copied());
+        }
+        if q.one_per_group {
+            hidden.extend(v.group_hidden.iter().copied());
+        }
+        if !hidden.is_empty() {
+            hidden.sort_unstable();
+            hidden.dedup();
+            body.push_str(&format!(" AND t.id NOT IN ({})", hidden.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
+        }
+    }
     let (ra_filter, ra_first) = ra_view(q.view.as_deref(), true);
     if let Some(filter) = &ra_filter {
         body.push_str(filter);

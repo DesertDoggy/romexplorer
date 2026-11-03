@@ -282,6 +282,13 @@ pub async fn recompute_roots(pool: &MySqlPool) -> Result<u64, DatabaseError> {
             }
         }
     }
+    // Two versions of one version set (one game sold side by side, a third version included)
+    // never share a family, whatever IGDB links: each keeps its own line of remakes.
+    let set_of = super::versions::set_versions(pool).await?;
+    edges.retain(|(a, b)| match (set_of.get(a), set_of.get(b)) {
+        (Some((sa, va)), Some((sb, vb))) => sa != sb || va == vb,
+        _ => true,
+    });
     let ids: HashSet<u64> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
     let mut info: HashMap<u64, (bool, bool, Option<u16>)> = HashMap::new();
     let list: Vec<u64> = ids.into_iter().collect();

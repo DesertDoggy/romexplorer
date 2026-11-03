@@ -491,7 +491,7 @@ pub async fn merge_titles(pool: &MySqlPool, ids: &[u64], reason: &str, grade: &s
     sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE title SET basegame_title_id = {keep} WHERE basegame_title_id IN ({list})"))).execute(&mut *tx).await?;
     sqlx::query("UPDATE title SET basegame_title_id = NULL WHERE id = ? AND basegame_title_id = ?").bind(keep).bind(keep).execute(&mut *tx).await?;
     // The games a collection holds, and the user's order of a family, follow too.
-    for (table, cols) in [("title_bundle_games", ["bundle_title_id", "game_title_id"]), ("title_family_order", ["root_title_id", "title_id"])] {
+    for (table, cols) in [("title_bundle_games", ["bundle_title_id", "game_title_id"]), ("title_family_order", ["root_title_id", "title_id"]), ("title_version_relations", ["title_id", "other_title_id"])] {
         for col in cols {
             sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE IGNORE {table} SET {col} = {keep} WHERE {col} IN ({list})"))).execute(&mut *tx).await?;
             sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table} WHERE {col} IN ({list})"))).execute(&mut *tx).await?;

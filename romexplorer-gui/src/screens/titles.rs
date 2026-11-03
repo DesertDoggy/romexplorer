@@ -34,7 +34,19 @@ fn BaseGameTool() -> Element {
 fn titles_spec(q: &str, reload: Signal<u64>) -> GridSpec {
     let columns = vec![
         common::status_column(),
-        Column::html("name", &state::tr("title"), title_name_html).sort("name"),
+        Column::render("name", &state::tr("title"), move |r| {
+            let key = super::versions::group_key(r);
+            rsx! {
+                Html { html: format!("{}{}", title_name_html(r), super::versions::group_badge(r)) }
+                if let Some(key) = key {
+                    button { class: "btn small", title: state::tr("show another version of this set"),
+                        onclick: move |e| { e.stop_propagation(); let key = key.clone(); spawn(async move { if super::versions::reroll(&key).await { bump(reload); } }); },
+                        "🎲"
+                    }
+                }
+            }
+        })
+        .sort("name"),
         Column::html("category", &state::tr("category"), common::title_kind_badge).sort("category"),
         Column::html("platforms", &state::tr("platforms"), |r| html::platform_badges(&s(r, "platforms"))).sort("platforms"),
         Column::html("providers", &state::tr("providers"), |r| html::provider_icons(&s(r, "providers"))).sort("providers"),
@@ -61,10 +73,13 @@ fn titles_spec(q: &str, reload: Signal<u64>) -> GridSpec {
             }),
         },
     ];
+    filters.push(Filter::Check { key: "hide_minor", label: state::tr("hide minor versions"), off: String::new() });
+    filters.push(Filter::Check { key: "one_per_group", label: state::tr("one of each version group"), off: String::new() });
     filters.extend(common::facet_filters());
     let mut spec = GridSpec::new("titles", columns, |q| async move {
         let mut p = q.base();
-        p.extend([("platforms", q.f("platform")), ("kinds", common::kinds(&q)), ("material", q.f("material")), ("igdb", q.f("igdb")), ("basegame", q.f("basegame")), ("view", q.f("view")), ("provider", q.f("provider"))]);
+        let on = |k: &str| if q.f(k) == "true" { "true".to_string() } else { String::new() };
+        p.extend([("platforms", q.f("platform")), ("kinds", common::kinds(&q)), ("material", q.f("material")), ("igdb", q.f("igdb")), ("basegame", q.f("basegame")), ("view", q.f("view")), ("provider", q.f("provider")), ("hide_minor", on("hide_minor")), ("one_per_group", on("one_per_group"))]);
         p.extend(common::facet_params(&q));
         api::get(&format!("/api/v1/catalog/titles{}", api::qs(&p))).await
     })
@@ -75,7 +90,7 @@ fn titles_spec(q: &str, reload: Signal<u64>) -> GridSpec {
         title: api::so(r, "display_name").unwrap_or_else(|| s(r, "name")),
         media: api::uo(r, "cover_media_id"),
         held: common::held_class(r),
-        flags: format!("{}{}", common::bucket_badge(r), common::status_badges(r, false)),
+        flags: format!("{}{}{}", common::bucket_badge(r), common::status_badges(r, false), super::versions::group_badge(r)),
         sub: format!("{}{}", html::platform_badges(&s(r, "platforms")), html::provider_icons(&s(r, "providers"))),
         ..Default::default()
     })
@@ -113,6 +128,16 @@ fn titles_spec(q: &str, reload: Signal<u64>) -> GridSpec {
         items.push(super::art::context_item("titles", u(&r, "row_id"), &name, Some(rows.clone())));
         items.push(super::art::export_context_item("titles", u(&r, "row_id"), &name, Some(rows.clone())));
         items.push(super::copy::context_item("titles", u(&r, "row_id"), &name, Some(rows)));
+        if let Some(key) = super::versions::group_key(&r) {
+            items.push(MenuItem::new(state::tr("Show another version of this set 🎲"), move || {
+                let key = key.clone();
+                spawn(async move {
+                    if super::versions::reroll(&key).await {
+                        bump(reload)
+                    }
+                });
+            }));
+        }
         items
     })
     .select(
@@ -208,6 +233,12 @@ fn TitlePage(id: u64) -> Element {
         let _ = gen();
         async move { api::get(&format!("/api/v1/catalog/titles/{id}")).await }
     });
+    let mut vgen = use_signal(|| 0u64);
+    let vinfo = use_resource(move || {
+        let _ = gen();
+        let _ = vgen();
+        async move { api::get(&format!("/api/v1/catalog/titles/{id}/versions")).await.ok() }
+    });
     use_effect(move || {
         spawn(async move { widgets::page_refresh("titles", id, false).await });
     });
@@ -288,7 +319,16 @@ fn TitlePage(id: u64) -> Element {
     };
     let mut cols = vec![order_col];
     cols.extend(release_columns());
-    let mut rel_spec = GridSpec::new("title_releases", cols, widgets::static_fetch(releases.clone()))
+    // Minor releases (a fuller release of this title covers them), for the grid's filter.
+    let minor: Vec<u64> = vinfo.read().as_ref().and_then(|v| v.as_ref()).map(|v| api::arr(v, "minor_releases").iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    let all_releases = releases.clone();
+    let minor_key = minor.iter().map(u64::to_string).collect::<Vec<_>>().join(".");
+    let mut rel_spec = GridSpec::new("title_releases", cols, move |q| {
+        let items: Vec<Value> = if q.f("hide_minor") == "true" { all_releases.iter().filter(|r| !minor.contains(&u(r, "id"))).cloned().collect() } else { all_releases.clone() };
+        let n = items.len();
+        std::future::ready(Ok(json!({ "items": items, "total": n })))
+    })
+    .filters(vec![Filter::Check { key: "hide_minor", label: state::tr("hide minor versions"), off: String::new() }])
         .link(|r| Some(Route::Release { id: u(r, "id") }))
         .local(common::held_class)
         .context(|r, _| async move { release_context(u(&r, "id"), s(&r, "name"), None, None, None).await })
@@ -310,7 +350,7 @@ fn TitlePage(id: u64) -> Element {
     // Remounted whenever the order itself changes: keyed by the move counter alone, the list
     // was rebuilt as soon as a move was sent -- from the data still on screen -- and not again
     // when the title came back in its new order.
-    let rel_key = format!("{id}-{}", releases.iter().map(|r| u(r, "id").to_string()).collect::<Vec<_>>().join("."));
+    let rel_key = format!("{id}-{}-{minor_key}", releases.iter().map(|r| u(r, "id").to_string()).collect::<Vec<_>>().join("."));
 
     let crumbs_name = shown.clone();
     let (match_name, match_links) = (name.clone(), links.clone());
@@ -531,6 +571,9 @@ fn TitlePage(id: u64) -> Element {
             }
         }
         super::display::DisplayCard { values: api::arr(&t, "display").to_vec(), release_ids: releases.iter().map(|r| u(r, "id")).collect(), note: if releases.len() > 1 { state::trf("its top release; a change applies to all {n} releases", &[("n", &releases.len().to_string())]) } else { String::new() }, media: format!("title_id={id}"), on_change: move |_| *gen.write() += 1 }
+        if let Some(Some(v)) = vinfo.read().as_ref() {
+            div { class: "card", super::versions::VersionsCard { id, info: v.clone(), on_change: move |_| *vgen.write() += 1 } }
+        }
         widgets::MediaStrip { query: format!("title_id={id}"), stamp: gen() }
         div { class: "card",
             h2 {

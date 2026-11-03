@@ -56,6 +56,7 @@ pub mod title_family;
 pub mod title_merge;
 pub mod title_review;
 pub mod vault;
+pub mod versions;
 pub mod storage;
 pub mod sync_rev;
 pub mod virtual_collection;

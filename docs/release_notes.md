@@ -34,6 +34,15 @@ replacing a build.
   or a set's selected rows or the whole set. It shows the number of questions and an approximate
   cost first, skips games already answered, and can be scheduled for a set.
 
+**Titles: minor versions and version sets**
+- "Hide minor versions" leaves out a game where a fuller edition covers it on the same platform
+  and region (International, Director's Cut, Final Mix, Royal and the like; an Easy Type loses to
+  the regular game). On Titles, Releases and a title's releases.
+- "One of each version group" lists one version of games sold side by side (Pokémon, Yo-kai Watch,
+  Battle Network and others): the one you hold, else your pick, else a random one, with 🎲 to
+  show another. Versions of a set no longer share a family on the Definitive tab.
+- A title page's new Versions card shows both, and lets you correct them.
+
 **Config › Advanced**
 - A new tab for operations that can damage the database or lose files, behind a clear warning.
   DB optimize moved here from Jobs and Data › DB.

@@ -257,7 +257,7 @@ pub const DATABASE_TABLES: [&str; 38] = [
 
 /// The catalogue: what DAT imports and the providers built. Large, and re-derivable -- but
 /// only by re-downloading and re-importing, and never with the same row ids.
-pub const CATALOG_TABLES: [&str; 59] = [
+pub const CATALOG_TABLES: [&str; 61] = [
     // provenance
     "sources",
     "dat_imports",
@@ -297,6 +297,10 @@ pub const CATALOG_TABLES: [&str; 59] = [
     "title_bundle_games",
     "title_family_order",
     "title_families",
+    // minor versions and version groups: the user's corrections, and which version of a
+    // group is shown
+    "title_version_relations",
+    "version_group_picks",
     "company",
     "franchise",
     "franchise_media",

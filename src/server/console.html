@@ -2875,6 +2875,54 @@ function platformFilterOptions() {
 function platformFilter() { return { key: 'platform', label: tr('platform'), type: 'combo', multi: true, options: platformFilterOptions }; }
 
 let titlesGrid = null;
+
+// --- versions: minor versions and version sets (`/api/v1/catalog/titles/{id}/versions`) ---
+const VERSION_SOURCE = () => ({ igdb: tr('IGDB edition'), name: tr('by name'), data: tr('built-in list'), user: tr('set by you') });
+// A title row's version set: how many versions are not listed, and the 🎲 that shows another.
+function versionGroupBadge(r, withButton = true) {
+  const g = r.version_group;
+  if (!g || !g.hidden) return '';
+  const label = ` <span class="badge dim" title="${esc(tr('one version of this set is listed; the others are on the title page'))}">${esc(trf('+{n} versions', { n: g.hidden }))}</span>`;
+  if (!withButton) return label;
+  return label + `<button class="btn small" title="${esc(tr('show another version of this set'))}" onclick="event.stopPropagation(); rerollVersionGroup('${esc(g.key)}')">🎲</button>`;
+}
+async function rerollVersionGroup(key, after) {
+  try { await api('/api/v1/catalog/version-groups/' + encodeURIComponent(key) + '/reroll', { method: 'POST' }); if (after) after(); else if (titlesGrid) titlesGrid.reload(); } catch (e) { toast(e.message, true); }
+}
+// A title page's Versions card: what it is a minor version of, what it covers, its version
+// set (which version is shown), and the corrections the user made.
+async function versionsCard(box, id, onChange) {
+  let v;
+  try { v = await api('/api/v1/catalog/titles/' + id + '/versions'); } catch (e) { box.innerHTML = `<h2>${tr('Versions')}</h2><div class="bad">${esc(e.message)}</div>`; return null; }
+  const src = VERSION_SOURCE();
+  const link = o => `<a class="link" onclick="go('collection/titles/${o.title_id}')">${esc(o.name)}</a>${o.platforms ? ` <span class="muted">${esc(o.platforms)}</span>` : ''}`;
+  const pairRow = o => `<li>${link(o)} ${badge(src[o.source] || o.source, 'dim')}${o.source !== 'user' ? ` <button class="btn small" data-notminor="${o.title_id}" title="${esc(tr('they are not minor and fuller versions of each other'))}">${tr('not a minor version')}</button>` : ''}</li>`;
+  const set = v.set;
+  const setHtml = set ? `<h3>${tr('Version set')} <button class="btn small" data-reroll title="${esc(tr('show another version of this set'))}">🎲</button></h3>
+    <ul>${set.versions.map(x => `<li>${x.titles.map(link).join(', ')} ${x.shown ? badge(tr('shown'), 'ok') : ''} ${x.owned ? badge(tr('held'), 'dim') : ''} ${x.titles.length ? (set.pinned && x.titles.some(t => t.title_id === set.pinned) ? `<button class="btn small" data-pick="">${tr('unpin')}</button>` : `<button class="btn small" data-pick="${x.titles[0].title_id}">${tr('show this one')}</button>`) : ''}</li>`).join('')}</ul>
+    <div class="muted">${tr('"One of each version group" lists one version: one you hold, else your pick, else a random one that stays until you press 🎲.')}</div>` : '';
+  const kindLabel = { minor: tr('minor version of'), not_minor: tr('not a minor version of'), group: tr('same version set as'), ungroup: tr('in no version set') };
+  box.innerHTML = `<h2>${tr('Versions')}</h2>
+    ${v.hidden ? `<p class="notice">${tr('"Hide minor versions" leaves this title out: a fuller version covers all its platforms and regions.')}</p>` : ''}
+    ${v.minor_of.length ? `<h3>${tr('Minor version of')}</h3><ul>${v.minor_of.map(pairRow).join('')}</ul>` : ''}
+    ${v.fuller_than.length ? `<h3>${tr('Fuller version of')}</h3><ul>${v.fuller_than.map(pairRow).join('')}</ul>` : ''}
+    ${setHtml}
+    ${!v.minor_of.length && !v.fuller_than.length && !set ? `<p class="muted">${tr('No other versions known.')}</p>` : ''}
+    ${v.relations.length ? `<h3>${tr('Your corrections')}</h3><ul>${v.relations.map(r => `<li>${esc(kindLabel[r.kind] || r.kind)} ${r.other ? link(r.other) : ''} <span class="link" data-unrel="${r.id}" title="${esc(tr('remove this correction'))}">✕</span></li>`).join('')}</ul>` : ''}
+    <div class="toolbar" style="margin-top:6px"><button class="btn small" data-add="minor">${tr('mark as minor version of…')}</button> <button class="btn small" data-add="group">${tr('add to a version set with…')}</button>${set ? ` <button class="btn small" data-add="ungroup">${tr('take out of its version set')}</button>` : ''}</div>`;
+  const post = async body => { try { await api('/api/v1/catalog/titles/' + id + '/versions', { method: 'POST', body }); versionsCard(box, id, onChange); if (onChange) onChange(); } catch (e) { toast(e.message, true); } };
+  for (const b of box.querySelectorAll('[data-notminor]')) b.onclick = () => post({ kind: 'not_minor', other_title_id: Number(b.dataset.notminor) });
+  for (const b of box.querySelectorAll('[data-add]')) b.onclick = () => {
+    const kind = b.dataset.add;
+    if (kind === 'ungroup') return post({ kind });
+    pickTitleDialog(kind === 'minor' ? tr('This title is a minor version of') : tr('Same version set as'), other => post({ kind, other_title_id: other }));
+  };
+  for (const b of box.querySelectorAll('[data-unrel]')) b.onclick = async () => { try { await api('/api/v1/catalog/titles/versions/relations/' + b.dataset.unrel, { method: 'DELETE' }); versionsCard(box, id, onChange); if (onChange) onChange(); } catch (e) { toast(e.message, true); } };
+  for (const b of box.querySelectorAll('[data-pick]')) b.onclick = async () => { try { await api('/api/v1/catalog/version-groups/' + encodeURIComponent(set.key) + '/pick', { method: 'PUT', body: { title_id: b.dataset.pick ? Number(b.dataset.pick) : null } }); versionsCard(box, id, onChange); } catch (e) { toast(e.message, true); } };
+  const reroll = box.querySelector('[data-reroll]');
+  if (reroll) reroll.onclick = () => rerollVersionGroup(set.key, () => versionsCard(box, id, onChange));
+  return v;
+}
 async function showTitles() {
   await loadFacets().catch(() => null);
   view.innerHTML = '<div id="grid"></div>';
@@ -2882,7 +2930,7 @@ async function showTitles() {
     gridKey: 'titles', explain: ['explain.collection.titles', 'explain.list.ownership'],
     columns: [
       statusColumn(),
-      { key: 'name', label: tr('title'), sort: 'name', render: r => esc(r.display_name || r.name) + (bucketBadge(r) ? ' ' + bucketBadge(r) : '') + (r.display_name && r.display_name !== r.name ? `<div class="localname">${esc(r.name)}</div>` : '') },
+      { key: 'name', label: tr('title'), sort: 'name', render: r => esc(r.display_name || r.name) + (bucketBadge(r) ? ' ' + bucketBadge(r) : '') + versionGroupBadge(r) + (r.display_name && r.display_name !== r.name ? `<div class="localname">${esc(r.name)}</div>` : '') },
       { key: 'category', label: tr('category'), sort: 'category', render: r => titleKindBadge(r) },
       { key: 'platforms', label: tr('platforms'), sort: 'platforms', render: r => platformBadges(r.platforms) },
       { key: 'providers', label: tr('providers'), sort: 'providers', render: r => providerIcons(r.providers) },
@@ -2892,11 +2940,12 @@ async function showTitles() {
       ...displayColumns(),
       { key: 'id', label: tr('id'), sort: 'id', cls: 'num' },
     ],
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') }].concat(facetFilters()),
-    fetch: st => api('/api/v1/catalog/titles' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, igdb: st.filters.igdb, basegame: st.filters.basegame, view: st.filters.view, provider: st.filters.provider }, facetParams(st)))),
+    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
+      { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }, { key: 'one_per_group', label: tr('one of each version group'), type: 'check' }].concat(facetFilters()),
+    fetch: st => api('/api/v1/catalog/titles' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, igdb: st.filters.igdb, basegame: st.filters.basegame, view: st.filters.view, provider: st.filters.provider, hide_minor: st.filters.hide_minor === 'true' || null, one_per_group: st.filters.one_per_group === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/titles/' + r.id,
     isLocal: heldClass,
-    gridCard: r => ({ title: r.display_name || r.name, media: r.cover_media_id, local: heldClass(r), flags: bucketBadge(r) + statusBadges(r), sub: platformBadges(r.platforms) + providerIcons(r.providers) }),
+    gridCard: r => ({ title: r.display_name || r.name, media: r.cover_media_id, local: heldClass(r), flags: bucketBadge(r) + statusBadges(r) + versionGroupBadge(r, false), sub: platformBadges(r.platforms) + providerIcons(r.providers) }),
     // A row is one kind of a title's releases (its `row_id`): a set or a copy takes only that kind.
     // What works on whole titles -- keyword tags, IGDB, merging -- takes the rows' titles.
     context: async (r, sel) => {
@@ -2905,7 +2954,8 @@ async function showTitles() {
       const name = r.display_name || r.name;
       return [{ label: rows.length > 1 ? trf('{n} selected titles', { n: rows.length }) : name, head: true }]
         .concat(await setMenuItems({ title_row_ids: rows }))
-        .concat([{ label: tr('Add keyword tag…'), action: async () => addKeywordTag(await titleIdsOfRows(rows), reload) }, { label: tr('Remove keyword tag…'), action: async () => removeKeywordTag(await titleIdsOfRows(rows), reload) }, { label: tr('Re-apply IGDB metadata'), action: async () => reapplyIgdb(await titleIdsOfRows(rows)) }, copyMenuItem('titles', r.row_id, name, sel), ...artMenuItems('titles', r.row_id, name, sel)]);
+        .concat([{ label: tr('Add keyword tag…'), action: async () => addKeywordTag(await titleIdsOfRows(rows), reload) }, { label: tr('Remove keyword tag…'), action: async () => removeKeywordTag(await titleIdsOfRows(rows), reload) }, { label: tr('Re-apply IGDB metadata'), action: async () => reapplyIgdb(await titleIdsOfRows(rows)) }, copyMenuItem('titles', r.row_id, name, sel), ...artMenuItems('titles', r.row_id, name, sel)])
+        .concat(r.version_group && r.version_group.hidden ? [{ label: tr('Show another version of this set 🎲'), action: () => rerollVersionGroup(r.version_group.key) }] : []);
     },
     selection: { key: r => r.row_id, actions: [copySelAction('titles'), ...artSelActions('titles'), { label: tr('add to set'), run: async (rows, done) => { await pickSet({ title_row_ids: rows }, done); } }, { label: tr('add keyword tag'), run: async (rows, done) => { await addKeywordTag(await titleIdsOfRows(rows), done); } }, { label: tr('remove keyword tag'), run: async (rows, done) => { await removeKeywordTag(await titleIdsOfRows(rows), done); } }, { label: tr('re-apply IGDB metadata'), run: async (rows, done) => { if (await reapplyIgdb(await titleIdsOfRows(rows))) done(); } }, { label: tr('merge selected into one title'), run: async (rows, done) => {
       const ids = await titleIdsOfRows(rows);
@@ -3382,8 +3432,8 @@ async function showReleases() {
   const grid = makeGrid(document.getElementById('grid'), {
     gridKey: 'releases', explain: ['explain.collection.releases', 'explain.list.ownership'],
     columns: releaseColumns(),
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()),
-    fetch: st => api('/api/v1/catalog/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, view: st.filters.view, source: st.filters.source }, facetParams(st)))),
+    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
+    fetch: st => api('/api/v1/catalog/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, view: st.filters.view, source: st.filters.source, hide_minor: st.filters.hide_minor === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
     context: (r, sel) => releaseContext(r.id, r.name, { ids: sel }),
@@ -3411,11 +3461,15 @@ async function showTitle(id) {
         <h2 style="margin-top:12px">${tr('Media')} <button class="btn small" id="page-art">${tr('download art…')}</button> <button class="btn small" id="page-export">${tr('export art…')}</button></h2><div id="media-slots"></div></div>
     </div>
     <div class="card" id="display-card"></div>
+    <div class="card" id="versions-card"></div>
     <div class="card" id="media-strip" hidden></div>
     <div class="card"><h2>${trf('Releases ({n})', { n: gameReleases.length })} ${t.manual_order ? `${badge(tr('manual order'), 'warn')} <button class="btn small" id="order-reset" title="${tr('back to the default order')}">${tr('reset order')}</button>` : ''} <span class="muted" style="font-weight:normal;font-size:12px">${t.manual_order ? tr('your order (drag ⋮⋮ or ▲▼), then the default for the rest') : tr('ranked: commercial before patches / subsets, then region and language priority, then edition and version (Config › Settings); drag ⋮⋮ or ▲▼ to order them yourself')} ${tr('— right-click a release to add it to a set')}</span></h2><div id="rel"></div></div>`;
   const moveRelease = async (row, after) => { try { await api('/api/v1/catalog/titles/' + id + '/release-order/move', { method: 'POST', body: { release_id: row.id, after_release_id: after ? after.id : null } }); showTitle(id); } catch (e) { toast(e.message, true); } };
   const orderCol = { key: 'order', label: '', render: r => `<span class="draghandle" title="${tr('drag to reorder')}">⋮⋮</span><button class="btn small" data-up="${r.id}" title="${tr('move up')}">▲</button><button class="btn small" data-dn="${r.id}" title="${tr('move down')}">▼</button>` };
-  const relGrid = makeGrid(document.getElementById('rel'), { gridKey: 'title_releases', columns: [orderCol].concat(releaseColumns()), search: false, filters: [], fetch: () => Promise.resolve({ items: gameReleases, total: gameReleases.length }), rowLink: r => 'collection/releases/' + r.id, isLocal: heldClass, context: r => releaseContext(r.id, r.name), gridCard: releaseCard, pageSize: 500, reorder: moveRelease,
+  // Minor releases (a fuller release of this title covers them), for the grid's filter.
+  let minorReleases = [];
+  const relGrid = makeGrid(document.getElementById('rel'), { gridKey: 'title_releases', columns: [orderCol].concat(releaseColumns()), search: false, filters: [{ key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }],
+    fetch: st => { const items = st.filters.hide_minor === 'true' ? gameReleases.filter(r => !minorReleases.includes(r.id)) : gameReleases; return Promise.resolve({ items, total: items.length }); }, rowLink: r => 'collection/releases/' + r.id, isLocal: heldClass, context: r => releaseContext(r.id, r.name), gridCard: releaseCard, pageSize: 500, reorder: moveRelease,
     selection: { key: r => r.id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ release_ids: ids }, done); } }, displaySelAction()].concat(releaseTitleActions()) } });
   // Under the releases, in order of what matters: RetroAchievements, the patched ROMs, then
   // what came with the game (a section per kind).
@@ -3424,6 +3478,7 @@ async function showTitle(id) {
   relCard.after(raZone); raZone.after(patchedZone); patchedZone.after(materialZone);
   materialSections(materialZone, t.releases);
   displayCard(document.getElementById('display-card'), t.display, gameReleases.map(x => x.id), () => showTitle(id), gameReleases.length > 1 ? trf('its top release; a change applies to all {n} releases', { n: gameReleases.length }) : '', { title_id: id });
+  versionsCard(document.getElementById('versions-card'), id).then(v => { if (v && v.minor_releases.length) { minorReleases = v.minor_releases; relGrid.reload(); } });
   // Before those: the patched ROMs, and the game's RetroAchievements patch files.
   if (patchedReleases.length || t.linked.length) {
     const card = el(`<div class="card"><h2>${trf('Patched ROMs ({n})', { n: patchedReleases.length + t.linked.length })}</h2><div></div>${t.linked.length ? `<p class="muted">${tr('Under a title of their own:')}</p>${patchedRefTable(t.linked)}` : ''}</div>`);
