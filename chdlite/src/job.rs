@@ -10,7 +10,7 @@ use romexplorer::rom::chd_info::read_chd_metadata;
 use romexplorer::rom::chdman_wrapper::ChdReader;
 use romexplorer::rom::content::{ContentPlan, InputSet};
 use romexplorer::rom::decode_threads::DecodeThreads;
-use romexplorer::rom::detect::sheet::CueSheetOptions;
+use romexplorer::rom::detect::sheet::{CueSheetOptions, SheetKind};
 use romexplorer::rom::detect::{hinted_metadata_cycle, HeuristicFlags};
 use romexplorer::rom::dolphin_wrapper::{DiscCompression, DiscReader};
 use romexplorer::rom::hash::HashFlags;
@@ -692,15 +692,27 @@ fn cue_style(style: &str) -> Result<CueSheetStyle, String> {
     })
 }
 
+fn gdrom_sheet(sheet: &str) -> Result<SheetKind, String> {
+    Ok(match sheet.trim().to_ascii_lowercase().as_str() {
+        "gdi" | "" => SheetKind::Gdi,
+        "cue" => SheetKind::Cue,
+        other => return Err(format!("unknown GD-ROM sheet '{other}' (gdi or cue)")),
+    })
+}
+
 /// Decodes the input's content once, writing it under `out_dir` (extract) or digesting it
 /// (hash): one `Single`. For a CHD or RVZ that is the disc inside; for anything else, the
-/// files themselves. The cue style also decides a GD-ROM's sheet (Redump: a cue, chdman: a
-/// gdi).
+/// files themselves. An extracted GD-ROM gets the `gdrom_sheet` setting's sheet (a gdi by
+/// default); a hashed one keeps the cue style's own choice (Redump: a cue), so the sheet's hash
+/// is the one the Redump DAT lists.
 fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let extracting = out_dir.is_some();
     let flags = if extracting { HashFlags::empty() } else { hash_flags(&spec.settings.hash.algorithms)? };
     let style = cue_style(&spec.settings.extract.cue_style)?;
-    let base = SingleArgs::default().with_sheet_style(style);
+    let mut base = SingleArgs::default().with_sheet_style(style);
+    if extracting {
+        base.cd_sheet = gdrom_sheet(&spec.settings.extract.gdrom_sheet)?;
+    }
 
     // What it will write, listed without decoding: to skip, or to clear the way for, files
     // already there.
@@ -760,6 +772,29 @@ fn ascii_field(bytes: &[u8]) -> String {
     bytes[..end].iter().map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '?' }).collect::<String>().trim().to_string()
 }
 
+/// Platform, serial / product code and title, from romexplorer's own detection: the same
+/// per-platform readers a scan uses, straight on the file (a CHD or RVZ by random access, a
+/// cue or gdi through its tracks). Only what was found is listed; a disc no platform
+/// recognises gets a single "unknown" line.
+fn identity_lines(path: &Path, hint: Option<Platform>) -> Vec<String> {
+    let found = hinted_metadata_cycle(path, hint, HeuristicFlags::ALL);
+    let meta = found.metadata;
+    let mut lines = Vec::new();
+    if found.platform == Platform::Unknown {
+        lines.push("  platform     unknown".to_string());
+    } else {
+        lines.push(format!("  platform     {}", found.platform.display_name()));
+    }
+    let clean = |value: &Option<String>| value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    if let Some(serial) = clean(&meta.serial_product_id) {
+        lines.push(format!("  serial       {serial}"));
+    }
+    if let Some(title) = clean(&meta.title) {
+        lines.push(format!("  title        {title}"));
+    }
+    lines
+}
+
 fn read(path: &Path, input: &Input) -> Result<String, String> {
     let file_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut lines = vec![format!("{}", path.display())];
@@ -777,6 +812,7 @@ fn read(path: &Path, input: &Input) -> Result<String, String> {
                 "raw"
             };
             lines.push(format!("  type         CHD v{} ({kind})", meta.file_version));
+            lines.extend(identity_lines(path, (kind == "GD-ROM").then_some(Platform::Dreamcast)));
             lines.push(format!("  logical size {} ({} bytes)", human(meta.logical_size as u64), meta.logical_size));
             lines.push(format!("  file size    {} ({:.1}%)", human(file_bytes), if meta.logical_size > 0 { file_bytes as f64 * 100.0 / meta.logical_size as f64 } else { 0.0 }));
             lines.push(format!("  hunk size    {} bytes, {} hunks", meta.hunk_size, meta.total_hunks));
@@ -817,6 +853,7 @@ fn read(path: &Path, input: &Input) -> Result<String, String> {
             let reader = romexplorer::rom::cso::CsoReader::open(path).map_err(|err| format!("{}: {err}", path.display()))?;
             let iso = reader.size();
             lines.push(format!("  type         CSO v{}, {} blocks of {} bytes", reader.header.version, iso.div_ceil(reader.header.block_size as u64), reader.header.block_size));
+            lines.extend(identity_lines(path, None));
             lines.push(format!("  iso size     {} ({iso} bytes)", human(iso)));
             lines.push(format!("  file size    {} ({:.1}%)", human(file_bytes), if iso > 0 { file_bytes as f64 * 100.0 / iso as f64 } else { 0.0 }));
             lines.push("  converts to  DVD CHD".to_string());
@@ -824,6 +861,7 @@ fn read(path: &Path, input: &Input) -> Result<String, String> {
         Input::Pbp => {
             let pbp = romexplorer::rom::pbp::Pbp::open(path)?;
             lines.push(format!("  type         PlayStation EBOOT.PBP, {} disc{}, {}", pbp.disc_count(), if pbp.disc_count() == 1 { "" } else { "s" }, human(file_bytes)));
+            lines.extend(identity_lines(path, None));
             let stem = romexplorer::rom::pbp::output_stem(path);
             for disc in 0..pbp.disc_count() {
                 let layout = romexplorer::rom::pbp::disc_layout(&pbp, disc, &stem)?;
@@ -846,6 +884,14 @@ fn read(path: &Path, input: &Input) -> Result<String, String> {
         }
         Input::Image { target, source, needs_cue } => {
             lines.push(format!("  type         disc image, {}", human(file_bytes)));
+            // A track read on its own stands for the disc its sheet describes.
+            let hint = match target {
+                Target::GdChd => Some(Platform::Dreamcast),
+                Target::Zar => Some(Platform::Xbox360),
+                Target::Xiso => Some(Platform::Xbox),
+                _ => None,
+            };
+            lines.extend(identity_lines(source, hint));
             lines.push(format!("  converts to  {}", target.label()));
             if source != path {
                 lines.push(format!("  via          {}", source.display()));

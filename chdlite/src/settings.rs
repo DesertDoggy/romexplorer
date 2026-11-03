@@ -19,6 +19,8 @@ pub const RVZ_BLOCKS: [(&str, u32); 7] =
     [("32k", 32 << 10), ("64k", 64 << 10), ("128k", 128 << 10), ("256k", 256 << 10), ("512k", 512 << 10), ("1m", 1 << 20), ("2m", 2 << 20)];
 pub const HASHES: [&str; 5] = ["sha1", "md5", "crc32", "sha256", "xxh3"];
 pub const CUE_STYLES: [&str; 3] = ["redump", "redump_catalog", "chdman"];
+/// The sheet an extracted GD-ROM gets.
+pub const GDROM_SHEETS: [&str; 2] = ["gdi", "cue"];
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -130,11 +132,16 @@ impl Rvz {
 pub struct Extract {
     /// One of [`CUE_STYLES`].
     pub cue_style: String,
+    /// One of [`GDROM_SHEETS`]: what an extracted GD-ROM CHD is written as. A `.gdi` by
+    /// default, which is what Dreamcast emulators and TOSEC expect; `cue` gives the Redump
+    /// layout instead. Hashing always uses the cue style's own choice, so a hash still matches
+    /// the Redump DAT.
+    pub gdrom_sheet: String,
 }
 
 impl Default for Extract {
     fn default() -> Self {
-        Self { cue_style: "redump".into() }
+        Self { cue_style: "redump".into(), gdrom_sheet: "gdi".into() }
     }
 }
 

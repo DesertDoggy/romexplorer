@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use crate::batch::{self, Batch, BatchEvent, WORKER_FLAG};
 use crate::classify::expand;
 use crate::job::Mode;
-use crate::settings::{CompMode, LitePreset, Settings, CUE_STYLES, RVZ_BLOCKS, RVZ_CODECS};
+use crate::settings::{CompMode, LitePreset, Settings, CUE_STYLES, GDROM_SHEETS, RVZ_BLOCKS, RVZ_CODECS};
 
 /// What the binary does with a bare path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +48,7 @@ Commands (default for {name}: {default}):
   auto      .chd/.rvz -> extract, anything else -> create (fast preset)
   create    create with the fast preset
   comp      create for the smallest file
-  extract   .chd -> cue+bin / gdi / iso, .rvz -> iso, .cso -> iso, .pbp -> cue+bin
+  extract   .chd -> cue+bin / gdi+bin (GD-ROM) / iso, .rvz -> iso, .cso -> iso, .pbp -> cue+bin
   read      show what a file is
   hash      hash the content inside a .chd/.rvz/.cso/.pbp (or the files themselves)
 
@@ -76,8 +76,8 @@ Options:
   --rvz-block <size>          {rvz_blocks}
   --rvz-scrub                 drop junk data (not reversible)
   --hash <list>               sha1,md5,crc32,sha256,xxh3
-  --cue-style <style>         {cue_styles}: the extracted sheet's dialect, and
-                              a GD-ROM's sheet (redump: .cue, chdman: .gdi)
+  --cue-style <style>         {cue_styles}: the extracted cue sheet's dialect
+  --gdrom-sheet <kind>        {gdrom_sheets}: an extracted GD-ROM's sheet (default gdi)
   --version, --help
 
 Defaults come from {settings}",
@@ -91,6 +91,7 @@ Defaults come from {settings}",
         rvz_codecs = RVZ_CODECS.join("|"),
         rvz_blocks = RVZ_BLOCKS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join("|"),
         cue_styles = CUE_STYLES.join("|"),
+        gdrom_sheets = GDROM_SHEETS.join("|"),
         settings = Settings::path().display(),
     )
 }
@@ -190,6 +191,13 @@ fn parse(args: &[String], default: DefaultMode, mut settings: Settings) -> Resul
             "--rvz-scrub" => settings.rvz.scrub = true,
             "--hash" | "-hash" => settings.hash.algorithms = list(&value(arg)?),
             "--cue-style" => settings.extract.cue_style = value(arg)?.to_ascii_lowercase(),
+            "--gdrom-sheet" => {
+                let sheet = value(arg)?.to_ascii_lowercase();
+                if !GDROM_SHEETS.contains(&sheet.as_str()) {
+                    return Err(format!("--gdrom-sheet: '{sheet}' is not one of {}", GDROM_SHEETS.join(", ")));
+                }
+                settings.extract.gdrom_sheet = sheet;
+            }
             "-i" | "--input" => paths.push(PathBuf::from(value(arg)?)),
             flag if flag.starts_with('-') && !Path::new(flag).exists() => return Err(format!("unknown option {flag}")),
             path => paths.push(PathBuf::from(path)),

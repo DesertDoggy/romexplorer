@@ -232,6 +232,9 @@ fn main() {
             // The window's own file-drop handler swallows HTML drag and drop on Windows (and
             // with it every drag-to-reorder); nothing here takes files dropped from the OS.
             .with_disable_drag_drop_handler(true)
+            // WebView2's data in the app root's `data/`, not %LOCALAPPDATA%, so the app stays
+            // portable.
+            .with_data_directory(romexplorer::database::config::AppPaths::detect().webview_data_dir())
             .with_window(dioxus::desktop::WindowBuilder::new().with_title("romexplorer").with_inner_size(dioxus::desktop::LogicalSize::new(1400.0, 900.0)))
             .with_custom_event_handler(move |event, _| {
                 if let dioxus::desktop::tao::event::Event::LoopDestroyed = event {

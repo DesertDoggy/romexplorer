@@ -209,6 +209,12 @@ impl AppPaths {
         Self::data_root(&self.root).join("mariadb")
     }
 
+    /// The desktop GUI's webview data (WebView2's cache and storage on Windows), kept in
+    /// the app's own `data/` so nothing lands in `%LOCALAPPDATA%`.
+    pub fn webview_data_dir(&self) -> PathBuf {
+        Self::data_root(&self.root).join("webview")
+    }
+
     fn data_root(root: &Path) -> PathBuf {
         env::var("ROMEXPLORER_DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| root.join("data"))
     }

@@ -21,7 +21,7 @@ pub fn ensure() -> Result<(), String> {
 
 #[cfg(feature = "bundled-natives")]
 fn unpack() -> Result<(), String> {
-    use crate::settings::{exe_dir, user_dir, DirKind};
+    use crate::settings::{data_dir, exe_dir};
 
     // An explicit root, or a `lib/` beside the executable, wins over the embedded copy.
     if std::env::var_os("ROMEXPLORER_EXE_ROOT").is_some() || std::env::var_os("ROMEXPLORER_APP_ROOT").is_some() {
@@ -34,7 +34,7 @@ fn unpack() -> Result<(), String> {
     // Keyed by version and by the packed sizes, so a rebuilt library under the same version
     // never loads a stale unpacked copy.
     let key = bundled::FILES.iter().fold(0u64, |acc, (_, raw, packed)| acc.wrapping_mul(1_000_003).wrapping_add(*raw).wrapping_add(packed.len() as u64));
-    let root = user_dir(DirKind::Cache).join("chdlite").join(format!("natives-{}-{key:x}", crate::VERSION));
+    let root = data_dir().join(format!("natives-{}-{key:x}", crate::VERSION));
     let dir = root.join("lib").join(bundled::OS).join(bundled::ARCH);
     std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 

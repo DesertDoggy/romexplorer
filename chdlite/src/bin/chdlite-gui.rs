@@ -12,12 +12,13 @@ use std::sync::Mutex;
 
 use dioxus::desktop::wry::http::Response;
 use dioxus::desktop::{use_asset_handler, Config, LogicalSize, WindowBuilder};
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 
 use chdlite::batch::{self, Batch, BatchEvent, WORKER_FLAG};
 use chdlite::classify::{expand, lossy_targets};
 use chdlite::job::Mode;
-use chdlite::settings::{CompMode, Jobs, LitePreset, Settings, CD_CODECS, CUE_STYLES, DVD_CODECS, HASHES, MAX_CODECS, RVZ_BLOCKS, RVZ_CODECS};
+use chdlite::settings::{CompMode, Jobs, LitePreset, Settings, CD_CODECS, CUE_STYLES, DVD_CODECS, GDROM_SHEETS, HASHES, MAX_CODECS, RVZ_BLOCKS, RVZ_CODECS};
 
 // Compiled in rather than shipped beside the executable, for the reason romexplorer-gui
 // gives: `asset!()` needs `dx build`, and this is built with plain cargo.
@@ -69,7 +70,13 @@ fn main() {
             window = window.with_window_icon(Some(icon));
         }
     }
-    let cfg = Config::new().with_menu(None).with_window(window).with_background_color((0x14, 0x16, 0x1b, 0xff));
+    // WebView2's own data (cache, local storage) beside the executable too, not in
+    // %LOCALAPPDATA%, so deleting the folder leaves nothing behind.
+    let cfg = Config::new()
+        .with_menu(None)
+        .with_window(window)
+        .with_background_color((0x14, 0x16, 0x1b, 0xff))
+        .with_data_directory(chdlite::settings::data_dir().join("webview"));
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 }
 
@@ -100,8 +107,11 @@ impl Run {
     }
 }
 
+/// The dropped paths, from the window's native drop event. Not `data_transfer().files()`: that
+/// is the webview's own list, which carries only bare file names -- and on Windows, where
+/// dioxus replays the native drop into the page, a single placeholder `file.txt`.
 fn dropped(event: &DragEvent) -> Vec<PathBuf> {
-    event.data().data_transfer().files().iter().map(|file| file.path()).collect()
+    event.data().files().iter().map(|file| file.path()).collect()
 }
 
 #[component]
@@ -419,7 +429,9 @@ fn number(text: &str) -> u32 {
 }
 
 #[component]
-fn Codecs(label: String, all: Vec<&'static str>, chosen: Vec<String>, disabled: bool, on_change: EventHandler<Vec<String>>) -> Element {
+/// A row of checkboxes. `max` caps how many can be on at once (chdman takes at most
+/// [`MAX_CODECS`] codecs); the hash list has no cap.
+fn Codecs(label: String, all: Vec<&'static str>, chosen: Vec<String>, disabled: bool, max: usize, on_change: EventHandler<Vec<String>>) -> Element {
     rsx! {
         div { class: "row",
             label { "{label}" }
@@ -435,7 +447,7 @@ fn Codecs(label: String, all: Vec<&'static str>, chosen: Vec<String>, disabled: 
                                 let chosen = chosen.clone();
                                 move |event: FormEvent| {
                                     let mut next: Vec<String> = chosen.iter().filter(|c| *c != codec).cloned().collect();
-                                    if event.checked() && next.len() < MAX_CODECS {
+                                    if event.checked() && next.len() < max {
                                         next.push(codec.to_string());
                                     }
                                     on_change.call(next);
@@ -486,8 +498,8 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                         option { value: "custom", selected: custom, "Custom" }
                     }
                 }
-                Codecs { label: "CD codecs", all: CD_CODECS.to_vec(), chosen: s.comp.cd_codecs.clone(), disabled: !custom, on_change: move |next| draft.write().comp.cd_codecs = next }
-                Codecs { label: "DVD codecs", all: DVD_CODECS.to_vec(), chosen: s.comp.dvd_codecs.clone(), disabled: !custom, on_change: move |next| draft.write().comp.dvd_codecs = next }
+                Codecs { label: "CD codecs", all: CD_CODECS.to_vec(), chosen: s.comp.cd_codecs.clone(), disabled: !custom, max: MAX_CODECS, on_change: move |next| draft.write().comp.cd_codecs = next }
+                Codecs { label: "DVD codecs", all: DVD_CODECS.to_vec(), chosen: s.comp.dvd_codecs.clone(), disabled: !custom, max: MAX_CODECS, on_change: move |next| draft.write().comp.dvd_codecs = next }
                 div { class: "row",
                     label { "CD hunk size" }
                     input { r#type: "number", min: "0", step: "2448", disabled: !custom, value: "{s.comp.cd_hunk_size}", oninput: move |event| draft.write().comp.cd_hunk_size = number(&event.value()) }
@@ -526,7 +538,7 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
 
                 h3 { "Extract and hash" }
                 div { class: "row",
-                    label { title: "The extracted sheet's dialect, and a GD-ROM's sheet: redump writes a .cue, chdman a .gdi", "Cue style" }
+                    label { title: "The extracted cue sheet's dialect", "Cue style" }
                     select {
                         onchange: move |event| draft.write().extract.cue_style = event.value(),
                         for style in CUE_STYLES {
@@ -534,7 +546,16 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                         }
                     }
                 }
-                Codecs { label: "Hashes", all: HASHES.to_vec(), chosen: s.hash.algorithms.clone(), disabled: false, on_change: move |next| draft.write().hash.algorithms = next }
+                div { class: "row",
+                    label { title: "The sheet an extracted GD-ROM (Dreamcast) CHD gets: .gdi, as emulators and TOSEC use, or a Redump-style .cue", "GD-ROM sheet" }
+                    select {
+                        onchange: move |event| draft.write().extract.gdrom_sheet = event.value(),
+                        for sheet in GDROM_SHEETS {
+                            option { key: "{sheet}", value: "{sheet}", selected: s.extract.gdrom_sheet == sheet, "{sheet}" }
+                        }
+                    }
+                }
+                Codecs { label: "Hashes", all: HASHES.to_vec(), chosen: s.hash.algorithms.clone(), disabled: false, max: HASHES.len(), on_change: move |next| draft.write().hash.algorithms = next }
 
                 h3 { "Performance and output" }
                 {
