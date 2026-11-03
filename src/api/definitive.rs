@@ -423,6 +423,8 @@ fn compare_question(members: &[FamilyMember]) -> String {
          Then rank whether an older version should be played instead of the newest one: \
          S = strongly recommend an older version; A = which one is better depends on preference; \
          B = the newest is better, but an older version has things the newest lacks; none = the newest is clearly best and nothing is lost. \
+         Pixel art against 3D alone gives at most B, except that when the newer version is an early-3D remake (PS1 / PS2 era, low-poly or low-resolution 3D), \
+         its graphics can look lower in quality today than refined 2D pixel art, and that can make it A. \
          Start the answer with exactly one line \"RANK: S\", \"RANK: A\", \"RANK: B\" or \"RANK: none\", then explain briefly, naming the versions.",
     );
     q
@@ -811,8 +813,11 @@ mod tests {
     #[test]
     fn notes_parse_and_are_in_id_order() {
         let text = include_str!("../../app_root_ex/assets/definitive_notes.json");
-        let raw: serde_json::Value = serde_json::from_str(text).expect("parses");
-        let keys: Vec<u64> = raw["notes"].as_object().expect("notes is an object").keys().map(|k| k.parse().expect("keys are IGDB ids")).collect();
+        let _: serde_json::Value = serde_json::from_str(text).expect("parses");
+        // The keys as the file has them: a parsed object sorts its keys as strings.
+        let keys: Vec<u64> = text.lines().filter_map(|l| l.trim().strip_prefix('"')?.split_once("\": {").and_then(|(k, _)| k.parse().ok())).collect();
+        assert!(!keys.is_empty() || notes().is_empty(), "the keys were found");
+        assert_eq!(keys.len(), notes().len(), "every note key is an IGDB id");
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted, "notes are kept in IGDB id order");
