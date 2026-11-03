@@ -2,6 +2,7 @@
 
 mod about;
 mod ai;
+mod advanced;
 pub mod art;
 mod audio;
 mod backup;
@@ -33,6 +34,7 @@ pub mod widgets;
 
 pub use about::*;
 pub use ai::ConfigAi;
+pub use advanced::ConfigAdvanced;
 pub use audio::*;
 pub use backup::*;
 pub use collection::*;

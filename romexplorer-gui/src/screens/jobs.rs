@@ -502,12 +502,6 @@ pub fn Jobs() -> Element {
             }
         }
         div { class: "card",
-            h2 { {state::tr("Database maintenance")} }
-            form { class: "inline", onsubmit: move |e| e.prevent_default(),
-                button { class: "btn danger", r#type: "button", title: state::tr("rarely a good idea — the dialog says why"), onclick: move |_| super::data::db_optimize_dialog(Some(Rc::new(move || bump(reload)))), {state::tr("DB optimize (purge soft-deleted)…")} }
-            }
-        }
-        div { class: "card",
             h2 { {state::tr("Jobs")} " " {ui::key_explain("explain.jobs.list")} }
             div { class: "toolbar",
                 span { class: "muted", {state::tr("clear from the list:")} }

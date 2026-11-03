@@ -2580,5 +2580,13 @@
   "A serial in the file name, per platform:": "파일 이름의 시리얼 사용(플랫폼별):",
   "(as above)": "(위 설정대로)",
   "use it": "사용",
-  "don't use it": "사용 안 함"
+  "don't use it": "사용 안 함",
+  "sub.config.advanced": "고급",
+  "tabinfo.config.advanced": "데이터베이스를 손상시키거나 파일을 잃을 수 있는 작업(데이터베이스 최적화 등). 먼저 백업하세요.",
+  "Advanced": "고급",
+  "Caution": "주의",
+  "Database optimize": "데이터베이스 최적화",
+  "Only an administrator can use these operations.": "이 작업은 관리자만 사용할 수 있습니다.",
+  "Purges soft-deleted rows and rebuilds the tables. It also destroys the records that let moved and renamed files be recognised, so it is rarely a good idea; the confirmation says more.": "삭제된 행을 지우고 테이블을 다시 만듭니다. 옮기거나 이름을 바꾼 파일을 알아보는 기록도 사라지므로 대부분 권하지 않습니다. 자세한 내용은 확인 창에 나옵니다.",
+  "The operations on this page can corrupt the database or lose files. Make a backup first (Config › Backup), and use them only when you know why you need them.": "이 페이지의 작업은 데이터베이스를 손상시키거나 파일을 잃게 할 수 있습니다. 먼저 백업하고(Config › Backup) 필요한 이유를 알 때만 사용하세요."
 }

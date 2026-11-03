@@ -2762,5 +2762,13 @@
   "A serial in the file name, per platform:": "ファイル名のシリアルを使うか（プラットフォームごと）:",
   "(as above)": "（上の設定どおり）",
   "use it": "使う",
-  "don't use it": "使わない"
+  "don't use it": "使わない",
+  "sub.config.advanced": "詳細",
+  "tabinfo.config.advanced": "データベースを壊したりファイルを失ったりするおそれのある操作（データベースの最適化など）。実行前にバックアップを取ってください。",
+  "Advanced": "詳細",
+  "Caution": "注意",
+  "Database optimize": "データベースの最適化",
+  "Only an administrator can use these operations.": "この操作は管理者だけが使えます。",
+  "Purges soft-deleted rows and rebuilds the tables. It also destroys the records that let moved and renamed files be recognised, so it is rarely a good idea; the confirmation says more.": "削除済みの行を消去し、テーブルを作り直します。移動や名前の変更をしたファイルを見分けるための記録も消えるので、ほとんどの場合おすすめしません。詳しくは確認画面に出ます。",
+  "The operations on this page can corrupt the database or lose files. Make a backup first (Config › Backup), and use them only when you know why you need them.": "このページの操作は、データベースを壊したりファイルを失ったりするおそれがあります。先にバックアップを取り（Config › Backup）、必要な理由がわかっているときだけ使ってください。"
 }

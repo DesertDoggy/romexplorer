@@ -753,7 +753,6 @@ pub fn DataDb() -> Element {
         div { class: "card",
             h2 { {state::tr("Maintenance")} " " {ui::key_explain("explain.data.maintenance")} }
             div { class: "toolbar",
-                button { class: "btn danger", title: state::tr("rarely a good idea — the dialog says why"), onclick: move |_| db_optimize_dialog(None), {state::tr("DB optimize (purge soft-deleted rows)…")} }
                 button { class: "btn", disabled: busy().is_some(), title: state::tr("release -> USA/English counterpart per platform, DAT names (CSV; Japan-only releases name themselves, others without a counterpart are left empty)"), onclick: move |_| cp("full"), if busy() == Some("full") { {state::tr("building…")} } else { {state::tr("counterparts CSV (full names)")} } }
                 button { class: "btn", disabled: busy().is_some(), title: state::tr("the same with region/language/revision tags removed, duplicates collapsed"), onclick: move |_| cp("stripped"), if busy() == Some("stripped") { {state::tr("building…")} } else { {state::tr("counterparts CSV (stripped)")} } }
                 button { class: "btn", onclick: move |_| { spawn(async move { if ui::confirm(&state::tr("Download every DAT source and import what changed? (network + a few minutes)")).await { enqueue(json!({ "job_type": "dat_sync", "import": true })).await; } }); }, {state::tr("DAT sync — all sources (download + import)")} }

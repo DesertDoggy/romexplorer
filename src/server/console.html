@@ -2338,7 +2338,7 @@ function trf(text, fills) { let out = tr(text); for (const [k, v] of Object.entr
 function platformLabel(name) { if (platformNameLanguage === 'en' || !vocab) return name; const p = vocab.platforms.find(x => x.name === name); return (p && p.name_ja) || name; }
 // Sub-routes reachable by link but not shown as a subtab.
 const HIDDEN_SUBS = { ra: ['game'] };
-const SUBS = { edit: [['keywords', 'Keyword tags'], ['dictionary', 'Name dictionary'], ['merges', 'Combined titles'], ['orders', 'Manual order'], ['merge_review', 'Merge review'], ['aspect_review', 'Aspect review']], ra: [['titles', 'Titles'], ['mastery', 'Mastery'], ['complete', 'Complete'], ['beat', 'Beat'], ['in_progress', 'In progress'], ['to_play', 'To be played']], collection: [['crossplatform', 'Cross-platform'], ['definitive', 'Definitive'], ['titles', 'Titles'], ['releases', 'Releases'], ['games', 'Games'], ['roms', 'Roms'], ['files', 'Files'], ['contents', 'Contents'], ['sets', 'Sets'], ['audio', 'Audio'], ['multimedia', 'Multimedia'], ['documents', 'Documents'], ['source', 'Source code'], ['etc', 'Etc'], ['patches', 'Patches'], ['bios', 'BIOS / firmware']], config: [['directories', 'Directories'], ['emulators', 'Emulators'], ['copy', 'Copy'], ['storage', 'Storage'], ['settings', 'Settings'], ['settings_json', 'Settings (JSON)'], ['server', 'Server'], ['backup', 'Backup'], ['share', 'Share'], ['mode', 'Mode'], ['users', 'Users'], ['credentials', 'Provider credentials'], ['ai', 'AI']], data: [['providers', 'Providers'], ['dats', 'DATs'], ['db', 'DB']] };
+const SUBS = { edit: [['keywords', 'Keyword tags'], ['dictionary', 'Name dictionary'], ['merges', 'Combined titles'], ['orders', 'Manual order'], ['merge_review', 'Merge review'], ['aspect_review', 'Aspect review']], ra: [['titles', 'Titles'], ['mastery', 'Mastery'], ['complete', 'Complete'], ['beat', 'Beat'], ['in_progress', 'In progress'], ['to_play', 'To be played']], collection: [['crossplatform', 'Cross-platform'], ['definitive', 'Definitive'], ['titles', 'Titles'], ['releases', 'Releases'], ['games', 'Games'], ['roms', 'Roms'], ['files', 'Files'], ['contents', 'Contents'], ['sets', 'Sets'], ['audio', 'Audio'], ['multimedia', 'Multimedia'], ['documents', 'Documents'], ['source', 'Source code'], ['etc', 'Etc'], ['patches', 'Patches'], ['bios', 'BIOS / firmware']], config: [['directories', 'Directories'], ['emulators', 'Emulators'], ['copy', 'Copy'], ['storage', 'Storage'], ['settings', 'Settings'], ['settings_json', 'Settings (JSON)'], ['server', 'Server'], ['backup', 'Backup'], ['share', 'Share'], ['mode', 'Mode'], ['users', 'Users'], ['credentials', 'Provider credentials'], ['ai', 'AI'], ['advanced', 'Advanced']], data: [['providers', 'Providers'], ['dats', 'DATs'], ['db', 'DB']] };
 // Explanations kept in the language files by key (`explain.*`, `tabinfo.*`): a "!" that
 // opens the key's text, one paragraph per blank-line-separated block; nothing when the file
 // has no text for it.
@@ -2395,7 +2395,7 @@ function route() {
     'ra/titles': () => showRa('titles'), 'ra/mastery': () => showRa('mastery'), 'ra/complete': () => showRa('complete'), 'ra/beat': () => showRa('beat'), 'ra/in_progress': () => showRa('in_progress'), 'ra/to_play': () => showRa('to_play'), 'ra/game': () => showRaGame(Number(id)),
     'edit/keywords': showKeywordTags, 'edit/dictionary': showDictionary, 'edit/merges': showCombinedTitles, 'edit/orders': showManualOrders, 'edit/merge_review': showMergeReview, 'edit/aspect_review': showAspectReview,
     'config/directories': showDirectories, 'config/emulators': showEmulators, 'config/copy': showCopyConfig, 'config/storage': showStorage, 'config/settings': () => settingsPage(false, id), 'config/settings_json': () => settingsPage(true, id), 'config/server': showServer, 'config/schedules': showSchedules, 'config/backup': showBackup, 'config/share': showSources, 'config/sources': showSources, 'config/mode': showMode, 'config/users': showUsers,
-    'config/credentials': showCredentialsPage, 'config/ai': showAiPage, 'data/providers': showProviders, 'data/dats': showDats, 'data/db': id ? () => showDbTable(id) : showDb,
+    'config/credentials': showCredentialsPage, 'config/ai': showAiPage, 'config/advanced': showAdvancedPage, 'data/providers': showProviders, 'data/dats': showDats, 'data/db': id ? () => showDbTable(id) : showDb,
   };
   const fn = screens[SUBS[tab] ? tab + '/' + sub : tab] || showStatus;
   Promise.resolve().then(fn).then(() => { if (!gridsLoading) restoreScroll(); }).catch(e => { view.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; });
@@ -5354,9 +5354,6 @@ async function showJobs() {
       <button class="btn" data-job="display_data" type="button">${tr('collect display data')}</button>
     </form>
     </div>
-    <div class="card"><h2>${tr('Database maintenance')}</h2><form class="inline">
-      <button class="btn danger" data-job="db_optimize" type="button" title="${tr('rarely a good idea — the prompt says why')}">${tr('DB optimize (purge soft-deleted)…')}</button>
-    </form></div>
     <div class="card"><h2>${tr('Jobs')} ${explainKey('explain.jobs.list')}</h2>
       <div class="toolbar" id="jobclear"><span class="muted">${tr('clear from the list:')}</span><button class="btn small" data-clear="done">${tr('done')}</button><button class="btn small" data-clear="failed">${tr('failed')}</button><button class="btn small" data-clear="cancelled">${tr('cancelled')}</button><button class="btn small" data-clear="">${tr('all finished')}</button></div>
       <div id="grid"></div></div>`;
@@ -5379,7 +5376,6 @@ async function showJobs() {
   const other = document.getElementById('otherform');
   let datPicker = null; datPlatformPicker(document.getElementById('dat-plats'), 'datjobplats').then(p => { datPicker = p; });
   other.querySelector('[data-job=dat_sync]').onclick = () => { const f = new FormData(other); const body = withDatPlatforms(datPicker, { job_type: 'dat_sync', source: f.get('source') || null, import: true }); if (body) enqueue(body); };
-  view.querySelector('[data-job=db_optimize]').onclick = async () => { if (await confirmDbOptimize()) enqueue({ job_type: 'db_optimize' }); };
   view.querySelector('[data-job=media_relayout]').onclick = () => enqueue({ job_type: 'media_relayout' });
   providerRequestCard(document.getElementById('reqcard'), providers);
   const rabadgeform = document.getElementById('rabadgeform');
@@ -5835,6 +5831,21 @@ async function showAiPage() {
     try { const r = await api('/api/v1/ai/import', { method: 'POST', body: Array.isArray(list) ? list : [] }); toast(trf('{n} answer(s) imported', { n: r.imported })); showAiPage(); } catch (e) { toast(e.message, true); }
   };
 }
+// Config › Advanced (the app's ConfigAdvanced): operations that can damage the database or lose
+// files, kept away from the everyday screens behind a loud warning. DB optimize lives here.
+async function showAdvancedPage() {
+  view.innerHTML = `<div class="card" style="border:2px solid var(--bad)"><h2 class="bad">${tr('Caution')}</h2>
+      <p class="bad" style="font-weight:bold">${tr('The operations on this page can corrupt the database or lose files. Make a backup first (Config › Backup), and use them only when you know why you need them.')}</p></div>
+    <div class="card"><h2>${tr('Database optimize')}</h2>
+      <p class="muted">${tr('Purges soft-deleted rows and rebuilds the tables. It also destroys the records that let moved and renamed files be recognised, so it is rarely a good idea; the confirmation says more.')}</p>
+      <div class="toolbar"><button class="btn danger" id="dbopt">${tr('DB optimize (purge soft-deleted rows)…')}</button></div></div>`;
+  const b = document.getElementById('dbopt');
+  b.onclick = async () => {
+    if (!(await confirmDbOptimize())) return;
+    try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'db_optimize' } }); toast(trf('enqueued {type} #{id} — watch it under Jobs', { type: r.job_type, id: r.id })); refreshHeader(); } catch (err) { toast(err.message, true); }
+  };
+  queueable(b);
+}
 // Config › Provider credentials: the same card as on Data › Providers.
 async function showCredentialsPage() {
   view.innerHTML = `<div class="card" id="creds"></div>`;
@@ -5882,9 +5893,8 @@ async function showDats() {
 async function showDb() {
   const tables = await api('/api/v1/db/tables');
   const enqueue = async (body) => { try { const r = await api('/api/v1/jobs', { method: 'POST', body }); toast(trf('enqueued {type} #{id} — watch it under Jobs', { type: r.job_type, id: r.id })); refreshHeader(); } catch (err) { toast(err.message, true); } };
-  view.innerHTML = `<div class="card"><h2>${tr('Maintenance')} ${explainKey('explain.data.maintenance')}</h2><div class="toolbar"><button class="btn danger" id="dbopt" title="${tr('rarely a good idea — the prompt says why')}">${tr('DB optimize (purge soft-deleted rows)…')}</button><button class="btn" data-cp="full" title="${tr('release -> USA/English counterpart per platform, DAT names (CSV; Japan-only releases name themselves, others without a counterpart are left empty)')}">${tr('counterparts CSV (full names)')}</button><button class="btn" data-cp="stripped" title="${tr('the same with region/language/revision tags removed, duplicates collapsed')}">${tr('counterparts CSV (stripped)')}</button><button class="btn" id="datall">${tr('DAT sync — all sources (download + import)')}</button><span class="muted">${tr('both run as jobs on the worker')}</span></div></div>
+  view.innerHTML = `<div class="card"><h2>${tr('Maintenance')} ${explainKey('explain.data.maintenance')}</h2><div class="toolbar"><button class="btn" data-cp="full" title="${tr('release -> USA/English counterpart per platform, DAT names (CSV; Japan-only releases name themselves, others without a counterpart are left empty)')}">${tr('counterparts CSV (full names)')}</button><button class="btn" data-cp="stripped" title="${tr('the same with region/language/revision tags removed, duplicates collapsed')}">${tr('counterparts CSV (stripped)')}</button><button class="btn" id="datall">${tr('DAT sync — all sources (download + import)')}</button><span class="muted">${tr('both run as jobs on the worker')}</span></div></div>
     <div class="card"><h2>${tr('Tables')} ${explainKey('explain.data.tables')}</h2><table class="grid"><thead><tr><th>${tr('table')}</th><th>${tr('rows')}</th><th>${tr('columns')}</th></tr></thead><tbody>${tables.map(t => `<tr class="click" onclick="go('data/db/${esc(t.name)}')"><td>${esc(t.name)}</td><td class="num">${t.rows}</td><td class="muted">${t.columns.map(c => esc(c.name)).join(', ')}</td></tr>`).join('')}</tbody></table></div>`;
-  document.getElementById('dbopt').onclick = async () => { if (await confirmDbOptimize()) enqueue({ job_type: 'db_optimize' }); };
   for (const b of view.querySelectorAll('[data-cp]')) b.onclick = async () => {
     b.disabled = true; const label = b.textContent; b.textContent = tr('building…');
     try {
@@ -5895,7 +5905,7 @@ async function showDb() {
     } catch (e) { toast(e.message, true); } finally { b.disabled = false; b.textContent = label; }
   };
   document.getElementById('datall').onclick = () => { if (confirm(tr('Download every DAT source and import what changed? (network + a few minutes)'))) enqueue({ job_type: 'dat_sync', import: true }); };
-  queueable(document.getElementById('dbopt'), document.getElementById('datall'));
+  queueable(document.getElementById('datall'));
 }
 
 async function showDbTable(table) {

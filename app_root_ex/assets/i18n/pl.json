@@ -2580,5 +2580,13 @@
   "A serial in the file name, per platform:": "Numer seryjny w nazwie pliku, dla każdej platformy:",
   "(as above)": "(jak wyżej)",
   "use it": "używaj",
-  "don't use it": "nie używaj"
+  "don't use it": "nie używaj",
+  "sub.config.advanced": "Zaawansowane",
+  "tabinfo.config.advanced": "Operacje, które mogą uszkodzić bazę danych lub spowodować utratę plików (optymalizacja bazy itd.). Najpierw zrób kopię zapasową.",
+  "Advanced": "Zaawansowane",
+  "Caution": "Uwaga",
+  "Database optimize": "Optymalizacja bazy danych",
+  "Only an administrator can use these operations.": "Tylko administrator może używać tych operacji.",
+  "Purges soft-deleted rows and rebuilds the tables. It also destroys the records that let moved and renamed files be recognised, so it is rarely a good idea; the confirmation says more.": "Usuwa skasowane wiersze i przebudowuje tabele. Niszczy też zapisy, dzięki którym rozpoznawane są przeniesione i przemianowane pliki, więc rzadko jest to dobry pomysł; potwierdzenie mówi więcej.",
+  "The operations on this page can corrupt the database or lose files. Make a backup first (Config › Backup), and use them only when you know why you need them.": "Operacje na tej stronie mogą uszkodzić bazę danych lub spowodować utratę plików. Najpierw zrób kopię zapasową (Config › Backup) i używaj ich tylko, gdy wiesz, po co."
 }

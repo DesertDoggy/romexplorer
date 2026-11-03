@@ -23,6 +23,10 @@ replacing a build.
   can be cleared (all or one feature, pinned ones kept if you like), exported and imported
   as JSON.
 
+**Config › Advanced**
+- A new tab for operations that can damage the database or lose files, behind a clear warning.
+  DB optimize moved here from Jobs and Data › DB.
+
 # romexplorer 0.1.8 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
