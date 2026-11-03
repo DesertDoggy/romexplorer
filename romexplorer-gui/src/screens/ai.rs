@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::api::{self, s, u};
 use crate::state;
-use crate::ui;
+use crate::ui::{self, Html};
 
 fn provider_label(id: &str) -> &'static str {
     match id {
@@ -41,9 +41,17 @@ pub fn ConfigAi() -> Element {
     };
     rsx! {
         AiChoices { key: "{o}", o: o.clone(), on_saved: move |_| overview.restart() }
+        {rsx! { AiSourceOrder { key: "{o}", o: o.clone(), on_saved: move |_| overview.restart() } }}
         div { class: "card",
             super::data::Credentials { on_change: move |_| overview.restart(), scope: "ai".to_string() }
             AiTests { o: o.clone() }
+            p { class: "notice", {state::tr("Create a separate API key (or project) just for romexplorer, and set a budget or spending limit for it with the provider, so a mistake or a long batch cannot run up a large bill.")} }
+            div { class: "toolbar",
+                for (i, (id, url)) in AI_LIMIT_LINKS.iter().enumerate() {
+                    if i > 0 { " · " }
+                    a { class: "link", href: "{url}", target: "_blank", rel: "noopener", {state::trf("{provider}: billing and limits", &[("provider", provider_label(id))])} }
+                }
+            }
         }
         // Keyed by what was loaded, so a save or a reset shows the table as it now is.
         {rsx! { AiPrices { key: "{o}", o: o.clone(), on_saved: move |_| overview.restart() } }}
@@ -126,6 +134,62 @@ fn AiChoices(o: Value, on_saved: EventHandler<()>) -> Element {
                     input { r#type: "number", min: "0", style: "width:90px", value: "{cache_days}", oninput: move |e| cache_days.set(e.value()) }
                 }
                 div { class: "toolbar actions", button { class: "btn primary", r#type: "submit", {state::tr("save")} } }
+            }
+        }
+    }
+}
+
+/// Which saved answer is shown first when one question has several (`ai_source_priority`),
+/// as an ordered list to move entries up and down in (the console's same list).
+#[component]
+fn AiSourceOrder(o: Value, on_saved: EventHandler<()>) -> Element {
+    let mut order = use_signal(|| {
+        let mut list: Vec<String> = api::arr(&o, "source_priority").iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        if list.is_empty() {
+            list.push("curated".into());
+        }
+        for k in api::arr(&o, "source_keys").iter().filter_map(|v| v.as_str()) {
+            if !list.iter().any(|x| x == k) {
+                list.push(k.to_string());
+            }
+        }
+        list
+    });
+    let save = move |_| {
+        spawn(async move {
+            match set_key("ai_source_priority", json!(order())).await {
+                Ok(()) => ui::toast(state::tr("saved"), false),
+                Err(e) => ui::toast(e, true),
+            }
+        });
+    };
+    let reset = move |_| {
+        spawn(async move {
+            match set_key("ai_source_priority", Value::Null).await {
+                Ok(()) => on_saved.call(()),
+                Err(e) => ui::toast(e, true),
+            }
+        });
+    };
+    let n = order().len();
+    rsx! {
+        div { class: "card",
+            h3 { {state::tr("Which answer is shown first")} }
+            p { class: "muted", {state::tr("When one question has several saved answers (the curated note, API answers, answers pasted from the browser), the one highest here is shown and its rank used. Sources not moved keep the newest first.")} }
+            ol {
+                for (i, k) in order().into_iter().enumerate() {
+                    li { key: "{k}",
+                        {source_label(&k)}
+                        " "
+                        button { class: "btn small", r#type: "button", disabled: i == 0, onclick: move |_| { order.write().swap(i, i - 1); }, "▲" }
+                        button { class: "btn small", r#type: "button", disabled: i + 1 == n, onclick: move |_| { order.write().swap(i, i + 1); }, "▼" }
+                    }
+                }
+            }
+            div { class: "toolbar",
+                button { class: "btn small primary", r#type: "button", onclick: save, {state::tr("save")} }
+                " "
+                button { class: "btn small", r#type: "button", onclick: reset, {state::tr("reset to the default (curated first, then newest)")} }
             }
         }
     }
@@ -226,6 +290,8 @@ fn AiPrices(o: Value, on_saved: EventHandler<()>) -> Element {
 fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
     let st = o.get("stats").cloned().unwrap_or_default();
     let mut what = use_signal(String::new);
+    let mut from = use_signal(String::new);
+    let source_keys: Vec<String> = api::arr(&o, "source_keys").iter().filter_map(|v| v.as_str().map(str::to_string)).filter(|k| k != "curated").collect();
     let mut keep_pinned = use_signal(|| true);
     let mut chosen = use_signal(|| None::<dioxus::html::FileData>);
     let purposes = api::arr(&st, "purposes").to_vec();
@@ -236,7 +302,10 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
                 return;
             }
             let purpose = what();
-            match api::post("/api/v1/ai/clear", json!({ "purpose": if purpose.is_empty() { Value::Null } else { json!(purpose) }, "keep_pinned": keep_pinned() })).await {
+            let chosen = from();
+            let (source, provider) = chosen.split_once(':').unwrap_or(("", ""));
+            let opt = |x: &str| if x.is_empty() { Value::Null } else { json!(x) };
+            match api::post("/api/v1/ai/clear", json!({ "purpose": opt(&purpose), "keep_pinned": keep_pinned(), "source": opt(source), "provider": opt(provider) })).await {
                 Ok(r) => {
                     ui::toast(state::trf("{n} answer(s) removed", &[("n", &u(&r, "removed").to_string())]), false);
                     on_change.call(());
@@ -286,6 +355,14 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
                         option { value: "{s(&p, \"purpose\")}", "{s(&p, \"purpose\")} ({u(&p, \"count\")})" }
                     }
                 }
+                select { value: "{from}", onchange: move |e| from.set(e.value()),
+                    option { value: "", {state::tr("all sources")} }
+                    for k in source_keys {
+                        option { value: "{k}", {source_label(&k)} }
+                    }
+                    option { value: "api:", {state::tr("every API answer")} }
+                    option { value: "browser:", {state::tr("every pasted answer")} }
+                }
                 label { style: "flex-direction:row;align-items:center;gap:4px",
                     input { r#type: "checkbox", checked: keep_pinned(), onchange: move |e| keep_pinned.set(e.checked()) }
                     {state::tr("keep pinned answers")}
@@ -295,6 +372,201 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
                 button { class: "btn", r#type: "button", onclick: export, {state::tr("export JSON")} }
                 input { r#type: "file", accept: ".json,application/json", onchange: move |e| chosen.set(e.files().into_iter().next()) }
                 button { class: "btn", r#type: "button", onclick: import, {state::tr("import JSON")} }
+            }
+        }
+    }
+}
+
+/// Where each provider sets a budget or spending limit (the console's AI_LIMIT_LINKS).
+pub const AI_LIMIT_LINKS: [(&str, &str); 4] = [
+    ("gemini", "https://console.cloud.google.com/billing/budgets"),
+    ("claude", "https://console.anthropic.com/settings/limits"),
+    ("openai", "https://platform.openai.com/settings/organization/limits"),
+    ("perplexity", "https://www.perplexity.ai/settings/api"),
+];
+
+const AI_SITES: [(&str, &str); 4] = [("google", "Google AI Mode"), ("claude", "Claude"), ("chatgpt", "ChatGPT"), ("perplexity", "Perplexity")];
+
+/// A saved AI answer's source as a label (the console's `aiSourceLabel`).
+pub fn source_label(key: &str) -> String {
+    if key == "curated" {
+        return state::tr("curated note");
+    }
+    let (src, who) = key.split_once(':').unwrap_or((key, ""));
+    if src == "api" {
+        state::trf("{provider} API", &[("provider", provider_label(who))])
+    } else {
+        let site = AI_SITES.iter().find(|(id, _)| *id == who).map_or(who, |(_, l)| *l);
+        state::trf("{site} (browser)", &[("site", site)])
+    }
+}
+
+/// The AI's rank: dashed, so it never reads as the curated rank badge.
+pub fn ai_rank_badge(rank: &str, source: &str) -> String {
+    let rank = if rank == "none" { state::tr("none") } else { rank.to_string() };
+    format!(
+        r#"<span class="badge" style="border:1px dashed currentColor;background:transparent" title="{}">{} · {}</span>"#,
+        crate::html::esc(&state::tr("AI rank: information only; the Definitive filter uses the curated notes")),
+        crate::html::esc(&state::trf("AI {rank}", &[("rank", &rank)])),
+        crate::html::esc(&source_label(source))
+    )
+}
+
+/// Before the first paid AI question: the cost warning, once (`ai_cost_warning_seen`, shared
+/// with the console). `true` to go ahead.
+pub async fn cost_warning_ok() -> bool {
+    if api::get("/api/v1/settings/ai_cost_warning_seen").await.ok().and_then(|v| v.get("value").and_then(Value::as_bool)) == Some(true) {
+        return true;
+    }
+    if !ui::confirm(&state::tr("Asking the AI uses your own API key, and the provider bills you for it. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). The author of this software is not responsible for any charges. Tip: create a separate API key for romexplorer and set a budget or spending limit for it with the provider (Config › AI has the links).")).await {
+        return false;
+    }
+    let _ = api::put("/api/v1/settings/ai_cost_warning_seen", json!(true)).await;
+    true
+}
+
+/// Collection › Definitive › a family (the console's `familyAiPanel`): which version to
+/// play, from the in-app AI or an answer pasted from the browser. Opening the page shows only
+/// what is saved; asking is a click, since each ask costs money.
+#[component]
+pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
+    // What the next request asks for ("", "ask", "again").
+    let mut mode = use_signal(|| "");
+    let mut answer = use_resource(move || async move {
+        let m = mode();
+        api::post(&format!("/api/v1/catalog/definitive/{head}/ask"), json!({ "lang": state::ui_language(), "ask": m == "ask", "again": m == "again" })).await
+    });
+    let mut pasted = use_signal(String::new);
+    let mut site = use_signal(|| "google".to_string());
+    let title = state::tr("Which version to play");
+    let v = match &*answer.read() {
+        None => return rsx! { div { class: "card", h2 { "{title}" } span { class: "muted", {state::tr("loading…")} } } },
+        Some(Err(e)) => return rsx! { div { class: "card", h2 { "{title}" } span { class: "bad", "{e.message}" } } },
+        Some(Ok(v)) => v.clone(),
+    };
+    let _ = curated;
+    let saved = v.get("answer").filter(|x| !x.is_null()).cloned();
+    let other = v.get("other_language").filter(|x| !x.is_null()).cloned();
+    let shown = saved.clone().or_else(|| other.clone());
+    let rank_html = match (api::so(&v, "rank"), api::so(&v, "rank_source")) {
+        (Some(r), Some(src)) if src == "curated" => format!("{} <span class=\"muted\">{}</span>", super::definitive::rank_badge(&r), crate::html::esc(&source_label("curated"))),
+        (Some(r), Some(src)) => ai_rank_badge(&r, &src),
+        _ => String::new(),
+    };
+    let lang = s(&v, "lang");
+    let links = api::arr(&v, "ask_links").to_vec();
+    let pinned = saved.as_ref().is_some_and(|x| api::b(x, "pinned"));
+    let saved_id = saved.as_ref().map(|x| u(x, "id"));
+    let is_api = saved.as_ref().is_some_and(|x| s(x, "source") == "api");
+    let ask = move |m: &'static str| {
+        spawn(async move {
+            if cost_warning_ok().await {
+                mode.set(m);
+                answer.restart();
+            }
+        });
+    };
+    let save_paste = move |_| {
+        let text = pasted().trim().to_string();
+        if text.is_empty() {
+            ui::toast(state::tr("nothing pasted"), true);
+            return;
+        }
+        spawn(async move {
+            match api::post(&format!("/api/v1/catalog/definitive/{head}/paste"), json!({ "lang": state::ui_language(), "site": site(), "answer": text })).await {
+                Ok(_) => {
+                    ui::toast(state::tr("saved"), false);
+                    pasted.set(String::new());
+                    mode.set("");
+                    answer.restart();
+                }
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
+    rsx! {
+        div { class: "card",
+            h2 { "{title} " Html { html: rank_html } }
+            if saved.is_none() {
+                if let Some(o) = &other {
+                    div { class: "muted", {state::trf("Saved in {language}.", &[("language", &state::language_native(&s(o, "lang")))])} }
+                }
+            }
+            if let Some(x) = &shown {
+                div { style: "white-space:pre-wrap;font-size:13px", "{s(x, \"answer\")}" }
+                if !api::arr(x, "sources").is_empty() {
+                    div { class: "muted", style: "font-size:12px;margin-top:4px",
+                        {state::tr("sources:")}
+                        for src in api::arr(x, "sources").to_vec() {
+                            " "
+                            a { class: "link", href: "{s(&src, \"url\")}", target: "_blank", rel: "noopener", {if s(&src, "title").is_empty() { s(&src, "url") } else { s(&src, "title") }} }
+                        }
+                    }
+                }
+                div { class: "muted", style: "font-size:12px;margin-top:4px",
+                    {source_label(&format!("{}:{}", s(x, "source"), s(x, "provider")))}
+                    " · "
+                    {state::trf("saved on {date} · {model}", &[("date", &crate::html::fmt_date(&s(x, "created_at"))), ("model", &s(x, "model"))])}
+                    if let Some(c) = x.get("cost_usd").and_then(Value::as_f64) {
+                        " · " {state::trf("approx. US${cost}", &[("cost", &format!("{c:.4}"))])}
+                    }
+                    if api::b(x, "pinned") { " " Html { html: crate::html::badge(&state::tr("pinned"), "ok") } }
+                }
+            } else {
+                p { class: "muted", {state::tr("No AI answer saved for this game yet. Ask the in-app AI, or ask in the browser and paste the answer below.")} }
+            }
+            if let Some(err) = api::so(&v, "error") { div { class: "muted", "{err}" } }
+            div { class: "toolbar", style: "margin-top:6px",
+                if saved.is_none() && other.is_none() {
+                    button { class: "btn small primary", title: state::tr("asks the in-app AI (Config › AI); each question costs a little"), onclick: move |_| ask("ask"), {state::tr("Ask the AI")} }
+                }
+                if saved.is_none() && other.is_some() {
+                    button { class: "btn small primary", onclick: move |_| ask("ask"), {state::trf("Ask in {language}", &[("language", &state::language_native(&lang))])} }
+                }
+                if is_api && !pinned {
+                    button { class: "btn small", title: state::tr("asks the AI again and replaces this answer"), onclick: move |_| ask("again"), {state::tr("Ask again")} }
+                }
+                if let Some(id) = saved_id {
+                    button { class: "btn small", title: state::tr("a pinned answer is kept: never asked again, expired or cleared with the cache"),
+                        onclick: move |_| {
+                            spawn(async move {
+                                match api::put(&format!("/api/v1/ai/answers/{id}/pin"), json!({ "pinned": !pinned })).await {
+                                    Ok(_) => { mode.set(""); answer.restart(); }
+                                    Err(e) => ui::toast(e.message, true),
+                                }
+                            });
+                        },
+                        {if pinned { state::tr("unpin") } else { state::tr("pin") }}
+                    }
+                }
+            }
+            div { class: "toolbar", style: "margin-top:6px",
+                span { class: "muted", title: state::tr("opens the question in the browser, signed in as you"), {state::tr("Ask:")} }
+                for (i, l) in links.into_iter().enumerate() {
+                    {
+                        let id = s(&l, "id");
+                        rsx! {
+                            " "
+                            a { class: if i == 0 { "btn small primary" } else { "btn small" }, href: "{s(&l, \"url\")}", target: "_blank", rel: "noopener", onclick: move |_| site.set(id.clone()), "{s(&l, \"label\")}" }
+                        }
+                    }
+                }
+                " "
+                a { class: "link", href: "{s(&v, \"google_url\")}", target: "_blank", rel: "noopener", {state::tr("search")} }
+            }
+            details { style: "margin-top:6px",
+                summary { {state::tr("Paste an answer from the browser")} }
+                textarea { rows: "6", style: "width:100%", placeholder: state::tr("Paste the whole answer, starting with its RANK: line"), value: "{pasted}", oninput: move |e| pasted.set(e.value()) }
+                div { class: "toolbar",
+                    label { {state::tr("from")} " "
+                        select { value: "{site}", onchange: move |e| site.set(e.value()),
+                            for (id, label) in AI_SITES {
+                                option { value: "{id}", selected: site() == id, "{label}" }
+                            }
+                        }
+                    }
+                    button { class: "btn small primary", r#type: "button", onclick: save_paste, {state::tr("save pasted answer")} }
+                }
             }
         }
     }

@@ -239,7 +239,12 @@ pub struct Answer {
     pub purpose: String,
     pub subject_key: String,
     pub lang: String,
+    /// For `source` api: gemini / claude / openai / perplexity. For browser: the Ask menu
+    /// link it was pasted from (google / claude / chatgpt / perplexity).
     pub provider: String,
+    /// `api` (asked by the app) or `browser` (pasted in from an Ask menu link).
+    #[serde(default = "default_source")]
+    pub source: String,
     pub model: String,
     pub prompt: String,
     pub answer: String,
@@ -255,6 +260,44 @@ pub struct Answer {
     pub created_at: Option<String>,
     #[serde(default)]
     pub pinned: bool,
+    /// When a browser answer was pasted in.
+    #[serde(default)]
+    pub pasted_at: Option<String>,
+}
+
+fn default_source() -> String {
+    "api".into()
+}
+
+impl Answer {
+    /// Its entry in `ai_source_priority`: `api:<provider>` or `browser:<site>`.
+    pub fn source_key(&self) -> String {
+        format!("{}:{}", self.source, self.provider)
+    }
+}
+
+/// `ai_source_priority`: which saved answer is shown when one question has several, best
+/// first -- `curated` (a feature's own curated text, where it has one, such as the
+/// Definitive notes), `api:<provider>`, `browser:<site>`. Sources not listed come after,
+/// newest first. Unset: curated first, then newest first.
+pub const KEY_SOURCE_PRIORITY: &str = "ai_source_priority";
+
+/// Every entry `ai_source_priority` can hold, in the default order.
+pub fn source_keys() -> Vec<String> {
+    let mut out = vec!["curated".to_string()];
+    out.extend(PROVIDERS.iter().map(|p| format!("api:{p}")));
+    out.extend(ASK_LINKS.iter().map(|(id, _)| format!("browser:{id}")));
+    out
+}
+
+pub async fn source_priority(app: &App) -> Result<Vec<String>> {
+    let list: Option<Vec<String>> = db_settings::get(&app.pool, KEY_SOURCE_PRIORITY).await.ok().flatten();
+    Ok(list.filter(|l| !l.is_empty()).unwrap_or_else(|| vec!["curated".to_string()]))
+}
+
+/// Where `key` stands in `priority`: its index, or after every listed one.
+pub fn rank_of(priority: &[String], key: &str) -> usize {
+    priority.iter().position(|k| k == key).unwrap_or(priority.len())
 }
 
 /// What [`lookup`] found or asked.
@@ -275,7 +318,7 @@ pub fn prompt_hash(prompt: &str) -> String {
     crate::database::import::sha1_hex(prompt)
 }
 
-const ANSWER_SELECT: &str = "SELECT id, purpose, subject_key, lang, provider, model, prompt, answer, CAST(sources AS CHAR) AS sources, tokens_in, tokens_out, CAST(cost_usd AS DOUBLE) AS cost_usd, CAST(created_at AS CHAR) AS created_at, pinned FROM ai_answers";
+const ANSWER_SELECT: &str = "SELECT id, purpose, subject_key, lang, provider, CAST(source AS CHAR) AS source, CAST(pasted_at AS CHAR) AS pasted_at, model, prompt, answer, CAST(sources AS CHAR) AS sources, tokens_in, tokens_out, CAST(cost_usd AS DOUBLE) AS cost_usd, CAST(created_at AS CHAR) AS created_at, pinned FROM ai_answers";
 
 fn row_to_answer(r: &sqlx::mysql::MySqlRow) -> Result<Answer> {
     let sources: Option<String> = r.try_get("sources")?;
@@ -285,6 +328,8 @@ fn row_to_answer(r: &sqlx::mysql::MySqlRow) -> Result<Answer> {
         subject_key: r.try_get("subject_key")?,
         lang: r.try_get("lang")?,
         provider: r.try_get("provider")?,
+        source: r.try_get("source")?,
+        pasted_at: r.try_get("pasted_at")?,
         model: r.try_get("model")?,
         prompt: r.try_get("prompt")?,
         answer: r.try_get("answer")?,
@@ -307,17 +352,27 @@ async fn fresh_sql(app: &App) -> Result<String> {
     })
 }
 
-/// The saved answer to `prompt` about `subject_key` in `lang`, if any.
-pub async fn cached(app: &App, purpose: &str, subject_key: &str, lang: &str, prompt: &str) -> Result<Option<Answer>> {
+/// Every saved answer to `prompt` about `subject_key` in `lang`, best first by
+/// `ai_source_priority`, then newest.
+pub async fn cached_all(app: &App, purpose: &str, subject_key: &str, lang: &str, prompt: &str) -> Result<Vec<Answer>> {
     let fresh = fresh_sql(app).await?;
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!("{ANSWER_SELECT} WHERE purpose = ? AND subject_key = ? AND lang = ? AND prompt_hash = ?{fresh} LIMIT 1")))
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("{ANSWER_SELECT} WHERE purpose = ? AND subject_key = ? AND lang = ? AND prompt_hash = ?{fresh} ORDER BY created_at DESC, id DESC")))
         .bind(purpose)
         .bind(subject_key)
         .bind(lang)
         .bind(prompt_hash(prompt))
-        .fetch_optional(&app.pool)
+        .fetch_all(&app.pool)
         .await?;
-    row.as_ref().map(row_to_answer).transpose()
+    let mut list = rows.iter().map(row_to_answer).collect::<Result<Vec<_>>>()?;
+    let priority = source_priority(app).await?;
+    list.sort_by_key(|a| rank_of(&priority, &a.source_key()));
+    Ok(list)
+}
+
+/// The saved answer to `prompt` about `subject_key` in `lang` that `ai_source_priority`
+/// puts first, if any.
+pub async fn cached(app: &App, purpose: &str, subject_key: &str, lang: &str, prompt: &str) -> Result<Option<Answer>> {
+    Ok(cached_all(app, purpose, subject_key, lang, prompt).await?.into_iter().next())
 }
 
 /// The newest saved answer about `subject_key` in any other language.
@@ -335,13 +390,15 @@ async fn cached_elsewhere(app: &App, purpose: &str, subject_key: &str, lang: &st
 async fn save(app: &App, a: &Answer) -> Result<u64> {
     let sources = serde_json::to_string(&a.sources).unwrap_or_else(|_| "[]".into());
     sqlx::query(
-        "INSERT INTO ai_answers (purpose, subject_key, lang, provider, model, prompt_hash, prompt, answer, sources, tokens_in, tokens_out, cost_usd, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-         ON DUPLICATE KEY UPDATE provider = VALUES(provider), model = VALUES(model), prompt = VALUES(prompt), answer = VALUES(answer), sources = VALUES(sources), tokens_in = VALUES(tokens_in), tokens_out = VALUES(tokens_out), cost_usd = VALUES(cost_usd), created_at = CURRENT_TIMESTAMP",
+        "INSERT INTO ai_answers (purpose, subject_key, lang, provider, source, pasted_at, model, prompt_hash, prompt, answer, sources, tokens_in, tokens_out, cost_usd, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE model = VALUES(model), prompt = VALUES(prompt), answer = VALUES(answer), sources = VALUES(sources), tokens_in = VALUES(tokens_in), tokens_out = VALUES(tokens_out), cost_usd = VALUES(cost_usd), pasted_at = VALUES(pasted_at), created_at = CURRENT_TIMESTAMP",
     )
     .bind(&a.purpose)
     .bind(&a.subject_key)
     .bind(&a.lang)
     .bind(&a.provider)
+    .bind(&a.source)
+    .bind(a.pasted_at.is_some().then(|| chrono::Utc::now().naive_utc()))
     .bind(&a.model)
     .bind(prompt_hash(&a.prompt))
     .bind(&a.prompt)
@@ -353,13 +410,24 @@ async fn save(app: &App, a: &Answer) -> Result<u64> {
     .bind(a.pinned)
     .execute(&app.pool)
     .await?;
-    let id: u64 = sqlx::query_scalar("SELECT id FROM ai_answers WHERE purpose = ? AND subject_key = ? AND lang = ? AND prompt_hash = ?").bind(&a.purpose).bind(&a.subject_key).bind(&a.lang).bind(prompt_hash(&a.prompt)).fetch_one(&app.pool).await?;
+    let id: u64 = sqlx::query_scalar("SELECT id FROM ai_answers WHERE purpose = ? AND subject_key = ? AND lang = ? AND prompt_hash = ? AND source = ? AND provider = ?")
+        .bind(&a.purpose)
+        .bind(&a.subject_key)
+        .bind(&a.lang)
+        .bind(prompt_hash(&a.prompt))
+        .bind(&a.source)
+        .bind(&a.provider)
+        .fetch_one(&app.pool)
+        .await?;
     Ok(id)
 }
 
 /// How [`lookup`] may spend money.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Spend {
+    /// The cache only, never a request: what a page shows when it opens, for a question
+    /// asked only on the user's click.
+    Never,
     /// The cache; ask only when nothing about the subject is saved in any language.
     #[default]
     IfNothingSaved,
@@ -375,27 +443,33 @@ pub enum Spend {
 pub async fn lookup(app: &App, purpose: &str, subject_key: &str, lang: Option<&str>, question: &str, spend: Spend) -> Result<Lookup> {
     let lang = language_code(lang).unwrap_or("en");
     let prompt = with_language(question, Some(lang));
-    let saved = cached(app, purpose, subject_key, lang, &prompt).await?;
+    let all = cached_all(app, purpose, subject_key, lang, &prompt).await?;
+    let saved = all.first().cloned();
+    let current = format!("api:{}", provider(app).await?);
+    let mine = all.iter().find(|a| a.source_key() == current).cloned();
     let mut out = Lookup::default();
-    match (&saved, spend) {
+    match (&mine, spend) {
         (Some(a), Spend::Again) if a.pinned => {
             out.error = Some("this answer is pinned: unpin it to ask again".into());
-            out.answer = saved;
+            out.answer = mine;
             out.cached = true;
             return Ok(out);
         }
-        (Some(_), Spend::IfNothingSaved | Spend::IfMissing) => {
+        (_, Spend::IfNothingSaved | Spend::IfMissing | Spend::Never) if saved.is_some() => {
             out.answer = saved;
             out.cached = true;
             return Ok(out);
         }
         _ => {}
     }
-    if spend == Spend::IfNothingSaved {
+    if matches!(spend, Spend::IfNothingSaved | Spend::Never) {
         if let Some(other) = cached_elsewhere(app, purpose, subject_key, lang).await? {
             out.other_language = Some(other);
             return Ok(out);
         }
+    }
+    if spend == Spend::Never {
+        return Ok(out);
     }
     let provider = provider(app).await?;
     match ask_provider(app, &provider, &prompt).await {
@@ -416,9 +490,12 @@ pub async fn lookup(app: &App, purpose: &str, subject_key: &str, lang: Option<&s
                 tokens_out: reply.tokens_out,
                 created_at: None,
                 pinned: false,
+                source: "api".into(),
+                pasted_at: None,
             };
             a.id = save(app, &a).await?;
-            out.answer = cached(app, purpose, subject_key, lang, &a.prompt).await?.or(Some(a));
+            // The new answer, as saved (with its date), whatever the source order would show.
+            out.answer = cached_all(app, purpose, subject_key, lang, &a.prompt).await?.into_iter().find(|x| x.id == a.id).or(Some(a));
         }
         Err(e) => {
             out.error = Some(e);
@@ -427,6 +504,44 @@ pub async fn lookup(app: &App, purpose: &str, subject_key: &str, lang: Option<&s
         }
     }
     Ok(out)
+}
+
+/// An answer the user copied from one of the Ask menu's browser links and pasted in: saved
+/// like an API answer, as `browser` from `site`, replacing what was pasted from that site
+/// for the same question before (a pinned one stays).
+pub async fn save_pasted(app: &App, purpose: &str, subject_key: &str, lang: Option<&str>, question: &str, site: &str, text: &str) -> Result<Answer> {
+    if !ASK_LINKS.iter().any(|(id, _)| *id == site) {
+        return Err(Error::invalid(format!("site must be one of {}", ASK_LINKS.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", "))));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(Error::invalid("nothing pasted"));
+    }
+    let lang = language_code(lang).unwrap_or("en");
+    let prompt = with_language(question, Some(lang));
+    if cached_all(app, purpose, subject_key, lang, &prompt).await?.iter().any(|a| a.source == "browser" && a.provider == site && a.pinned) {
+        return Err(Error::conflict("the answer pasted from this site is pinned: unpin it to replace it"));
+    }
+    let mut a = Answer {
+        id: 0,
+        purpose: purpose.to_string(),
+        subject_key: subject_key.to_string(),
+        lang: lang.to_string(),
+        provider: site.to_string(),
+        source: "browser".into(),
+        model: ASK_LINKS.iter().find(|(id, _)| *id == site).map(|(_, label)| label.to_string()).unwrap_or_default(),
+        prompt,
+        answer: text.to_string(),
+        sources: Vec::new(),
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: None,
+        created_at: None,
+        pinned: false,
+        pasted_at: Some(String::new()),
+    };
+    a.id = save(app, &a).await?;
+    Ok(cached_all(app, purpose, subject_key, lang, &a.prompt).await?.into_iter().find(|x| x.id == a.id).unwrap_or(a))
 }
 
 pub async fn set_pinned(app: &App, id: u64, pinned: bool) -> Result<()> {
@@ -458,6 +573,9 @@ pub struct Overview {
     pub providers: Vec<ProviderView>,
     pub prices: BTreeMap<String, Price>,
     pub stats: Stats,
+    /// `ai_source_priority` as set (empty: the default), and every entry it can hold.
+    pub source_priority: Vec<String>,
+    pub source_keys: Vec<String>,
 }
 
 pub async fn overview(app: &App) -> Result<Overview> {
@@ -475,6 +593,8 @@ pub async fn overview(app: &App) -> Result<Overview> {
         providers,
         prices: prices(app).await?,
         stats: stats(app).await?,
+        source_priority: db_settings::get::<Vec<String>>(&app.pool, KEY_SOURCE_PRIORITY).await.ok().flatten().unwrap_or_default(),
+        source_keys: source_keys(),
     })
 }
 
@@ -526,6 +646,12 @@ pub struct ClearRequest {
     pub purpose: Option<String>,
     #[serde(default)]
     pub keep_pinned: bool,
+    /// Only `api` or `browser` answers; none: both.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Only this provider's / site's answers (with `source`).
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 pub async fn clear(app: &App, req: &ClearRequest) -> Result<u64> {
@@ -537,8 +663,25 @@ pub async fn clear(app: &App, req: &ClearRequest) -> Result<u64> {
     if purpose.is_some() {
         sql.push_str(" AND purpose = ?");
     }
+    let source = req.source.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(s) = source {
+        if !["api", "browser"].contains(&s) {
+            return Err(Error::invalid("source must be api or browser"));
+        }
+        sql.push_str(" AND source = ?");
+    }
+    let provider = req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    if provider.is_some() {
+        sql.push_str(" AND provider = ?");
+    }
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     if let Some(p) = purpose {
+        q = q.bind(p);
+    }
+    if let Some(s) = source {
+        q = q.bind(s);
+    }
+    if let Some(p) = provider {
         q = q.bind(p);
     }
     Ok(q.execute(&app.pool).await?.rows_affected())

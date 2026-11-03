@@ -188,6 +188,14 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid(format!("{key} must be a number of days (0: keep)")));
             }
         }
+        crate::api::ai::KEY_SOURCE_PRIORITY => {
+            let known = crate::api::ai::source_keys();
+            for k in string_list(value, key)? {
+                if !known.contains(&k) {
+                    return Err(Error::invalid(format!("{key}: unknown source {k:?} (one of {})", known.join(", "))));
+                }
+            }
+        }
         crate::api::ai::KEY_PRICES => {
             if serde_json::from_value::<std::collections::BTreeMap<String, crate::api::ai::Price>>(value.clone()).is_err() {
                 return Err(Error::invalid(format!("{key} must be {{\"model\": {{\"in\": <$ per M tokens>, \"out\": <$ per M tokens>}}}}")));

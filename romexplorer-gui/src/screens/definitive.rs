@@ -221,6 +221,7 @@ pub fn Family(id: u64) -> Element {
             }
             div { key: "{key}", Grid { spec: Spec(Rc::new(spec)) } }
         }
+        super::ai::FamilyAi { key: "{head}", head, curated: None }
     }
 }
 

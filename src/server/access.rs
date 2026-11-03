@@ -287,6 +287,8 @@ const ADMIN: &[Rule] = &[
     ("DELETE", "/api/v1/catalog/titles/{id}/release-order"),
     ("POST", "/api/v1/catalog/definitive/{id}/order/move"),
     ("DELETE", "/api/v1/catalog/definitive/{id}/order"),
+    ("POST", "/api/v1/catalog/definitive/{id}/ask"),
+    ("POST", "/api/v1/catalog/definitive/{id}/paste"),
     ("POST", "/api/v1/catalog/titles/{id}/basegame"),
     ("DELETE", "/api/v1/catalog/titles/{id}/basegame"),
     ("POST", "/api/v1/catalog/titles/merges/decouple"),

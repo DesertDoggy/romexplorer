@@ -367,6 +367,150 @@ pub async fn detail(app: &App, title_id: u64) -> Result<FamilyDetail> {
     })
 }
 
+/// `POST /catalog/definitive/{id}/ask`: what the request may spend.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AskRequest {
+    /// The UI language the answer should come back in.
+    #[serde(default)]
+    pub lang: Option<String>,
+    /// Ask (the "Ask the AI" button); without it only a saved answer is shown.
+    #[serde(default)]
+    pub ask: bool,
+    /// Ask again and replace the saved answer (not a pinned one).
+    #[serde(default)]
+    pub again: bool,
+}
+
+/// What the AI says about a family: which version to play, as a rank like the curated
+/// notes' and the explanation under it.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AskAnswer {
+    /// As sent: the question with its "Answer in <Language>." line.
+    pub question: String,
+    pub google_url: String,
+    pub ask_links: Vec<super::ai::AskLink>,
+    pub provider: String,
+    pub lang: String,
+    /// The answer's first line, `RANK: S|A|B|none`, read back: info only, never the
+    /// curated rank (which the Definitive filter goes by).
+    pub ai_rank: Option<String>,
+    /// Where that answer came from: `api:<provider>` or `browser:<site>`.
+    pub ai_source: Option<String>,
+    /// The rank the family page shows: the curated note's or the AI's, whichever comes
+    /// first in `ai_source_priority` (`curated` first unless moved).
+    pub rank: Option<String>,
+    /// `curated`, or the AI answer's source.
+    pub rank_source: Option<String>,
+    #[serde(flatten)]
+    pub result: super::ai::Lookup,
+}
+
+/// The `ai_answers` purpose of the Definitive family question.
+pub const ASK_PURPOSE: &str = "definitive.compare";
+
+/// The question about a family: its versions, one per line, and what to rank them by. The
+/// rank definitions are the curated notes' own, so the AI's rank reads the same way.
+fn compare_question(members: &[FamilyMember]) -> String {
+    let mut q = String::from("These are the versions of one video game (name, platforms, year):\n");
+    for m in members {
+        let year = m.year.map(|y| y.to_string()).unwrap_or_else(|| "?".into());
+        q.push_str(&format!("- {} ({}, {year})\n", m.name, m.platforms.as_deref().unwrap_or("?")));
+    }
+    q.push_str(
+        "Which version has the most gameplay content, and which has the best features (graphics, sound, quality of life)? \
+         Then rank whether an older version should be played instead of the newest one: \
+         S = strongly recommend an older version; A = which one is better depends on preference; \
+         B = the newest is better, but an older version has things the newest lacks; none = the newest is clearly best and nothing is lost. \
+         Start the answer with exactly one line \"RANK: S\", \"RANK: A\", \"RANK: B\" or \"RANK: none\", then explain briefly, naming the versions.",
+    );
+    q
+}
+
+/// The rank on an answer's first line (`RANK: S`), and the answer without that line.
+pub fn split_rank(answer: &str) -> (Option<String>, String) {
+    let mut lines = answer.trim_start().splitn(2, '\n');
+    let first = lines.next().unwrap_or("").trim().trim_matches('*').trim();
+    let rank = first.strip_prefix("RANK:").or_else(|| first.strip_prefix("Rank:")).map(|r| r.trim().trim_matches('*').trim().to_string());
+    match rank.filter(|r| ["S", "A", "B", "none"].iter().any(|k| k.eq_ignore_ascii_case(r))) {
+        Some(r) => (Some(if r.eq_ignore_ascii_case("none") { "none".into() } else { r.to_ascii_uppercase() }), lines.next().unwrap_or("").trim().to_string()),
+        None => (None, answer.to_string()),
+    }
+}
+
+/// Which version of the family `title_id` is in to play, from the in-app AI: the saved
+/// answer, else asked when `req.ask` / `req.again` says so. The subject is the base game's
+/// IGDB id, so the answer survives a rebuilt catalogue.
+pub async fn ask(app: &App, title_id: u64, req: &AskRequest) -> Result<AskAnswer> {
+    let (fam, subject, q) = ask_subject(app, title_id).await?;
+    let lang = super::ai::language_code(req.lang.as_deref()).unwrap_or("en");
+    let asked = super::ai::with_language(&q, Some(lang));
+    let spend = if req.again {
+        super::ai::Spend::Again
+    } else if req.ask {
+        super::ai::Spend::IfMissing
+    } else {
+        super::ai::Spend::Never
+    };
+    let mut result = super::ai::lookup(app, ASK_PURPOSE, &subject, Some(lang), &q, spend).await?;
+    let mut ai_rank = None;
+    for a in [result.answer.as_mut(), result.other_language.as_mut()].into_iter().flatten() {
+        let (rank, text) = split_rank(&a.answer);
+        if ai_rank.is_none() {
+            ai_rank = rank;
+        }
+        a.answer = text;
+    }
+    let ai_source = result.answer.as_ref().or(result.other_language.as_ref()).map(super::ai::Answer::source_key);
+    // The shown rank: curated or AI, by the source order.
+    let priority = super::ai::source_priority(app).await?;
+    let curated = fam.note.as_ref().map(|n| n.rank.clone());
+    let (rank, rank_source) = match (&curated, &ai_rank, &ai_source) {
+        (Some(c), Some(a), Some(src)) => {
+            if super::ai::rank_of(&priority, "curated") <= super::ai::rank_of(&priority, src) {
+                (Some(c.clone()), Some("curated".to_string()))
+            } else {
+                (Some(a.clone()), Some(src.clone()))
+            }
+        }
+        (Some(c), _, _) => (Some(c.clone()), Some("curated".to_string())),
+        (None, Some(a), Some(src)) => (Some(a.clone()), Some(src.clone())),
+        _ => (None, None),
+    };
+    let google_url = reqwest::Url::parse_with_params("https://www.google.com/search", &[("q", q.as_str())]).map(|u| u.to_string()).unwrap_or_default();
+    Ok(AskAnswer { google_url, ask_links: super::ai::ask_links(&asked, &super::ai::ask_first(app).await?), question: asked, provider: super::ai::provider(app).await?, lang: lang.to_string(), ai_rank, ai_source, rank, rank_source, result })
+}
+
+/// The family `title_id` is in, its `ai_answers` subject (the base game's IGDB id, so the
+/// answer survives a rebuilt catalogue) and the question asked about it.
+async fn ask_subject(app: &App, title_id: u64) -> Result<(FamilyDetail, String, String)> {
+    let fam = detail(app, title_id).await?;
+    let igdb: Option<String> = sqlx::query_scalar("SELECT provider_id FROM title_provider_links WHERE title_id = ? AND provider = 'igdb' AND deleted = FALSE ORDER BY provider_id LIMIT 1").bind(fam.id).fetch_optional(&app.pool).await?;
+    let subject = match igdb {
+        Some(id) => format!("igdb:{id}"),
+        None => format!("title:{}", fam.id),
+    };
+    let q = compare_question(&fam.members);
+    Ok((fam, subject, q))
+}
+
+/// `POST /catalog/definitive/{id}/paste`: an answer copied from an Ask menu link.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PasteRequest {
+    #[serde(default)]
+    pub lang: Option<String>,
+    /// The Ask menu link it came from: google / claude / chatgpt / perplexity.
+    pub site: String,
+    pub answer: String,
+}
+
+/// Saves a pasted answer for the family (`ai::save_pasted`) and returns the family's AI
+/// panel as it now is.
+pub async fn paste(app: &App, title_id: u64, req: &PasteRequest) -> Result<AskAnswer> {
+    let (_, subject, q) = ask_subject(app, title_id).await?;
+    super::ai::save_pasted(app, ASK_PURPOSE, &subject, req.lang.as_deref(), &q, &req.site, &req.answer).await?;
+    ask(app, title_id, &AskRequest { lang: req.lang.clone(), ask: false, again: false }).await
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MoveRequest {
     pub title_id: u64,
@@ -428,6 +572,17 @@ pub fn refresh_all_later(app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ai_rank_is_read_from_the_first_line() {
+        assert_eq!(split_rank("RANK: S\nPlay the older one."), (Some("S".into()), "Play the older one.".into()));
+        assert_eq!(split_rank("**RANK: none**\n\nThe newest is best."), (Some("none".into()), "The newest is best.".into()));
+        assert_eq!(split_rank("Rank: b\nx"), (Some("B".into()), "x".into()));
+        assert_eq!(split_rank("No rank here.\nMore."), (None, "No rank here.\nMore.".into()));
+        let members = vec![FamilyMember { title_id: 1, name: "Hoge Quest".into(), category: "base_game".into(), platforms: Some("NES".into()), year: Some(1987), cover_media_id: None, local_games: 0, provider_only: false, is_base: true, manual: false }];
+        let q = compare_question(&members);
+        assert!(q.contains("- Hoge Quest (NES, 1987)") && q.contains("RANK: none") && q.contains("S = strongly recommend"), "{q}");
+    }
 
     #[test]
     fn notes_parse_and_are_in_id_order() {

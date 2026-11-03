@@ -378,7 +378,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 93] = [
+pub const KNOWN_KEYS: [(&str, &str); 95] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -403,6 +403,8 @@ pub const KNOWN_KEYS: [(&str, &str); 93] = [
     ("ai_model_perplexity", "The Perplexity model asked. Unset: sonar."),
     (crate::api::ai::KEY_ASK_FIRST, "Which link of the Ask menu comes first: google (default; Google AI Mode) | claude | chatgpt | perplexity. The links open in the browser with your own sign-in, at no cost to this app."),
     (crate::api::ai::KEY_CACHE_DAYS, "Saved AI answers older than this many days are asked again (pinned ones never). Unset or 0 (default): kept until you ask again or clear them."),
+    (crate::api::ai::KEY_SOURCE_PRIORITY, "Which saved AI answer is shown when there are several for one question, best first: curated (a feature's own curated text, such as the Definitive notes) | api:gemini | api:claude | api:openai | api:perplexity | browser:google | browser:claude | browser:chatgpt | browser:perplexity. Sources not listed come after, newest first. Unset: curated first, then newest first."),
+    ("ai_cost_warning_seen", "The AI cost warning was shown and accepted (true), so a question asked with the in-app AI does not show it again. Remove it to see the warning before the next question."),
     (crate::api::ai::KEY_PRICES, "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins."),
     (KEY_SEARCH_TRANSLATIONS, "Searches also look for a name's other-language versions from the name dictionary (Edit › Name dictionary): a search in Japanese finds the English name and the other way round (true | false; default true)."),
     (KEY_MEDIA_PROVIDER_FALLBACK, "While the main server is offline, fetch art from the provider's own URL (true | false; default true). While the server is up, it does every provider fetch itself and this machine takes the result from it; off means this machine never calls a provider for art at all."),

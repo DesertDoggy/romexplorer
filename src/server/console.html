@@ -3671,6 +3671,72 @@ function memberBadges(r) {
   return cbadge('category', r.category) + (r.is_base ? ' ' + badge(tr('base game')) : '') + (r.provider_only ? ` <span class="badge dim" title="${esc(tr('a version IGDB knows of; no DAT lists it'))}">${esc(tr('IGDB only'))}</span>` : '') + (r.manual ? ' ' + badge(tr('moved by you'), 'warn') : '');
 }
 // A family's page: its versions in definitive order, dragged to reorder.
+// Before the first paid AI question: the cost warning, once (the setting ai_cost_warning_seen
+// is shared with the app). True to go ahead.
+async function aiCostWarningOk() {
+  let seen = null; try { seen = await api('/api/v1/settings/ai_cost_warning_seen'); } catch (e) {}
+  if (seen && seen.value === true) return true;
+  if (!confirm(tr("Asking the AI uses your own API key, and the provider bills you for it. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). The author of this software is not responsible for any charges. Tip: create a separate API key for romexplorer and set a budget or spending limit for it with the provider (Config › AI has the links)."))) return false;
+  try { await api('/api/v1/settings/ai_cost_warning_seen', { method: 'PUT', body: 'true', headers: { 'Content-Type': 'application/json' } }); } catch (e) {}
+  return true;
+}
+// A saved AI answer's source as a label: "Gemini API", "Claude (browser)", "curated note".
+const AI_SITE_LABELS = { google: 'Google AI Mode', claude: 'Claude', chatgpt: 'ChatGPT', perplexity: 'Perplexity' };
+function aiSourceLabel(key) {
+  if (!key) return '';
+  if (key === 'curated') return tr('curated note');
+  const [src, who] = key.split(':');
+  return src === 'api' ? trf('{provider} API', { provider: AI_PROVIDER_LABELS[who] || who }) : trf('{site} (browser)', { site: AI_SITE_LABELS[who] || who });
+}
+// The AI's rank: dashed, so it never reads as the curated rank badge.
+function aiRankBadge(rank, source) {
+  return `<span class="badge" style="border:1px dashed currentColor;background:transparent" title="${esc(tr('AI rank: information only; the Definitive filter uses the curated notes'))}">${esc(trf('AI {rank}', { rank: rank === 'none' ? tr('none') : rank }))} · ${esc(aiSourceLabel(source))}</span>`;
+}
+// Collection › Definitive › a family (the app's FamilyAi): which version to play, from the
+// in-app AI or an answer pasted from the browser. Opening the page shows only what is saved;
+// asking is a click, since each ask costs money.
+async function familyAiPanel(box, head, req) {
+  box.innerHTML = `<h2>${tr('Which version to play')}</h2><span class="muted">${tr('loading…')}</span>`;
+  let v;
+  try { v = await api('/api/v1/catalog/definitive/' + head + '/ask', { method: 'POST', body: Object.assign({ lang: uiLanguage }, req) }); }
+  catch (e) { box.innerHTML = `<h2>${tr('Which version to play')}</h2><span class="bad">${esc(e.message)}</span>`; return; }
+  const a = v.answer || v.other_language;
+  const shown = v.rank ? (v.rank_source === 'curated' ? `${rankBadge(v.rank)} <span class="muted">${esc(aiSourceLabel('curated'))}</span>` : aiRankBadge(v.rank, v.rank_source)) : '';
+  const meta = a ? `<div class="muted" style="font-size:12px;margin-top:4px">${esc(aiSourceLabel(a.source + ':' + a.provider))} · ${esc(trf('saved on {date} · {model}', { date: fmtDate(a.created_at), model: a.model }))}${a.cost_usd != null ? ' · ' + esc(trf('approx. US${cost}', { cost: Number(a.cost_usd).toFixed(4) })) : ''}${a.pinned ? ' ' + badge(tr('pinned'), 'ok') : ''}</div>` : '';
+  const sources = a && a.sources && a.sources.length ? `<div class="muted" style="font-size:12px;margin-top:4px">${tr('sources:')} ${a.sources.map(s => `<a class="link" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>`).join(' ')}</div>` : '';
+  const other = !v.answer && v.other_language ? `<div class="muted">${esc(trf('Saved in {language}.', { language: langNative(v.other_language.lang) }))}</div>` : '';
+  const buttons = [];
+  if (!v.answer && !v.other_language) buttons.push(`<button class="btn small primary" data-fa="ask" title="${esc(tr('asks the in-app AI (Config › AI); each question costs a little'))}">${tr('Ask the AI')}</button>`);
+  if (!v.answer && v.other_language) buttons.push(`<button class="btn small primary" data-fa="ask">${esc(trf('Ask in {language}', { language: langNative(v.lang) }))}</button>`);
+  if (v.answer && v.answer.source === 'api' && !v.answer.pinned) buttons.push(`<button class="btn small" data-fa="again" title="${esc(tr('asks the AI again and replaces this answer'))}">${tr('Ask again')}</button>`);
+  if (v.answer) buttons.push(`<button class="btn small" data-fa="pin" title="${esc(tr('a pinned answer is kept: never asked again, expired or cleared with the cache'))}">${v.answer.pinned ? tr('unpin') : tr('pin')}</button>`);
+  const lastSite = pref('ai_last_site', (v.ask_links[0] || {}).id || 'google');
+  const links = (v.ask_links || []).map((l, i) => `<a class="btn small${i === 0 ? ' primary' : ''}" data-site="${esc(l.id)}" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join(' ');
+  box.innerHTML = `<h2>${tr('Which version to play')} ${shown}</h2>${other}
+    ${a ? `<div style="white-space:pre-wrap;font-size:13px">${esc(a.answer)}</div>` : `<p class="muted">${tr('No AI answer saved for this game yet. Ask the in-app AI, or ask in the browser and paste the answer below.')}</p>`}
+    ${sources}${meta}${v.error ? `<div class="muted">${esc(v.error)}</div>` : ''}
+    ${buttons.length ? `<div class="toolbar" style="margin-top:6px">${buttons.join(' ')}</div>` : ''}
+    <div class="toolbar" style="margin-top:6px"><span class="muted" title="${esc(tr('opens the question in the browser, signed in as you'))}">${tr('Ask:')}</span> ${links} <a class="link" href="${esc(v.google_url)}" target="_blank" rel="noopener">${tr('search')}</a></div>
+    <details style="margin-top:6px"><summary>${tr('Paste an answer from the browser')}</summary>
+      <textarea id="fa-paste" rows="6" style="width:100%" placeholder="${esc(tr('Paste the whole answer, starting with its RANK: line'))}"></textarea>
+      <div class="toolbar"><label>${tr('from')} <select id="fa-site">${Object.entries(AI_SITE_LABELS).map(([id, l]) => `<option value="${id}" ${id === lastSite ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+      <button class="btn small primary" id="fa-save">${tr('save pasted answer')}</button></div></details>`;
+  for (const l of box.querySelectorAll('[data-site]')) l.addEventListener('click', () => setPref('ai_last_site', l.dataset.site));
+  for (const b of box.querySelectorAll('[data-fa]')) b.onclick = async () => {
+    if (b.dataset.fa === 'pin') {
+      try { await api('/api/v1/ai/answers/' + v.answer.id + '/pin', { method: 'PUT', body: { pinned: !v.answer.pinned } }); } catch (e) { return toast(e.message, true); }
+      familyAiPanel(box, head, {});
+    } else {
+      if (!(await aiCostWarningOk())) return;
+      box.querySelector('h2').insertAdjacentHTML('beforeend', ` <span class="muted">${tr('asking…')}</span>`); familyAiPanel(box, head, { [b.dataset.fa]: true });
+    }
+  };
+  box.querySelector('#fa-save').onclick = async () => {
+    const answer = box.querySelector('#fa-paste').value.trim(); const site = box.querySelector('#fa-site').value;
+    if (!answer) return toast(tr('nothing pasted'), true);
+    try { await api('/api/v1/catalog/definitive/' + head + '/paste', { method: 'POST', body: { lang: uiLanguage, site, answer } }); setPref('ai_last_site', site); toast(tr('saved')); familyAiPanel(box, head, {}); } catch (e) { toast(e.message, true); }
+  };
+}
 async function showFamily(id) {
   const f = await api('/api/v1/catalog/definitive/' + id);
   const head = f.id;
@@ -3679,8 +3745,10 @@ async function showFamily(id) {
       <p class="muted">${tr('Newest version first; between versions on several platforms, your platform priority. Drag a version to put it where you want it.')}</p>
       ${f.note ? `<div class="notice">${rankBadge(f.note.rank)} <b>${esc(noteText(f.note, 'recommend'))}</b><div>${esc(noteText(f.note, 'note'))}</div></div>` : ''}
       <div class="toolbar"><button class="btn small" id="fam-base">${tr('base game page')}</button>${f.manual_order ? ` ${badge(tr('your order'), 'warn')} <button class="btn small" id="fam-reset" title="${tr('back to the newest-first order')}">${tr('reset order')}</button>` : ''}</div>
-      <div id="fam-members"></div></div>`;
+      <div id="fam-members"></div></div>
+    <div class="card" id="fam-ai"></div>`;
   document.getElementById('fam-base').onclick = () => go('collection/titles/' + head);
+  familyAiPanel(document.getElementById('fam-ai'), head, {});
   const reset = document.getElementById('fam-reset');
   if (reset) reset.onclick = async () => { try { await api('/api/v1/catalog/definitive/' + head + '/order', { method: 'DELETE' }); showFamily(head); } catch (e) { toast(e.message, true); } };
   const move = async (row, after) => { try { await api('/api/v1/catalog/definitive/' + head + '/order/move', { method: 'POST', body: { title_id: row.title_id, after_title_id: after ? after.title_id : null } }); showFamily(head); } catch (e) { toast(e.message, true); } };
@@ -5756,6 +5824,8 @@ async function showCredentials(card, scope = 'providers') {
 // Ask menu's first link, the AI providers' keys with a Test button each, the price table the
 // approximate cost uses, and the saved answers (stats, clear, export / import).
 const AI_PROVIDER_LABELS = { gemini: 'Gemini', claude: 'Claude', openai: 'OpenAI', perplexity: 'Perplexity' };
+// Where each provider sets a budget or spending limit (the app's AI_LIMIT_LINKS).
+const AI_LIMIT_LINKS = [['gemini', 'https://console.cloud.google.com/billing/budgets'], ['claude', 'https://console.anthropic.com/settings/limits'], ['openai', 'https://platform.openai.com/settings/organization/limits'], ['perplexity', 'https://www.perplexity.ai/settings/api']];
 async function showAiPage() {
   view.innerHTML = `<div class="card" id="ai-main"></div><div class="card" id="ai-keys"></div><div class="card" id="ai-prices"></div><div class="card" id="ai-cache"></div>`;
   let o; try { o = await api('/api/v1/ai'); } catch (e) { view.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return; }
@@ -5784,9 +5854,25 @@ async function showAiPage() {
       toast(tr('saved')); showAiPage();
     } catch (e) { toast(e.message, true); }
   };
+  // Which saved answer is shown when one question has several: an ordered list.
+  const order = (o.source_priority && o.source_priority.length ? o.source_priority : ['curated']).slice();
+  for (const k of o.source_keys) if (!order.includes(k)) order.push(k);
+  const orderBox = el(`<div style="margin-top:10px"><h3>${tr('Which answer is shown first')}</h3><p class="muted">${tr('When one question has several saved answers (the curated note, API answers, answers pasted from the browser), the one highest here is shown and its rank used. Sources not moved keep the newest first.')}</p><ol id="srcorder"></ol><div class="toolbar"><button class="btn small primary" type="button" id="srcsave">${tr('save')}</button> <button class="btn small" type="button" id="srcreset">${tr('reset to the default (curated first, then newest)')}</button></div></div>`);
+  main.appendChild(orderBox);
+  const drawOrder = () => {
+    const ol = orderBox.querySelector('#srcorder');
+    ol.innerHTML = order.map((k, i) => `<li>${esc(aiSourceLabel(k))} <button class="btn small" type="button" data-up="${i}">▲</button><button class="btn small" type="button" data-dn="${i}">▼</button></li>`).join('');
+    for (const b of ol.querySelectorAll('[data-up]')) b.onclick = () => { const i = Number(b.dataset.up); if (i > 0) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; drawOrder(); } };
+    for (const b of ol.querySelectorAll('[data-dn]')) b.onclick = () => { const i = Number(b.dataset.dn); if (i + 1 < order.length) { [order[i + 1], order[i]] = [order[i], order[i + 1]]; drawOrder(); } };
+  };
+  drawOrder();
+  orderBox.querySelector('#srcsave').onclick = async () => { try { await setKey('ai_source_priority', order); toast(tr('saved')); } catch (e) { toast(e.message, true); } };
+  orderBox.querySelector('#srcreset').onclick = async () => { try { await setKey('ai_source_priority', null); showAiPage(); } catch (e) { toast(e.message, true); } };
   const keys = document.getElementById('ai-keys');
   keys.onsaved = () => showAiPage();
   await showCredentials(keys, 'ai');
+  keys.insertAdjacentHTML('beforeend', `<p class="notice">${tr('Create a separate API key (or project) just for romexplorer, and set a budget or spending limit for it with the provider, so a mistake or a long batch cannot run up a large bill.')}</p>
+    <div class="toolbar">${AI_LIMIT_LINKS.map(([id, url]) => `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${esc(trf('{provider}: billing and limits', { provider: AI_PROVIDER_LABELS[id] }))}</a>`).join(' · ')}</div>`);
   keys.insertAdjacentHTML('beforeend', `<div class="toolbar">${o.providers.map(p => `<button class="btn small" type="button" data-test="${p.id}" title="${esc(tr('asks a one-word question with this key and model'))}">${esc(trf('test {provider}', { provider: AI_PROVIDER_LABELS[p.id] }))}</button>`).join(' ')}</div>`);
   for (const b of keys.querySelectorAll('[data-test]')) b.onclick = async () => {
     b.disabled = true;
@@ -5812,6 +5898,7 @@ async function showAiPage() {
   cache.innerHTML = `<h2>${tr('Saved answers')}</h2>
     <p>${esc(trf('{n} answer(s), {pinned} pinned, {size}', { n: st.count, pinned: st.pinned, size: fmtSize(st.bytes) }))} · ${esc(trf('approx. US${cost} this month, US${total} in all', { cost: st.cost_month_usd.toFixed(2), total: st.cost_total_usd.toFixed(2) }))}</p>
     <div class="toolbar"><select id="aiclearwhat"><option value="">${tr('all features')}</option>${st.purposes.map(p => `<option value="${esc(p.purpose)}">${esc(p.purpose)} (${p.count})</option>`).join('')}</select>
+      <select id="aiclearsrc"><option value="">${tr('all sources')}</option>${o.source_keys.filter(k => k !== 'curated').map(k => `<option value="${esc(k)}">${esc(aiSourceLabel(k))}</option>`).join('')}<option value="api:">${tr('every API answer')}</option><option value="browser:">${tr('every pasted answer')}</option></select>
       <label style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="aikeeppinned" checked>${tr('keep pinned answers')}</label>
       <button class="btn danger" type="button" id="aiclear">${tr('clear saved answers')}</button>
       <span class="grow"></span>
@@ -5819,7 +5906,8 @@ async function showAiPage() {
       <input type="file" accept=".json,application/json" id="aiimportfile"> <button class="btn" type="button" id="aiimport">${tr('import JSON')}</button></div>`;
   cache.querySelector('#aiclear').onclick = async () => {
     if (!confirm(tr('Remove the saved AI answers? Asking again costs money.'))) return;
-    try { const r = await api('/api/v1/ai/clear', { method: 'POST', body: { purpose: cache.querySelector('#aiclearwhat').value || null, keep_pinned: cache.querySelector('#aikeeppinned').checked } }); toast(trf('{n} answer(s) removed', { n: r.removed })); showAiPage(); } catch (e) { toast(e.message, true); }
+    const [source, provider] = (cache.querySelector('#aiclearsrc').value || ':').split(':');
+    try { const r = await api('/api/v1/ai/clear', { method: 'POST', body: { purpose: cache.querySelector('#aiclearwhat').value || null, keep_pinned: cache.querySelector('#aikeeppinned').checked, source: source || null, provider: provider || null } }); toast(trf('{n} answer(s) removed', { n: r.removed })); showAiPage(); } catch (e) { toast(e.message, true); }
   };
   cache.querySelector('#aiexport').onclick = async () => {
     try { const list = await api('/api/v1/ai/export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(list, null, 1)], { type: 'application/json' })); a.download = 'romexplorer-ai-answers.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); } catch (e) { toast(e.message, true); }

@@ -1,7 +1,7 @@
 //! One module per console area; each screen is a Dioxus component named after its route.
 
 mod about;
-mod ai;
+pub mod ai;
 mod advanced;
 pub mod art;
 mod audio;

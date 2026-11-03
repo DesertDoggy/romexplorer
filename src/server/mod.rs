@@ -2101,6 +2101,15 @@ async fn definitive_order_move(State(s): State<Shared>, Path(id): Path<u64>, Jso
     Ok(Json(api::definitive::move_member(&s.app, id, &b).await?))
 }
 
+async fn definitive_ask(State(s): State<Shared>, Path(id): Path<u64>, body: Option<Json<api::definitive::AskRequest>>) -> ApiResult<api::definitive::AskAnswer> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(api::definitive::ask(&s.app, id, &req).await?))
+}
+
+async fn definitive_paste(State(s): State<Shared>, Path(id): Path<u64>, Json(req): Json<api::definitive::PasteRequest>) -> ApiResult<api::definitive::AskAnswer> {
+    Ok(Json(api::definitive::paste(&s.app, id, &req).await?))
+}
+
 async fn definitive_order_reset(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<api::definitive::FamilyDetail> {
     Ok(Json(api::definitive::reset_order(&s.app, id).await?))
 }
@@ -2676,6 +2685,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/catalog/definitive/{id}", get(catalog_definitive_family))
         .route("/api/v1/catalog/definitive/{id}/order/move", post(definitive_order_move))
         .route("/api/v1/catalog/definitive/{id}/order", delete(definitive_order_reset))
+        .route("/api/v1/catalog/definitive/{id}/ask", post(definitive_ask))
+        .route("/api/v1/catalog/definitive/{id}/paste", post(definitive_paste))
         .route("/api/v1/catalog/titles/{id}/basegame", post(title_basegame_set).delete(title_basegame_reset))
         .route("/api/v1/catalog/titles/{id}", get(catalog_title))
         .route("/api/v1/catalog/releases", get(catalog_releases))

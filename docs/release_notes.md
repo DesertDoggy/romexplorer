@@ -23,6 +23,13 @@ replacing a build.
   can be cleared (all or one feature, pinned ones kept if you like), exported and imported
   as JSON.
 
+**AI on the Definitive tab**
+- Each game's page can ask the AI which version has the most content and the best graphics, sound
+  and quality of life. The answer comes with a rank like the curated notes, shown as an AI rank.
+- An answer from a browser link can be pasted in and is saved like an API answer. Config › AI sets
+  which answer is shown first, the curated note included, and clears saved answers by source.
+- The first question shows a cost warning. Config › AI links to each provider's spending limits.
+
 **Config › Advanced**
 - A new tab for operations that can damage the database or lose files, behind a clear warning.
   DB optimize moved here from Jobs and Data › DB.
