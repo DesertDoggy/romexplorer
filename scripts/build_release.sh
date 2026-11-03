@@ -251,18 +251,43 @@ if [[ "$GUI_WEB" -eq 1 && "$wants_web" -eq 1 ]]; then
 fi
 
 # --- 4. packages, 5. desktop bundles ---------------------------------------------------------
+# Both GUIs link WebKitGTK -- romexplorer's desktop and chdlite-gui, which the cli package
+# carries (dioxus desktop) -- so a linux/arm64 cross build of either needs its arm64
+# development files. scripts/linux_arm64_sysroot.sh unpacks them into a private sysroot
+# (installing the :arm64 -dev packages would uninstall the x64 ones); package.sh picks it up.
+# Built here on first need, so a fresh machine does not have to know to run it; no root.
+# Without it cargo fails at link time, minutes in, and without --continue that would take the
+# finished server package's SHA256SUMS down with it -- so a failure skips only those packages.
+ARM64_SYSROOT="${LINUX_ARM64_SYSROOT:-$ROOT_DIR/tests/output/sysroot/linux-arm64}"
+ARM64_GUI_BLOCKER=""
+needs_arm64_webkit=0
+for t in "${TARGETS[@]}"; do
+    [[ "$t" == "linux/arm64" ]] || continue
+    for m in "${M_LIST[@]}"; do [[ "$m" != "server" ]] && needs_arm64_webkit=1; done
+done
+if [[ "$needs_arm64_webkit" -eq 1 && "$HOST_ARCH" != "arm64" \
+      && ! -f "$ARM64_SYSROOT/.complete" \
+      && ! -f /usr/lib/aarch64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc ]]; then
+    echo
+    echo "=== arm64 sysroot (once: no arm64 WebKitGTK yet) ==="
+    start=$SECONDS
+    if bash "$SCRIPTS/linux_arm64_sysroot.sh"; then
+        TIMINGS+=("$(printf '  %-40s %5ds' "arm64 sysroot" $((SECONDS - start)))")
+    else
+        TIMINGS+=("$(printf '  %-40s %5ds  FAILED' "arm64 sysroot" $((SECONDS - start)))")
+        ARM64_GUI_BLOCKER="no arm64 WebKitGTK to link against, and scripts/linux_arm64_sysroot.sh failed (its error is above)"
+    fi
+fi
+if [[ -z "$ARM64_GUI_BLOCKER" && "$needs_arm64_webkit" -eq 1 && "$HOST_ARCH" != "arm64" ]] \
+   && ! command -v "${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:-aarch64-linux-gnu-gcc}" >/dev/null 2>&1; then
+    ARM64_GUI_BLOCKER="no arm64 cross compiler (sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu)"
+fi
+
 for t in "${TARGETS[@]}"; do
     p="${t%/*}" a="${t#*/}"
     for m in "${M_LIST[@]}"; do
-        # The desktop GUI links WebKitGTK, so a cross build needs its arm64 development files:
-        # scripts/linux_arm64_sysroot.sh unpacks them into a private sysroot (installing the
-        # :arm64 -dev packages would uninstall the x64 ones). Without them cargo fails at link
-        # time, minutes in, and without --continue that would take the finished server
-        # package's SHA256SUMS down with it.
-        if [[ "$t" == "linux/arm64" && "$m" != "server" && "$HOST_ARCH" != "arm64" \
-              && ! -f "${LINUX_ARM64_SYSROOT:-$ROOT_DIR/tests/output/sysroot/linux-arm64}/.complete" \
-              && ! -f /usr/lib/aarch64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc ]]; then
-            SKIPPED+=("$t $m: no arm64 WebKitGTK to link against -- run scripts/linux_arm64_sysroot.sh once")
+        if [[ "$t" == "linux/arm64" && "$m" != "server" && -n "$ARM64_GUI_BLOCKER" ]]; then
+            SKIPPED+=("$t $m: $ARM64_GUI_BLOCKER")
             continue
         fi
         if [[ "$m" == "cli" ]]; then
