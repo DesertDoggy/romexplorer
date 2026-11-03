@@ -5823,7 +5823,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer"
-version = "0.1.7"
+version = "0.8.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -5880,7 +5880,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer-gui"
-version = "0.1.7"
+version = "0.8.0"
 dependencies = [
  "axum",
  "dioxus",
@@ -5898,7 +5898,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer-types"
-version = "0.1.7"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "rustls",
