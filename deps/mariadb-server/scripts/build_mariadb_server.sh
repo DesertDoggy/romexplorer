@@ -323,6 +323,13 @@ ssl_defs_for() {
     fi
     log_line INFO "Using OpenSSL: include=${inc_dir} crypto=${crypto_lib} ssl=${ssl_lib}" >&2
     printf '%s' "-DWITH_SSL=${OPENSSL_ROOT_DIR} -DOPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR} -DOPENSSL_INCLUDE_DIR=${inc_dir} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_SSL_LIBRARY=${ssl_lib}"
+    # With MSVC, CMake's FindOpenSSL ignores OPENSSL_CRYPTO_LIBRARY/OPENSSL_SSL_LIBRARY: it
+    # searches LIB_EAY_RELEASE/SSL_EAY_RELEASE under <root>/lib only (not our shared/), then
+    # overwrites the two above with the NOTFOUND result. mariadb then silently falls back to
+    # its bundled wolfssl. Seeding the variables it actually searches for fixes that.
+    case "$1" in
+        windows) printf '%s' " -DLIB_EAY_RELEASE=${crypto_lib} -DSSL_EAY_RELEASE=${ssl_lib}" ;;
+    esac
 }
 
 rpath_defs_for() {
