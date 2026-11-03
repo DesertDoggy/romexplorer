@@ -290,6 +290,17 @@ for t in "${TARGETS[@]}"; do
             SKIPPED+=("$t $m: $ARM64_GUI_BLOCKER")
             continue
         fi
+        # --skip-native trusts app_root_ex/lib/, but a --mode cli run fills it with only what
+        # chdlite needs (no MariaDB), and package.sh would then compile for minutes before its
+        # gate finds the bundled MariaDB missing. Both server and desktop ship mariadbd.
+        if [[ "$SKIP_NATIVE" -eq 1 && "$m" != "cli" ]]; then
+            md="$ROOT_DIR/app_root_ex/lib/$p/$a/mariadb"
+            exe=""; [[ "$p" == "windows" ]] && exe=".exe"
+            if [[ ! -f "$md/bin/mariadbd$exe" || ! -f "$md/share/english/errmsg.sys" ]]; then
+                SKIPPED+=("$t $m: --skip-native, but app_root_ex/lib/$p/$a has no complete MariaDB (built by an earlier --mode cli run?) -- run once without --skip-native")
+                continue
+            fi
+        fi
         if [[ "$m" == "cli" ]]; then
             # No --version: the cli tools carry their own (chdlite/Cargo.toml), not the workspace's.
             step "package $t cli" bash "$SCRIPTS/package.sh" --kind cli --os "$p" --arch "$a" || true

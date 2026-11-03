@@ -250,6 +250,18 @@ if [[ "$ARCH" == "arm64" && ( "$PLATFORM" == "linux" || "$PLATFORM" == "windows"
         if [[ "$PLATFORM" == "linux" ]]; then ok="${SUPPORTS_ARM64_LINUX[$name]}"; else ok="${SUPPORTS_ARM64_WINDOWS[$name]}"; fi
         [[ "$ok" -eq 0 ]] && blocked+=("$name")
     done
+    # Without --only, the unverified arms are left out rather than failing the whole target:
+    # they are the optional formats (Wii U .wua/.zar, XISO, PBP), and the app runs without
+    # them -- package.sh copies whichever libraries exist. Named in --only, they still refuse.
+    if [[ ${#blocked[@]} -gt 0 && "$UNVERIFIED_ARM64" -eq 0 && -z "$ONLY" ]]; then
+        echo "  note: leaving out $PLATFORM/arm64 arms not verified yet: ${blocked[*]} (--unverified-arm64 to try them)"
+        kept=()
+        for name in "${SELECTED[@]}"; do
+            [[ " ${blocked[*]} " == *" $name "* ]] || kept+=("$name")
+        done
+        SELECTED=("${kept[@]}")
+        blocked=()
+    fi
     if [[ ${#blocked[@]} -gt 0 && "$UNVERIFIED_ARM64" -eq 0 ]]; then
         echo >&2
         echo "error: $PLATFORM/$ARCH has not been verified yet for: ${blocked[*]}" >&2
