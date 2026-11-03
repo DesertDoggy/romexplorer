@@ -204,9 +204,12 @@ pub const CREDENTIAL_FIELDS: &[CredentialField] = &[
     CredentialField { provider: "thegamesdb", key: "thegamesdb_api_key", label: "API key", secret: true, required: true },
     CredentialField { provider: "retroachievements", key: "ra_username", label: "user name", secret: false, required: true },
     CredentialField { provider: "retroachievements", key: "ra_api_key", label: "web API key", secret: true, required: true },
-    // Not a metadata provider: Edit › Merge review asks it what an International or a
-    // Director's Cut changed (free key from Google AI Studio).
-    CredentialField { provider: "gemini", key: "gemini_api_key", label: "API key (Google AI Studio; for Merge review lookups)", secret: true, required: true },
+    // Not metadata providers: the AI that answers in the app (`api::ai`, Config › AI) --
+    // Edit › Merge review asks it what an International or a Director's Cut changed.
+    CredentialField { provider: "gemini", key: "gemini_api_key", label: "API key (Google AI Studio)", secret: true, required: true },
+    CredentialField { provider: "claude", key: "anthropic_api_key", label: "API key (Claude Console)", secret: true, required: true },
+    CredentialField { provider: "openai", key: "openai_api_key", label: "API key (OpenAI Platform)", secret: true, required: true },
+    CredentialField { provider: "perplexity", key: "perplexity_api_key", label: "API key (Perplexity)", secret: true, required: true },
 ];
 
 /// `text` with each `(key, value)` applied: `Some` sets the key (sealed with `vault`),

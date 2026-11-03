@@ -205,10 +205,18 @@ pub struct CredentialView {
 }
 
 /// Every credential a provider reads, and which of them `api.env` holds a usable value for.
-pub fn credentials(app: &App) -> Result<Vec<CredentialView>> {
+/// `scope`: `providers` (Data › Providers: the metadata providers'), `ai` (Config › AI: the
+/// AI providers'), anything else every one.
+pub fn credentials(app: &App, scope: Option<&str>) -> Result<Vec<CredentialView>> {
     let creds = crate::database::ApiCredentials::load(&app.paths.api_env())?;
+    let ai = |f: &&crate::database::env_creds::CredentialField| super::ai::PROVIDERS.contains(&f.provider);
     Ok(crate::database::env_creds::CREDENTIAL_FIELDS
         .iter()
+        .filter(|f| match scope {
+            Some("ai") => ai(f),
+            Some("providers") => !ai(f),
+            _ => true,
+        })
         .map(|f| CredentialView { provider: f.provider, key: f.key, label: f.label, secret: f.secret, required: f.required, set: creds.get(f.key).is_some() })
         .collect())
 }

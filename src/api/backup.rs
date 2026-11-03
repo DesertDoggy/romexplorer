@@ -183,7 +183,9 @@ fn seed_link_providers() -> String {
 }
 
 /// Ownership and configuration: everything this machine cannot get back by re-importing.
-pub const DATABASE_TABLES: [&str; 37] = [
+pub const DATABASE_TABLES: [&str; 38] = [
+    // AI answers that were paid for (`api::ai`), keyed by stable ids, not row ids
+    "ai_answers",
     // the user's order of a release's local copies
     "local_game_order",
     // the name dictionary: the user's own names and the automatic ones they removed; the

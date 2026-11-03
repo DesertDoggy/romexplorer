@@ -1139,6 +1139,38 @@ async fn share_export(State(s): State<Shared>, Path(table): Path<String>, Query(
     Ok(Json(api::sync::export(&s.app, &table, after.as_deref(), q.limit.unwrap_or(2_000), false).await?))
 }
 
+// -- Config › AI ----------------------------------------------------------------------------
+
+async fn ai_overview(State(s): State<Shared>) -> ApiResult<api::ai::Overview> {
+    Ok(Json(api::ai::overview(&s.app).await?))
+}
+
+async fn ai_clear(State(s): State<Shared>, Json(req): Json<api::ai::ClearRequest>) -> ApiResult<Value> {
+    Ok(Json(json!({ "removed": api::ai::clear(&s.app, &req).await? })))
+}
+
+async fn ai_export(State(s): State<Shared>) -> ApiResult<Vec<api::ai::Answer>> {
+    Ok(Json(api::ai::export(&s.app).await?))
+}
+
+async fn ai_import(State(s): State<Shared>, Json(answers): Json<Vec<api::ai::Answer>>) -> ApiResult<Value> {
+    Ok(Json(json!({ "imported": api::ai::import(&s.app, &answers).await? })))
+}
+
+async fn ai_test(State(s): State<Shared>, Path(provider): Path<String>) -> ApiResult<Value> {
+    Ok(Json(api::ai::test(&s.app, &provider).await?))
+}
+
+#[derive(Deserialize)]
+struct PinBody {
+    pinned: bool,
+}
+
+async fn ai_pin(State(s): State<Shared>, Path(id): Path<u64>, Json(b): Json<PinBody>) -> ApiResult<Value> {
+    api::ai::set_pinned(&s.app, id, b.pinned).await?;
+    Ok(Json(json!({ "id": id, "pinned": b.pinned })))
+}
+
 async fn media_reuse_prompt(State(s): State<Shared>) -> ApiResult<api::media::ReusePrompt> {
     Ok(Json(api::media::reuse_prompt(&s.app).await?))
 }
@@ -1512,8 +1544,8 @@ async fn review_merge_action(State(s): State<Shared>, Path((key, action)): Path<
             Ok(Json(json!({ "dismissed": key })))
         }
         "lookup" => {
-            let lang = body.and_then(|Json(b)| b.lang);
-            Ok(Json(serde_json::to_value(api::review::lookup(&s.app, &key, lang.as_deref()).await?).unwrap_or_default()))
+            let req = body.map(|Json(b)| b).unwrap_or_default();
+            Ok(Json(serde_json::to_value(api::review::lookup(&s.app, &key, &req).await?).unwrap_or_default()))
         }
         _ => Err(Error::invalid("action must be apply, dismiss or lookup").into()),
     }
@@ -2166,13 +2198,13 @@ struct ResolveUrlBody {
     url: String,
 }
 
-async fn providers_credentials(State(s): State<Shared>) -> ApiResult<Vec<api::providers::CredentialView>> {
-    Ok(Json(api::providers::credentials(&s.app)?))
+async fn providers_credentials(State(s): State<Shared>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult<Vec<api::providers::CredentialView>> {
+    Ok(Json(api::providers::credentials(&s.app, q.get("scope").map(String::as_str))?))
 }
 
 async fn providers_credentials_put(State(s): State<Shared>, Json(values): Json<std::collections::BTreeMap<String, String>>) -> ApiResult<Vec<api::providers::CredentialView>> {
     api::providers::set_credentials(&s.app, &values)?;
-    Ok(Json(api::providers::credentials(&s.app)?))
+    Ok(Json(api::providers::credentials(&s.app, None)?))
 }
 
 async fn providers_resolve_url(State(s): State<Shared>, Json(b): Json<ResolveUrlBody>) -> ApiResult<api::links::ResolvedUrl> {
@@ -2520,6 +2552,12 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
+        .route("/api/v1/ai", get(ai_overview))
+        .route("/api/v1/ai/clear", post(ai_clear))
+        .route("/api/v1/ai/export", get(ai_export))
+        .route("/api/v1/ai/import", post(ai_import))
+        .route("/api/v1/ai/test/{provider}", post(ai_test))
+        .route("/api/v1/ai/answers/{id}/pin", axum::routing::put(ai_pin))
         .route("/api/v1/media/remote/{id}", get(media_remote))
         .route("/api/v1/server", get(server_info))
         .route("/api/v1/server/ports", axum::routing::put(server_ports_put))

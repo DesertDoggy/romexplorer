@@ -285,8 +285,11 @@ pub fn ProviderRequest(list: Vec<Value>) -> Element {
 /// Data › Providers: the credentials each provider needs. Values are write-only: the form
 /// shows which keys are set and takes new ones; saving an empty field clears that key.
 #[component]
-pub fn Credentials(on_change: EventHandler<()>) -> Element {
-    let mut fields = use_resource(|| async { api::get("/api/v1/providers/credentials").await.map(|v| api::items(&v)) });
+/// `scope`: `providers` (the default: Data › Providers, Config › Provider credentials) or
+/// `ai` (Config › AI).
+pub fn Credentials(on_change: EventHandler<()>, scope: Option<String>) -> Element {
+    let scope = scope.unwrap_or_else(|| "providers".to_string());
+    let mut fields = use_resource(use_reactive!(|scope| async move { api::get(&format!("/api/v1/providers/credentials?scope={}", api::encode(&scope))).await.map(|v| api::items(&v)) }));
     let mut edits = use_signal(std::collections::BTreeMap::<String, String>::new);
     let mut busy = use_signal(|| false);
     let list = match &*fields.read() {

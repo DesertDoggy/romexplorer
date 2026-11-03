@@ -55,6 +55,7 @@ pub mod sources;
 pub mod status;
 pub mod sync;
 pub mod review;
+pub mod ai;
 pub mod set_file;
 pub mod titles;
 pub mod storage;

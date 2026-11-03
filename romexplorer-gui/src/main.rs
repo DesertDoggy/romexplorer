@@ -169,6 +169,8 @@ pub enum Route {
         ConfigUsers {},
         #[route("/config/credentials")]
         ConfigCredentials {},
+        #[route("/config/ai")]
+        ConfigAi {},
         #[route("/data/providers")]
         DataProviders {},
         #[route("/data/dats")]
@@ -336,6 +338,7 @@ fn tab_of(route: &Route) -> (&'static str, &'static str) {
         ConfigMode {} => ("config", "mode"),
         ConfigUsers {} => ("config", "users"),
         ConfigCredentials {} => ("config", "credentials"),
+        ConfigAi {} => ("config", "ai"),
         DataProviders {} => ("data", "providers"),
         DataDats {} => ("data", "dats"),
         DataDb {} | DataDbTable { .. } => ("data", "db"),
@@ -410,6 +413,7 @@ fn subtabs(tab: &str) -> Vec<(&'static str, &'static str, Route)> {
             ("mode", "Mode", Route::ConfigMode {}),
             ("users", "Users", Route::ConfigUsers {}),
             ("credentials", "Provider credentials", Route::ConfigCredentials {}),
+            ("ai", "AI", Route::ConfigAi {}),
         ],
         "data" => vec![("providers", "Providers", Route::DataProviders {}), ("dats", "DATs", Route::DataDats {}), ("db", "DB", Route::DataDb {})],
         _ => Vec::new(),

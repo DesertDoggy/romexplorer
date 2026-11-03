@@ -158,5 +158,7 @@
   "relation.standalone": "standalone expansion",
   "relation.dlc": "DLC",
   "relation.mod": "mod",
-  "relation.bundle": "collection"
+  "relation.bundle": "collection",
+  "sub.config.ai": "AI",
+  "tabinfo.config.ai": "The AI that answers in the app (provider, model, API key), the Ask menu's first link, the prices for the approximate cost, and the saved answers."
 }

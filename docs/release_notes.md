@@ -1,3 +1,28 @@
+# romexplorer 0.8.0 (alpha)
+
+Alpha: the database schema may change between releases with no upgrade path. Back up before
+replacing a build.
+
+## Changes
+
+**AI in Merge review**
+- "Ask Google" is now an Ask menu: Google AI Mode, Claude, ChatGPT and Perplexity open in the
+  browser with the question filled in, signed in with your own account. Config › AI picks
+  which comes first.
+- The answer in the app can come from Gemini, Claude, OpenAI or Perplexity, each with its own
+  API key and model. Sources are shown when the service returns them.
+- Answers are saved, so a card opened again shows the saved answer with its date and model.
+  Ask again replaces it, and a pinned answer is kept. When only another language's answer
+  is saved, it is shown with an "Ask in <language>" button instead of a new paid request.
+- Saved answers are in the database backup.
+
+**Config › AI**
+- A new tab for the AI: provider and model, the Ask menu's first link, the API keys with a
+  Test button (moved here from Data › Providers), and an editable price table.
+- Shows how many answers are saved and their approximate cost this month and in all. They
+  can be cleared (all or one feature, pinned ones kept if you like), exported and imported
+  as JSON.
+
 # romexplorer 0.7.1 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before

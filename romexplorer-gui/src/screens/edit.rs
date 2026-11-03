@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::common::{self, bump, CellLink};
 use crate::api::{self, s, u};
@@ -725,39 +725,96 @@ fn ReviewTitleCard(title: serde_json::Value) -> Element {
     }
 }
 
-/// What the web says about an International / Director's Cut: Gemini's answer when a key is
-/// set, and Ask Google either way. Asked when the card opens; nothing is stored.
+/// What the web says about an International / Director's Cut (the console's `lookupPanel`):
+/// the in-app AI's answer, saved per suggestion and language, with Ask again / pin, "Ask in
+/// <language>" when only another language's answer is saved, and the Ask menu of browser
+/// links. Asked when the card opens only if nothing about it is saved yet.
 #[component]
 fn LookupPanel(lookup: String) -> Element {
-    let answer = use_resource(use_reactive!(|lookup| async move { api::post(&format!("/api/v1/review/merges/{}/lookup", api::encode(&lookup)), json!({ "lang": state::ui_language() })).await }));
+    // What the next request asks for ("", "again", "ask"), for this suggestion only: a card
+    // opened next must never inherit a paid "ask again".
+    let mut req = use_signal(|| (String::new(), ""));
+    let mut answer = use_resource(use_reactive!(|lookup| async move {
+        let (for_key, mode) = req();
+        let mode = if for_key == lookup { mode } else { "" };
+        api::post(&format!("/api/v1/review/merges/{}/lookup", api::encode(&lookup)), json!({ "lang": state::ui_language(), "again": mode == "again", "ask": mode == "ask" })).await
+    }));
     let a = answer.read().clone();
+    let key = lookup.clone();
     rsx! {
         div { class: "card", style: "margin:8px 0",
             h3 { {state::tr("What differs")} }
             match a {
                 None => rsx! { div { class: "muted", {state::tr("asking…")} } },
                 Some(Err(e)) => rsx! { div { class: "bad", "{e.message}" } },
-                Some(Ok(v)) => rsx! {
-                    if let Some(text) = api::so(&v, "answer") {
-                        div { style: "white-space:pre-wrap;font-size:13px", "{text}" }
-                    }
-                    if !api::arr(&v, "sources").is_empty() {
-                        div { class: "muted", style: "font-size:12px;margin-top:4px",
-                            {state::tr("sources:")}
-                            " "
-                            for src in api::arr(&v, "sources").to_vec() {
-                                a { class: "link", href: "{s(&src, \"url\")}", target: "_blank", rel: "noopener", "{s(&src, \"title\")}" }
-                                " "
+                Some(Ok(v)) => {
+                    let saved = v.get("answer").filter(|x| !x.is_null()).cloned();
+                    let other = v.get("other_language").filter(|x| !x.is_null()).cloned();
+                    let shown = saved.clone().or_else(|| other.clone());
+                    let pinned = saved.as_ref().is_some_and(|x| api::b(x, "pinned"));
+                    let saved_id = saved.as_ref().map(|x| u(x, "id"));
+                    let lang = s(&v, "lang");
+                    let links = api::arr(&v, "ask_links").to_vec();
+                    let (k_again, k_ask) = (key.clone(), key.clone());
+                    rsx! {
+                        if saved.is_none() {
+                            if let Some(o) = &other {
+                                div { class: "muted", {state::trf("Saved in {language}.", &[("language", &state::language_native(&s(o, "lang")))])} }
                             }
                         }
+                        if let Some(x) = &shown {
+                            div { style: "white-space:pre-wrap;font-size:13px", "{s(x, \"answer\")}" }
+                            if !api::arr(x, "sources").is_empty() {
+                                div { class: "muted", style: "font-size:12px;margin-top:4px",
+                                    {state::tr("sources:")}
+                                    " "
+                                    for src in api::arr(x, "sources").to_vec() {
+                                        a { class: "link", href: "{s(&src, \"url\")}", target: "_blank", rel: "noopener", {if s(&src, "title").is_empty() { s(&src, "url") } else { s(&src, "title") }} }
+                                        " "
+                                    }
+                                }
+                            }
+                            div { class: "muted", style: "font-size:12px;margin-top:4px",
+                                {state::trf("saved on {date} · {model}", &[("date", &html::fmt_date(&s(x, "created_at"))), ("model", &s(x, "model"))])}
+                                if let Some(c) = x.get("cost_usd").and_then(Value::as_f64) {
+                                    " · " {state::trf("approx. US${cost}", &[("cost", &format!("{c:.4}"))])}
+                                }
+                                if api::b(x, "pinned") { " " Html { html: badge(&state::tr("pinned"), "ok") } }
+                            }
+                        }
+                        if let Some(err) = api::so(&v, "error") { div { class: "muted", "{err}" } }
+                        div { class: "toolbar", style: "margin-top:6px",
+                            if saved.is_some() && !pinned {
+                                button { class: "btn small", title: state::tr("asks the AI again and replaces this answer"), onclick: move |_| req.set((k_again.clone(), "again")), {state::tr("Ask again")} }
+                            }
+                            if let Some(id) = saved_id {
+                                button { class: "btn small", title: state::tr("a pinned answer is kept: never asked again, expired or cleared with the cache"),
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            match api::put(&format!("/api/v1/ai/answers/{id}/pin"), json!({ "pinned": !pinned })).await {
+                                                Ok(_) => answer.restart(),
+                                                Err(e) => ui::toast(e.message, true),
+                                            }
+                                        });
+                                    },
+                                    {if pinned { state::tr("unpin") } else { state::tr("pin") }}
+                                }
+                            }
+                            if saved.is_none() && other.is_some() {
+                                button { class: "btn small primary", onclick: move |_| req.set((k_ask.clone(), "ask")), {state::trf("Ask in {language}", &[("language", &state::language_native(&lang))])} }
+                            }
+                        }
+                        div { class: "toolbar", style: "margin-top:6px",
+                            span { class: "muted", title: state::tr("opens the question in the browser, signed in as you"), {state::tr("Ask:")} }
+                            for (i, l) in links.into_iter().enumerate() {
+                                " "
+                                a { class: if i == 0 { "btn small primary" } else { "btn small" }, href: "{s(&l, \"url\")}", target: "_blank", rel: "noopener", "{s(&l, \"label\")}" }
+                            }
+                            " "
+                            a { class: "link", href: "{s(&v, \"google_url\")}", target: "_blank", rel: "noopener", {state::tr("search")} }
+                        }
                     }
-                    if let Some(err) = api::so(&v, "error") { div { class: "muted", "{err}" } }
-                    div { class: "toolbar", style: "margin-top:6px",
-                        a { class: "btn small primary", href: "{s(&v, \"ai_mode_url\")}", target: "_blank", rel: "noopener", {state::tr("Ask Google")} }
-                        " "
-                        a { class: "link", href: "{s(&v, \"google_url\")}", target: "_blank", rel: "noopener", {state::tr("search")} }
-                    }
-                },
+                }
             }
         }
     }

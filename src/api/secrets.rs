@@ -29,7 +29,10 @@ pub const SECRET_COLUMNS: &[(&str, &str)] = &[
 
 /// Columns whose names look like a credential and are not one, each with the reason.
 #[cfg(test)]
-const NOT_A_SECRET: &[(&str, &str, &str)] = &[];
+const NOT_A_SECRET: &[(&str, &str, &str)] = &[
+    ("ai_answers", "tokens_in", "how many tokens an AI question used (`api::ai`): a count, not a credential"),
+    ("ai_answers", "tokens_out", "how many tokens an AI answer used (`api::ai`): a count, not a credential"),
+];
 
 pub fn is_secret(table: &str, column: &str) -> bool {
     SECRET_COLUMNS.iter().any(|(t, c)| *t == table && *c == column)

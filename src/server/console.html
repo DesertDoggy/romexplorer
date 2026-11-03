@@ -2338,7 +2338,7 @@ function trf(text, fills) { let out = tr(text); for (const [k, v] of Object.entr
 function platformLabel(name) { if (platformNameLanguage === 'en' || !vocab) return name; const p = vocab.platforms.find(x => x.name === name); return (p && p.name_ja) || name; }
 // Sub-routes reachable by link but not shown as a subtab.
 const HIDDEN_SUBS = { ra: ['game'] };
-const SUBS = { edit: [['keywords', 'Keyword tags'], ['dictionary', 'Name dictionary'], ['merges', 'Combined titles'], ['orders', 'Manual order'], ['merge_review', 'Merge review'], ['aspect_review', 'Aspect review']], ra: [['titles', 'Titles'], ['mastery', 'Mastery'], ['complete', 'Complete'], ['beat', 'Beat'], ['in_progress', 'In progress'], ['to_play', 'To be played']], collection: [['crossplatform', 'Cross-platform'], ['definitive', 'Definitive'], ['titles', 'Titles'], ['releases', 'Releases'], ['games', 'Games'], ['roms', 'Roms'], ['files', 'Files'], ['contents', 'Contents'], ['sets', 'Sets'], ['audio', 'Audio'], ['multimedia', 'Multimedia'], ['documents', 'Documents'], ['source', 'Source code'], ['etc', 'Etc'], ['patches', 'Patches'], ['bios', 'BIOS / firmware']], config: [['directories', 'Directories'], ['emulators', 'Emulators'], ['copy', 'Copy'], ['storage', 'Storage'], ['settings', 'Settings'], ['settings_json', 'Settings (JSON)'], ['server', 'Server'], ['backup', 'Backup'], ['share', 'Share'], ['mode', 'Mode'], ['users', 'Users'], ['credentials', 'Provider credentials']], data: [['providers', 'Providers'], ['dats', 'DATs'], ['db', 'DB']] };
+const SUBS = { edit: [['keywords', 'Keyword tags'], ['dictionary', 'Name dictionary'], ['merges', 'Combined titles'], ['orders', 'Manual order'], ['merge_review', 'Merge review'], ['aspect_review', 'Aspect review']], ra: [['titles', 'Titles'], ['mastery', 'Mastery'], ['complete', 'Complete'], ['beat', 'Beat'], ['in_progress', 'In progress'], ['to_play', 'To be played']], collection: [['crossplatform', 'Cross-platform'], ['definitive', 'Definitive'], ['titles', 'Titles'], ['releases', 'Releases'], ['games', 'Games'], ['roms', 'Roms'], ['files', 'Files'], ['contents', 'Contents'], ['sets', 'Sets'], ['audio', 'Audio'], ['multimedia', 'Multimedia'], ['documents', 'Documents'], ['source', 'Source code'], ['etc', 'Etc'], ['patches', 'Patches'], ['bios', 'BIOS / firmware']], config: [['directories', 'Directories'], ['emulators', 'Emulators'], ['copy', 'Copy'], ['storage', 'Storage'], ['settings', 'Settings'], ['settings_json', 'Settings (JSON)'], ['server', 'Server'], ['backup', 'Backup'], ['share', 'Share'], ['mode', 'Mode'], ['users', 'Users'], ['credentials', 'Provider credentials'], ['ai', 'AI']], data: [['providers', 'Providers'], ['dats', 'DATs'], ['db', 'DB']] };
 // Explanations kept in the language files by key (`explain.*`, `tabinfo.*`): a "!" that
 // opens the key's text, one paragraph per blank-line-separated block; nothing when the file
 // has no text for it.
@@ -2395,7 +2395,7 @@ function route() {
     'ra/titles': () => showRa('titles'), 'ra/mastery': () => showRa('mastery'), 'ra/complete': () => showRa('complete'), 'ra/beat': () => showRa('beat'), 'ra/in_progress': () => showRa('in_progress'), 'ra/to_play': () => showRa('to_play'), 'ra/game': () => showRaGame(Number(id)),
     'edit/keywords': showKeywordTags, 'edit/dictionary': showDictionary, 'edit/merges': showCombinedTitles, 'edit/orders': showManualOrders, 'edit/merge_review': showMergeReview, 'edit/aspect_review': showAspectReview,
     'config/directories': showDirectories, 'config/emulators': showEmulators, 'config/copy': showCopyConfig, 'config/storage': showStorage, 'config/settings': () => settingsPage(false, id), 'config/settings_json': () => settingsPage(true, id), 'config/server': showServer, 'config/schedules': showSchedules, 'config/backup': showBackup, 'config/share': showSources, 'config/sources': showSources, 'config/mode': showMode, 'config/users': showUsers,
-    'config/credentials': showCredentialsPage, 'data/providers': showProviders, 'data/dats': showDats, 'data/db': id ? () => showDbTable(id) : showDb,
+    'config/credentials': showCredentialsPage, 'config/ai': showAiPage, 'data/providers': showProviders, 'data/dats': showDats, 'data/db': id ? () => showDbTable(id) : showDb,
   };
   const fn = screens[SUBS[tab] ? tab + '/' + sub : tab] || showStatus;
   Promise.resolve().then(fn).then(() => { if (!gridsLoading) restoreScroll(); }).catch(e => { view.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; });
@@ -3127,19 +3127,39 @@ async function showMergeReview() {
       const no = el(`<button class="btn danger" title="${tr('not offered again')}">${tr('No')}</button>`);
       no.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/dismiss', { method: 'POST', body: {} }); q.done(); } catch (e) { toast(e.message, true); } };
       q.nav.append(no);
-      if (it.can_look_up) {
-        const look = host.querySelector('#rv-look');
-        api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/lookup', { method: 'POST', body: { lang: uiLanguage } }).then(v => {
-          look.innerHTML = `<h3>${tr('What differs')}</h3>${v.answer ? `<div style="white-space:pre-wrap;font-size:13px">${esc(v.answer)}</div>` : ''}
-            ${v.sources && v.sources.length ? `<div class="muted" style="font-size:12px;margin-top:4px">${tr('sources:')} ${v.sources.map(s => `<a class="link" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`).join(' ')}</div>` : ''}
-            ${v.error ? `<div class="muted">${esc(v.error)}</div>` : ''}
-            <div class="toolbar" style="margin-top:6px"><a class="btn small primary" href="${esc(v.ai_mode_url)}" target="_blank" rel="noopener">${tr('Ask Google')}</a> <a class="link" href="${esc(v.google_url)}" target="_blank" rel="noopener">${tr('search')}</a></div>`;
-        }).catch(e => { look.innerHTML = `<h3>${tr('What differs')}</h3><span class="bad">${esc(e.message)}</span>`; });
-      }
+      if (it.can_look_up) lookupPanel(host.querySelector('#rv-look'), it.key, {});
     },
   });
 }
 
+// Merge review's "What differs" (the app's LookupPanel): the in-app AI's answer, saved per
+// suggestion and language, with Ask again / pin, "Ask in <language>" when only another
+// language's answer is saved, and the Ask menu of browser links.
+async function lookupPanel(look, key, req) {
+  look.innerHTML = `<h3>${tr('What differs')}</h3><span class="muted">${tr('asking…')}</span>`;
+  let v;
+  try { v = await api('/api/v1/review/merges/' + encodeURIComponent(key) + '/lookup', { method: 'POST', body: Object.assign({ lang: uiLanguage }, req) }); }
+  catch (e) { look.innerHTML = `<h3>${tr('What differs')}</h3><span class="bad">${esc(e.message)}</span>`; return; }
+  const a = v.answer || v.other_language;
+  const sources = a && a.sources && a.sources.length ? `<div class="muted" style="font-size:12px;margin-top:4px">${tr('sources:')} ${a.sources.map(s => `<a class="link" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>`).join(' ')}</div>` : '';
+  const meta = a ? `<div class="muted" style="font-size:12px;margin-top:4px">${esc(trf('saved on {date} · {model}', { date: fmtDate(a.created_at), model: a.model }))}${a.cost_usd != null ? ' · ' + esc(trf('approx. US${cost}', { cost: Number(a.cost_usd).toFixed(4) })) : ''}${a.pinned ? ' ' + badge(tr('pinned'), 'ok') : ''}</div>` : '';
+  const other = !v.answer && v.other_language ? `<div class="muted">${esc(trf('Saved in {language}.', { language: langNative(v.other_language.lang) }))}</div>` : '';
+  const buttons = [];
+  if (v.answer && !v.answer.pinned) buttons.push(`<button class="btn small" data-look="again" title="${esc(tr('asks the AI again and replaces this answer'))}">${tr('Ask again')}</button>`);
+  if (v.answer) buttons.push(`<button class="btn small" data-look="pin" title="${esc(tr('a pinned answer is kept: never asked again, expired or cleared with the cache'))}">${v.answer.pinned ? tr('unpin') : tr('pin')}</button>`);
+  if (!v.answer && v.other_language) buttons.push(`<button class="btn small primary" data-look="ask">${esc(trf('Ask in {language}', { language: langNative(v.lang) }))}</button>`);
+  const links = (v.ask_links || []).map((l, i) => `<a class="btn small${i === 0 ? ' primary' : ''}" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join(' ');
+  look.innerHTML = `<h3>${tr('What differs')}</h3>${other}${a ? `<div style="white-space:pre-wrap;font-size:13px">${esc(a.answer)}</div>` : ''}${sources}${meta}
+    ${v.error ? `<div class="muted">${esc(v.error)}</div>` : ''}
+    ${buttons.length ? `<div class="toolbar" style="margin-top:6px">${buttons.join(' ')}</div>` : ''}
+    <div class="toolbar" style="margin-top:6px"><span class="muted" title="${esc(tr('opens the question in the browser, signed in as you'))}">${tr('Ask:')}</span> ${links} <a class="link" href="${esc(v.google_url)}" target="_blank" rel="noopener">${tr('search')}</a></div>`;
+  for (const b of look.querySelectorAll('[data-look]')) b.onclick = async () => {
+    if (b.dataset.look === 'pin') {
+      try { await api('/api/v1/ai/answers/' + v.answer.id + '/pin', { method: 'PUT', body: { pinned: !v.answer.pinned } }); } catch (e) { return toast(e.message, true); }
+      lookupPanel(look, key, {});
+    } else lookupPanel(look, key, { [b.dataset.look]: true });
+  };
+}
 async function showAspectReview() {
   let last = [];
   await reviewQueue({
@@ -5704,9 +5724,9 @@ function providerRequestCard(card, ps) {
 
 // The credentials each provider needs. Write-only: which keys are set, and new values; an
 // empty field keeps what is there, × clears the key on save.
-async function showCredentials(card) {
+async function showCredentials(card, scope = 'providers') {
   let fields;
-  try { fields = await api('/api/v1/providers/credentials'); } catch (err) { card.innerHTML = `<h2>${tr('Credentials')}</h2><p class="muted">${esc(err.message)}</p>`; return; }
+  try { fields = await api('/api/v1/providers/credentials' + qs({ scope })); } catch (err) { card.innerHTML = `<h2>${tr('Credentials')}</h2><p class="muted">${esc(err.message)}</p>`; return; }
   const providers = [...new Set(fields.map(f => f.provider))];
   const edits = {};
   card.innerHTML = `<h2>${tr('Credentials')}</h2><p class="muted">${tr('Type a value to set it, or leave a field blank to keep what is there. To clear a key, press its × and save. Saved values take effect on the next request or job, no restart needed.')}</p><form id="credform">${providers.map(p => `<div style="margin:8px 0"><h3>${providerIcon(p)} ${esc(p)}</h3><table class="grid"><tbody>${fields.filter(f => f.provider === p).map(f => `<tr data-key="${esc(f.key)}"><td>${esc(f.label)}${f.required ? '' : ` <span class="muted">${tr('(optional)')}</span>`}</td><td class="state">${f.set ? badge(tr('set'), 'ok') : badge(tr('not set'), 'dim')}</td><td><input type="${f.secret ? 'password' : 'text'}" autocomplete="off" style="min-width:320px" placeholder="${f.set ? tr('(unchanged)') : ''}"></td><td>${f.set ? `<button class="btn small danger" type="button" title="${tr('clear this key on save')}">×</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`).join('')}<div class="toolbar actions"><button class="btn primary">${tr('save')}</button></div></form>`;
@@ -5719,10 +5739,89 @@ async function showCredentials(card) {
   form.onsubmit = async e => {
     e.preventDefault();
     if (!Object.keys(edits).length) return toast(tr('nothing changed'));
-    try { await api('/api/v1/providers/credentials', { method: 'PUT', body: edits }); toast(tr('credentials saved')); showCredentials(card); } catch (err) { toast(err.message, true); }
+    try { await api('/api/v1/providers/credentials', { method: 'PUT', body: edits }); toast(tr('credentials saved')); if (card.onsaved) card.onsaved(); else showCredentials(card, scope); } catch (err) { toast(err.message, true); }
   };
 }
 
+// Config › AI (the app's ConfigAi): which AI answers in the app and with which model, the
+// Ask menu's first link, the AI providers' keys with a Test button each, the price table the
+// approximate cost uses, and the saved answers (stats, clear, export / import).
+const AI_PROVIDER_LABELS = { gemini: 'Gemini', claude: 'Claude', openai: 'OpenAI', perplexity: 'Perplexity' };
+async function showAiPage() {
+  view.innerHTML = `<div class="card" id="ai-main"></div><div class="card" id="ai-keys"></div><div class="card" id="ai-prices"></div><div class="card" id="ai-cache"></div>`;
+  let o; try { o = await api('/api/v1/ai'); } catch (e) { view.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return; }
+  const setKey = async (key, value) => {
+    if (value === null || value === '') await api('/api/v1/settings/' + key, { method: 'DELETE' });
+    else await api('/api/v1/settings/' + key, { method: 'PUT', body: JSON.stringify(value), headers: { 'Content-Type': 'application/json' } });
+  };
+  const main = document.getElementById('ai-main');
+  main.innerHTML = `<h2>${tr('AI')}</h2>
+    <p class="muted">${tr('The AI that answers in the app (Merge review › What differs) is paid per use with your own API key. The Ask menu opens the same question in the browser instead, signed in as you, at no cost here.')}</p>
+    <form id="aiform" class="stack">
+      <label>${tr('answers in the app')} <select name="provider">${o.providers.map(p => `<option value="${p.id}" ${p.id === o.provider ? 'selected' : ''}>${esc(AI_PROVIDER_LABELS[p.id])}${p.key_set ? '' : ' ' + esc(tr('(no key)'))}</option>`).join('')}</select></label>
+      <table class="grid"><thead><tr><th>${tr('provider')}</th><th>${tr('model')}</th></tr></thead><tbody>${o.providers.map(p => `<tr><td>${esc(AI_PROVIDER_LABELS[p.id])}</td><td><input name="model_${p.id}" value="${esc(p.model || '')}" placeholder="${esc(p.default_model)}" style="min-width:240px"></td></tr>`).join('')}</tbody></table>
+      <label>${tr('Ask menu: first link')} <select name="ask_first">${o.ask_links.map(([id, label]) => `<option value="${id}" ${id === o.ask_first ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+      <label>${tr('ask saved answers again after (days; empty: keep)')} <input name="cache_days" type="number" min="0" value="${o.cache_days || ''}" style="width:90px"></label>
+      <div class="toolbar actions"><button class="btn primary">${tr('save')}</button></div>
+    </form>`;
+  main.querySelector('#aiform').onsubmit = async ev => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    try {
+      await setKey('ai_provider', f.get('provider'));
+      for (const p of o.providers) await setKey('ai_model_' + p.id, String(f.get('model_' + p.id) || '').trim());
+      await setKey('ai_ask_first', f.get('ask_first'));
+      await setKey('ai_cache_days', f.get('cache_days') ? Number(f.get('cache_days')) : null);
+      toast(tr('saved')); showAiPage();
+    } catch (e) { toast(e.message, true); }
+  };
+  const keys = document.getElementById('ai-keys');
+  keys.onsaved = () => showAiPage();
+  await showCredentials(keys, 'ai');
+  keys.insertAdjacentHTML('beforeend', `<div class="toolbar">${o.providers.map(p => `<button class="btn small" type="button" data-test="${p.id}" title="${esc(tr('asks a one-word question with this key and model'))}">${esc(trf('test {provider}', { provider: AI_PROVIDER_LABELS[p.id] }))}</button>`).join(' ')}</div>`);
+  for (const b of keys.querySelectorAll('[data-test]')) b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await api('/api/v1/ai/test/' + b.dataset.test, { method: 'POST' }); toast(r.ok ? trf('{provider} answered ({model})', { provider: AI_PROVIDER_LABELS[b.dataset.test], model: r.model }) : r.message, !r.ok); } catch (e) { toast(e.message, true); }
+    b.disabled = false;
+  };
+  const prices = document.getElementById('ai-prices');
+  const priceRow = (m, p) => `<tr><td><input value="${esc(m)}" data-k="m" placeholder="${esc(tr('model id prefix'))}"></td><td><input type="number" step="any" min="0" value="${p ? p.in : ''}" data-k="in" style="width:90px"></td><td><input type="number" step="any" min="0" value="${p ? p.out : ''}" data-k="out" style="width:90px"></td></tr>`;
+  prices.innerHTML = `<h2>${tr('Prices')}</h2><p class="muted">${tr('US dollars per million tokens, for the approximate cost shown with each answer. A model takes the row with the longest matching name prefix. Change a price, or add a row, and save.')}</p>
+    <table class="grid"><thead><tr><th>${tr('model')}</th><th class="num">${tr('in')}</th><th class="num">${tr('out')}</th></tr></thead><tbody>${Object.entries(o.prices).map(([m, p]) => priceRow(m, p)).join('')}${priceRow('', null)}</tbody></table>
+    <div class="toolbar"><button class="btn primary" type="button" id="pricesave">${tr('save')}</button> <button class="btn" type="button" id="pricereset">${tr('reset to the built-in prices')}</button></div>`;
+  prices.querySelector('#pricesave').onclick = async () => {
+    const out = {};
+    for (const row of prices.querySelectorAll('tbody tr')) {
+      const get = k => row.querySelector(`[data-k="${k}"]`).value.trim();
+      if (get('m') && get('in') !== '' && get('out') !== '') out[get('m')] = { in: Number(get('in')), out: Number(get('out')) };
+    }
+    try { await setKey('ai_prices', out); toast(tr('saved')); showAiPage(); } catch (e) { toast(e.message, true); }
+  };
+  prices.querySelector('#pricereset').onclick = async () => { try { await setKey('ai_prices', null); showAiPage(); } catch (e) { toast(e.message, true); } };
+  const cache = document.getElementById('ai-cache');
+  const st = o.stats;
+  cache.innerHTML = `<h2>${tr('Saved answers')}</h2>
+    <p>${esc(trf('{n} answer(s), {pinned} pinned, {size}', { n: st.count, pinned: st.pinned, size: fmtSize(st.bytes) }))} · ${esc(trf('approx. US${cost} this month, US${total} in all', { cost: st.cost_month_usd.toFixed(2), total: st.cost_total_usd.toFixed(2) }))}</p>
+    <div class="toolbar"><select id="aiclearwhat"><option value="">${tr('all features')}</option>${st.purposes.map(p => `<option value="${esc(p.purpose)}">${esc(p.purpose)} (${p.count})</option>`).join('')}</select>
+      <label style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="aikeeppinned" checked>${tr('keep pinned answers')}</label>
+      <button class="btn danger" type="button" id="aiclear">${tr('clear saved answers')}</button>
+      <span class="grow"></span>
+      <button class="btn" type="button" id="aiexport">${tr('export JSON')}</button>
+      <input type="file" accept=".json,application/json" id="aiimportfile"> <button class="btn" type="button" id="aiimport">${tr('import JSON')}</button></div>`;
+  cache.querySelector('#aiclear').onclick = async () => {
+    if (!confirm(tr('Remove the saved AI answers? Asking again costs money.'))) return;
+    try { const r = await api('/api/v1/ai/clear', { method: 'POST', body: { purpose: cache.querySelector('#aiclearwhat').value || null, keep_pinned: cache.querySelector('#aikeeppinned').checked } }); toast(trf('{n} answer(s) removed', { n: r.removed })); showAiPage(); } catch (e) { toast(e.message, true); }
+  };
+  cache.querySelector('#aiexport').onclick = async () => {
+    try { const list = await api('/api/v1/ai/export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(list, null, 1)], { type: 'application/json' })); a.download = 'romexplorer-ai-answers.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); } catch (e) { toast(e.message, true); }
+  };
+  cache.querySelector('#aiimport').onclick = async () => {
+    const file = cache.querySelector('#aiimportfile').files[0];
+    if (!file) return toast(tr('choose a file'), true);
+    let list; try { list = JSON.parse(await file.text()); } catch (e) { return toast(tr('That file is not JSON.'), true); }
+    try { const r = await api('/api/v1/ai/import', { method: 'POST', body: Array.isArray(list) ? list : [] }); toast(trf('{n} answer(s) imported', { n: r.imported })); showAiPage(); } catch (e) { toast(e.message, true); }
+  };
+}
 // Config › Provider credentials: the same card as on Data › Providers.
 async function showCredentialsPage() {
   view.innerHTML = `<div class="card" id="creds"></div>`;

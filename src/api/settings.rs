@@ -173,6 +173,31 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 }
             }
         }
+        crate::api::ai::KEY_PROVIDER => {
+            if !value.as_str().is_some_and(|v| crate::api::ai::PROVIDERS.contains(&v)) {
+                return Err(Error::invalid(format!("{key} must be one of {}", crate::api::ai::PROVIDERS.join(", "))));
+            }
+        }
+        crate::api::ai::KEY_ASK_FIRST => {
+            if !value.as_str().is_some_and(|v| crate::api::ai::ASK_LINKS.iter().any(|(id, _)| *id == v)) {
+                return Err(Error::invalid(format!("{key} must be google, claude, chatgpt or perplexity")));
+            }
+        }
+        crate::api::ai::KEY_CACHE_DAYS => {
+            if !(value.is_null() || value.as_u64().is_some_and(|d| d <= 36_500)) {
+                return Err(Error::invalid(format!("{key} must be a number of days (0: keep)")));
+            }
+        }
+        crate::api::ai::KEY_PRICES => {
+            if serde_json::from_value::<std::collections::BTreeMap<String, crate::api::ai::Price>>(value.clone()).is_err() {
+                return Err(Error::invalid(format!("{key} must be {{\"model\": {{\"in\": <$ per M tokens>, \"out\": <$ per M tokens>}}}}")));
+            }
+        }
+        k if k.starts_with("ai_model_") => {
+            if !value.as_str().is_some_and(|v| v.len() <= 96 && !v.contains(char::is_whitespace)) {
+                return Err(Error::invalid(format!("{key} must be a model id")));
+            }
+        }
         db_settings::KEY_CHD_READER => {
             if !value.as_str().is_some_and(|v| crate::rom::chd_info::ChdReaderMode::from_name(v).is_some()) {
                 return Err(Error::invalid("chd_reader must be \"checked\", \"chdman\" or \"rust\""));

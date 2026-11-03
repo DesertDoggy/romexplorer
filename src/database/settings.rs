@@ -378,7 +378,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 85] = [
+pub const KNOWN_KEYS: [(&str, &str); 93] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -395,7 +395,15 @@ pub const KNOWN_KEYS: [(&str, &str); 85] = [
     (KEY_CATALOG_FROM, "The instance this machine's catalogue was synced from. Ownership can only be mirrored between machines whose catalogues share a lineage, because row ids are copied verbatim."),
     (KEY_MEDIA_SYNC_AFTER_PULL, "After a catalogue sync from the main server brings new art, queue a media_sync job that fetches it from the server (true | false; default true). The server is asked first either way; this only decides whether it happens on its own."),
     (KEY_MERGE_REVIEW_ORDER, "Which suggestions Edit › Merge review shows first: \"regional\" (default) -- International and Director's Cut releases, Japanese releases filed under another game, names that translate each other, bundles holding single games -- or \"english\": titles sharing an IGDB game first."),
-    (KEY_GEMINI_MODEL, "The Gemini model Merge review asks about International and Director's Cut releases (with a Gemini API key under Data › Providers). Unset: the newest Flash model the key can use."),
+    (KEY_GEMINI_MODEL, "Older name of ai_model_gemini, still read when that is unset."),
+    (crate::api::ai::KEY_PROVIDER, "Which AI answers in the app (Merge review's \"What differs\"): gemini (default) | claude | openai | perplexity. Each needs its API key under Config › AI and is paid per use."),
+    ("ai_model_gemini", "The Gemini model asked. Unset: the newest Flash model the key can use."),
+    ("ai_model_claude", "The Claude model asked (with web search). Unset: claude-opus-5-5."),
+    ("ai_model_openai", "The OpenAI model asked (with web search). Unset: gpt-5."),
+    ("ai_model_perplexity", "The Perplexity model asked. Unset: sonar."),
+    (crate::api::ai::KEY_ASK_FIRST, "Which link of the Ask menu comes first: google (default; Google AI Mode) | claude | chatgpt | perplexity. The links open in the browser with your own sign-in, at no cost to this app."),
+    (crate::api::ai::KEY_CACHE_DAYS, "Saved AI answers older than this many days are asked again (pinned ones never). Unset or 0 (default): kept until you ask again or clear them."),
+    (crate::api::ai::KEY_PRICES, "Prices for the approximate AI cost, in US dollars per million tokens: {\"model-prefix\": {\"in\": 1.25, \"out\": 10}}. Laid over the built-in table; the longest matching prefix wins."),
     (KEY_SEARCH_TRANSLATIONS, "Searches also look for a name's other-language versions from the name dictionary (Edit › Name dictionary): a search in Japanese finds the English name and the other way round (true | false; default true)."),
     (KEY_MEDIA_PROVIDER_FALLBACK, "While the main server is offline, fetch art from the provider's own URL (true | false; default true). While the server is up, it does every provider fetch itself and this machine takes the result from it; off means this machine never calls a provider for art at all."),
     (KEY_MEDIA_REUSE_EXISTING, "When art a provider sync would download is already at its place in the media folder -- left there by an earlier install, say after starting over with a new database -- record that file instead of downloading it again (true | false; default true). Checked per provider and per picture, so what is missing still downloads. Your own uploads are not found this way."),
@@ -649,12 +657,13 @@ pub fn playmatch_batch_limit(stored: Option<i64>) -> Option<u64> {
 /// only one that needs a RetroAchievements console id, and `hash::hash` rejects the whole
 /// call when that is missing. The scan asks for it only for files whose platform resolved.
 /// The sections the settings form is laid out in: (id, heading), in display order.
-pub const SETTING_GROUPS: [(&str, &str); 11] = [
+pub const SETTING_GROUPS: [(&str, &str); 12] = [
     ("display", "Display & language"),
     ("lists", "Lists & ordering"),
     ("scan", "Scanning & files"),
     ("copy", "Copy & conversion"),
     ("metadata", "Metadata & providers"),
+    ("ai", "AI"),
     ("media", "Media & art"),
     ("audio", "Audio"),
     ("ra", "RetroAchievements"),
@@ -839,7 +848,9 @@ pub fn group_of(key: &str) -> &'static str {
         "release_kinds_default" | "release_unlicensed" | KEY_COLLECTION_DEFAULT_TAB | KEY_COLLECTION_HIDDEN_TABS | "definitive_fetch_versions" | KEY_PLATFORM_PRIORITY | "definitive_pc_max_age" | "definitive_two_cover_layout" | "release_edition_order" | "view_defaults" | "region_priority" | "language_priority" | "canonical_name_priority" => "lists",
         KEY_SCAN_HASHES | KEY_SCAN_HEURISTICS | KEY_SCAN_PKG_TITLES | KEY_SERIAL_MATCH | KEY_SCAN_PARALLEL | KEY_SHEET_STYLE | KEY_CHD_READER | "integrity_populate_hash" => "scan",
         k if k.starts_with("copy_") => "copy",
-        KEY_DAT_SYNC_PLATFORMS | KEY_MERGE_REVIEW_ORDER | KEY_GEMINI_MODEL | "provider_priority" | "provider_sync_scope" | "raw_response_retention" | "cache_ttl_days" | "metadata_source_priority" | "hasheous_parallel_downloads" | "playmatch_batch_size" => "metadata",
+        KEY_GEMINI_MODEL => "ai",
+        k if k.starts_with("ai_") => "ai",
+        KEY_DAT_SYNC_PLATFORMS | KEY_MERGE_REVIEW_ORDER | "provider_priority" | "provider_sync_scope" | "raw_response_retention" | "cache_ttl_days" | "metadata_source_priority" | "hasheous_parallel_downloads" | "playmatch_batch_size" => "metadata",
         k if k.starts_with("media_") => "media",
         k if k.starts_with("audio_") => "audio",
         k if k.starts_with("ra_") => "ra",
