@@ -20,8 +20,9 @@ and Linux. See [docs/release_notes.md](docs/release_notes.md) for what is tested
   RetroBIOS DATs into a bundled MariaDB, and merges regional releases and titles.
 - **Metadata and art.** IGDB, ScreenScraper, TheGamesDB, SteamGridDB, MobyGames, Hasheous,
   PlayMatch, EmuReady and RetroAchievements, each rate-limited on its own.
-- **Copy to a device.** Copies selected games to a folder or card, converting on the way,
-  with names and layouts a frontend expects.
+- **Copy to a device.** Copies games and their art from the server or this machine to a
+  folder or card, converting on the way, with names and layouts a frontend expects; art is laid
+  out for RetroArch or PCSX2 / DuckStation.
 - **Verify and back up.** Integrity checks against recorded hashes; zstd backups of the
   database and catalogue; restore.
 - **Share between machines.** A main server's catalogue and art can be mirrored by clients
@@ -97,9 +98,8 @@ does the right thing; `chdlite-gui` is the same in a window. Every option is als
 
 ### Provider keys
 
-Optional. Enter API keys in Config › Provider credentials as an administrator. They are
-stored encrypted on the server and never shown again; a provider without keys is simply
-unavailable.
+Optional. Enter API keys in Config › Provider credentials as an administrator. A provider
+without keys is simply unavailable.
 
 ### First use
 
@@ -136,6 +136,125 @@ recur every so many minutes, hours, days, weeks or months. The main ones:
 - **Integrity check** -- re-read held files and compare them with their recorded hashes.
 - **Sheet / playlist check and creation** -- check that `.cue`, `.gdi` and `.m3u` files
   still resolve, and rebuild missing ones.
+
+## Scan and hash match
+
+**File scan** walks a folder and hashes every file (CRC32, MD5, SHA-1, SHA-256, XXH3 and the
+RA hash). Archives (CHD, RVZ/WIA/GCZ, zip, 7z) are hashed from the inside. When the scan ends,
+it queues a hash match of the same folder with the boxes you ticked. With all boxes off, no
+match runs.
+
+| box | what it does |
+|---|---|
+| DAT match | Links each game to the DAT release whose hashes match its files (a CHD also by its tracks), then by serial for what no hash matched. Offline. |
+| RetroAchievements | Links games to RetroAchievements games by their RA hash, from the RA data already synced. Offline, always on. |
+| Hasheous | Looks each file up by hash on hasheous.org (no key). Returns the release and its ids on other providers. |
+| PlayMatch | Looks up files that still have no IGDB id (no key), 100 per request. Returns the same kind of ids. |
+
+Hasheous and PlayMatch go online only when the data is not cached locally.
+
+**Providers Hasheous and PlayMatch lead to:** IGDB, TheGamesDB, RetroAchievements,
+SteamGridDB, ScreenScraper and MobyGames (data and art, by the ids found), plus a name search on
+IGDB, TheGamesDB, SteamGridDB, MobyGames, EmuReady and ScreenScraper for titles still without a
+link. Providers without keys are skipped.
+
+## Copy
+
+**Copy games and their artwork to another destination.** In desktop client mode you can also
+copy from the main server: add the network-mounted directory (SMB, NFS, ...) and the server's
+collection root in the client settings.
+
+**You can copy a set, or individual titles, releases, crossplats and defs.**
+
+Copy modes (chosen when you copy):
+
+| mode | for | rules |
+|---|---|---|
+| To this collection | server → a collection folder on this machine | skips what this machine already holds; the copies count as held here straight away |
+| To an SD card / USB / phone folder | any folder outside the collection | nothing is skipped for being held elsewhere; nothing is recorded |
+| Within this collection | converting in place (ISO → RVZ, ...) | keeps both copies |
+| Within the server's collection | from the server's own UI | every file verified; never overwrites |
+| Upload | this machine → the server | only what the server lacks; never overwrites; the server rescans it |
+
+- Copies go into one subfolder per platform. You choose the subfolder name style when you copy.
+- Files can be converted on the way, to archive them and save space, or into another format a
+  device needs.
+- If the destination file already exists, it is skipped.
+
+**Artwork can also be exported.** Tick "export art afterwards" in the copy dialog, or use
+**export art...** on its own. Image files are renamed and laid out for emulators:
+
+- **RetroArch:** `<system>/Named_Boxarts`, `Named_Titles`, `Named_Snaps`, `Named_Logos`,
+  `<rom name>.png`, the libretro-thumbnails layout.
+- **PCSX2 / DuckStation:** one covers folder, `<serial>.<ext>`, or named after the game file.
+
+Which provider's picture fills each slot follows `media_export_priority` (real box scans first).
+
+## Collection tab
+
+The collection is the database of all the games you own, and of the other games that exist in
+databases such as Redump, No-Intro, TOSEC and IGDB (DAT / metadata download required).
+
+| sub-tab | one row per |
+|---|---|
+| Titles\* | A Title is a single game on a single platform. |
+| Releases\*\* | A Release is a single game where each region, language, revision, edition, demo etc. counts separately. |
+| Crossplats\*\*\* | A Crossplat combines all Titles of the same game on different platforms. |
+| Defs\*\*\*\* | A Def is for choosing one version of a game from all its versions (a game family): the original plus its remasters, ports, remakes, GOTY editions etc. One row per game family. |
+| Games | A Game is a complete (or incomplete) set of roms for one game. If you hold several copies, each counts as one Game. A game can contain several roms (Disc 1, Disc 2, ...). |
+| Roms | A Rom is a single unit of game media. Separate discs count as separate roms. A rom can contain several files (Disc 1 = cue + track 1.bin + track 2.bin). |
+| Files | Individual files on disk. |
+| Contents | A Content is a set of bytes, by hash. It can be a file, or a single entry inside an archive. A content can also contain contents. |
+| Sets | A Set is your own ordered list of Titles / Releases / Crossplats / Defs. |
+| Multimedia, Documents, Source code, Etc | Video and music discs; manuals, magazines and scans; source code; tools, trainers, saves. |
+| Patches | RetroAchievements compatibility patches (with download), DAT-listed patches, your patch folders. |
+| BIOS / firmware | The machine's system files: BIOS, firmware, NAND and SD card images. |
+| Audio | Your audio files in the audio directory. These (and titles) can be tagged, so a soundtrack plays while you view the Title page. |
+
+\* The same game on a different platform (Hoge Quest (PS2), Hoge Quest (Dreamcast)) counts
+as a separate Title. Different revisions (Hoge Quest, Hoge Quest (Rev A)), regions
+(Hoge Quest (Japan), Adventure of Hoge (USA)) or languages (Hoge Quest (ja), Hoge Quest (fr))
+are bundled into the same Title.
+
+\*\* On copy, if several copies of the same release are found, the complete one (no missing
+files) wins, then the priority set in settings (headered > unheadered, z64 > n64, etc.).
+On copy, one release is copied from the server or the client, chosen by your
+region / language / edition (regular, budget, special release) priorities. Releases you do not
+own are skipped for the next priority.
+
+\*\*\* Hoge Quest includes Hoge Quest (PS2) and Hoge Quest (Dreamcast).
+
+\*\*\*\* For when you want to play only the latest version, or the one with the most playable
+content. By default a Def picks the latest Crossplat, but some Defs carry ranked notes for
+cases where the latest Crossplat misses content from earlier versions (e.g. Hoge Quest 3D
+Remake (PC) lacks the extra dungeon of Hoge Quest (GBA)). You can drag the versions into the
+order you prefer. Since the definitive version may only exist on current platforms, you can
+choose to copy the top-priority crossplat / title in your collection, or to copy nothing when
+the most definitive version is not in your collection (i.e. go play it on Steam).
+
+Note: Crossplats and Defs are built from IGDB metadata, so it must be downloaded. A setting can
+download the related data automatically (off by default, because the large database slows
+everything down).
+
+## RetroAchievements tab
+
+Your RetroAchievements account and the games with achievements, as of the last account sync
+(needs `ra_username` and `ra_api_key`). The account block on top shows your profile and
+progress. A game's page lists its achievements and its compatibility patches, with a download
+button.
+
+If you copy a Title or add it to a Set from the RA tab, **only** releases that have
+achievements are chosen. (E.g. if Hoge Quest (USA) has achievements and Hoge Quest (Japan)
+doesn't, Hoge Quest (USA) is copied even if your region priority is Japan > USA.)
+
+| sub-tab | shows |
+|---|---|
+| Titles | Titles with RetroAchievements achievements. |
+| Mastery | Titles where you unlocked every achievement in hardcore mode. |
+| Complete | Titles where you unlocked every achievement in softcore mode. |
+| Beat | Games you beat but have not completed. |
+| In progress | Started but not mastered or completed (beaten ones too, unless the `ra_include_beaten` setting is off). |
+| To be played | Titles with achievements that you haven't started. |
 
 ## Third-party code
 

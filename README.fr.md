@@ -23,8 +23,10 @@ Consultez [docs/release_notes.md](docs/release_notes.md) pour savoir ce qui est 
   RetroBIOS dans un MariaDB intégré, et fusionne les sorties régionales et les titres.
 - **Métadonnées et visuels.** IGDB, ScreenScraper, TheGamesDB, SteamGridDB, MobyGames,
   Hasheous, PlayMatch, EmuReady et RetroAchievements, chacun avec sa propre limite de requêtes.
-- **Copier vers un appareil.** Copie les jeux sélectionnés vers un dossier ou une carte, en les
-  convertissant au passage, avec les noms et l'arborescence qu'attend un frontend.
+- **Copier vers un appareil.** Copie des jeux et leurs images depuis le serveur ou cette
+  machine vers un dossier ou une carte, en les convertissant au passage, avec les noms et
+  l'arborescence qu'attend un frontend ; les images sont rangées pour RetroArch ou
+  PCSX2 / DuckStation.
 - **Vérifier et sauvegarder.** Vérifications d'intégrité par rapport aux hashs enregistrés ;
   sauvegardes zstd de la base de données et du catalogue ; restauration.
 - **Partager entre machines.** Le catalogue et les visuels d'un serveur principal peuvent
@@ -107,8 +109,7 @@ séparément : voir [docs/chdlite_release_notes.md](docs/chdlite_release_notes.m
 ### Clés des fournisseurs
 
 Facultatif. Saisissez les clés d'API dans Configuration › Identifiants des fournisseurs, en tant
-qu'administrateur. Elles sont stockées chiffrées sur le serveur et ne sont plus jamais affichées ;
-un fournisseur sans clé est simplement indisponible.
+qu'administrateur. Un fournisseur sans clé est simplement indisponible.
 
 ### Premiers pas
 
@@ -148,6 +149,132 @@ pour se répéter toutes les N minutes, heures, jours, semaines ou mois. Les pri
 - **Vérification d'intégrité** -- relit les fichiers possédés et les compare à leurs hashs enregistrés.
 - **Vérification et création des feuilles cue / playlists** -- vérifie que les fichiers `.cue`, `.gdi`
   et `.m3u` pointent toujours vers des fichiers valides, et reconstruit ceux qui manquent.
+
+## Scan et correspondance par hash
+
+Le **scan de fichiers** parcourt un dossier et calcule le hash de chaque fichier (CRC32, MD5,
+SHA-1, SHA-256, XXH3 et le hash RA). Les archives (CHD, RVZ/WIA/GCZ, zip, 7z) sont hachées de
+l'intérieur. À la fin du scan, une correspondance par hash du même dossier est mise en file
+d'attente avec les cases que vous avez cochées. Si toutes les cases sont décochées, aucune
+correspondance n'est lancée.
+
+| case | ce qu'elle fait |
+|---|---|
+| Correspondance DAT | Relie chaque jeu à la release DAT dont les hashes correspondent à ses fichiers (un CHD aussi par ses pistes), puis par numéro de série pour ce qu'aucun hash n'a trouvé. Hors ligne. |
+| RetroAchievements | Relie les jeux aux jeux RetroAchievements par leur hash RA, à partir des données RA déjà synchronisées. Hors ligne, toujours active. |
+| Hasheous | Recherche chaque fichier par hash sur hasheous.org (sans clé). Renvoie la release et ses identifiants chez les autres fournisseurs. |
+| PlayMatch | Recherche les fichiers qui n'ont toujours pas d'identifiant IGDB (sans clé), 100 par requête. Renvoie le même type d'identifiants. |
+
+Hasheous et PlayMatch ne se connectent à Internet que si les données ne sont pas en cache local.
+
+**Fournisseurs auxquels mènent Hasheous et PlayMatch :** IGDB, TheGamesDB, RetroAchievements,
+SteamGridDB, ScreenScraper et MobyGames (données et images, par les identifiants trouvés), plus
+une recherche par nom sur IGDB, TheGamesDB, SteamGridDB, MobyGames, EmuReady et ScreenScraper
+pour les titres encore sans lien. Les fournisseurs sans clé sont ignorés.
+
+## Copie
+
+**Copiez des jeux et leurs illustrations vers une autre destination.** En mode client de
+bureau, vous pouvez aussi copier depuis le serveur principal : ajoutez le dossier monté en
+réseau (SMB, NFS, ...) et la racine de la collection du serveur dans les réglages du client.
+
+**Vous pouvez copier un set, ou des titres, releases, Crossplats et Defs individuels.**
+
+Modes de copie (choisis au moment de copier) :
+
+| mode | pour | règles |
+|---|---|---|
+| Vers cette collection | serveur → un dossier de collection sur cette machine | ignore ce que cette machine possède déjà ; les copies comptent aussitôt comme possédées ici |
+| Vers une carte SD / USB / un dossier de téléphone | n'importe quel dossier hors de la collection | rien n'est ignoré parce qu'il est possédé ailleurs ; rien n'est enregistré |
+| Dans cette collection | conversion sur place (ISO → RVZ, ...) | garde les deux copies |
+| Dans la collection du serveur | depuis l'interface du serveur lui-même | chaque fichier est vérifié ; jamais d'écrasement |
+| Envoi | cette machine → le serveur | seulement ce qui manque au serveur ; jamais d'écrasement ; le serveur le rescanne |
+
+- Les copies vont dans un sous-dossier par plateforme. Vous choisissez le style de nom des
+  sous-dossiers au moment de copier.
+- Les fichiers peuvent être convertis au passage, pour les archiver et gagner de la place, ou
+  dans un autre format qu'exige un appareil.
+- Si le fichier existe déjà à destination, il est ignoré.
+
+**Les illustrations peuvent aussi être exportées.** Cochez « exporter les images ensuite » dans
+la fenêtre de copie, ou utilisez **exporter les images...** seul. Les images sont renommées et
+rangées pour les émulateurs :
+
+- **RetroArch :** `<system>/Named_Boxarts`, `Named_Titles`, `Named_Snaps`, `Named_Logos`,
+  `<rom name>.png`, l'arborescence de libretro-thumbnails.
+- **PCSX2 / DuckStation :** un seul dossier covers, `<serial>.<ext>`, ou nommé d'après le
+  fichier du jeu.
+
+L'image de quel fournisseur remplit chaque emplacement suit `media_export_priority` (les vrais
+scans de boîte d'abord).
+
+## Onglet Collection
+
+La collection est la base de données de tous les jeux que vous possédez, et des autres jeux
+présents dans des bases comme Redump, No-Intro, TOSEC et IGDB (téléchargement des DAT / des
+métadonnées requis).
+
+| sous-onglet | une ligne par |
+|---|---|
+| Titres\* | Un Titre est un seul jeu sur une seule plateforme. |
+| Releases\*\* | Une Release est un seul jeu où chaque région, langue, révision, édition, démo, etc. compte séparément. |
+| Crossplats\*\*\* | Un Crossplat réunit tous les Titres d'un même jeu sur différentes plateformes. |
+| Defs\*\*\*\* | Un Def sert à choisir une version d'un jeu parmi toutes ses versions (une famille de jeux) : l'original et ses remasters, portages, remakes, éditions GOTY, etc. Une ligne par famille de jeux. |
+| Jeux | Un Jeu est un ensemble complet (ou incomplet) de roms pour un jeu. Si vous en possédez plusieurs copies, chacune compte comme un Jeu. Un jeu peut contenir plusieurs roms (Disc 1, Disc 2, ...). |
+| Roms | Une Rom est une unité de support de jeu. Des disques séparés comptent comme des roms séparées. Une rom peut contenir plusieurs fichiers (Disc 1 = cue + track 1.bin + track 2.bin). |
+| Fichiers | Les fichiers individuels sur le disque. |
+| Contenus | Un Contenu est une suite d'octets, identifiée par son hash. Ce peut être un fichier, ou une seule entrée dans une archive. Un contenu peut aussi contenir des contenus. |
+| Sets | Un Set est votre propre liste ordonnée de Titres / Releases / Crossplats / Defs. |
+| Multimédia, Documents, Code source, Divers | Disques vidéo et musique ; manuels, magazines et scans ; code source ; outils, trainers, sauvegardes. |
+| Patches | Patches de compatibilité RetroAchievements (avec téléchargement), patches listés dans les DAT, vos dossiers de patches. |
+| BIOS / firmware | Les fichiers système de la machine : BIOS, firmware, images NAND et de carte SD. |
+| Audio | Vos fichiers audio dans le dossier audio. Ils peuvent (comme les titres) être étiquetés, pour qu'une bande-son joue pendant que vous consultez la page du Titre. |
+
+\* Le même jeu sur une autre plateforme (Hoge Quest (PS2), Hoge Quest (Dreamcast)) compte
+comme un Titre distinct. Les révisions (Hoge Quest, Hoge Quest (Rev A)), régions
+(Hoge Quest (Japan), Adventure of Hoge (USA)) ou langues (Hoge Quest (ja), Hoge Quest (fr))
+différentes sont regroupées dans le même Titre.
+
+\*\* À la copie, si plusieurs copies de la même release sont trouvées, la complète (aucun
+fichier manquant) l'emporte, puis la priorité définie dans les réglages (avec en-tête > sans
+en-tête, z64 > n64, etc.). À la copie, une seule release est copiée depuis le serveur ou le
+client, choisie selon vos priorités de région / langue / édition (normale, économique,
+spéciale). Les releases que vous ne possédez pas sont sautées au profit de la priorité suivante.
+
+\*\*\* Hoge Quest inclut Hoge Quest (PS2) et Hoge Quest (Dreamcast).
+
+\*\*\*\* Pour quand vous voulez jouer seulement à la dernière version, ou à celle qui a le plus
+de contenu jouable. Par défaut, un Def choisit le Crossplat le plus récent, mais certains Defs
+portent des notes classées pour les cas où le dernier Crossplat manque de contenu des versions
+précédentes (ex. Hoge Quest 3D Remake (PC) n'a pas le donjon bonus de Hoge Quest (GBA)). Vous
+pouvez faire glisser les versions dans l'ordre que vous préférez. Comme la version définitive
+peut n'exister que sur des plateformes actuelles, vous pouvez choisir de copier le Crossplat /
+Titre prioritaire de votre collection, ou de ne rien copier quand la version la plus définitive
+n'est pas dans votre collection (autrement dit : allez y jouer sur Steam).
+
+Note : les Crossplats et les Defs sont construits à partir des métadonnées IGDB, qui doivent
+donc être téléchargées. Un réglage peut télécharger automatiquement les données liées (désactivé
+par défaut, car la grande base de données ralentit tout).
+
+## Onglet RetroAchievements
+
+Votre compte RetroAchievements et les jeux qui ont des succès, d'après la dernière
+synchronisation du compte (nécessite `ra_username` et `ra_api_key`). Le bloc du compte en haut
+montre votre profil et votre progression. La page d'un jeu liste ses succès et ses patches de
+compatibilité, avec un bouton de téléchargement.
+
+Si vous copiez un Titre ou l'ajoutez à un Set depuis l'onglet RA, **seules** les releases qui
+ont des succès sont choisies. (Ex. : si Hoge Quest (USA) a des succès et Hoge Quest (Japan)
+n'en a pas, Hoge Quest (USA) est copié même si votre priorité de région est Japan > USA.)
+
+| sous-onglet | affiche |
+|---|---|
+| Titres | Les titres qui ont des succès RetroAchievements. |
+| Maîtrise | Les titres dont vous avez débloqué tous les succès en mode hardcore. |
+| Terminés | Les titres dont vous avez débloqué tous les succès en mode softcore. |
+| Battus | Les jeux que vous avez battus sans les terminer. |
+| En cours | Commencés mais ni maîtrisés ni terminés (les battus aussi, sauf si le réglage `ra_include_beaten` est désactivé). |
+| À jouer | Les titres avec des succès que vous n'avez pas commencés. |
 
 ## Code tiers
 

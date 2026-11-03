@@ -24,8 +24,9 @@ applicazione desktop, su Windows, macOS e Linux. Consultare
   RetroBIOS in un MariaDB incluso, e unisce le uscite regionali e i titoli.
 - **Metadati e immagini.** IGDB, ScreenScraper, TheGamesDB, SteamGridDB, MobyGames, Hasheous,
   PlayMatch, EmuReady e RetroAchievements, ciascuno con il proprio limite di richieste.
-- **Copia su un dispositivo.** Copia i giochi selezionati in una cartella o su una scheda,
-  convertendoli durante la copia, con i nomi e la struttura che un frontend si aspetta.
+- **Copia su un dispositivo.** Copia i giochi e le loro immagini dal server o da questa macchina
+  in una cartella o su una scheda, convertendoli durante la copia, con i nomi e la struttura che
+  un frontend si aspetta; le immagini sono organizzate per RetroArch o PCSX2 / DuckStation.
 - **Verifica e backup.** Controlli di integrità rispetto agli hash registrati; backup zstd del
   database e del catalogo; ripristino.
 - **Condivisione tra macchine.** Il catalogo e le immagini di un server principale possono essere
@@ -104,8 +105,7 @@ opzione è disponibile anche come flag (`--help`). chdlite viene pubblicato sepa
 ### Chiavi dei provider
 
 Facoltative. Inserire le chiavi API in Configurazione › Credenziali dei provider come
-amministratore. Vengono salvate cifrate sul server e non vengono più mostrate; un provider senza
-chiavi semplicemente non è disponibile.
+amministratore. Un provider senza chiavi semplicemente non è disponibile.
 
 ### Primo utilizzo
 
@@ -145,6 +145,131 @@ Le principali:
 - **Controllo di integrità** -- rilegge i file posseduti e li confronta con gli hash registrati.
 - **Controllo e creazione di fogli cue / playlist** -- verifica che i file `.cue`, `.gdi` e `.m3u`
   puntino ancora a file validi e ricostruisce quelli mancanti.
+
+## Scansione e corrispondenza per hash
+
+La **scansione dei file** percorre una cartella e calcola l'hash di ogni file (CRC32, MD5,
+SHA-1, SHA-256, XXH3 e l'hash RA). Gli archivi (CHD, RVZ/WIA/GCZ, zip, 7z) vengono letti
+dall'interno. Al termine della scansione viene messa in coda una corrispondenza per hash della
+stessa cartella con le caselle che hai spuntato. Con tutte le caselle disattivate non viene
+eseguita alcuna corrispondenza.
+
+| casella | cosa fa |
+|---|---|
+| Corrispondenza DAT | Collega ogni gioco alla release DAT i cui hash corrispondono ai suoi file (un CHD anche tramite le sue tracce), poi tramite numero di serie per ciò che nessun hash ha trovato. Offline. |
+| RetroAchievements | Collega i giochi ai giochi di RetroAchievements tramite il loro hash RA, dai dati RA già sincronizzati. Offline, sempre attiva. |
+| Hasheous | Cerca ogni file per hash su hasheous.org (senza chiave). Restituisce la release e i suoi id presso gli altri provider. |
+| PlayMatch | Cerca i file che ancora non hanno un id IGDB (senza chiave), 100 per richiesta. Restituisce lo stesso tipo di id. |
+
+Hasheous e PlayMatch vanno online solo quando i dati non sono nella cache locale.
+
+**Provider a cui portano Hasheous e PlayMatch:** IGDB, TheGamesDB, RetroAchievements,
+SteamGridDB, ScreenScraper e MobyGames (dati e immagini, tramite gli id trovati), più una
+ricerca per nome su IGDB, TheGamesDB, SteamGridDB, MobyGames, EmuReady e ScreenScraper per i
+titoli ancora senza collegamento. I provider senza chiavi vengono saltati.
+
+## Copia
+
+**Copia i giochi e le loro illustrazioni in un'altra destinazione.** In modalità client desktop
+puoi copiare anche dal server principale: aggiungi la cartella montata in rete (SMB, NFS, ...) e
+la radice della collezione del server nelle impostazioni del client.
+
+**Puoi copiare un set, oppure singoli titoli, release, Crossplat e Def.**
+
+Modalità di copia (si sceglie al momento della copia):
+
+| modalità | per | regole |
+|---|---|---|
+| In questa collezione | server → una cartella della collezione su questa macchina | salta ciò che questa macchina possiede già; le copie contano subito come possedute qui |
+| Su scheda SD / USB / cartella del telefono | qualsiasi cartella fuori dalla collezione | nulla viene saltato perché posseduto altrove; nulla viene registrato |
+| All'interno di questa collezione | conversione sul posto (ISO → RVZ, ...) | mantiene entrambe le copie |
+| All'interno della collezione del server | dall'interfaccia del server stesso | ogni file verificato; non sovrascrive mai |
+| Caricamento | questa macchina → il server | solo ciò che manca al server; non sovrascrive mai; il server lo riscansiona |
+
+- Le copie vanno in una sottocartella per piattaforma. Lo stile del nome delle sottocartelle si
+  sceglie al momento della copia.
+- I file possono essere convertiti durante la copia, per archiviarli e risparmiare spazio, o in
+  un altro formato richiesto da un dispositivo.
+- Se il file esiste già nella destinazione, viene saltato.
+
+**Anche le illustrazioni possono essere esportate.** Spunta «esporta immagini dopo» nella
+finestra di copia, oppure usa **esporta immagini...** da solo. Le immagini vengono rinominate e
+organizzate per gli emulatori:
+
+- **RetroArch:** `<system>/Named_Boxarts`, `Named_Titles`, `Named_Snaps`, `Named_Logos`,
+  `<rom name>.png`, la struttura di libretro-thumbnails.
+- **PCSX2 / DuckStation:** un'unica cartella covers, `<serial>.<ext>`, oppure con il nome del
+  file del gioco.
+
+L'immagine di quale provider riempie ogni slot segue `media_export_priority` (prima le vere
+scansioni delle scatole).
+
+## Scheda Collezione
+
+La collezione è il database di tutti i giochi che possiedi, e degli altri giochi presenti in
+database come Redump, No-Intro, TOSEC e IGDB (richiede il download dei DAT / dei metadati).
+
+| sotto-scheda | una riga per |
+|---|---|
+| Titoli\* | Un Titolo è un singolo gioco su una singola piattaforma. |
+| Release\*\* | Una Release è un singolo gioco in cui ogni regione, lingua, revisione, edizione, demo, ecc. conta separatamente. |
+| Crossplat\*\*\* | Un Crossplat riunisce tutti i Titoli dello stesso gioco su piattaforme diverse. |
+| Def\*\*\*\* | Un Def serve a scegliere una versione di un gioco fra tutte le sue versioni (una famiglia di giochi): l'originale più i suoi remaster, port, remake, edizioni GOTY, ecc. Una riga per famiglia di giochi. |
+| Giochi | Un Gioco è un set completo (o incompleto) di rom per un gioco. Se ne possiedi più copie, ognuna conta come un Gioco. Un gioco può contenere più rom (Disc 1, Disc 2, ...). |
+| Rom | Una Rom è una singola unità di supporto del gioco. Dischi separati contano come rom separate. Una rom può contenere più file (Disc 1 = cue + track 1.bin + track 2.bin). |
+| File | I singoli file sul disco. |
+| Contenuti | Un Contenuto è una sequenza di byte, identificata dal suo hash. Può essere un file, oppure una singola voce dentro un archivio. Un contenuto può anche contenere altri contenuti. |
+| Set | Un Set è la tua lista ordinata di Titoli / Release / Crossplat / Def. |
+| Multimedia, Documenti, Codice sorgente, Altro | Dischi video e musicali; manuali, riviste e scansioni; codice sorgente; strumenti, trainer, salvataggi. |
+| Patch | Patch di compatibilità RetroAchievements (con download), patch elencate nei DAT, le tue cartelle di patch. |
+| BIOS / firmware | I file di sistema della macchina: BIOS, firmware, immagini NAND e di schede SD. |
+| Audio | I tuoi file audio nella cartella audio. Si possono etichettare (come i titoli), così una colonna sonora suona mentre guardi la pagina del Titolo. |
+
+\* Lo stesso gioco su un'altra piattaforma (Hoge Quest (PS2), Hoge Quest (Dreamcast)) conta
+come un Titolo separato. Revisioni (Hoge Quest, Hoge Quest (Rev A)), regioni
+(Hoge Quest (Japan), Adventure of Hoge (USA)) o lingue (Hoge Quest (ja), Hoge Quest (fr))
+diverse sono raggruppate nello stesso Titolo.
+
+\*\* Nella copia, se si trovano più copie della stessa release, vince quella completa (nessun
+file mancante), poi la priorità impostata nelle impostazioni (con header > senza header,
+z64 > n64, ecc.). Nella copia viene copiata una sola release dal server o dal client, scelta in
+base alle tue priorità di regione / lingua / edizione (normale, economica, speciale). Le release
+che non possiedi vengono saltate a favore della priorità successiva.
+
+\*\*\* Hoge Quest include Hoge Quest (PS2) e Hoge Quest (Dreamcast).
+
+\*\*\*\* Per quando vuoi giocare solo l'ultima versione, o quella con più contenuti giocabili.
+Per impostazione predefinita un Def sceglie il Crossplat più recente, ma alcuni Def hanno note
+classificate per i casi in cui l'ultimo Crossplat manca di contenuti delle versioni precedenti
+(es. a Hoge Quest 3D Remake (PC) manca il dungeon extra di Hoge Quest (GBA)). Puoi trascinare le
+versioni nell'ordine che preferisci. Poiché la versione definitiva può esistere solo sulle
+piattaforme attuali, puoi scegliere di copiare il Crossplat / Titolo con la priorità più alta
+della tua collezione, oppure di non copiare nulla quando la versione più definitiva non è nella
+tua collezione (cioè: vai a giocarla su Steam).
+
+Nota: Crossplat e Def sono costruiti dai metadati IGDB, che quindi vanno scaricati.
+Un'impostazione può scaricare automaticamente i dati correlati (disattivata per impostazione
+predefinita, perché il database grande rallenta tutto).
+
+## Scheda RetroAchievements
+
+Il tuo account RetroAchievements e i giochi con obiettivi, secondo l'ultima sincronizzazione
+dell'account (servono `ra_username` e `ra_api_key`). Il riquadro dell'account in alto mostra il
+tuo profilo e i tuoi progressi. La pagina di un gioco elenca i suoi obiettivi e le sue patch di
+compatibilità, con un pulsante di download.
+
+Se copi un Titolo o lo aggiungi a un Set dalla scheda RA, vengono scelte **solo** le release che
+hanno obiettivi. (Es.: se Hoge Quest (USA) ha obiettivi e Hoge Quest (Japan) no, viene copiato
+Hoge Quest (USA) anche se la tua priorità di regione è Japan > USA.)
+
+| sotto-scheda | mostra |
+|---|---|
+| Titoli | Titoli con obiettivi RetroAchievements. |
+| Maestria | Titoli in cui hai sbloccato tutti gli obiettivi in modalità hardcore. |
+| Completati | Titoli in cui hai sbloccato tutti gli obiettivi in modalità softcore. |
+| Battuti | Giochi che hai battuto ma non completato. |
+| In corso | Iniziati ma non padroneggiati né completati (anche quelli battuti, a meno che l'impostazione `ra_include_beaten` sia disattivata). |
+| Da giocare | Titoli con obiettivi che non hai ancora iniziato. |
 
 ## Codice di terze parti
 

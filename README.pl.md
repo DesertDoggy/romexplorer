@@ -24,8 +24,9 @@ w [docs/release_notes.md](docs/release_notes.md).
   RetroBIOS do dołączonej bazy MariaDB oraz scala regionalne wydania i tytuły.
 - **Metadane i grafiki.** IGDB, ScreenScraper, TheGamesDB, SteamGridDB, MobyGames, Hasheous,
   PlayMatch, EmuReady i RetroAchievements, każdy z osobnym limitem zapytań.
-- **Kopiowanie na urządzenie.** Kopiuje wybrane gry do folderu lub na kartę, konwertując je po
-  drodze, z nazwami i układem, jakich oczekuje frontend.
+- **Kopiowanie na urządzenie.** Kopiuje gry i ich grafiki z serwera lub z tego komputera do
+  folderu lub na kartę, konwertując je po drodze, z nazwami i układem, jakich oczekuje frontend;
+  grafiki są układane dla RetroArch lub PCSX2 / DuckStation.
 - **Weryfikacja i kopie zapasowe.** Sprawdzanie integralności względem zapisanych hashy; kopie
   zapasowe bazy danych i katalogu w formacie zstd; przywracanie.
 - **Współdzielenie między komputerami.** Klienci i peery mogą tworzyć lustrzane kopie
@@ -106,9 +107,8 @@ Każda opcja jest też dostępna jako flaga (`--help`). chdlite jest wydawany os
 
 ### Klucze dostawców
 
-Opcjonalne. Wprowadź klucze API jako administrator w Konfiguracja › Dane logowania dostawców. Są
-przechowywane na serwerze w postaci zaszyfrowanej i nigdy więcej nie są wyświetlane; dostawca bez
-kluczy jest po prostu niedostępny.
+Opcjonalne. Wprowadź klucze API jako administrator w Konfiguracja › Dane logowania dostawców.
+Dostawca bez kluczy jest po prostu niedostępny.
 
 ### Pierwsze kroki
 
@@ -149,6 +149,128 @@ Najważniejsze:
   hashami.
 - **Sprawdzanie i tworzenie arkuszy / playlist** -- sprawdza, czy pliki `.cue`, `.gdi` i `.m3u`
   nadal wskazują prawidłowe pliki, i odtwarza brakujące.
+
+## Skanowanie i dopasowanie po hashu
+
+**Skanowanie plików** przechodzi przez folder i liczy hash każdego pliku (CRC32, MD5, SHA-1,
+SHA-256, XXH3 i hash RA). Archiwa (CHD, RVZ/WIA/GCZ, zip, 7z) są hashowane od środka. Po
+zakończeniu skanowania do kolejki trafia dopasowanie po hashu tego samego folderu z polami,
+które zaznaczysz. Gdy wszystkie pola są odznaczone, żadne dopasowanie nie jest uruchamiane.
+
+| pole | co robi |
+|---|---|
+| Dopasowanie DAT | Łączy każdą grę z wydaniem z DAT, którego hashe pasują do jej plików (CHD także po ścieżkach), a potem po numerze seryjnym to, czego nie znalazł żaden hash. Offline. |
+| RetroAchievements | Łączy gry z grami RetroAchievements po ich hashu RA, na podstawie już zsynchronizowanych danych RA. Offline, zawsze włączone. |
+| Hasheous | Szuka każdego pliku po hashu w hasheous.org (bez klucza). Zwraca wydanie i jego identyfikatory u innych dostawców. |
+| PlayMatch | Szuka plików, które wciąż nie mają identyfikatora IGDB (bez klucza), 100 na zapytanie. Zwraca ten sam rodzaj identyfikatorów. |
+
+Hasheous i PlayMatch łączą się z internetem tylko wtedy, gdy danych nie ma w lokalnej pamięci
+podręcznej.
+
+**Dostawcy, do których prowadzą Hasheous i PlayMatch:** IGDB, TheGamesDB, RetroAchievements,
+SteamGridDB, ScreenScraper i MobyGames (dane i grafiki, według znalezionych identyfikatorów),
+a także wyszukiwanie po nazwie w IGDB, TheGamesDB, SteamGridDB, MobyGames, EmuReady
+i ScreenScraper dla tytułów, które wciąż nie mają powiązania. Dostawcy bez kluczy są pomijani.
+
+## Kopiowanie
+
+**Kopiuj gry i ich grafiki do innego miejsca.** W trybie klienta desktopowego możesz też
+kopiować z serwera głównego: dodaj w ustawieniach klienta katalog zamontowany sieciowo
+(SMB, NFS, ...) oraz katalog główny kolekcji serwera.
+
+**Możesz skopiować set albo pojedyncze tytuły, wydania, Crossplaty i Defy.**
+
+Tryby kopiowania (wybierane przy kopiowaniu):
+
+| tryb | do czego | zasady |
+|---|---|---|
+| Do tej kolekcji | serwer → folder kolekcji na tym komputerze | pomija to, co ten komputer już ma; kopie od razu liczą się jako posiadane tutaj |
+| Na kartę SD / USB / do folderu telefonu | dowolny folder poza kolekcją | nic nie jest pomijane z powodu posiadania gdzie indziej; nic nie jest zapisywane |
+| W obrębie tej kolekcji | konwersja na miejscu (ISO → RVZ, ...) | zachowuje obie kopie |
+| W obrębie kolekcji serwera | z interfejsu samego serwera | każdy plik weryfikowany; nigdy nie nadpisuje |
+| Wysyłanie | ten komputer → serwer | tylko to, czego brakuje serwerowi; nigdy nie nadpisuje; serwer skanuje to ponownie |
+
+- Kopie trafiają do podfolderu dla każdej platformy. Styl nazw podfolderów wybierasz przy
+  kopiowaniu.
+- Pliki można konwertować w trakcie kopiowania, aby je zarchiwizować i oszczędzić miejsce, albo
+  do innego formatu, którego wymaga urządzenie.
+- Jeśli plik docelowy już istnieje, jest pomijany.
+
+**Grafiki można też eksportować.** Zaznacz „eksportuj grafiki potem” w oknie kopiowania albo
+użyj osobno **eksportuj grafiki...**. Pliki obrazów są przemianowywane i układane dla emulatorów:
+
+- **RetroArch:** `<system>/Named_Boxarts`, `Named_Titles`, `Named_Snaps`, `Named_Logos`,
+  `<rom name>.png`, układ libretro-thumbnails.
+- **PCSX2 / DuckStation:** jeden folder covers, `<serial>.<ext>` albo nazwa według pliku gry.
+
+To, obraz którego dostawcy wypełnia dane miejsce, wynika z `media_export_priority` (najpierw
+prawdziwe skany pudełek).
+
+## Karta Kolekcja
+
+Kolekcja to baza danych wszystkich gier, które posiadasz, oraz innych gier istniejących w bazach
+takich jak Redump, No-Intro, TOSEC i IGDB (wymaga pobrania DAT-ów / metadanych).
+
+| podkarta | jeden wiersz na |
+|---|---|
+| Tytuły\* | Tytuł to jedna gra na jednej platformie. |
+| Wydania\*\* | Wydanie to jedna gra, w której każdy region, język, rewizja, edycja, demo itd. liczy się osobno. |
+| Crossplaty\*\*\* | Crossplat łączy wszystkie Tytuły tej samej gry na różnych platformach. |
+| Defy\*\*\*\* | Def służy do wyboru jednej wersji gry spośród wszystkich jej wersji (rodziny gry): oryginału oraz jego remasterów, portów, remake'ów, edycji GOTY itd. Jeden wiersz na rodzinę gry. |
+| Gry | Gra to kompletny (lub niekompletny) zestaw romów jednej gry. Jeśli masz kilka kopii, każda liczy się jako jedna Gra. Gra może zawierać kilka romów (Disc 1, Disc 2, ...). |
+| Romy | Rom to pojedyncza jednostka nośnika gry. Osobne płyty liczą się jako osobne romy. Rom może zawierać kilka plików (Disc 1 = cue + track 1.bin + track 2.bin). |
+| Pliki | Pojedyncze pliki na dysku. |
+| Zawartości | Zawartość to ciąg bajtów rozpoznawany po hashu. Może to być plik albo pojedynczy wpis w archiwum. Zawartość może też zawierać zawartości. |
+| Sety | Set to twoja własna uporządkowana lista Tytułów / Wydań / Crossplatów / Defów. |
+| Multimedia, Dokumenty, Kod źródłowy, Inne | Płyty wideo i muzyczne; instrukcje, czasopisma i skany; kod źródłowy; narzędzia, trainery, zapisy gier. |
+| Łatki | Łatki zgodności RetroAchievements (z pobieraniem), łatki wymienione w DAT-ach, twoje foldery z łatkami. |
+| BIOS / firmware | Pliki systemowe urządzenia: BIOS, firmware, obrazy NAND i kart SD. |
+| Audio | Twoje pliki audio w katalogu audio. Można je (podobnie jak tytuły) otagować, aby ścieżka dźwiękowa grała podczas oglądania strony Tytułu. |
+
+\* Ta sama gra na innej platformie (Hoge Quest (PS2), Hoge Quest (Dreamcast)) liczy się jako
+osobny Tytuł. Różne rewizje (Hoge Quest, Hoge Quest (Rev A)), regiony (Hoge Quest (Japan),
+Adventure of Hoge (USA)) lub języki (Hoge Quest (ja), Hoge Quest (fr)) są łączone w ten sam
+Tytuł.
+
+\*\* Jeśli przy kopiowaniu znaleziono kilka kopii tego samego wydania, wygrywa kompletna (bez
+brakujących plików), a potem priorytet z ustawień (z nagłówkiem > bez nagłówka, z64 > n64 itd.).
+Przy kopiowaniu kopiowane jest jedno wydanie z serwera lub klienta, wybrane według twoich
+priorytetów regionu / języka / edycji (zwykła, budżetowa, specjalna). Wydania, których nie
+posiadasz, są pomijane na rzecz kolejnego priorytetu.
+
+\*\*\* Hoge Quest obejmuje Hoge Quest (PS2) i Hoge Quest (Dreamcast).
+
+\*\*\*\* Na wypadek, gdy chcesz grać tylko w najnowszą wersję albo w tę z największą ilością
+grywalnej zawartości. Domyślnie Def wybiera najnowszy Crossplat, ale niektóre Defy mają
+uszeregowane notatki dla przypadków, w których najnowszemu Crossplatowi brakuje zawartości
+z wcześniejszych wersji (np. w Hoge Quest 3D Remake (PC) brakuje dodatkowego lochu z Hoge Quest
+(GBA)). Możesz przeciągnąć wersje w preferowanej kolejności. Ponieważ wersja ostateczna może
+istnieć tylko na obecnych platformach, możesz ustawić kopiowanie Crossplatu / Tytułu
+o najwyższym priorytecie w twojej kolekcji albo niekopiowanie niczego, gdy najbardziej
+ostatecznej wersji nie ma w kolekcji (czyli: zagraj w nią na Steamie).
+
+Uwaga: Crossplaty i Defy są budowane z metadanych IGDB, więc trzeba je pobrać. Ustawienie może
+automatycznie pobierać powiązane dane (domyślnie wyłączone, bo duża baza danych spowalnia
+wszystko).
+
+## Karta RetroAchievements
+
+Twoje konto RetroAchievements i gry z osiągnięciami, według ostatniej synchronizacji konta
+(wymaga `ra_username` i `ra_api_key`). Blok konta u góry pokazuje twój profil i postępy. Strona
+gry wymienia jej osiągnięcia i łatki zgodności, z przyciskiem pobierania.
+
+Jeśli kopiujesz Tytuł lub dodajesz go do Setu z karty RA, wybierane są **tylko** wydania
+z osiągnięciami. (Np. jeśli Hoge Quest (USA) ma osiągnięcia, a Hoge Quest (Japan) nie,
+kopiowany jest Hoge Quest (USA), nawet gdy twój priorytet regionów to Japan > USA.)
+
+| podkarta | pokazuje |
+|---|---|
+| Tytuły | Tytuły z osiągnięciami RetroAchievements. |
+| Mistrzostwo | Tytuły, w których odblokowałeś wszystkie osiągnięcia w trybie hardcore. |
+| Ukończone | Tytuły, w których odblokowałeś wszystkie osiągnięcia w trybie softcore. |
+| Pokonane | Gry, które przeszedłeś, ale nie ukończyłeś. |
+| W toku | Rozpoczęte, ale bez mistrzostwa i nieukończone (także pokonane, chyba że ustawienie `ra_include_beaten` jest wyłączone). |
+| Do zagrania | Tytuły z osiągnięciami, których jeszcze nie zacząłeś. |
 
 ## Kod zewnętrzny
 
