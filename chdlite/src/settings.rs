@@ -1,7 +1,9 @@
 //! `chdlite.toml`: what the GUI's settings screen edits and the CLI reads its defaults from.
 //!
-//! Portable when a `chdlite.toml` sits beside the executable; otherwise the per-user config
-//! directory. Every field has a default, so a missing or partial file is never an error.
+//! Portable: the file, and everything else chdlite keeps ([`data_dir`]), sits beside the
+//! executable. Only where that folder cannot be written to (or inside a macOS `.app` bundle,
+//! whose signature a write would break) does it fall back to the per-user directories. Every
+//! field has a default, so a missing or partial file is never an error.
 
 use std::path::{Path, PathBuf};
 
@@ -197,12 +199,16 @@ impl Settings {
         (!dir.is_empty()).then(|| PathBuf::from(dir))
     }
 
-    /// Where the settings file is (or would be written).
+    /// Where the settings file is (or would be written): beside the executable, unless that
+    /// folder is not writable (see [`portable_dir`]).
     pub fn path() -> PathBuf {
-        if let Some(portable) = exe_dir().map(|dir| dir.join(FILE_NAME)).filter(|path| path.is_file()) {
-            return portable;
+        if let Some(beside) = exe_dir().map(|dir| dir.join(FILE_NAME)).filter(|path| path.is_file()) {
+            return beside;
         }
-        user_dir(DirKind::Config).join("chdlite").join(FILE_NAME)
+        match portable_dir() {
+            Some(dir) => dir.join(FILE_NAME),
+            None => user_dir(DirKind::Config).join("chdlite").join(FILE_NAME),
+        }
     }
 
     pub fn load() -> Self {
@@ -246,6 +252,29 @@ impl Settings {
 
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
+}
+
+/// The executable's folder, when chdlite may keep its files there: it can be written to, and
+/// it is not inside a macOS `.app` bundle.
+pub fn portable_dir() -> Option<PathBuf> {
+    let dir = exe_dir()?;
+    if dir.ancestors().any(|a| a.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("app"))) {
+        return None;
+    }
+    let probe = dir.join(format!(".chdlite-write-test-{}", std::process::id()));
+    let writable = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    writable.then_some(dir)
+}
+
+/// Where chdlite keeps everything besides the settings file (the unpacked native libraries,
+/// the GUI's webview data): `chdlite-data` beside the executable, or the per-user cache
+/// directory when that folder is not writable.
+pub fn data_dir() -> PathBuf {
+    match portable_dir() {
+        Some(dir) => dir.join("chdlite-data"),
+        None => user_dir(DirKind::Cache).join("chdlite"),
+    }
 }
 
 #[derive(Clone, Copy)]
