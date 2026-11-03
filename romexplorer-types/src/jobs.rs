@@ -116,10 +116,13 @@ pub enum JobType {
     /// Writes art into an emulator's own folders (RetroArch thumbnails, PCSX2 / DuckStation
     /// covers), converted to the formats it reads. Payload: [`ArtworkExportRequest`].
     ArtworkExport,
+    /// Asks the in-app AI which version to play for many Definitive families at once, one
+    /// question per family, as the family page's "Ask the AI" does. Payload: [`AiBatchRateRequest`].
+    AiBatchRate,
 }
 
 impl JobType {
-    pub const ALL: [JobType; 36] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport];
+    pub const ALL: [JobType; 37] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -159,6 +162,7 @@ impl JobType {
             Self::AudioAutotag => "audio_autotag",
             Self::DisplayData => "display_data",
             Self::ArtworkExport => "artwork_export",
+            Self::AiBatchRate => "ai_batch_rate",
         }
     }
 
@@ -197,7 +201,9 @@ impl JobType {
     /// and redoing it unasked on the next launch looks like a zombie. It is cancelled, and
     /// the user starts it again (retry).
     pub fn resumes_after_restart(self) -> bool {
-        !matches!(self, Self::CopyFiles)
+        // A batch AI rating is not either: each question is paid for, so a run starts only
+        // when the user starts it (a retry skips what was answered).
+        !matches!(self, Self::CopyFiles | Self::AiBatchRate)
     }
 }
 
@@ -520,6 +526,31 @@ pub enum JobRequest {
     DisplayData(DisplayDataRequest),
     /// Writes art into an emulator's own folders.
     ArtworkExport(ArtworkExportRequest),
+    /// Asks the AI about many Definitive families.
+    AiBatchRate(AiBatchRateRequest),
+}
+
+/// Which families a batch AI rating asks about: the families of `title_ids` (Definitive
+/// tab rows), of `release_ids` (a set's selected rows), and of every release in `set_id`.
+/// Families with one version are skipped, and so are those with a saved answer in `lang`
+/// unless `reask`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AiBatchRateRequest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_id: Option<u64>,
+    /// The UI language the answers come back in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    /// Ask again where an answer is saved (a pinned one is kept).
+    #[serde(default)]
+    pub reask: bool,
+    /// Ask about at most this many families.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
 }
 
 /// Art into a folder: for the files a copy just wrote (`files`), or for what a selection
@@ -728,6 +759,7 @@ impl JobRequest {
             Self::AudioAutotag => JobType::AudioAutotag,
             Self::DisplayData(_) => JobType::DisplayData,
             Self::ArtworkExport(_) => JobType::ArtworkExport,
+            Self::AiBatchRate(_) => JobType::AiBatchRate,
         }
     }
 

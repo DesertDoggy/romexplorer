@@ -2106,6 +2106,10 @@ async fn definitive_ask(State(s): State<Shared>, Path(id): Path<u64>, body: Opti
     Ok(Json(api::definitive::ask(&s.app, id, &req).await?))
 }
 
+async fn definitive_batch_estimate(State(s): State<Shared>, Json(req): Json<romexplorer_types::jobs::AiBatchRateRequest>) -> ApiResult<api::definitive::BatchEstimate> {
+    Ok(Json(api::definitive::batch_estimate(&s.app, &req).await?))
+}
+
 async fn definitive_paste(State(s): State<Shared>, Path(id): Path<u64>, Json(req): Json<api::definitive::PasteRequest>) -> ApiResult<api::definitive::AskAnswer> {
     Ok(Json(api::definitive::paste(&s.app, id, &req).await?))
 }
@@ -2687,6 +2691,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/catalog/definitive/{id}/order", delete(definitive_order_reset))
         .route("/api/v1/catalog/definitive/{id}/ask", post(definitive_ask))
         .route("/api/v1/catalog/definitive/{id}/paste", post(definitive_paste))
+        .route("/api/v1/catalog/definitive/batch-estimate", post(definitive_batch_estimate))
         .route("/api/v1/catalog/titles/{id}/basegame", post(title_basegame_set).delete(title_basegame_reset))
         .route("/api/v1/catalog/titles/{id}", get(catalog_title))
         .route("/api/v1/catalog/releases", get(catalog_releases))

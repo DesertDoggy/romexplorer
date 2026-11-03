@@ -2609,5 +2609,21 @@
   "save pasted answer": "enregistrer la réponse collée",
   "{provider} API": "API {provider}",
   "{provider}: billing and limits": "{provider} : facturation et limites",
-  "{site} (browser)": "{site} (navigateur)"
+  "{site} (browser)": "{site} (navigateur)",
+  "batch rate with AI…": "Évaluer en lot avec l'IA…",
+  "batch rate with AI": "évaluer en lot avec l'IA",
+  "Batch rate with AI: {what}": "Évaluer en lot avec l'IA : {what}",
+  "batch rate with AI: {set}": "évaluer en lot avec l'IA : {set}",
+  "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).": "Une question payante par jeu est envoyée au fournisseur d'IA, ce qui peut consommer beaucoup de jetons. Le coût affiché est une estimation, pas une garantie : la facture réelle peut être plus élevée (tarifs du fournisseur, frais de recherche web, nouvelles tentatives). Elle est facturée par le fournisseur sur votre propre clé API. L'auteur de ce logiciel n'est responsable d'aucun frais. Utilisez une clé API dédiée à romexplorer, avec un budget ou une limite de dépenses fixé chez le fournisseur (les liens sont dans Config › IA).",
+  "re-ask games with a saved answer (replaces the API answer; pinned answers are kept)": "redemander pour les jeux qui ont déjà une réponse (remplace la réponse API ; les réponses épinglées sont gardées)",
+  "I understand": "Je comprends",
+  "start": "lancer",
+  "{n} game(s) to ask": "{n} jeu(x) à demander",
+  "unknown (no price for this model)": "inconnu (pas de prix pour ce modèle)",
+  "{families} game(s) selected: {one} with one version skipped, {cached} with a saved answer": "{families} jeu(x) sélectionné(s) : {one} avec une seule version ignoré(s), {cached} avec une réponse enregistrée",
+  "no {provider} API key set (Config › AI)": "aucune clé API {provider} (Config › IA)",
+  "{n} selected release(s)": "{n} version(s) sélectionnée(s)",
+  "asks the in-app AI which version to play, for every game of this set": "demande à l'IA de l'application quelle version jouer, pour chaque jeu de cet ensemble",
+  "choose a set": "choisissez un ensemble",
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Chaque exécution ne demande que pour les jeux de l'ensemble sans réponse enregistrée, une question payante chacun, facturée par le fournisseur sur votre propre clé API. Fixez un budget ou une limite de dépenses chez le fournisseur (les liens sont dans Config › IA)."
 }

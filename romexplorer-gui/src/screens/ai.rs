@@ -571,3 +571,110 @@ pub fn FamilyAi(head: u64, curated: Option<String>) -> Element {
         }
     }
 }
+
+/// The batch dialog's warning (the console's `AI_BATCH_WARNING`).
+const AI_BATCH_WARNING: &str = "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).";
+
+/// "Batch rate with AI" (the console's `aiBatchDialog`): the family question for every family
+/// of `scope` (`title_ids`, `release_ids` or `set_id`), as an `ai_batch_rate` job. Shows what
+/// it would ask and cost first, and starts only once the warning is ticked.
+pub fn batch_dialog(scope: Value, what: String) {
+    ui::open_modal(move || rsx! { BatchDialog { scope: scope.clone(), what: what.clone() } });
+}
+
+/// The selection-bar button: `key` is what the selected ids are (`title_ids`, `release_ids`).
+pub fn batch_action(key: &'static str, kind: &'static str) -> crate::components::SelAction {
+    crate::components::SelAction::new(&state::tr("batch rate with AI…"), move |ids: Vec<u64>| {
+        let what = if kind == "games" { state::trf("{n} selected games", &[("n", &ids.len().to_string())]) } else { state::trf("{n} selected release(s)", &[("n", &ids.len().to_string())]) };
+        let scope = json!({ key: ids });
+        async move {
+            batch_dialog(scope, what);
+            false
+        }
+    })
+}
+
+#[component]
+fn BatchDialog(scope: Value, what: String) -> Element {
+    let mut reask = use_signal(|| false);
+    let mut max = use_signal(String::new);
+    let mut ok = use_signal(|| false);
+    let mut job = use_signal(|| None::<u64>);
+    let mut finished = use_signal(|| false);
+    let scope2 = scope.clone();
+    let body = move || {
+        let mut b = scope2.clone();
+        b["lang"] = json!(state::ui_language());
+        b["reask"] = json!(reask());
+        b["max"] = max().trim().parse::<u32>().ok().filter(|m| *m > 0).map_or(Value::Null, |m| json!(m));
+        b
+    };
+    let body2 = body.clone();
+    let est = use_resource(move || {
+        let b = body2();
+        async move { api::post("/api/v1/catalog/definitive/batch-estimate", b).await }
+    });
+    let e = match &*est.read() {
+        Some(Ok(v)) => Some(v.clone()),
+        _ => None,
+    };
+    let can = ok() && e.as_ref().is_some_and(|v| api::b(v, "has_key") && u(v, "to_ask") > 0);
+    let start = move |_| {
+        let mut b = body();
+        b["job_type"] = json!("ai_batch_rate");
+        spawn(async move {
+            match api::post("/api/v1/jobs", b).await {
+                Ok(r) => job.set(r.get("id").and_then(Value::as_u64)),
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
+    let busy = job().is_some();
+    rsx! {
+        h2 { {state::trf("Batch rate with AI: {what}", &[("what", &what)])} }
+        match &*est.read() {
+            None => rsx! { div { class: "muted", {state::tr("loading…")} } },
+            Some(Err(err)) => rsx! { div { class: "bad", "{err.message}" } },
+            Some(Ok(v)) => {
+                let provider = s(v, "provider");
+                let cost = match v.get("total_usd").and_then(Value::as_f64) {
+                    Some(c) => state::trf("approx. US${cost}", &[("cost", &format!("{c:.2}"))]),
+                    None => state::tr("unknown (no price for this model)"),
+                };
+                rsx! {
+                    div { {state::trf("{n} game(s) to ask", &[("n", &u(v, "to_ask").to_string())])} " · " b { "{cost}" } " " span { class: "muted", "({provider_label(&provider)} {s(v, \"model\")})" } }
+                    div { class: "muted", {state::trf("{families} game(s) selected: {one} with one version skipped, {cached} with a saved answer", &[("families", &u(v, "families").to_string()), ("one", &u(v, "one_version").to_string()), ("cached", &u(v, "cached").to_string())])} }
+                    if !api::b(v, "has_key") {
+                        div { class: "bad", {state::trf("no {provider} API key set (Config › AI)", &[("provider", provider_label(&provider))])} }
+                    }
+                }
+            }
+        }
+        div { class: "kv", style: "grid-template-columns:max-content 1fr; gap:6px 10px; margin-top:8px",
+            div {}
+            div { label { input { r#type: "checkbox", disabled: busy, checked: reask(), onchange: move |e| reask.set(e.checked()) } " " {state::tr("re-ask games with a saved answer (replaces the API answer; pinned answers are kept)")} } }
+            div { {state::tr("at most")} }
+            div { input { r#type: "number", min: "1", size: "6", disabled: busy, placeholder: state::tr("all"), value: "{max}", onchange: move |e| max.set(e.value()) } " " span { class: "muted", {state::tr("games")} } }
+        }
+        p { class: "notice", {state::tr(AI_BATCH_WARNING)} }
+        div { class: "toolbar",
+            for (i, (id, url)) in AI_LIMIT_LINKS.iter().enumerate() {
+                if i > 0 { " · " }
+                a { class: "link", href: "{url}", target: "_blank", rel: "noopener", {state::trf("{provider}: billing and limits", &[("provider", provider_label(id))])} }
+            }
+        }
+        label { style: "display:block;margin-top:8px", input { r#type: "checkbox", disabled: busy, checked: ok(), onchange: move |e| ok.set(e.checked()) } " " b { {state::tr("I understand")} } }
+        if let Some(id) = job() {
+            div { class: "card", super::backup::JobWatch { key: "{id}", job_id: id, on_done: move |_| finished.set(true) } }
+        }
+        div { class: "fsfoot",
+            span { class: "grow" }
+            if let Some(id) = job() {
+                super::copy::RunningJobButtons { job_id: id, finished: finished() }
+            } else {
+                button { r#type: "button", class: "btn", onclick: move |_| ui::close_modal(), {state::tr("cancel")} }
+                button { r#type: "button", class: "btn primary", disabled: !can, onclick: start, {state::tr("start")} }
+            }
+        }
+    }
+}

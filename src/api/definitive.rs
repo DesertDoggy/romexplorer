@@ -11,6 +11,8 @@ use sqlx::Row;
 use super::catalog::{self, apply, Bind, ListQuery, Page};
 use super::{clamp_page, like_pattern, App, Error, Result};
 use crate::database::title_family::{self as family, MEMBER_CATEGORIES};
+use crate::database::jobs::Progress;
+use romexplorer_types::jobs::AiBatchRateRequest;
 
 /// One version note (`assets/definitive_notes.json`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -509,6 +511,228 @@ pub async fn paste(app: &App, title_id: u64, req: &PasteRequest) -> Result<AskAn
     let (_, subject, q) = ask_subject(app, title_id).await?;
     super::ai::save_pasted(app, ASK_PURPOSE, &subject, req.lang.as_deref(), &q, &req.site, &req.answer).await?;
     ask(app, title_id, &AskRequest { lang: req.lang.clone(), ask: false, again: false }).await
+}
+
+// ---------------------------------------------------------------------------
+// Batch rate with AI
+// ---------------------------------------------------------------------------
+
+/// What a batch AI rating would do, before it is started (the confirm dialog).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BatchEstimate {
+    /// Families the selection is in.
+    pub families: u64,
+    /// Skipped: only one version, nothing to compare.
+    pub one_version: u64,
+    /// With a saved answer in this language: skipped unless re-asked.
+    pub cached: u64,
+    /// Questions the job would send.
+    pub to_ask: u64,
+    pub provider: String,
+    pub model: String,
+    /// The chosen provider has an API key set.
+    pub has_key: bool,
+    /// Roughly, per question and in all, in US dollars; `None` when the model has no price.
+    pub each_usd: Option<f64>,
+    pub total_usd: Option<f64>,
+}
+
+/// The families a batch asks about, in title id order of their heads.
+struct BatchPlan {
+    families: u64,
+    one_version: u64,
+    cached: u64,
+    ask: Vec<u64>,
+}
+
+async fn batch_plan(app: &App, req: &AiBatchRateRequest) -> Result<BatchPlan> {
+    let pool = &app.pool;
+    let mut titles = req.title_ids.clone();
+    for chunk in req.release_ids.chunks(500) {
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        titles.extend(sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(format!("SELECT DISTINCT title_id FROM title_releases WHERE release_id IN ({list})"))).fetch_all(pool).await?);
+    }
+    if let Some(set) = req.set_id {
+        titles.extend(sqlx::query_scalar::<_, u64>("SELECT DISTINCT tr.title_id FROM collection_set_releases csr JOIN title_releases tr ON tr.release_id = csr.release_id WHERE csr.set_id = ?").bind(set).fetch_all(pool).await?);
+    }
+    titles.sort_unstable();
+    titles.dedup();
+    let heads = family::heads_of(pool, &titles).await?;
+    let members = family::members_of(pool, &heads).await?;
+    let multi: Vec<u64> = heads.iter().copied().filter(|h| members.get(h).is_some_and(|m| m.len() >= 2)).collect();
+    let subjects = batch_subjects(app, &multi).await?;
+    let lang = super::ai::language_code(req.lang.as_deref()).unwrap_or("en");
+    let keys: Vec<String> = subjects.values().cloned().collect();
+    let saved = super::ai::saved_subjects(app, ASK_PURPOSE, lang, &keys).await?;
+    let (cached, mut ask): (Vec<u64>, Vec<u64>) = multi.iter().copied().partition(|h| subjects.get(h).is_some_and(|s| saved.contains(s)));
+    if req.reask {
+        ask = multi.clone();
+    }
+    if let Some(max) = req.max {
+        ask.truncate(max as usize);
+    }
+    Ok(BatchPlan { families: heads.len() as u64, one_version: (heads.len() - multi.len()) as u64, cached: cached.len() as u64, ask })
+}
+
+/// Each head's `ai_answers` subject, as [`ask_subject`] makes it.
+async fn batch_subjects(app: &App, heads: &[u64]) -> Result<HashMap<u64, String>> {
+    let mut out: HashMap<u64, String> = heads.iter().map(|h| (*h, format!("title:{h}"))).collect();
+    for chunk in heads.chunks(500) {
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT title_id, MIN(provider_id) AS igdb FROM title_provider_links WHERE title_id IN ({list}) AND provider = 'igdb' AND deleted = FALSE GROUP BY title_id")))
+            .fetch_all(&app.pool)
+            .await?;
+        for r in rows {
+            out.insert(r.try_get("title_id")?, format!("igdb:{}", r.try_get::<String, _>("igdb")?));
+        }
+    }
+    Ok(out)
+}
+
+/// `POST /catalog/definitive/batch-estimate`: what "Batch rate with AI" would ask and cost.
+pub async fn batch_estimate(app: &App, req: &AiBatchRateRequest) -> Result<BatchEstimate> {
+    let plan = batch_plan(app, req).await?;
+    let provider = super::ai::provider(app).await?;
+    let (model, each) = super::ai::estimate_each(app, ASK_PURPOSE).await?;
+    let to_ask = plan.ask.len() as u64;
+    Ok(BatchEstimate {
+        families: plan.families,
+        one_version: plan.one_version,
+        cached: plan.cached,
+        to_ask,
+        has_key: super::ai::has_key(app, &provider).await,
+        provider,
+        model,
+        each_usd: each,
+        total_usd: each.map(|e| e * to_ask as f64),
+    })
+}
+
+/// The job's request is checked before it is queued: something to ask about, and a key.
+pub async fn batch_validate(app: &App, req: &AiBatchRateRequest) -> Result<()> {
+    if req.title_ids.is_empty() && req.release_ids.is_empty() && req.set_id.is_none() {
+        return Err(Error::invalid("nothing selected"));
+    }
+    if req.max == Some(0) {
+        return Err(Error::invalid("max must be at least 1"));
+    }
+    let provider = super::ai::provider(app).await?;
+    if !super::ai::has_key(app, &provider).await {
+        return Err(Error::unavailable(format!("no {provider} API key set (Config › AI)")));
+    }
+    Ok(())
+}
+
+/// What a batch AI rating did.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BatchSummary {
+    pub families: u64,
+    pub one_version: u64,
+    /// Skipped: an answer was already saved (or is pinned, when re-asking).
+    pub cached: u64,
+    pub asked: u64,
+    pub failed: u64,
+    /// By the AI's rank: S, A, B, none, and answers without a RANK line.
+    pub ranks: BTreeMap<String, u64>,
+    /// What the answers cost, as the providers reported or the price table says.
+    pub cost_usd: f64,
+    pub cancelled: bool,
+    /// Why the run stopped early (the same error three times in a row).
+    pub stopped: Option<String>,
+    pub last_error: Option<String>,
+}
+
+pub fn batch_one_liner(s: &BatchSummary) -> String {
+    let mut out = format!("{} asked, {} skipped (saved), {} one-version, {} failed, ~US${:.2}", s.asked, s.cached, s.one_version, s.failed, s.cost_usd);
+    if s.cancelled {
+        out.push_str(", cancelled");
+    }
+    if let Some(e) = &s.stopped {
+        out.push_str(&format!(", stopped: {e}"));
+    }
+    out
+}
+
+/// Waits `secs`, or less when the job is cancelled meanwhile. `true` if it was.
+async fn wait_or_cancel(progress: &Progress, secs: u64) -> bool {
+    for _ in 0..secs {
+        if progress.cancelled().await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    progress.cancelled().await
+}
+
+/// The `ai_batch_rate` job: the family question for each family of the selection, one at a
+/// time. A rate-limit refusal waits and asks again (30 s, doubling, four times); any other
+/// failure counts and moves on, and three in a row stop the run, since the next would fail
+/// too (no credit, a revoked key).
+pub async fn batch_rate(app: &App, req: &AiBatchRateRequest, progress: &Progress) -> Result<BatchSummary> {
+    /// Between two questions: a provider's per-minute limit is rarely below 30.
+    const PACE_SECS: u64 = 2;
+    let plan = batch_plan(app, req).await?;
+    let total = plan.ask.len() as u64;
+    let mut s = BatchSummary { families: plan.families, one_version: plan.one_version, cached: if req.reask { 0 } else { plan.cached }, ..Default::default() };
+    let mut in_a_row = 0u32;
+    for (i, head) in plan.ask.iter().enumerate() {
+        if progress.cancelled().await {
+            s.cancelled = true;
+            break;
+        }
+        progress.report(i as u64, Some(total.max(1)), &format!("{i} of {total} asked")).await;
+        let mut wait = 30;
+        let outcome = loop {
+            let asked = ask(app, *head, &AskRequest { lang: req.lang.clone(), ask: !req.reask, again: req.reask }).await;
+            match asked {
+                Ok(a) => match a.result.error.clone() {
+                    Some(e) if req.reask && a.result.answer.as_ref().is_some_and(|x| x.pinned) => break Ok((a, Some(e))),
+                    Some(e) if super::ai::is_rate_limited(&e) && wait <= 240 => {
+                        log::info!("ai_batch_rate: rate limited, waiting {wait}s: {e}");
+                        progress.report(i as u64, Some(total.max(1)), &format!("{i} of {total} asked; rate limited, waiting {wait}s")).await;
+                        if wait_or_cancel(progress, wait).await {
+                            s.cancelled = true;
+                            break Err(String::new());
+                        }
+                        wait *= 2;
+                    }
+                    Some(e) => break Err(e),
+                    None => break Ok((a, None)),
+                },
+                Err(e) => break Err(e.message),
+            }
+        };
+        if s.cancelled {
+            break;
+        }
+        match outcome {
+            // Re-asking a pinned answer: kept, as the family page keeps it.
+            Ok((_, Some(_))) => s.cached += 1,
+            Ok((a, None)) if a.result.cached => s.cached += 1,
+            Ok((a, None)) => {
+                in_a_row = 0;
+                s.asked += 1;
+                *s.ranks.entry(a.ai_rank.clone().unwrap_or_else(|| "unranked".into())).or_default() += 1;
+                s.cost_usd += a.result.answer.as_ref().and_then(|x| x.cost_usd).unwrap_or(0.0);
+            }
+            Err(e) => {
+                log::warn!("ai_batch_rate: family {head}: {e}");
+                s.failed += 1;
+                in_a_row += 1;
+                s.last_error = Some(e.clone());
+                if in_a_row >= 3 {
+                    s.stopped = Some(e);
+                    break;
+                }
+            }
+        }
+        if i + 1 < plan.ask.len() && wait_or_cancel(progress, PACE_SECS).await {
+            s.cancelled = true;
+            break;
+        }
+    }
+    progress.finish(s.asked + s.failed, Some(total.max(1)), &batch_one_liner(&s), &s).await;
+    Ok(s)
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -29,6 +29,9 @@ replacing a build.
 - An answer from a browser link can be pasted in and is saved like an API answer. Config › AI sets
   which answer is shown first, the curated note included, and clears saved answers by source.
 - The first question shows a cost warning. Config › AI links to each provider's spending limits.
+- "Batch rate with AI" asks about many games as one job: the selected games on the Definitive tab,
+  or a set's selected rows or the whole set. It shows the number of questions and an approximate
+  cost first, skips games already answered, and can be scheduled for a set.
 
 **Config › Advanced**
 - A new tab for operations that can damage the database or lose files, behind a clear warning.

@@ -2609,5 +2609,21 @@
   "save pasted answer": "zapisz wklejoną odpowiedź",
   "{provider} API": "API {provider}",
   "{provider}: billing and limits": "{provider}: rozliczenia i limity",
-  "{site} (browser)": "{site} (przeglądarka)"
+  "{site} (browser)": "{site} (przeglądarka)",
+  "batch rate with AI…": "Oceń zbiorczo z AI…",
+  "batch rate with AI": "oceń zbiorczo z AI",
+  "Batch rate with AI: {what}": "Oceń zbiorczo z AI: {what}",
+  "batch rate with AI: {set}": "oceń zbiorczo z AI: {set}",
+  "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).": "Do dostawcy AI wysyłane jest jedno płatne pytanie na grę, co może zużyć wiele tokenów. Pokazany koszt to szacunek, nie gwarancja: rzeczywista opłata może być wyższa (cennik dostawcy, opłaty za wyszukiwanie w sieci, ponowienia). Nalicza ją dostawca na Twój własny klucz API. Autor tego oprogramowania nie odpowiada za żadne opłaty. Użyj osobnego klucza API tylko dla romexplorer, z budżetem lub limitem wydatków ustawionym u dostawcy (linki są w Konfiguracja › AI).",
+  "re-ask games with a saved answer (replaces the API answer; pinned answers are kept)": "zapytaj ponownie o gry z zapisaną odpowiedzią (zastępuje odpowiedź API; przypięte zostają)",
+  "I understand": "Rozumiem",
+  "start": "uruchom",
+  "{n} game(s) to ask": "{n} gier do zapytania",
+  "unknown (no price for this model)": "nieznany (brak ceny dla tego modelu)",
+  "{families} game(s) selected: {one} with one version skipped, {cached} with a saved answer": "Wybrano {families} gier: {one} z jedną wersją pominięto, {cached} z zapisaną odpowiedzią",
+  "no {provider} API key set (Config › AI)": "brak klucza API {provider} (Konfiguracja › AI)",
+  "{n} selected release(s)": "{n} wybranych wydań",
+  "asks the in-app AI which version to play, for every game of this set": "pyta AI w aplikacji, w którą wersję grać, dla każdej gry z tego zestawu",
+  "choose a set": "wybierz zestaw",
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "Każde uruchomienie pyta tylko o gry z zestawu bez zapisanej odpowiedzi, jedno płatne pytanie na grę, naliczane przez dostawcę na Twój własny klucz API. Ustaw budżet lub limit wydatków u dostawcy (linki są w Konfiguracja › AI)."
 }

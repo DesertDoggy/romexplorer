@@ -808,8 +808,11 @@ pub fn ConfigSchedules() -> Element {
         // The directories a quick scan can be pointed at; a server that refuses the list
         // still gets the rest of the screen.
         let dirs = api::get("/api/v1/directories").await.map(|v| api::items(&v)).unwrap_or_default();
-        Ok::<_, api::ApiError>((list, ps, dirs))
+        let sets = api::get("/api/v1/sets").await.map(|v| api::items(&v)).unwrap_or_default();
+        Ok::<_, api::ApiError>((list, ps, dirs, sets))
     });
+    let mut ai_set = use_signal(String::new);
+    let mut ai_max = use_signal(String::new);
     let mut edit_id = use_signal(|| None::<u64>);
     let mut name = use_signal(String::new);
     let mut directory = use_signal(String::new);
@@ -827,7 +830,7 @@ pub fn ConfigSchedules() -> Element {
     let mut check_n = use_signal(|| "6".to_string());
     let mut check_u = use_signal(|| "days".to_string());
     let mut enabled = use_signal(|| true);
-    let (list, ps, dirs) = match &*data.read() {
+    let (list, ps, dirs, sets) = match &*data.read() {
         None => return rsx! { div { class: "muted", {state::tr("loading…")} } },
         Some(Err(e)) => return rsx! { div { class: "card bad", "{e.message}" } },
         Some(Ok(v)) => v.clone(),
@@ -875,6 +878,11 @@ pub fn ConfigSchedules() -> Element {
             }
             state::trf("missing media: {scope}", &[("scope", &scope)])
         }
+        "ai_batch_rate" => {
+            let id = u(t, "set_id");
+            let set = sets.iter().find(|x| u(x, "id") == id).map(|x| s(x, "name")).unwrap_or_else(|| format!("#{id}"));
+            state::trf("batch rate with AI: {set}", &[("set", &set)])
+        }
         x => x.to_string(),
     };
     let when = |n: Option<u64>, unit: String| n.map(|n| state::trf("every {n} {unit}", &[("n", &n.to_string()), ("unit", &state::tr(&unit))])).unwrap_or_default();
@@ -897,6 +905,8 @@ pub fn ConfigSchedules() -> Element {
         directory.set(String::new());
         when_idle.set(true);
         mscope.set("owned".into());
+        ai_set.set(String::new());
+        ai_max.set(String::new());
     };
     let mut reset2 = reset.clone();
     rsx! {
@@ -924,6 +934,11 @@ pub fn ConfigSchedules() -> Element {
                         target["mode"] = json!("new_only");
                     } else if jt == "ra_badges" {
                         target["scope"] = json!(if mscope() == "owned" { "owned" } else { "played" });
+                    } else if jt == "ai_batch_rate" {
+                        let Ok(set) = ai_set().parse::<u64>() else { ui::toast(state::tr("choose a set"), true); return; };
+                        target["set_id"] = json!(set);
+                        target["lang"] = json!(state::ui_language());
+                        if let Ok(max) = ai_max().trim().parse::<u32>() { if max > 0 { target["max"] = json!(max); } }
                     } else if jt == "media_backfill" {
                         target["scope"] = json!(mscope());
                         target["platform"] = platform().parse::<u64>().map(|p| json!(p)).unwrap_or(Value::Null);
@@ -946,7 +961,7 @@ pub fn ConfigSchedules() -> Element {
                 label { {state::tr("name")} input { r#type: "text", required: true, style: "min-width:180px", value: "{name}", oninput: move |e| name.set(e.value()) } }
                 label { {state::tr("job")}
                     select { onchange: move |e| job.set(e.value()),
-                        for (v, l) in [("provider_bulk_sync", "provider bulk sync"), ("dat_sync", "DAT sync"), ("db_optimize", "DB optimize"), ("integrity_check", "integrity check"), ("file_scan", "file quick scan"), ("media_backfill", "download missing media"), ("ra_badges", "RA badges download/update")] { option { value: "{v}", selected: v == jt, {state::tr(l)} } }
+                        for (v, l) in [("provider_bulk_sync", "provider bulk sync"), ("dat_sync", "DAT sync"), ("db_optimize", "DB optimize"), ("integrity_check", "integrity check"), ("file_scan", "file quick scan"), ("media_backfill", "download missing media"), ("ra_badges", "RA badges download/update"), ("ai_batch_rate", "batch rate with AI")] { option { value: "{v}", selected: v == jt, {state::tr(l)} } }
                     }
                 }
                 if jt == "provider_bulk_sync" {
@@ -976,6 +991,15 @@ pub fn ConfigSchedules() -> Element {
                             option { value: "owned", selected: mscope() == "owned", {state::tr("owned games")} }
                         }
                     }
+                }
+                if jt == "ai_batch_rate" {
+                    label { {state::tr("set")}
+                        select { onchange: move |e| ai_set.set(e.value()),
+                            option { value: "", {state::tr("— choose —")} }
+                            for x in sets.iter() { option { value: "{u(x, \"id\")}", selected: u(x, "id").to_string() == ai_set(), "{s(x, \"name\")}" } }
+                        }
+                    }
+                    label { {state::tr("at most")} input { r#type: "number", min: "1", style: "width:72px", placeholder: state::tr("all"), value: "{ai_max}", oninput: move |e| ai_max.set(e.value()) } }
                 }
                 if jt == "media_backfill" {
                     label { {state::tr("media for")}
@@ -1019,6 +1043,9 @@ pub fn ConfigSchedules() -> Element {
             }
             if jt == "integrity_check" {
                 Explain { {state::tr("Reads held files back and compares one quick hash. Worth scheduling: it is read-only, and running it often and briefly sweeps the collection oldest-first. Set the size of a run under Jobs.")} }
+            }
+            if jt == "ai_batch_rate" {
+                p { class: "notice", {state::tr("Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).")} }
             }
             if jt == "db_optimize" {
                 p { class: "bad", {state::tr("Scheduling this is almost never right: it repeatedly destroys the records that let moved and renamed files be recognised, and the \"missing, but found elsewhere\" hint with them. Prefer running it by hand when the database is actually too large.")} }
@@ -1066,6 +1093,7 @@ pub fn ConfigSchedules() -> Element {
                                                 if let Some(Value::Number(n)) = t.get("platform") { platform.set(n.to_string()); }
                                                 source.set(s(&t, "source"));
                                                 if s(&t, "job_type") == "ra_badges" { mscope.set(if s(&t, "scope") == "owned" { "owned".into() } else { "played".into() }); }
+                                                if s(&t, "job_type") == "ai_batch_rate" { ai_set.set(api::uo(&t, "set_id").map(|v| v.to_string()).unwrap_or_default()); ai_max.set(api::uo(&t, "max").map(|v| v.to_string()).unwrap_or_default()); }
                                                 if s(&t, "job_type") == "media_backfill" { mscope.set(if s(&t, "scope") == "all" { "all".into() } else { "owned".into() }); if t.get("platform").map_or(true, Value::is_null) { platform.set(String::new()); } }
                                                 if let Some(n) = api::uo(x, "fixed_every_n") { fixed_n.set(n.to_string()); fixed_u.set(s(x, "fixed_unit")); }
                                                 if let Some(n) = api::uo(x, "check_every_n") { check_n.set(n.to_string()); check_u.set(s(x, "check_unit")); }

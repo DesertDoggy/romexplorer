@@ -701,6 +701,9 @@ pub fn lane_of(job_type: JobType, payload: &serde_json::Value) -> String {
         // Its own lane: it spans every provider, so it would hold any one provider's lane for
         // its whole run, and a scan or a page's own refresh must never wait behind it.
         JobType::MediaBackfill => "media".to_string(),
+        // Network only, paced by the provider's rate limit: one batch at a time, so two
+        // never share (and halve) that limit.
+        JobType::AiBatchRate => "ai".to_string(),
     }
 }
 
@@ -1010,12 +1013,13 @@ mod tests {
         assert_eq!(JobType::from_name("not_a_real_job_type"), None);
     }
 
-    /// Only a copy waits for the user after a restart; everything else picks up by itself.
+    /// Only a copy and a batch AI rating wait for the user after a restart; everything else
+    /// picks up by itself.
     #[test]
-    fn only_a_copy_is_not_resumed_after_a_restart() {
+    fn only_a_copy_and_an_ai_batch_are_not_resumed_after_a_restart() {
         let not_resuming: Vec<JobType> = JobType::ALL.into_iter().filter(|t| !t.resumes_after_restart()).collect();
-        assert_eq!(not_resuming, vec![JobType::CopyFiles]);
-        assert_eq!(not_resuming_sql(), "'copy_files'");
+        assert_eq!(not_resuming, vec![JobType::CopyFiles, JobType::AiBatchRate]);
+        assert_eq!(not_resuming_sql(), "'copy_files','ai_batch_rate'");
     }
 
     #[test]

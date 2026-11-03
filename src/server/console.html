@@ -3660,7 +3660,7 @@ async function showDefinitive() {
     isLocal: r => r.local_games > 0 ? 'local' : '',
     // Into a set as the game's definitive version: copy_definitive decides which release.
     context: async (r, sel) => [{ label: sel && sel.length > 1 ? trf('{n} selected games', { n: sel.length }) : r.lead.name, head: true }].concat(await setMenuItems({ family_ids: sel || [r.id] })),
-    selection: { key: r => r.id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ family_ids: ids }, done); } }] },
+    selection: { key: r => r.id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ family_ids: ids }, done); } }, { label: tr('batch rate with AI…'), run: async (ids) => { aiBatchDialog({ title_ids: ids }, trf('{n} selected games', { n: ids.length })); } }] },
     gridCard: (r, mode) => {
       const dual = mode === 'dual' && !same(r);
       return { title: r.lead.name, media: r.lead.cover_media_id, media2: dual ? r.other.cover_media_id : null, dual: dual ? twoCoverLayout : '', local: r.local_games > 0 ? 'local' : '', chips: r.note_rank ? rankBadge(r.note_rank) : '', sub: platformsHtml(r.lead.platforms) + (same(r) ? '' : `<div class="muted">${esc(r.other.name)}</div>`) };
@@ -3669,6 +3669,48 @@ async function showDefinitive() {
 }
 function memberBadges(r) {
   return cbadge('category', r.category) + (r.is_base ? ' ' + badge(tr('base game')) : '') + (r.provider_only ? ` <span class="badge dim" title="${esc(tr('a version IGDB knows of; no DAT lists it'))}">${esc(tr('IGDB only'))}</span>` : '') + (r.manual ? ' ' + badge(tr('moved by you'), 'warn') : '');
+}
+// "Batch rate with AI": the family question for every family of a selection, as a job. The
+// dialog shows what it would ask and cost first, and starts only once the warning is ticked.
+// scope: { title_ids } (Definitive rows), { release_ids } (a set's rows) or { set_id }.
+const AI_BATCH_WARNING = "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).";
+async function aiBatchDialog(scope, what) {
+  const box = openModal(`<h2>${trf('Batch rate with AI: {what}', { what: esc(what) })}</h2><div data-est class="muted">${tr('loading…')}</div>
+    <div class="kv" style="grid-template-columns:max-content 1fr; gap:6px 10px; margin-top:8px">
+      <div></div><div><label><input type="checkbox" data-reask> ${tr('re-ask games with a saved answer (replaces the API answer; pinned answers are kept)')}</label></div>
+      <div>${tr('at most')}</div><div><input data-max type="number" min="1" size="6" placeholder="${tr('all')}"> <span class="muted">${tr('games')}</span></div>
+    </div>
+    <p class="notice">${esc(tr(AI_BATCH_WARNING))}</p>
+    <div class="toolbar">${AI_LIMIT_LINKS.map(([id, url]) => `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${esc(trf('{provider}: billing and limits', { provider: AI_PROVIDER_LABELS[id] }))}</a>`).join(' · ')}</div>
+    <label style="display:block;margin-top:8px"><input type="checkbox" data-ok> <b>${tr('I understand')}</b></label>
+    <div class="card" data-watch style="display:none"></div>
+    <div class="fsfoot"><span class="grow"></span><button class="btn" type="button" data-cancel>${tr('cancel')}</button> <button class="btn primary" type="button" data-start disabled>${tr('start')}</button></div>`);
+  const q = sel => box.querySelector(sel);
+  const body = () => { const max = Number(q('[data-max]').value); return Object.assign({ lang: uiLanguage, reask: q('[data-reask]').checked, max: max > 0 ? Math.trunc(max) : null }, scope); };
+  let est = null;
+  const sync = () => { q('[data-start]').disabled = !(q('[data-ok]').checked && est && est.has_key && est.to_ask > 0); };
+  const estimate = async () => {
+    try { est = await api('/api/v1/catalog/definitive/batch-estimate', { method: 'POST', body: body() }); } catch (e) { est = null; q('[data-est]').textContent = e.message; sync(); return; }
+    const cost = est.total_usd === null || est.total_usd === undefined ? tr('unknown (no price for this model)') : trf('approx. US${cost}', { cost: est.total_usd.toFixed(2) });
+    q('[data-est]').innerHTML = `<div>${esc(trf('{n} game(s) to ask', { n: est.to_ask }))} · <b>${esc(cost)}</b> <span class="muted">(${esc(AI_PROVIDER_LABELS[est.provider] || est.provider)} ${esc(est.model)})</span></div>
+      <div class="muted">${esc(trf('{families} game(s) selected: {one} with one version skipped, {cached} with a saved answer', { families: est.families, one: est.one_version, cached: est.cached }))}</div>
+      ${est.has_key ? '' : `<div class="bad">${esc(trf('no {provider} API key set (Config › AI)', { provider: AI_PROVIDER_LABELS[est.provider] || est.provider }))}</div>`}`;
+    sync();
+  };
+  q('[data-reask]').onchange = estimate;
+  q('[data-max]').onchange = estimate;
+  q('[data-ok]').onchange = sync;
+  q('[data-cancel]').onclick = closeModal;
+  q('[data-start]').onclick = async () => {
+    q('[data-start]').disabled = true;
+    try {
+      const r = await api('/api/v1/jobs', { method: 'POST', body: Object.assign({ job_type: 'ai_batch_rate' }, body()) });
+      for (const x of box.querySelectorAll('input')) x.disabled = true;
+      q('[data-watch]').style.display = '';
+      jobFooter(box, r.id);
+    } catch (err) { toast(err.message, true); sync(); }
+  };
+  estimate();
 }
 // A family's page: its versions in definitive order, dragged to reorder.
 // Before the first paid AI question: the cost warning, once (the setting ai_cost_warning_seen
@@ -4157,11 +4199,12 @@ async function showSet(id) {
   const rowsById = new Map();
   view.innerHTML = `<div class="crumbs"><a onclick="go('collection/sets')">${tr('Sets')}</a> › ${esc(s.name)}</div>
     <div class="card"><div id="set-head">${setHeader(s)}</div>
-      <div class="toolbar" style="margin-top:6px"><button class="btn small" id="set-copy">${tr('copy to…')}</button> <button class="btn small" id="set-art">${tr('download art…')}</button> <button class="btn small" id="set-export">${tr('export art…')}</button></div></div>
+      <div class="toolbar" style="margin-top:6px"><button class="btn small" id="set-copy">${tr('copy to…')}</button> <button class="btn small" id="set-art">${tr('download art…')}</button> <button class="btn small" id="set-export">${tr('export art…')}</button> <button class="btn small" id="set-ai" title="${tr('asks the in-app AI which version to play, for every game of this set')}">${tr('batch rate with AI…')}</button></div></div>
     <div class="card"><div id="grid"></div></div>`;
   document.getElementById('set-copy').onclick = () => copyDialog(copySelection('sets', [Number(id)]), s.name);
   document.getElementById('set-art').onclick = () => artDialog(artSelection('sets', [id]), s.name);
   document.getElementById('set-export').onclick = () => exportArtDialog(artSelection('sets', [id]), s.name);
+  document.getElementById('set-ai').onclick = () => aiBatchDialog({ set_id: Number(id) }, s.name);
   const refreshHead = async () => {
     setsCache = null;
     try { const fresh = await api('/api/v1/sets/' + id); const head = document.getElementById('set-head'); if (head) head.innerHTML = setHeader(fresh); } catch (e) { toast(e.message, true); }
@@ -4181,7 +4224,7 @@ async function showSet(id) {
     selection: { key: r => r.id, actions: [{ label: tr('remove from this set'), run: async (ids, done) => {
       if (!confirm(trf('Remove {n} release(s) from this set? (the releases themselves are untouched)', { n: ids.length }))) return;
       try { const r = await api('/api/v1/sets/' + id + '/remove', { method: 'POST', body: { release_ids: ids } }); toast(trf('{n} release(s) removed from the set', { n: r.removed })); done(); refreshHead(); } catch (err) { toast(err.message, true); }
-    } }, { label: tr('add to set'), run: async (ids, done) => { await pickSet(setRowsBody(ids.map(i => rowsById.get(i)).filter(Boolean)), done); } }, copySelAction('releases'), ...artSelActions('releases'), displaySelAction()] },
+    } }, { label: tr('add to set'), run: async (ids, done) => { await pickSet(setRowsBody(ids.map(i => rowsById.get(i)).filter(Boolean)), done); } }, copySelAction('releases'), ...artSelActions('releases'), displaySelAction(), { label: tr('batch rate with AI…'), run: async (ids) => { aiBatchDialog({ release_ids: ids }, trf('{n} selected release(s)', { n: ids.length })); } }] },
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
     context: (r, sel) => releaseContext(r.id, r.name, { ids: sel, inSet: Number(id), body: setRowsBody((sel || [r.id]).map(i => rowsById.get(i)).filter(Boolean)), after: () => { grid.reload(); refreshHead(); } }),
@@ -5024,19 +5067,22 @@ function settingEditor(key, value) {
 // a cheap change check, or both. A check only enqueues a diff run when the provider says
 // its data changed; an identical job still queued is never added twice.
 async function showSchedules() {
-  const [list, ps, dirs] = await Promise.all([api('/api/v1/schedules'), api('/api/v1/providers'), api('/api/v1/directories').catch(() => [])]);
+  const [list, ps, dirs, sets] = await Promise.all([api('/api/v1/schedules'), api('/api/v1/providers'), api('/api/v1/directories').catch(() => []), api('/api/v1/sets').catch(() => [])]);
+  const setName = id => (sets.find(x => x.id === id) || {}).name || ('#' + id);
   const dirPath = id => (dirs.find(d => d.id === id) || {}).path || ('#' + id);
   const bulk = ps.filter(p => p.available && (p.capabilities.platform || p.capabilities.full));
   const units = ['minutes', 'hours', 'days', 'weeks', 'months'];
   const unitSel = (name) => `<select name="${name}">${units.map(u => `<option value="${u}" ${u === 'days' ? 'selected' : ''}>${tr(u)}</option>`).join('')}</select>`;
-  const describe = t => t.job_type === 'provider_bulk_sync' ? `${t.provider} ${t.full ? tr('full') : (t.platform === 'all' || t.platform == null ? tr('all platforms') : (vocab.platforms.find(p => p.id === t.platform)?.name || t.platform))}` : t.job_type === 'dat_sync' ? trf('DAT sync {source}', { source: t.source || tr('all sources') }) : t.job_type === 'file_scan' ? trf('quick scan {dir}', { dir: dirPath(t.directory_id) }) : t.job_type === 'ra_badges' ? trf('RA badges: {scope}', { scope: t.scope === 'owned' ? tr('owned games') : tr('played by the account') }) : t.job_type === 'media_backfill' ? trf('missing media: {scope}', { scope: (t.scope === 'all' ? tr('the whole catalogue') : tr('owned games')) + (t.platform != null ? ' · ' + (vocab.platforms.find(p => p.id === t.platform)?.name || t.platform) : '') }) : t.job_type;
+  const describe = t => t.job_type === 'provider_bulk_sync' ? `${t.provider} ${t.full ? tr('full') : (t.platform === 'all' || t.platform == null ? tr('all platforms') : (vocab.platforms.find(p => p.id === t.platform)?.name || t.platform))}` : t.job_type === 'dat_sync' ? trf('DAT sync {source}', { source: t.source || tr('all sources') }) : t.job_type === 'file_scan' ? trf('quick scan {dir}', { dir: dirPath(t.directory_id) }) : t.job_type === 'ra_badges' ? trf('RA badges: {scope}', { scope: t.scope === 'owned' ? tr('owned games') : tr('played by the account') }) : t.job_type === 'media_backfill' ? trf('missing media: {scope}', { scope: (t.scope === 'all' ? tr('the whole catalogue') : tr('owned games')) + (t.platform != null ? ' · ' + (vocab.platforms.find(p => p.id === t.platform)?.name || t.platform) : '') }) : t.job_type === 'ai_batch_rate' ? trf('batch rate with AI: {set}', { set: setName(t.set_id) }) : t.job_type;
   const when = (n, u) => n ? trf('every {n} {unit}', { n, unit: tr(u) }) : '';
   view.innerHTML = `
     <div class="card"><h2>${tr('Add / edit schedule')}</h2>
       <p class="muted">${tr('<b>Fixed</b> runs the job every interval. <b>Check</b> asks the provider every interval whether its data changed (one small request: IGDB update count, TheGamesDB dump ETag, Hasheous checksums, EmuReady game count) and runs a diff sync only then; RetroAchievements has no such check, so use fixed for it. <b>Both</b> does the two independently.')}</p>
       <form class="inline" id="schform"><input type="hidden" name="id">
         <label>${tr('name')}<input type="text" name="name" required style="min-width:180px"></label>
-        <label>${tr('job')}<select name="job_type"><option value="provider_bulk_sync">${tr('provider bulk sync')}</option><option value="dat_sync">${tr('DAT sync')}</option><option value="db_optimize">${tr('DB optimize')}</option><option value="integrity_check">${tr('integrity check')}</option><option value="file_scan">${tr('file quick scan')}</option><option value="media_backfill">${tr('download missing media')}</option><option value="ra_badges">${tr('RA badges download/update')}</option></select></label>
+        <label>${tr('job')}<select name="job_type"><option value="provider_bulk_sync">${tr('provider bulk sync')}</option><option value="dat_sync">${tr('DAT sync')}</option><option value="db_optimize">${tr('DB optimize')}</option><option value="integrity_check">${tr('integrity check')}</option><option value="file_scan">${tr('file quick scan')}</option><option value="media_backfill">${tr('download missing media')}</option><option value="ra_badges">${tr('RA badges download/update')}</option><option value="ai_batch_rate">${tr('batch rate with AI')}</option></select></label>
+        <label data-s="aibatch">${tr('set')}<select name="ai_set"><option value="">${tr('— choose —')}</option>${sets.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
+        <label data-s="aibatch">${tr('at most')}<input type="number" name="ai_max" min="1" style="width:72px" placeholder="${tr('all')}"></label>
         <label data-s="rabadges">${tr('RetroAchievements games')}<select name="rascope"><option value="played">${tr('played by the account')}</option><option value="owned">${tr('owned games')}</option></select></label>
         <label data-s="media">${tr('media for')}<select name="mscope"><option value="owned">${tr('owned games')}</option><option value="all">${tr('the whole catalogue')}</option></select></label>
         <label data-s="media">${tr('platform')}<select name="mplatform">${platformOptions('', tr('all platforms'))}</select></label>
@@ -5053,6 +5099,7 @@ async function showSchedules() {
         <label title="${tr('A due run waits until no other job is queued or running.')}"><span>${tr('run only when idle')}</span><input type="checkbox" name="when_idle" checked></label>
         <button class="btn primary">${tr('save')}</button><button class="btn" type="button" id="schreset">${tr('clear')}</button>
       </form>
+      <p class="notice" data-s="aibatch">${tr('Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).')}</p>
       <p class="bad" data-s="dbopt" style="display:none">${tr('Scheduling this is almost never right: it repeatedly destroys the records that let moved and renamed files be recognised, and the &quot;missing, but found elsewhere&quot; hint with them. Prefer running it by hand when the database is actually too large.')}</p></div>
     <div class="card"><h2>${trf('Schedules ({n})', { n: list.length })}</h2><table class="grid"><thead><tr><th>${tr('name')}</th><th>${tr('job')}</th><th>${tr('mode')}</th><th>${tr('trigger')}</th><th>${tr('next fixed')}</th><th>${tr('next check')}</th><th>${tr('last run')}</th><th>${tr('last check')}</th><th></th></tr></thead><tbody>
       ${list.map(x => `<tr><td>${esc(x.name)} ${x.enabled ? '' : badge(tr('disabled'), 'dim')} ${x.when_idle ? badge(tr('when idle'), 'dim') : ''}</td><td>${esc(describe(x.target))}</td><td>${esc(x.mode)}</td><td>${esc(x.trigger)} <span class="muted">${esc([when(x.fixed_every_n, x.fixed_unit), when(x.check_every_n, x.check_unit)].filter(Boolean).join(' / '))}</span></td><td>${fmtDate(x.next_fixed_at)}</td><td>${fmtDate(x.next_check_at)}</td><td>${fmtDate(x.last_run_at)} ${x.last_job_id ? `<span class="muted">#${x.last_job_id}</span>` : ''}</td><td class="muted" style="white-space:normal;max-width:260px">${fmtDate(x.last_check_at)} ${esc(x.last_check_result || '')}</td><td><button class="btn small" data-run="${x.id}">${tr('run now')}</button> <button class="btn small" data-edit="${x.id}">${tr('edit')}</button> <button class="btn small danger" data-del="${x.id}">${tr('delete')}</button></td></tr>`).join('') || `<tr><td colspan="9" class="muted">${tr('none yet')}</td></tr>`}
@@ -5065,7 +5112,7 @@ async function showSchedules() {
     const keep = form.scope.value;
     form.scope.innerHTML = [c.platform ? `<option value="platform">${tr('one platform')}</option><option value="all">${tr('every catalog platform')}</option>` : '', c.full ? `<option value="full">${tr('full database')}</option>` : ''].join('');
     if ([...form.scope.options].some(o => o.value === keep)) form.scope.value = keep;
-    show('prov', jt === 'provider_bulk_sync'); show('plat', jt === 'provider_bulk_sync' && form.scope.value === 'platform'); show('dat', jt === 'dat_sync'); show('scan', jt === 'file_scan'); show('media', jt === 'media_backfill'); show('rabadges', jt === 'ra_badges');
+    show('prov', jt === 'provider_bulk_sync'); show('plat', jt === 'provider_bulk_sync' && form.scope.value === 'platform'); show('dat', jt === 'dat_sync'); show('scan', jt === 'file_scan'); show('media', jt === 'media_backfill'); show('rabadges', jt === 'ra_badges'); show('aibatch', jt === 'ai_batch_rate');
     view.querySelectorAll('[data-s="dbopt"]').forEach(e => e.style.display = jt === 'db_optimize' ? '' : 'none');
     show('fixed', form.trigger.value !== 'check'); show('check', form.trigger.value !== 'fixed');
   };
@@ -5083,6 +5130,7 @@ async function showSchedules() {
     } else if (jt === 'dat_sync') { target.source = f.get('source') || null; target.import = true; }
     else if (jt === 'file_scan') { if (!f.get('directory_id')) return toast(tr('pick a directory'), true); target.directory_id = Number(f.get('directory_id')); target.mode = 'new_only'; }
     else if (jt === 'ra_badges') target.scope = f.get('rascope');
+    else if (jt === 'ai_batch_rate') { if (!f.get('ai_set')) return toast(tr('choose a set'), true); target.set_id = Number(f.get('ai_set')); target.lang = uiLanguage; const max = Number(f.get('ai_max')); if (max > 0) target.max = Math.trunc(max); }
     else if (jt === 'media_backfill') { target.scope = f.get('mscope'); target.platform = f.get('mplatform') ? Number(f.get('mplatform')) : null; }
     const trigger = f.get('trigger');
     const spec = { name: f.get('name'), target, mode: f.get('mode'), trigger, enabled: !!f.get('enabled'), when_idle: !!f.get('when_idle'),
@@ -5102,6 +5150,7 @@ async function showSchedules() {
     if (typeof t.platform === 'number') form.platform.value = t.platform;
     if (t.source) form.source.value = t.source;
     if (t.job_type === 'ra_badges') form.rascope.value = t.scope || 'played';
+    if (t.job_type === 'ai_batch_rate') { form.ai_set.value = t.set_id ?? ''; form.ai_max.value = t.max ?? ''; }
     if (t.job_type === 'media_backfill') { form.mscope.value = t.scope || 'owned'; form.mplatform.value = t.platform ?? ''; }
     if (x.fixed_every_n) { form.fixed_every_n.value = x.fixed_every_n; form.fixed_unit.value = x.fixed_unit; }
     if (x.check_every_n) { form.check_every_n.value = x.check_every_n; form.check_unit.value = x.check_unit; }

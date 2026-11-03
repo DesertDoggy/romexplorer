@@ -2609,5 +2609,21 @@
   "save pasted answer": "붙여 넣은 답변 저장",
   "{provider} API": "{provider} API",
   "{provider}: billing and limits": "{provider}: 청구 및 한도",
-  "{site} (browser)": "{site}(브라우저)"
+  "{site} (browser)": "{site}(브라우저)",
+  "batch rate with AI…": "AI로 일괄 평가…",
+  "batch rate with AI": "AI로 일괄 평가",
+  "Batch rate with AI: {what}": "AI로 일괄 평가: {what}",
+  "batch rate with AI: {set}": "AI로 일괄 평가: {set}",
+  "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).": "게임마다 유료 질문을 1회씩 AI 제공자에게 보내며, 토큰을 많이 쓸 수 있습니다. 표시되는 비용은 추정치이며 보장되지 않습니다. 실제 청구액은 더 높을 수 있습니다(제공자 요금, 웹 검색 요금, 재시도). 요금은 제공자가 사용자 본인의 API 키로 청구합니다. 이 소프트웨어의 작성자는 어떠한 요금에도 책임지지 않습니다. romexplorer 전용 API 키를 만들고 제공자 쪽에서 예산이나 지출 한도를 설정하세요(링크는 설정 › AI에 있습니다).",
+  "re-ask games with a saved answer (replaces the API answer; pinned answers are kept)": "저장된 답변이 있는 게임도 다시 묻기(API 답변을 교체하며, 고정한 답변은 유지됩니다)",
+  "I understand": "이해했습니다",
+  "start": "시작",
+  "{n} game(s) to ask": "질문할 게임 {n}개",
+  "unknown (no price for this model)": "알 수 없음(이 모델의 가격이 없습니다)",
+  "{families} game(s) selected: {one} with one version skipped, {cached} with a saved answer": "선택한 게임 {families}개: 버전이 하나뿐인 {one}개 제외, 답변 저장됨 {cached}개",
+  "no {provider} API key set (Config › AI)": "{provider} API 키가 설정되지 않았습니다(설정 › AI)",
+  "{n} selected release(s)": "선택한 릴리스 {n}개",
+  "asks the in-app AI which version to play, for every game of this set": "이 세트의 모든 게임에 대해 어떤 버전을 플레이할지 앱 내 AI에게 묻습니다",
+  "choose a set": "세트를 선택하세요",
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "실행할 때마다 답변이 저장되지 않은 세트의 게임만 게임당 유료 질문 1회로 묻습니다. 요금은 제공자가 사용자 본인의 API 키로 청구합니다. 제공자 쪽에서 예산이나 지출 한도를 설정하세요(링크는 설정 › AI에 있습니다)."
 }

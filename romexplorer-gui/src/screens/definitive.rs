@@ -88,10 +88,13 @@ fn definitive_spec() -> GridSpec {
     })
     .select(
         |r| u(r, "id"),
-        vec![crate::components::SelAction::new(&state::tr("add to set"), |ids: Vec<u64>| async move {
-            super::common::pick_set(json!({ "family_ids": ids }), None);
-            false
-        })],
+        vec![
+            crate::components::SelAction::new(&state::tr("add to set"), |ids: Vec<u64>| async move {
+                super::common::pick_set(json!({ "family_ids": ids }), None);
+                false
+            }),
+            super::ai::batch_action("title_ids", "games"),
+        ],
     )
     .cards("definitive", |r, mode| {
         let (lead, other) = (&r["lead"], &r["other"]);

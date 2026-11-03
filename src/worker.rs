@@ -775,6 +775,14 @@ impl Worker {
                 log::info!("artwork_export job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());
                 Ok(())
             }
+            JobType::AiBatchRate => {
+                let request: romexplorer_types::jobs::AiBatchRateRequest =
+                    serde_json::from_value(job.payload.clone()).map_err(|e| DatabaseError::Config(format!("ai_batch_rate: bad payload: {e}")))?;
+                let progress = Progress::new(&self.app.pool, job.id);
+                let summary = api::definitive::batch_rate(&self.app, &request, &progress).await.map_err(|e| DatabaseError::Config(e.message))?;
+                log::info!("ai_batch_rate job {}: {}", job.id, api::definitive::batch_one_liner(&summary));
+                Ok(())
+            }
             JobType::AudioAutotag => {
                 let summary = api::audio_autotag::run(&self.app, &Progress::new(&self.app.pool, job.id)).await?;
                 log::info!("audio_autotag job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());

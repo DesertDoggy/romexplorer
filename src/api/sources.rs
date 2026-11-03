@@ -880,11 +880,13 @@ mod mode_tests {
             JobType::DictionaryBuild,
             // Writes this machine's art into its own emulators' folders.
             JobType::ArtworkExport,
+            // Saves AI answers, this machine's own cache.
+            JobType::AiBatchRate,
         ] {
             assert!(!t.writes_catalog(), "{} should be allowed on a client", t.name());
         }
         // Exhaustive: every job type is on one of the two lists above.
-        assert_eq!(JobType::ALL.len(), 10 + 26, "a new job type needs classifying in this test");
+        assert_eq!(JobType::ALL.len(), 10 + 27, "a new job type needs classifying in this test");
     }
 }
 

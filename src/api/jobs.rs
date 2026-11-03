@@ -230,6 +230,7 @@ pub async fn validate(app: &App, request: &JobRequest) -> Result<()> {
         JobRequest::DictionaryBuild(_) | JobRequest::AudioAutotag => Ok(()),
         JobRequest::DisplayData(r) => super::display_data::validate(r),
         JobRequest::ArtworkExport(r) => super::artwork::validate(app, r).await,
+        JobRequest::AiBatchRate(r) => super::definitive::batch_validate(app, r).await,
         JobRequest::RaBadges(r) => {
             crate::api::ra::validate_badges(r)?;
             if !app.clients().is_available(Provider::RetroAchievements) {

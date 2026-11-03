@@ -2791,5 +2791,21 @@
   "save pasted answer": "貼り付けた回答を保存",
   "{provider} API": "{provider} API",
   "{provider}: billing and limits": "{provider}: 請求と上限",
-  "{site} (browser)": "{site}（ブラウザー）"
+  "{site} (browser)": "{site}（ブラウザー）",
+  "batch rate with AI…": "AIでまとめて評価…",
+  "batch rate with AI": "AIでまとめて評価",
+  "Batch rate with AI: {what}": "AIでまとめて評価：{what}",
+  "batch rate with AI: {set}": "AIでまとめて評価：{set}",
+  "This sends one paid question per game to the AI provider, which can use many tokens. The cost shown is an estimate, not a guarantee: actual charges can be higher (provider pricing, web-search fees, retries). It is billed by the provider to your own API key. The author of this software is not responsible for any charges. Use a separate API key for romexplorer with a budget or spending limit set with the provider (Config › AI has the links).": "ゲームごとに1回、有料の質問をAIプロバイダーに送ります。トークンを多く使うことがあります。表示される金額は目安で、保証ではありません。実際の請求はこれより高くなることがあります（料金改定、Web検索の料金、再試行など）。請求はプロバイダーからあなたのAPIキーに対して行われます。本ソフトウェアの作者は、いかなる請求にも責任を負いません。romexplorer専用のAPIキーを作り、プロバイダー側で予算か利用上限を設定してください（リンクは設定 › AIにあります）。",
+  "re-ask games with a saved answer (replaces the API answer; pinned answers are kept)": "保存済みの回答があるゲームも聞き直す（APIの回答を置き換えます。固定した回答は残ります）",
+  "I understand": "理解しました",
+  "start": "開始",
+  "{n} game(s) to ask": "質問するゲーム：{n}本",
+  "unknown (no price for this model)": "不明（このモデルの料金が未登録です）",
+  "{families} game(s) selected: {one} with one version skipped, {cached} with a saved answer": "選択したゲーム：{families}本（バージョンが1つだけのもの{one}本は除外、回答保存済み{cached}本）",
+  "no {provider} API key set (Config › AI)": "{provider}のAPIキーが未設定です（設定 › AI）",
+  "{n} selected release(s)": "選択したリリース{n}件",
+  "asks the in-app AI which version to play, for every game of this set": "このセットの全ゲームについて、どのバージョンを遊ぶべきかアプリ内AIに聞きます",
+  "choose a set": "セットを選んでください",
+  "Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Set a budget or spending limit with the provider (Config › AI has the links).": "毎回、回答が保存されていないゲームだけを1本につき1回、有料で質問します。請求はプロバイダーからあなたのAPIキーに対して行われます。プロバイダー側で予算か利用上限を設定してください（リンクは設定 › AIにあります）。"
 }

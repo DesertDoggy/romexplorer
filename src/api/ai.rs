@@ -165,6 +165,39 @@ pub async fn model_setting(app: &App, provider: &str) -> Result<Option<String>> 
     Ok(m.map(|m| m.trim().trim_start_matches("models/").to_string()).filter(|m| !m.is_empty()))
 }
 
+/// Whether `provider` has an API key set.
+pub async fn has_key(app: &App, provider: &str) -> bool {
+    api_key(app, provider).await.is_some()
+}
+
+/// What one more `purpose` question to the chosen provider costs, roughly, in US dollars:
+/// the average of the last saved answers' costs, else the price table at a typical answer's
+/// size. `None` when the model has no price.
+pub async fn estimate_each(app: &App, purpose: &str) -> Result<(String, Option<f64>)> {
+    let provider = provider(app).await?;
+    let model = model_setting(app, &provider).await?.unwrap_or_else(|| default_model(&provider).to_string());
+    let recent: Vec<f64> = sqlx::query_scalar("SELECT CAST(cost_usd AS DOUBLE) FROM ai_answers WHERE purpose = ? AND provider = ? AND source = 'api' AND cost_usd IS NOT NULL ORDER BY created_at DESC LIMIT 20")
+        .bind(purpose)
+        .bind(&provider)
+        .fetch_all(&app.pool)
+        .await?;
+    if !recent.is_empty() {
+        return Ok((model, Some(recent.iter().sum::<f64>() / recent.len() as f64)));
+    }
+    // A family question with search: about 2,000 tokens in (the search results count) and
+    // 900 out, and a few searches.
+    let table = prices(app).await?;
+    let each = price_of(&table, &model).map(|p| (2000.0 * p.input + 900.0 * p.output) / 1_000_000.0 + if provider == "claude" { 3.0 * CLAUDE_SEARCH_FEE } else { 0.0 });
+    Ok((model, each))
+}
+
+/// Whether a failed request's message says the provider is limiting the rate (try again
+/// later), as opposed to a refusal that will not change.
+pub fn is_rate_limited(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    !m.contains("limit 0") && (m.contains("429") || m.contains("rate limit") || m.contains("rate_limit") || m.contains("too many requests") || m.contains("resource_exhausted") || m.contains("resource has been exhausted") || m.contains("overloaded"))
+}
+
 async fn api_key(app: &App, provider: &str) -> Option<String> {
     let name = key_name(provider)?;
     let mut creds = crate::database::ApiCredentials::load(&app.paths.api_env()).ok()?;
@@ -373,6 +406,23 @@ pub async fn cached_all(app: &App, purpose: &str, subject_key: &str, lang: &str,
 /// puts first, if any.
 pub async fn cached(app: &App, purpose: &str, subject_key: &str, lang: &str, prompt: &str) -> Result<Option<Answer>> {
     Ok(cached_all(app, purpose, subject_key, lang, prompt).await?.into_iter().next())
+}
+
+/// Which of `subjects` have a saved, unexpired `purpose` answer in `lang` (any source, any
+/// wording of the question).
+pub async fn saved_subjects(app: &App, purpose: &str, lang: &str, subjects: &[String]) -> Result<HashSet<String>> {
+    let fresh = fresh_sql(app).await?;
+    let mut out = HashSet::new();
+    for chunk in subjects.chunks(500) {
+        let marks = vec!["?"; chunk.len()].join(",");
+        let sql = format!("SELECT DISTINCT subject_key FROM ai_answers WHERE purpose = ? AND lang = ? AND subject_key IN ({marks}){fresh}");
+        let mut q = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql)).bind(purpose).bind(lang);
+        for s in chunk {
+            q = q.bind(s);
+        }
+        out.extend(q.fetch_all(&app.pool).await?);
+    }
+    Ok(out)
 }
 
 /// The newest saved answer about `subject_key` in any other language.
@@ -1123,6 +1173,15 @@ fn parse_perplexity(model: &str, v: &serde_json::Value) -> std::result::Result<R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limits_wait_and_refusals_do_not() {
+        assert!(is_rate_limited("claude-opus-5-5: Number of requests has exceeded your rate limit [rate_limit_error]"));
+        assert!(is_rate_limited("gemini-3-flash: Resource has been exhausted (e.g. check quota). [RESOURCE_EXHAUSTED]"));
+        assert!(is_rate_limited("gpt-5: answered 429 Too Many Requests"));
+        assert!(!is_rate_limited("this key has no free quota for gemini-3-flash (limit 0) - use the Ask menu, or a key with billing"));
+        assert!(!is_rate_limited("claude-opus-5-5: invalid x-api-key [authentication_error]"));
+    }
 
     #[test]
     fn the_answer_language_is_one_line_under_the_question() {

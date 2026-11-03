@@ -1275,12 +1275,12 @@ async fn review_queues(app: &App) {
     assert_eq!(api::review::merge_queue(app, &other_set, &Default::default()).await.unwrap().total, 0, "a set narrows the queue");
 
     // No Gemini key here: the lookup still gives the question as a Google search.
-    let look = api::review::lookup(app, &item.key).await.unwrap();
-    assert!(look.answer.is_none() && look.error.is_some());
-    assert!(look.google_url.starts_with("https://www.google.com/search?q=") && look.ai_mode_url.ends_with("udm=50"), "{look:?}");
+    let look = api::review::lookup(app, &item.key, &Default::default()).await.unwrap();
+    assert!(look.result.answer.is_none() && look.result.error.is_some());
+    assert!(look.google_url.starts_with("https://www.google.com/search?q=") && look.ask_links.iter().any(|l| l.id == "google" && l.url.ends_with("udm=50")), "{look:?}");
 
     let key = item.key.clone();
-    let done = api::review::apply(app, &key, &api::review::ApplyRequest { option: 0 }).await.unwrap();
+    let done = api::review::apply(app, &key, &api::review::ApplyRequest { option: 0, ..Default::default() }).await.unwrap();
     assert_eq!(done.title_ids.len(), 2);
     let title_of = |r: u64| async move { sqlx::query_scalar::<_, u64>("SELECT title_id FROM title_releases WHERE release_id = ?").bind(r).fetch_one(pool).await.unwrap() };
     let (t_us, t_intl, t_jp) = (title_of(us).await, title_of(intl).await, title_of(jp).await);
@@ -1312,7 +1312,7 @@ async fn review_queues(app: &App) {
     let page = api::review::merge_queue(app, &Default::default(), &only_bundles).await.unwrap();
     let item = page.items.iter().find(|i| i.key == format!("bundle:{bundle}")).expect("the bundle is suggested");
     assert!(item.options[0].recommended && item.options[0].label == "split_bundle");
-    api::review::apply(app, &item.key, &api::review::ApplyRequest { option: 0 }).await.unwrap();
+    api::review::apply(app, &item.key, &api::review::ApplyRequest { option: 0, ..Default::default() }).await.unwrap();
     assert_eq!(title_of(stray).await, title_of(single_us).await, "the game's release joined its title");
     assert_eq!(title_of(renamed).await, title_of(second_us).await, "matched by the title's alternative name, in the same click");
     assert_eq!(title_of(collection).await, bundle, "the collection stays");

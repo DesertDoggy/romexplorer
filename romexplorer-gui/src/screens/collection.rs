@@ -885,6 +885,7 @@ fn SetPage(id: u64) -> Element {
                 super::art::art_action("releases"),
                 super::art::export_art_action("releases"),
                 super::display::display_action(),
+                super::ai::batch_action("release_ids", "releases"),
             ],
         )
         .link(|r| Some(Route::Release { id: u(r, "id") }))
@@ -932,6 +933,7 @@ fn SetPage(id: u64) -> Element {
                 button { class: "btn small", onclick: { let n = s(&st, "name"); move |_| super::copy::copy_dialog(super::copy::set_selection(id), n.clone()) }, {state::tr("copy to…")} }
                 button { class: "btn small", onclick: { let n = s(&st, "name"); move |_| super::art::art_dialog(super::copy::set_selection(id), n.clone()) }, {state::tr("download art…")} }
                 button { class: "btn small", onclick: { let n = s(&st, "name"); move |_| super::art::export_dialog(super::copy::set_selection(id), n.clone()) }, {state::tr("export art…")} }
+                button { class: "btn small", title: state::tr("asks the in-app AI which version to play, for every game of this set"), onclick: { let n = s(&st, "name"); move |_| super::ai::batch_dialog(json!({ "set_id": id }), n.clone()) }, {state::tr("batch rate with AI…")} }
             }
         }
         div { class: "card", Grid { spec, reload: Some(reload) } }
