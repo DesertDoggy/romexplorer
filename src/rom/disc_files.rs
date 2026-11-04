@@ -315,6 +315,14 @@ fn iso9660(view: &DiscView) -> Result<Option<Vec<DiscFile>>, String> {
             break 'probe;
         }
     }
+    // A Dreamcast GD-ROM's high-density area, read as one image counted from the start of
+    // the disc (`rom_audio`'s GD-ROM view): its descriptor is at sector 45016.
+    if found.is_none() && view.size() >= (45_016 + 1) * SECTOR {
+        let pvd = view.bytes(45_016 * SECTOR, SECTOR as usize)?;
+        if pvd[0] == 1 && &pvd[1..6] == b"CD001" {
+            found = Some((pvd, SECTOR, 0));
+        }
+    }
     let Some((pvd, stride, user)) = found else { return Ok(None) };
     let root = &pvd[156..156 + 34];
     let root_lba = u64::from(le32(root, 2).unwrap_or(0));
@@ -326,6 +334,19 @@ fn iso9660(view: &DiscView) -> Result<Option<Vec<DiscFile>>, String> {
     let mut files = Vec::new();
     iso_dir(view, layout, root_lba, root_len, "", 0, &mut files)?;
     Ok(Some(files))
+}
+
+/// Whether a directory record's CD-XA system use area marks the file as Mode 2 Form 2 or
+/// interleaved (XA audio, STR video).
+fn is_xa_form2(record: &[u8], name_len: usize) -> bool {
+    // The system use area follows the name, padded to an even offset.
+    let at = 33 + name_len + usize::from(name_len % 2 == 0);
+    let Some(xa) = record.get(at..at + 14) else { return false };
+    if &xa[6..8] != b"XA" {
+        return false;
+    }
+    let attributes = u16::from_be_bytes([xa[4], xa[5]]);
+    attributes & (0x1000 | 0x2000) != 0
 }
 
 fn iso_extent(view: &DiscView, layout: IsoLayout, lba: u64, len: u32) -> Result<Vec<u8>, String> {
@@ -373,10 +394,47 @@ fn iso_dir(view: &DiscView, layout: IsoLayout, lba: u64, len: u32, prefix: &str,
         } else if let Some(first) = layout.at(extent) {
             let sectors = u64::from(size).div_ceil(SECTOR);
             if sectors == 0 || first + (sectors - 1) * layout.stride + SECTOR <= view.size() {
-                let extent = if layout.stride == SECTOR { Extent::Linear { offset: first } } else { Extent::Sectors { first, stride: layout.stride } };
-                out.push(DiscFile { path, size: u64::from(size), extent });
+                if layout.stride != SECTOR && is_xa_form2(record, name_len) {
+                    // CD-XA audio (and the audio in PS1 videos) is in Mode 2 Form 2 sectors,
+                    // whose 2324 bytes do not fit the 2048-byte reading: hand over the raw
+                    // sectors, headers and all, as a ripped .xa is.
+                    out.push(DiscFile { path, size: sectors * layout.stride, extent: Extent::Linear { offset: first - layout.user } });
+                } else {
+                    let extent = if layout.stride == SECTOR { Extent::Linear { offset: first } } else { Extent::Sectors { first, stride: layout.stride } };
+                    out.push(DiscFile { path, size: u64::from(size), extent });
+                }
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(name: &[u8], attributes: u16) -> Vec<u8> {
+        let mut r = vec![0u8; 33];
+        r[32] = name.len() as u8;
+        r.extend_from_slice(name);
+        if name.len() % 2 == 0 {
+            r.push(0);
+        }
+        let mut xa = [0u8; 14];
+        xa[4..6].copy_from_slice(&attributes.to_be_bytes());
+        xa[6..8].copy_from_slice(b"XA");
+        r.extend_from_slice(&xa);
+        r
+    }
+
+    #[test]
+    fn xa_audio_and_video_are_told_from_data_by_their_attributes() {
+        assert!(is_xa_form2(&record(b"MUSIC.XA;1", 0x3D55), 10), "interleaved form 2");
+        assert!(is_xa_form2(&record(b"MOVIE.STR;1", 0x2555), 11), "interleaved");
+        assert!(!is_xa_form2(&record(b"DATA.BIN;1", 0x0D55), 10), "mode 2 form 1 is plain data");
+        let mut plain = vec![0u8; 33];
+        plain[32] = 1;
+        plain.push(b'A');
+        assert!(!is_xa_form2(&plain, 1), "no system use area");
+    }
 }

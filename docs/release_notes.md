@@ -26,8 +26,9 @@ replacing a build.
 **ROM audio**
 - Title pages can play the music inside your ROMs, straight from the disc image like a CD
   player: CD audio tracks and the music files on the disc (PlayStation, Saturn, Dreamcast,
-  GameCube, Xbox, PSP and more, and dumped folders). Run Index ROM audio on the Audio tab
-  first. Zip and 7z archives and Wii discs are not read yet.
+  GameCube, Xbox, Xbox 360, PSP and more, and dumped folders), including WMA, XMA and ATRAC3
+  music. Run Index ROM audio on the Audio tab first. Zip and 7z archives and Wii discs are not
+  read yet.
 - Settings choose tagged audio, ROM music or both, whether jingles and sound effects play
   too, and what a title you don't own plays (another version, such as the original of a
   remake, or a random one).

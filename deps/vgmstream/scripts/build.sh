@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds rvgmstream.dll / librvgmstream.so / librvgmstream.dylib: vgmstream's game audio decoder behind the
-# flat C API in deps/vgmstream/rvgm.h (see that header for why there is a shim at all). The build is
+# Builds rvgmstream.dll / librvgmstream.so / librvgmstream.dylib: vgmstream's game audio decoder,
+# with a static audio-only FFmpeg from deps/ffmpeg when one is built, behind the flat C API in
+# deps/vgmstream/rvgm.h (see that header for why there is a shim at all). The build is
 # deps/vgmstream/CMakeLists.txt, which includes upstream's source lists and edits nothing upstream.
 #
 # Usage:
@@ -68,6 +69,18 @@ build_dir="$(mktemp -d "${TMPDIR:-/tmp}/rvgm_build.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
 cmake_args=(-S "$user_dir" -B "$build_dir" "-DVGM_ROOT=$repo_root" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor")
+# FFmpeg (deps/ffmpeg/scripts/build.sh), linked in statically when its release tree for this
+# platform/arch exists: the newest version directory wins. Without it rvgmstream still builds,
+# and WMA, XMA and ATRAC3 streams stay unplayable. VGM_NO_FFMPEG=1 skips it on purpose.
+ffmpeg_root=""
+if [[ "${VGM_NO_FFMPEG:-0}" != "1" ]]; then
+  ffmpeg_root="$(ls -d "$main_root/deps/ffmpeg/release/$platform/$arch"/*/static 2>/dev/null | sort -V | tail -1 || true)"
+fi
+if [[ -n "$ffmpeg_root" ]]; then
+  cmake_args+=("-DFFMPEG_ROOT=$ffmpeg_root")
+else
+  echo "[WARN] no FFmpeg build for $platform/$arch under deps/ffmpeg/release: WMA, XMA and ATRAC3 will not decode"
+fi
 if [[ -n "${CC:-}" ]]; then
   cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 fi
@@ -108,6 +121,7 @@ cp "$user_dir/rvgm.h" "$out_dir/include/rvgm.h"
   echo "arch=$arch"
   echo "commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "compiler=${CC:-default}"
+  echo "ffmpeg=${ffmpeg_root:-none}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out_dir/build-info.txt"
 echo "[INFO] built $out_dir/dynamic/$lib_name ($(wc -c < "$out_dir/dynamic/$lib_name") bytes)"

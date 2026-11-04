@@ -225,8 +225,16 @@ fn open_chd(path: &Path) -> Result<OpenedRom, String> {
     let tracks: Arc<[_]> = layout.tracks.clone().into();
     let image = DiscView::new(Box::new(CdImageReader::new(reader, tracks)), total);
     let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None };
-    for track in &layout.tracks {
+    let mut high_density = Vec::new();
+    for (i, track) in layout.tracks.iter().enumerate() {
         if track.is_empty() {
+            continue;
+        }
+        // A GD-ROM's high-density data tracks make one filesystem; each starts at the
+        // sector the sheet gives it.
+        let gd_lba = layout.sheet.tracks.get(i).and_then(|t| t.gdi).map(|g| g.lba).filter(|lba| *lba >= GD_HIGH_DENSITY);
+        if let (Some(lba), true) = (gd_lba, track.track.track_type != CD_TRACK_AUDIO) {
+            high_density.push(GdTrack::new(lba, image.slice(track.start, track.len()), track.frame_bytes));
             continue;
         }
         // From INDEX 01, as a cue sheet's track starts: a pregap kept in the file comes first.
@@ -238,7 +246,64 @@ fn open_chd(path: &Path) -> Result<OpenedRom, String> {
             out.data.push(view);
         }
     }
+    out.data.extend(gd_area(high_density));
     Ok(out)
+}
+
+/// Where a GD-ROM's high-density area starts.
+const GD_HIGH_DENSITY: u32 = 45_000;
+
+/// One data track of a GD-ROM's high-density area: the sector it starts at on the disc, and
+/// how its sectors sit in `view`.
+struct GdTrack {
+    lba: u64,
+    view: DiscView,
+    stride: u64,
+    user: u64,
+}
+
+impl GdTrack {
+    fn new(lba: u32, view: DiscView, sector_size: u32) -> Self {
+        let (stride, user) = match sector_size {
+            2048 => (2048, 0),
+            2336 => (2336, 8),
+            _ => (2352, 16),
+        };
+        Self { lba: u64::from(lba), view, stride, user }
+    }
+
+    fn sectors(&self) -> u64 {
+        self.view.size() / self.stride
+    }
+}
+
+/// A GD-ROM's high-density data tracks as one image of 2048-byte sectors counted from the
+/// start of the disc, as its filesystem counts them: sectors no data track holds (the low-
+/// density area, audio tracks, gaps) read as zeros.
+struct GdArea(Vec<GdTrack>);
+
+impl ReadAt for GdArea {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        const SECTOR: u64 = 2048;
+        let mut done = 0usize;
+        while done < buf.len() {
+            let pos = offset + done as u64;
+            let (lba, within) = (pos / SECTOR, pos % SECTOR);
+            let take = ((SECTOR - within) as usize).min(buf.len() - done);
+            let out = &mut buf[done..done + take];
+            match self.0.iter().find(|t| lba >= t.lba && lba - t.lba < t.sectors()) {
+                Some(t) => t.view.read(t.user + (lba - t.lba) * t.stride + within, out)?,
+                None => out.fill(0),
+            }
+            done += take;
+        }
+        Ok(())
+    }
+}
+
+fn gd_area(tracks: Vec<GdTrack>) -> Option<DiscView> {
+    let end = tracks.iter().map(|t| t.lba + t.sectors()).max()?;
+    Some(DiscView::new(Box::new(GdArea(tracks)), end * 2048))
 }
 
 fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
@@ -246,6 +311,7 @@ fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None };
     let mut opened: std::collections::HashMap<String, DiscView> = std::collections::HashMap::new();
+    let mut high_density = Vec::new();
     for (i, track) in sheet.tracks.iter().enumerate() {
         let file = match opened.get(&track.file_name) {
             Some(v) => v.clone(),
@@ -255,26 +321,39 @@ fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
                 v
             }
         };
+        let audio = track.gdi.map(|g| g.kind == 0).unwrap_or(false) || matches!(track.track_type, super::models::ChdTrackType::Audio);
+        // A gdi gives each track a file of its own, starting at the track's first sector;
+        // the number in it is where the track is on the disc, not in the file.
+        if let Some(g) = track.gdi {
+            let view = file.slice(g.offset, u64::MAX);
+            if audio {
+                out.cdda.push((track.number, view));
+            } else if g.lba >= GD_HIGH_DENSITY {
+                high_density.push(GdTrack::new(g.lba, view, g.sector_size));
+            } else {
+                out.data.push(view);
+            }
+            continue;
+        }
         let sector = u64::from(track.sector_size.max(1));
-        let base = track.gdi.map(|g| g.offset).unwrap_or(0);
-        let start = base + u64::from(track.index1) * sector;
+        let start = u64::from(track.index1) * sector;
         // The track runs to where the next track in the same file starts, or the file's end.
         let end = sheet.tracks[i + 1..]
             .iter()
             .find(|t| t.file_name == track.file_name)
-            .map(|t| base + u64::from(t.index0.unwrap_or(t.index1)) * sector)
+            .map(|t| u64::from(t.index0.unwrap_or(t.index1)) * sector)
             .unwrap_or(file.size());
         if end <= start {
             continue;
         }
         let view = file.slice(start, end - start);
-        let audio = track.gdi.map(|g| g.kind == 0).unwrap_or(false) || matches!(track.track_type, super::models::ChdTrackType::Audio);
         if audio {
             out.cdda.push((track.number, view));
         } else {
             out.data.push(view);
         }
     }
+    out.data.extend(gd_area(high_density));
     Ok(out)
 }
 

@@ -97,18 +97,25 @@ fn dir_record(name: &[u8], lba: u32, len: u32, dir: bool) -> Vec<u8> {
 /// A minimal ISO9660 image (2048-byte sectors): the volume descriptor at sector 16, one
 /// sector per directory, files after them. Names get the `;1` version suffix discs carry.
 pub fn iso9660(root: &[Entry]) -> Vec<u8> {
+    iso9660_at(root, 0)
+}
+
+/// [`iso9660`] for a track that starts at sector `base` of its disc (a GD-ROM's
+/// high-density area starts at 45000): every sector number in it counts from the disc's
+/// start, as the filesystem does.
+pub fn iso9660_at(root: &[Entry], base: u32) -> Vec<u8> {
     const S: usize = 2048;
     let mut sectors: Vec<Vec<u8>> = vec![vec![0u8; S]; 18];
-    // Lays out a directory: reserves its sector, then its children; returns (lba, size).
-    fn place(entries: &[Entry], parent: u32, sectors: &mut Vec<Vec<u8>>) -> u32 {
+    // Lays out a directory: reserves its sector, then its children; returns its lba.
+    fn place(entries: &[Entry], parent: u32, base: u32, sectors: &mut Vec<Vec<u8>>) -> u32 {
         let me = sectors.len() as u32;
         sectors.push(Vec::new());
-        let mut table = dir_record(&[0], me, S as u32, true);
+        let mut table = dir_record(&[0], base + me, S as u32, true);
         table.extend(dir_record(&[1], parent, S as u32, true));
         for e in entries {
             match e {
                 Entry::File(name, data) => {
-                    let lba = sectors.len() as u32;
+                    let lba = base + sectors.len() as u32;
                     for chunk in data.chunks(S) {
                         let mut s = chunk.to_vec();
                         s.resize(S, 0);
@@ -117,7 +124,7 @@ pub fn iso9660(root: &[Entry]) -> Vec<u8> {
                     table.extend(dir_record(format!("{name};1").as_bytes(), lba, data.len() as u32, false));
                 }
                 Entry::Dir(name, kids) => {
-                    let lba = place(kids, me, sectors);
+                    let lba = place(kids, base + me, base, sectors);
                     table.extend(dir_record(name.as_bytes(), lba, S as u32, true));
                 }
             }
@@ -125,9 +132,9 @@ pub fn iso9660(root: &[Entry]) -> Vec<u8> {
         assert!(table.len() <= S);
         table.resize(S, 0);
         sectors[me as usize] = table;
-        me
+        base + me
     }
-    let root_lba = place(root, 18, &mut sectors);
+    let root_lba = place(root, base + 18, base, &mut sectors);
     let mut pvd = vec![0u8; S];
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
@@ -204,5 +211,23 @@ pub fn cdda(seconds: f64) -> Vec<u8> {
     let samples = (44_100.0 * seconds) as usize;
     let mut out: Vec<u8> = tone(44_100, 2, samples, 330.0).iter().flat_map(|s| s.to_le_bytes()).collect();
     out.resize(out.len().div_ceil(2352) * 2352, 0);
+    out
+}
+
+/// Raw Mode 2 Form 2 sectors (2352 bytes: sync, header, subheader, 2324 bytes of data, EDC)
+/// holding `data`, as CD-XA audio is stored. The subheader says Form 2, audio.
+pub fn xa_raw(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (n, chunk) in data.chunks(2324).enumerate() {
+        let mut s = vec![0u8; 2352];
+        s[1..11].fill(0xFF);
+        s[12..15].copy_from_slice(&[0, 2, n as u8]);
+        s[15] = 2;
+        let sub = [1u8, 1, 0x64, 0];
+        s[16..20].copy_from_slice(&sub);
+        s[20..24].copy_from_slice(&sub);
+        s[24..24 + chunk.len()].copy_from_slice(chunk);
+        out.extend_from_slice(&s);
+    }
     out
 }
