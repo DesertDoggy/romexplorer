@@ -444,7 +444,7 @@ pub const KNOWN_KEYS: [(&str, &str); 101] = [
     (KEY_AUDIO_KEEP_PLAYING, "Keep a title's music playing on other screens until another title page opens (true | false; default true)."),
     (KEY_AUDIO_ROM_VIDEOS, "Play the sound of the video files in a title's ROMs, such as its title movie (true | false; default false). Each title page can turn it on or off for that title."),
     (KEY_AUDIO_ROM_LOOP_MIN_S, "A ROM sound that loops is music from this many seconds (default 3)."),
-    (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 20)."),
+    (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 60)."),
     (KEY_AUDIO_ROM_JINGLE_MIN_S, "A ROM sound that does not loop is a jingle from this many seconds (default 8); shorter is a sound effect."),
     (KEY_INSTANCE_ID, "This installation's own id, generated once. Stamped into exports so an import can tell your own data from another machine's."),
     (KEY_BACKUP_DIR, "Where backup zips are written. Empty = <data root>/backups."),
@@ -839,7 +839,7 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
         "Seconds. A ROM sound that loops and is at least this long is music (default 3).",
     ]),
     (KEY_AUDIO_ROM_BGM_MIN_S, &[
-        "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.",
+        "Seconds. A ROM sound that does not loop is music from this length (default 60), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.",
     ]),
     (KEY_AUDIO_FALLBACK, &[
         "What a title with no audio linked to it plays: nothing (default), tracks picked at random from the audio linked to other titles, or the audio files tagged generic_bgm.",

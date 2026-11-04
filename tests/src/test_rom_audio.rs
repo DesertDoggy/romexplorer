@@ -82,7 +82,11 @@ use std::path::{Path, PathBuf};
 
 use game_audio::Entry;
 use romexplorer::rom::disc_files::{self, DiscView, FsKind};
-use romexplorer::rom::rom_audio::{self, classify, SoundKind, Thresholds, TrackLocation};
+use romexplorer::rom::rom_audio::{self, classify, Shape, SoundKind, Thresholds, TrackLocation};
+
+fn shape(looping: bool, duration_ms: u64, channels: u16) -> Shape {
+    Shape { looping, duration_ms, channels, cd_audio: false }
+}
 
 #[path = "support/disc_images.rs"]
 #[allow(dead_code)]
@@ -182,20 +186,22 @@ fn a_wii_disc_is_refused_not_misread() {
 #[test]
 fn classify_by_loop_length_and_folder() {
     let t = Thresholds::default();
-    assert_eq!(classify(true, 3_500, 2, "x/y.adx", &t), SoundKind::Bgm, "a short loop is still music");
-    assert_eq!(classify(false, 25_000, 2, "x/y.adx", &t), SoundKind::Bgm);
-    assert_eq!(classify(false, 10_000, 2, "x/y.adx", &t), SoundKind::Jingle);
-    assert_eq!(classify(false, 2_000, 2, "x/y.adx", &t), SoundKind::Se);
-    assert_eq!(classify(true, 5_000, 2, "SE/rain_loop.adx", &t), SoundKind::Se, "a looping ambience in an SE folder");
-    assert_eq!(classify(false, 12_000, 2, "BGM/ending.adx", &t), SoundKind::Bgm, "a BGM folder lifts a jingle-length track");
-    assert_eq!(classify(false, 30_000, 2, "voice/v_001.at3", &t), SoundKind::Se, "a voice line is not music");
-    assert_eq!(classify(false, 400_000, 2, "VOICE/event_01.adx", &t), SoundKind::Se, "however long it runs");
-    assert_eq!(classify(false, 4_000, 2, "music/sting01.ads", &t), SoundKind::Jingle);
-    assert_eq!(classify(false, 30_000, 2, "Data/Sound/stage1.wma", &t), SoundKind::Bgm, "a Sound folder holds music too");
-    assert_eq!(classify(false, 400_000, 2, "SE/ambience.adx", &t), SoundKind::Bgm, "far past the BGM length, the folder does not decide");
-    assert_eq!(classify(false, 400_000, 1, "x/talk.adx", &t), SoundKind::Jingle, "long mono without a loop is likely speech");
-    assert_eq!(classify(false, 30_000, 1, "bgm/b01.adx", &t), SoundKind::Bgm, "unless its name says music");
-    assert_eq!(classify(false, 10_000, 2, "STREAM/s_03.adx", &t), SoundKind::Jingle, "a stream folder is not a BGM name");
+    assert_eq!(classify(&shape(true, 3_500, 2), "x/y.adx", &t), SoundKind::Bgm, "a short loop is still music");
+    assert_eq!(classify(&shape(false, 65_000, 2), "x/y.adx", &t), SoundKind::Bgm);
+    assert_eq!(classify(&shape(false, 45_000, 2), "x/y.adx", &t), SoundKind::Jingle, "under a minute without a loop is not BGM");
+    assert_eq!(classify(&Shape { cd_audio: true, ..shape(false, 45_000, 2) }, "/Track 05", &t), SoundKind::Bgm, "but a CD audio track is from 20 s");
+    assert_eq!(classify(&shape(false, 10_000, 2), "x/y.adx", &t), SoundKind::Jingle);
+    assert_eq!(classify(&shape(false, 2_000, 2), "x/y.adx", &t), SoundKind::Se);
+    assert_eq!(classify(&shape(true, 5_000, 2), "SE/rain_loop.adx", &t), SoundKind::Se, "a looping ambience in an SE folder");
+    assert_eq!(classify(&shape(false, 12_000, 2), "BGM/ending.adx", &t), SoundKind::Bgm, "a BGM folder lifts a jingle-length track");
+    assert_eq!(classify(&shape(false, 30_000, 2), "voice/v_001.at3", &t), SoundKind::Se, "a voice line is not music");
+    assert_eq!(classify(&shape(false, 400_000, 2), "VOICE/event_01.adx", &t), SoundKind::Se, "however long it runs");
+    assert_eq!(classify(&shape(false, 4_000, 2), "music/sting01.ads", &t), SoundKind::Jingle);
+    assert_eq!(classify(&shape(false, 90_000, 2), "Data/Sound/stage1.wma", &t), SoundKind::Bgm, "a Sound folder holds music too");
+    assert_eq!(classify(&shape(false, 400_000, 2), "SE/ambience.adx", &t), SoundKind::Bgm, "far past the BGM length, the folder does not decide");
+    assert_eq!(classify(&shape(false, 400_000, 1), "x/talk.adx", &t), SoundKind::Jingle, "long mono without a loop is likely speech");
+    assert_eq!(classify(&shape(false, 30_000, 1), "bgm/b01.adx", &t), SoundKind::Bgm, "unless its name says music");
+    assert_eq!(classify(&shape(false, 10_000, 2), "STREAM/s_03.adx", &t), SoundKind::Jingle, "a stream folder is not a BGM name");
 }
 
 fn by_name(tracks: &[rom_audio::FoundTrack], name: &str) -> rom_audio::FoundTrack {
