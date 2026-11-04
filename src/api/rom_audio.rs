@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
 use sqlx::Row;
@@ -22,7 +23,7 @@ use romexplorer_types::jobs::{FileScanMode, RomAudioIndexRequest};
 use crate::database::jobs::Progress;
 use crate::database::settings as db_settings;
 use crate::rom::rom_audio::{self, FoundTrack, SoundKind, Thresholds, TrackLocation};
-use crate::rom::{gme, rip_sets};
+use crate::rom::{gme, rip_match, rip_sets};
 use crate::rom::{vgmstream, xaac};
 
 use super::audio::AudioRow;
@@ -245,8 +246,12 @@ pub struct IndexSummary {
     /// Not a disc image or a folder: cartridges, archives.
     pub skipped_not_disc: u64,
     pub tracks: u64,
-    /// Of `tracks`, those from rip sets in game folders.
+    /// Of `tracks`, those from rip sets (in game folders or the rip library).
     pub rip_tracks: u64,
+    /// Sets in the rip library folders that can be matched to ROMs.
+    pub library_sets: u64,
+    /// ROMs a library set was matched to.
+    pub library_matches: u64,
     pub errors: Vec<String>,
 }
 
@@ -254,6 +259,9 @@ pub fn one_liner(s: &IndexSummary) -> String {
     let mut parts = vec![format!("{} ROM(s) read, {} track(s) found", s.roms_read, s.tracks)];
     if s.rip_tracks > 0 {
         parts.push(format!("{} from rip sets", s.rip_tracks));
+    }
+    if s.library_sets > 0 {
+        parts.push(format!("{} ROM(s) matched to the rip library's {} set(s)", s.library_matches, s.library_sets));
     }
     if s.skipped_existing > 0 {
         parts.push(format!("{} already indexed", s.skipped_existing));
@@ -341,6 +349,18 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
     Ok(titles <= 1)
 }
 
+/// The rip library from `audio_rip_folders`, fingerprinted; empty when there is none or the
+/// player is not built. Fingerprints are cached beside the media.
+async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
+    let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
+    if folders.is_empty() || !gme::available() {
+        return Ok(rip_match::Library::build(&[], None, |_, _| {}));
+    }
+    progress.report(0, None, "reading the rip library").await;
+    let cache = app.paths.media_dir().join("_rip_library.json");
+    tokio::task::spawn_blocking(move || rip_match::Library::build(&folders, Some(&cache), |_, _| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))
+}
+
 pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Progress) -> Result<IndexSummary> {
     let quick = request.mode == FileScanMode::NewOnly;
     let mut summary = IndexSummary { mode: if quick { "new_only" } else { "full" }.to_string(), ..Default::default() };
@@ -353,7 +373,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         None => String::new(),
     };
     let skip = if quick { " AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)" } else { "" };
-    let roms = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT r.id, r.main_path FROM local_rom r WHERE r.deleted = FALSE{scope}{skip} ORDER BY r.main_path")))
+    let roms = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT r.id, r.main_path, r.app_platform_id FROM local_rom r WHERE r.deleted = FALSE{scope}{skip} ORDER BY r.main_path")))
         .fetch_all(&app.pool)
         .await?;
     if quick {
@@ -364,6 +384,10 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     }
     let total = roms.len() as u64;
     summary.roms_seen = total;
+    let library = Arc::new(rip_library(app, progress).await?);
+    summary.library_sets = library.len() as u64;
+    // A library set's tracks, read once per run however many ROMs (regions) it matches.
+    let mut set_tracks: HashMap<PathBuf, Vec<FoundTrack>> = HashMap::new();
     for (i, row) in roms.iter().enumerate() {
         if progress.cancelled().await {
             break;
@@ -379,21 +403,41 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             _ => None,
         };
         let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
-        if disc.is_none() && folder.is_none() {
+        let platform: u16 = row.try_get("app_platform_id")?;
+        let in_library = library.covers(platform);
+        if disc.is_none() && folder.is_none() && !in_library {
             summary.skipped_not_disc += 1;
             continue;
         }
         let label = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
         progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label}", i + 1)).await;
         let open = disc.clone();
+        let (lib, rom_file) = (library.clone(), PathBuf::from(&main_path));
         let found = tokio::task::spawn_blocking(move || {
             let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |_| {})).unwrap_or_default();
             let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |_| {}));
-            (rips, disc)
+            let matched = if in_library && rom_file.is_file() { lib.match_rom(&rom_file, platform) } else { Ok(Vec::new()) };
+            (rips, disc, matched)
         })
         .await
         .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
-        let (rips, disc_found) = found;
+        let (mut rips, disc_found, matched) = found;
+        match matched {
+            Ok(sets) => {
+                if !sets.is_empty() {
+                    summary.library_matches += 1;
+                }
+                for (set, _) in sets {
+                    if !set_tracks.contains_key(&set) {
+                        let (path, t) = (set.clone(), thresholds);
+                        let tracks = tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+                        set_tracks.insert(set.clone(), tracks);
+                    }
+                    rips.extend(set_tracks[&set].iter().cloned());
+                }
+            }
+            Err(e) => summary.errors.push(format!("{main_path}: rip library: {e}")),
+        }
         let (disc_tracks, error) = match disc_found {
             Some(Ok(tracks)) => (tracks, None),
             Some(Err(e)) => {
@@ -579,7 +623,15 @@ async fn tracks_where(app: &App, condition: &str, order: &str, s: &Settings, tak
     let sql = format!("SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY {order} LIMIT 20000");
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&app.pool).await?;
     let mut out = Vec::new();
+    // A rip library set matched to several ROMs of a title (its regions) is listed once.
+    let mut rips_seen = std::collections::HashSet::new();
     for row in &rows {
+        if row.try_get::<u16, _>("data_track")? == rip_sets::RIP_VIEW as u16 {
+            let key = (row.try_get::<Option<String>, _>("inner_path")?.unwrap_or_default(), row.try_get::<u32, _>("subsong")?);
+            if Path::new(key.0.split('|').next().unwrap_or("")).is_absolute() && !rips_seen.insert(key) {
+                continue;
+            }
+        }
         if let Some(track) = row_to_track(row, s)? {
             out.push(track);
             if out.len() >= take {
@@ -717,9 +769,14 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
         _ => TrackLocation::File { view: u32::from(data_track), path: row.try_get::<Option<String>, _>("inner_path")?.unwrap_or_default(), subsong: row.try_get("subsong")? },
     };
     // A rip-set track is read from the game's folder, a disc's from the ROM.
-    let path = if matches!(location, TrackLocation::Rip { .. }) { game_folder(&main_path) } else { rom_path(&main_path, &rom_id_files) };
+    let path = match &location {
+        // A library set's path is absolute; a game folder's is relative to that folder.
+        TrackLocation::Rip { path, .. } if Path::new(path.split('|').next().unwrap_or(path)).is_absolute() => Some(PathBuf::new()),
+        TrackLocation::Rip { .. } => game_folder(&main_path),
+        _ => rom_path(&main_path, &rom_id_files),
+    };
     let path = path.ok_or_else(|| Error::not_found(format!("ROM audio track {id}: the ROM is not on this machine")))?;
-    if !path.exists() {
+    if !path.as_os_str().is_empty() && !path.exists() {
         return Err(Error::not_found(format!("ROM audio track {id}: {} is missing", path.display())));
     }
     let lossless = db_settings::get::<String>(&app.pool, db_settings::KEY_AUDIO_DSD_CACHE_FORMAT).await?.as_deref() == Some("flac");

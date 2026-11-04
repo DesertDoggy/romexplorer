@@ -599,6 +599,8 @@
   "add keyword tag": "キーワードタグを追加",
   "add keyword tag…": "キーワードタグを追加…",
   "add language": "言語を追加",
+  "add folder": "フォルダーを追加",
+  "Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.": "音楽の吸い出しファイル（NSF・SPC・GBS・HES・KSS・SGC など、そのままでも zip でも可。zip かフォルダー 1 つが 1 セット）を置いたフォルダーです。「ROM の音声を索引」で、各セットを中身で照合して ROM に結び付けます。地域違いの ROM にも対応します。",
   "add platform…": "プラットフォームを追加…",
   "add region": "地域を追加",
   "add source": "ソースを追加",

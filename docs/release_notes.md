@@ -42,6 +42,9 @@ replacing a build.
 - Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s). Files named as fanfares or music effects ("me") count as jingles. A short first audio track (the spoken "this is a game disc" warning) counts as a sound effect.
 - Music rips kept in a game's folder (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC, loose or zipped)
   play on its title page too, with the track names and lengths from their playlists.
+- A rip library: list the folders where you keep rip sets in Settings › Audio, and Index ROM
+  audio matches each set to your ROMs by their content, so one set plays for every region of
+  the game whatever its name.
 
 # romexplorer 0.1.8 (alpha)
 

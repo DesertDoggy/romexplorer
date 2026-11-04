@@ -605,6 +605,9 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid("the ROM audio lengths are a number of seconds, 0 or more"));
             }
         }
+        db_settings::KEY_AUDIO_RIP_FOLDERS => {
+            string_list(value, "audio_rip_folders")?;
+        }
         db_settings::KEY_AUDIO_CLIENT_BITRATE => {
             if !value.as_u64().is_some_and(|n| super::audio_convert::BITRATE_RANGE.contains(&(n as u32))) {
                 return Err(Error::invalid("audio_client_bitrate_kbps must be an integer 48-320"));
