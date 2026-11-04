@@ -2263,7 +2263,7 @@ async function showAudio() {
   const facets = await api('/api/v1/audio/facets').catch(() => ({ tags: [], artists: [], albums: [], years: [] }));
   const opts = (list, any) => `<option value="">${esc(any)}</option>` + list.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
   view.innerHTML = `<div class="card"><p class="muted">${tr('The audio files under the folders set as audio under Config › Storage, with what their tags say. A scan walks every subfolder. Give files a keyword tag and they play on the pages of every title carrying the same tag.')}</p>
-      <div class="toolbar"><button class="btn primary" data-scan="full">${tr('Scan audio (full)')}</button><button class="btn" data-scan="new_only">${tr('Quick scan (new only)')}</button><button class="btn" id="audio-autotag" title="${tr('tag albums with the title they are named after (translations included); your own tags are left alone, and the automatic ones can be filtered and removed under Edit › Keyword tags')}">${tr('auto-tag by title')}</button><button class="btn" id="audio-fetch" title="${tr('Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep.')}">${tr('Fetch from the main server')}</button><button class="btn" data-romidx="full" title="${tr("find the music and sounds inside disc images and dumped folders, so title pages can play them from the ROM")}">${tr('Index ROM audio')}</button><button class="btn" data-romidx="new_only" title="${tr("find the music and sounds inside disc images and dumped folders, so title pages can play them from the ROM")}">${tr('Index ROM audio (new only)')}</button><span id="audio-scan" class="muted"></span></div></div>
+      <div class="toolbar"><button class="btn primary" data-scan="full">${tr('Scan audio (full)')}</button><button class="btn" data-scan="new_only">${tr('Quick scan (new only)')}</button><button class="btn" id="audio-autotag" title="${tr('tag albums with the title they are named after (translations included); your own tags are left alone, and the automatic ones can be filtered and removed under Edit › Keyword tags')}">${tr('auto-tag by title')}</button><button class="btn" id="audio-fetch" title="${tr('Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep.')}">${tr('Fetch from the main server')}</button><button class="btn" data-romidx="full" title="${tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them")}">${tr('Index ROM audio')}</button><button class="btn" data-romidx="new_only" title="${tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them")}">${tr('Index ROM audio (new only)')}</button><span id="audio-scan" class="muted"></span></div></div>
     <div id="grid"></div>`;
   const reload = () => showAudio();
   const tagAction = (label, path, promptText, scope) => ({ label, run: async (ids, done) => {
@@ -4598,7 +4598,7 @@ function settingEditor(key, value) {
         definitive_pc_max_age: [10, 0, 100, tr('years'), tr('Collection › Definitive: a PC version less than this many years older than the newest version takes the "PC (Definitive tab)" place in the platform priority; an older one ranks by its own year. 0 = PC versions never move up.')],
         media_export_cache_max_mb: [1024, 0, null, 'MiB', tr('Size cap of the cache of pictures converted for emulators; 0 = no cap. The least recently used go first.')],
         audio_rom_loop_min_s: [3, 0, null, 's', tr('ROM audio: a sound that loops is music from this length.')],
-        audio_rom_bgm_min_s: [20, 0, null, 's', tr('ROM audio: a sound that does not loop is music from this length.')],
+        audio_rom_bgm_min_s: [60, 0, null, 's', tr('ROM audio: a sound that does not loop is music from this length.')],
         audio_rom_jingle_min_s: [8, 0, null, 's', tr('ROM audio: a sound that does not loop is a jingle from this length; shorter is a sound effect.')],
       }[key];
       current = value ?? spec[0];
@@ -4830,6 +4830,19 @@ function settingEditor(key, value) {
         }
       }).catch(err => { t.replaceWith(el(`<div class="muted">${esc(err.message)}</div>`)); });
       return { el: box, get: () => Object.keys(current).length ? current : null };
+    }
+    case 'audio_rip_folders': {
+      let list = Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
+      box.appendChild(el(`<div class="muted">${tr('Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.')}</div>`));
+      const holder = el('<div></div>'); box.appendChild(holder);
+      const draw = () => { holder.innerHTML = ''; holder.appendChild(orderList(list, d => esc(d), o => { list = o; }, true).el); };
+      draw();
+      const add = el(`<div class="toolbar"><input type="text" style="min-width:420px" placeholder="D:\\Emulator\\ripsets"><button class="btn small" type="button">${tr('add folder')}</button></div>`);
+      const input = add.querySelector('input');
+      const push = () => { const v = input.value.trim(); if (v && !list.includes(v)) { list = [...list, v]; draw(); } input.value = ''; };
+      add.querySelector('button').onclick = push; input.onkeydown = e => { if (e.key === 'Enter') push(); };
+      box.appendChild(add);
+      return { el: box, get: () => list.length ? list : null };
     }
     case 'copy_recent_destinations': {
       let list = Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];

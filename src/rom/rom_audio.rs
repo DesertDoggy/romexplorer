@@ -27,6 +27,7 @@ use super::chd_cd::{cd_layout, CdImageReader};
 use super::chdman_wrapper::{ChdReader, CD_TRACK_AUDIO};
 use super::detect::sheet::{CueSheetOptions, Sheet, SheetKind};
 use super::disc_files::{self, DiscFile, DiscView};
+use super::inner_archives;
 use super::source::ReadAt;
 use super::vgmstream::{self, PlayConfig, Stream, StreamInfo, VgmSource};
 
@@ -76,18 +77,24 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Self { loop_min_ms: 3_000, bgm_min_ms: 20_000, jingle_min_ms: 8_000 }
+        Self { loop_min_ms: 3_000, bgm_min_ms: 60_000, jingle_min_ms: 8_000 }
     }
 }
 
 /// Words in a path that say what a sound is. Matched against whole path components and
 /// their `_`/`-`/digit-separated parts, case-insensitively.
-const BGM_WORDS: [&str; 7] = ["bgm", "music", "mus", "stream", "strm", "song", "bgms"];
+const BGM_WORDS: [&str; 5] = ["bgm", "music", "mus", "song", "bgms"];
 /// "sound" and "sounds" are not here: games name the folder holding all their audio, music
 /// included, that way.
-const SE_WORDS: [&str; 6] = ["se", "sfx", "snd", "voice", "vo", "voices"];
-/// A sound that does not loop and runs this many times the BGM length is music, whatever
-/// its folder says: the words only settle sounds near a line.
+const SE_WORDS: [&str; 3] = ["se", "sfx", "snd"];
+/// Jingles by name: "me" is the "music effect" (fanfare, short tune) of many games' file names.
+const JINGLE_WORDS: [&str; 5] = ["me", "jingle", "jingles", "fanfare", "fanfares"];
+/// A jingle by name still has to be this long; shorter is a click or silence.
+const NAMED_JINGLE_MIN_MS: u64 = 1_000;
+/// Speech is never music, however long it runs.
+const VOICE_WORDS: [&str; 5] = ["voice", "vo", "voices", "vox", "speech"];
+/// A stereo sound that does not loop and runs this many times the BGM length is music,
+/// whatever an SE folder says: the words only settle sounds near a line.
 const LONG_BGM_FACTOR: u64 = 3;
 
 fn path_words(path: &str) -> Vec<String> {
@@ -98,19 +105,57 @@ fn path_words(path: &str) -> Vec<String> {
         .collect()
 }
 
-/// BGM, jingle or sound effect, by loop and length; names in the path move a sound that is
-/// close to a line (looping but short, or long but not looping) to the side they point to.
-pub fn classify(looping: bool, duration_ms: u64, path: &str, t: &Thresholds) -> SoundKind {
+/// What [`classify`] goes by, besides the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Shape {
+    pub looping: bool,
+    pub duration_ms: u64,
+    /// 0 when not known.
+    pub channels: u16,
+    /// The CD audio track's number; 0 for a file.
+    pub cd_track: u16,
+    /// A track of a music rip set, whose length is the ripper's chosen play length.
+    pub rip: bool,
+}
+
+/// The longest BGM length a CD audio track or a rip-set track is held to.
+const CD_AUDIO_BGM_MIN_MS: u64 = 20_000;
+/// A disc's first audio track (1, or 2 after the data track) shorter than this is the
+/// spoken "this is a game disc" warning a CD player plays, not music.
+const CD_WARNING_MAX_MS: u64 = 45_000;
+
+/// BGM, jingle or sound effect, by loop, length and channels; names in the path move a
+/// sound that is close to a line (looping but short, or long but not looping) to the side
+/// they point to. Speech is a sound effect. A long mono sound that does not loop is more
+/// likely speech than music, so only a BGM name makes it BGM. `channels` 0 is unknown.
+pub fn classify(sound: &Shape, path: &str, t: &Thresholds) -> SoundKind {
+    let Shape { looping, duration_ms, channels, cd_track, rip } = *sound;
+    let cd_audio = cd_track > 0;
+    if cd_track <= 2 && cd_audio && duration_ms < CD_WARNING_MAX_MS {
+        return SoundKind::Se;
+    }
+    // CD audio tracks are the disc's soundtrack far more often than not, and many run under
+    // a minute: they keep the old 20 s line even when the BGM length is set higher. So do
+    // rip-set tracks, whose loops a ripper often plays for well under a minute.
+    let t = &Thresholds { bgm_min_ms: if cd_audio || rip { t.bgm_min_ms.min(CD_AUDIO_BGM_MIN_MS) } else { t.bgm_min_ms }, ..*t };
     let words = path_words(path);
-    let says_bgm = words.iter().any(|w| BGM_WORDS.contains(&w.as_str()));
-    let says_se = !says_bgm && words.iter().any(|w| SE_WORDS.contains(&w.as_str()));
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    let says_bgm = has(&BGM_WORDS);
+    if !says_bgm && has(&VOICE_WORDS) {
+        return SoundKind::Se;
+    }
+    if !says_bgm && has(&JINGLE_WORDS) {
+        return if duration_ms >= NAMED_JINGLE_MIN_MS { SoundKind::Jingle } else { SoundKind::Se };
+    }
+    let says_se = !says_bgm && has(&SE_WORDS);
     if looping && duration_ms >= t.loop_min_ms {
-        // A looping voice or ambience loop in an SE folder is not music.
+        // A looping ambience in an SE folder is not music.
         return if says_se && duration_ms < t.bgm_min_ms { SoundKind::Se } else { SoundKind::Bgm };
     }
     if duration_ms >= t.bgm_min_ms {
-        let long = duration_ms >= t.bgm_min_ms.saturating_mul(LONG_BGM_FACTOR);
-        return if says_se && !long { SoundKind::Jingle } else { SoundKind::Bgm };
+        let mono = channels == 1;
+        let long = !mono && duration_ms >= t.bgm_min_ms.saturating_mul(LONG_BGM_FACTOR);
+        return if (says_se || mono) && !says_bgm && !long { SoundKind::Jingle } else { SoundKind::Bgm };
     }
     if duration_ms >= t.jingle_min_ms {
         return if says_bgm { SoundKind::Bgm } else { SoundKind::Jingle };
@@ -129,6 +174,9 @@ pub enum TrackLocation {
     /// Subsong `subsong` (0 = the file has none) of the file at `path` in data view `view`
     /// (0 = the first data track, or the whole image; for a folder, always 0).
     File { view: u32, path: String, subsong: u32 },
+    /// Track `track` (0-based) of a rip-set file in the game's folder, by its path there
+    /// (`<archive>|<member>` inside a zip or 7z); see [`super::rip_sets`].
+    Rip { path: String, track: u32 },
 }
 
 /// One sound found by [`index_rom`].
@@ -188,9 +236,10 @@ fn extension(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
 }
 
-/// ROM files [`open_rom`] can find audio in: disc images and their sheets. Cartridges and
-/// archives are not on the list.
-pub const DISC_EXTENSIONS: [&str; 13] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "cso", "zso"];
+/// ROM files [`open_rom`] can find audio in: disc images and their sheets, and the DS / 3DS
+/// cartridges, which carry a filesystem. Other cartridges hold sequenced music only, and
+/// archives are not read yet.
+pub const DISC_EXTENSIONS: [&str; 17] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "cso", "zso", "nds", "dsi", "3ds", "cci"];
 
 /// Whether [`index_rom`] is worth running on `path`: a folder dump or a disc image.
 pub fn may_hold_audio(path: &Path) -> bool {
@@ -514,88 +563,6 @@ impl VgmSource for Shared {
     }
 }
 
-/// `size` bytes at `start` of another source: a member of an AFS archive.
-struct Slice {
-    inner: Box<dyn VgmSource>,
-    start: u64,
-    size: u64,
-    /// The archive's own name, to reopen it by.
-    name: String,
-    /// The name vgmstream knows the member by, and reopens it by.
-    member: String,
-}
-
-impl VgmSource for Slice {
-    fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> usize {
-        if offset >= self.size {
-            return 0;
-        }
-        let n = dst.len().min((self.size - offset) as usize);
-        self.inner.read_at(self.start + offset, &mut dst[..n])
-    }
-
-    fn size(&self) -> u64 {
-        self.size
-    }
-
-    fn open(&self, name: &str) -> Option<Box<dyn VgmSource>> {
-        if !vgmstream::file_name_of(name).eq_ignore_ascii_case(vgmstream::file_name_of(&self.member)) {
-            return None;
-        }
-        let base = self.inner.open(&self.name)?;
-        Some(Box::new(Slice { inner: base, start: self.start, size: self.size, name: self.name.clone(), member: self.member.clone() }))
-    }
-}
-
-/// An AFS archive's members that vgmstream can play (Dreamcast and Naomi games keep their
-/// sound in these): index, offset, size and the extension their first bytes call for. The
-/// archive has no names vgmstream would know, so a member is named `<archive>#<index>.<ext>`.
-fn afs_members(src: &mut dyn VgmSource) -> Vec<(u32, u64, u64, &'static str)> {
-    let mut head = [0u8; 8];
-    if src.read_at(0, &mut head) != 8 || &head[..4] != b"AFS\0" {
-        return Vec::new();
-    }
-    let count = u32::from_le_bytes([head[4], head[5], head[6], head[7]]).min(65_536);
-    let mut table = vec![0u8; count as usize * 8];
-    if src.read_at(8, &mut table) != table.len() {
-        return Vec::new();
-    }
-    let size = src.size();
-    let mut out = Vec::new();
-    for (i, entry) in table.chunks_exact(8).enumerate() {
-        let offset = u64::from(u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]));
-        let len = u64::from(u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]));
-        if len < MIN_FILE_BYTES || offset.checked_add(len).is_none_or(|end| end > size) {
-            continue;
-        }
-        let mut magic = [0u8; 4];
-        if src.read_at(offset, &mut magic) != 4 {
-            continue;
-        }
-        let ext = match &magic {
-            b"SPSD" => "spsd",
-            b"RIFF" => "wav",
-            [0x80, 0x00, ..] => "adx",
-            _ => continue,
-        };
-        out.push((i as u32, offset, len, ext));
-    }
-    out
-}
-
-fn is_afs(path: &str) -> bool {
-    path.len() > 4 && path[path.len() - 4..].eq_ignore_ascii_case(".afs")
-}
-
-/// `X.AFS#12.spsd` → (`X.AFS`, 12).
-fn split_afs(path: &str) -> Option<(&str, u32)> {
-    let (base, member) = path.rsplit_once('#')?;
-    if !is_afs(base) {
-        return None;
-    }
-    Some((base, member.split('.').next()?.parse().ok()?))
-}
-
 /// Video files: their sound is a film's mix of voice, effects and music. Indexed, marked
 /// `video`, and played only when `audio_rom_videos` or the title's own choice asks for it.
 const VIDEO_EXTENSIONS: [&str; 17] = ["xmv", "sfd", "bik", "bk2", "usm", "str", "pss", "pmf", "mps", "wmv", "avi", "mp4", "mov", "m2v", "thp", "mods", "vid"];
@@ -634,11 +601,16 @@ const MIN_FILE_BYTES: u64 = 0x40;
 
 fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, path_for_words: &str, t: &Thresholds) -> FoundTrack {
     let duration_ms = info.duration_ms();
-    let video = is_video(location_path(&location));
+    let inner = location_path(&location);
+    let video = is_video(inner_archives::split(inner).map_or(inner, |(base, _)| base));
+    let shape = Shape { looping: info.looping, duration_ms, channels: info.channels, cd_track: match location {
+        TrackLocation::Cdda { track } => u16::try_from(track).unwrap_or(u16::MAX),
+        TrackLocation::File { .. } | TrackLocation::Rip { .. } => 0,
+    }, rip: false };
     FoundTrack {
         location,
         name,
-        kind: classify(info.looping, duration_ms, path_for_words, t),
+        kind: classify(&shape, path_for_words, t),
         sample_rate: info.sample_rate,
         channels: info.channels,
         duration_ms,
@@ -654,7 +626,7 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
 
 fn location_path(location: &TrackLocation) -> &str {
     match location {
-        TrackLocation::File { path, .. } => path,
+        TrackLocation::File { path, .. } | TrackLocation::Rip { path, .. } => path,
         TrackLocation::Cdda { .. } => "",
     }
 }
@@ -679,21 +651,79 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
     }
     drop(first);
     let alone = count > NAMED_SUBSONGS;
+    // Banks sometimes point two entries at the same sound: subsongs alike in length, loop
+    // and format are compared by their first samples, and a repeat is left out.
+    let mut alike: HashMap<AlikeKey, Vec<(u32, Option<u64>)>> = HashMap::new();
     for subsong in 1..=count.min(MAX_SUBSONGS) {
-        let Some(stream) = Stream::open(open(alone), path, subsong, PlayConfig::AS_STORED) else { continue };
+        let Some(mut stream) = Stream::open(open(alone), path, subsong, PlayConfig::AS_STORED) else { continue };
         let info = stream.info().clone();
+        let key = (info.stream_samples, info.loop_start, info.loop_end, info.looping, info.channels, info.sample_rate, info.codec.clone());
+        let earlier = alike.entry(key).or_default();
+        if !earlier.is_empty() {
+            let mine = first_samples_hash(&mut stream);
+            let mut repeat = false;
+            for (other, hash) in earlier.iter_mut() {
+                if hash.is_none() {
+                    *hash = Stream::open(open(true), path, *other, PlayConfig::AS_STORED).map(|mut s| first_samples_hash(&mut s));
+                }
+                if *hash == Some(mine) {
+                    repeat = true;
+                    break;
+                }
+            }
+            if repeat {
+                continue;
+            }
+            earlier.push((subsong, Some(mine)));
+        } else {
+            earlier.push((subsong, None));
+        }
         let words = format!("{path}/{}", info.stream_name);
         let name = if info.stream_name.is_empty() { format!("{file_name} #{subsong}") } else { info.stream_name.clone() };
         out.push(found(TrackLocation::File { view, path: path.to_string(), subsong }, name, &info, size, &words, t));
     }
 }
 
-/// Every playable member of the AFS archive at `path`, as `<path>#<index>.<ext>`.
-fn index_afs(open: &dyn Fn() -> Box<dyn VgmSource>, path: &str, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
-    for (index, start, size, ext) in afs_members(open().as_mut()) {
-        let member = format!("{path}#{index}.{ext}");
-        let slice = |_alone| Box::new(Slice { inner: open(), start, size, name: path.to_string(), member: member.clone() }) as Box<dyn VgmSource>;
-        index_file(&slice, &member, size, view, t, out);
+/// Length, loop and format: subsongs that share these may be the same sound.
+type AlikeKey = (u64, u64, u64, bool, u16, u32, String);
+
+/// A hash of a stream's first second or so of samples: enough to tell two sounds apart.
+fn first_samples_hash(stream: &mut Stream) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut taken = 0usize;
+    while taken < 96_000 {
+        match stream.render() {
+            Ok(Some(chunk)) => {
+                chunk.hash(&mut h);
+                taken += chunk.len();
+            }
+            _ => break,
+        }
+    }
+    h.finish()
+}
+
+/// Every playable member of the archive at `path` (AFS, SDAT, RARC/U8, CPK), as
+/// `<path>#<index>.<ext>`, named by the member's own name where the archive has one.
+fn index_members(open: &dyn Fn() -> Box<dyn VgmSource>, path: &str, kind: inner_archives::Kind, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
+    for m in inner_archives::members(open().as_mut(), kind) {
+        let member = inner_archives::member_path(path, &m);
+        let source = |_alone| inner_archives::open_member(open(), path, &member, &m);
+        let from = out.len();
+        index_file(&source, &member, m.size(), view, t, out);
+        if let Some(name) = &m.name {
+            let own = vgmstream::file_name_of(name);
+            let numbered = vgmstream::file_name_of(&member).to_string();
+            for track in &mut out[from..] {
+                if let Some(rest) = track.name.strip_prefix(&numbered) {
+                    track.name = format!("{own}{rest}");
+                    // Its own name says more than the number did; the player classifies by both.
+                    let shape = Shape { looping: track.looping, duration_ms: track.duration_ms, channels: track.channels, cd_track: 0, rip: false };
+                    track.kind = classify(&shape, &format!("{member}/{}", track.name), t);
+                }
+            }
+        }
     }
 }
 
@@ -732,9 +762,9 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
                 continue;
             }
             let source = DiscFileSource { view: view.clone(), listing: listing.clone(), file: file.clone() };
-            if is_afs(&file.path) {
+            if let Some(kind) = inner_archives::kind_of(&file.path) {
                 progress(&file.path);
-                index_afs(&|| Box::new(source.clone()), &file.path, n as u32, t, &mut out);
+                index_members(&|| Box::new(source.clone()), &file.path, kind, n as u32, t, &mut out);
                 continue;
             }
             if !vgmstream::known_extension(file.name()) {
@@ -753,9 +783,9 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
                 continue;
             }
             let file = || FolderSource::open_rel(root, &rel).map(|s| Box::new(s) as Box<dyn VgmSource>).unwrap_or_else(|| Box::new(vgmstream::MemorySource::new("missing", Vec::new())));
-            if is_afs(&rel) {
+            if let Some(kind) = inner_archives::kind_of(&rel) {
                 progress(&rel);
-                index_afs(&file, &rel, 0, t, &mut out);
+                index_members(&file, &rel, kind, 0, t, &mut out);
                 continue;
             }
             if !vgmstream::known_extension(name) {
@@ -826,7 +856,11 @@ impl PcmStream for VgmPcm {
 }
 
 /// Opens the track at `location` in the ROM at `path` for playing, with `config`'s loops.
+/// For a [`TrackLocation::Rip`] `path` is the game's folder, not the ROM.
 pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> Result<Box<dyn PcmStream>, String> {
+    if let TrackLocation::Rip { path: rel, track } = location {
+        return super::rip_sets::open(path, rel, *track);
+    }
     let rom = open_rom(path)?;
     match location {
         TrackLocation::Cdda { track } => {
@@ -834,8 +868,8 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
             Ok(Box::new(CddaStream { view, pos: 0 }))
         }
         TrackLocation::File { view, path: inner, subsong } => {
-            let afs = split_afs(inner);
-            let file_path = afs.map_or(inner.as_str(), |(base, _)| base);
+            let member = inner_archives::split(inner);
+            let file_path = member.map_or(inner.as_str(), |(base, _)| base);
             let mut source: Box<dyn VgmSource> = if let Some(root) = &rom.folder {
                 Box::new(FolderSource::open_rel(root, file_path).ok_or_else(|| format!("{file_path} is not in the folder"))?)
             } else {
@@ -844,13 +878,15 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
                 let file = listing.iter().find(|f| f.path == file_path).cloned().ok_or_else(|| format!("{file_path} is not on the disc"))?;
                 Box::new(DiscFileSource { view: disc.clone(), listing, file })
             };
-            if let Some((base, index)) = afs {
-                let (_, start, size, _) = afs_members(source.as_mut()).into_iter().find(|m| m.0 == index).ok_or_else(|| format!("{base} has no member {index}"))?;
-                source = Box::new(Slice { inner: source, start, size, name: base.to_string(), member: inner.clone() });
+            if let Some((base, index)) = member {
+                let kind = inner_archives::kind_of(base).ok_or_else(|| format!("{base} is not an archive"))?;
+                let m = inner_archives::members(source.as_mut(), kind).into_iter().find(|m| m.index == index).ok_or_else(|| format!("{base} has no member {index}"))?;
+                source = inner_archives::open_member(source, base, inner, &m);
             }
             let stream = Stream::open(source, inner, *subsong, config).ok_or_else(|| format!("{inner} would not open"))?;
             Ok(Box::new(VgmPcm(stream)))
         }
+        TrackLocation::Rip { .. } => unreachable!("handled above"),
     }
 }
 

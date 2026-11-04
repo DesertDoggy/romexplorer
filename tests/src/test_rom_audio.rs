@@ -82,7 +82,11 @@ use std::path::{Path, PathBuf};
 
 use game_audio::Entry;
 use romexplorer::rom::disc_files::{self, DiscView, FsKind};
-use romexplorer::rom::rom_audio::{self, classify, SoundKind, Thresholds, TrackLocation};
+use romexplorer::rom::rom_audio::{self, classify, Shape, SoundKind, Thresholds, TrackLocation};
+
+fn shape(looping: bool, duration_ms: u64, channels: u16) -> Shape {
+    Shape { looping, duration_ms, channels, cd_track: 0, rip: false }
+}
 
 #[path = "support/disc_images.rs"]
 #[allow(dead_code)]
@@ -92,7 +96,10 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("romexplorer_test_rom_audio_{}_{}", std::process::id(), name));
+        // Tests run in parallel and may share a name: each gets its own folder.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("romexplorer_test_rom_audio_{}_{n}_{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
@@ -179,16 +186,29 @@ fn a_wii_disc_is_refused_not_misread() {
 #[test]
 fn classify_by_loop_length_and_folder() {
     let t = Thresholds::default();
-    assert_eq!(classify(true, 3_500, "x/y.adx", &t), SoundKind::Bgm, "a short loop is still music");
-    assert_eq!(classify(false, 25_000, "x/y.adx", &t), SoundKind::Bgm);
-    assert_eq!(classify(false, 10_000, "x/y.adx", &t), SoundKind::Jingle);
-    assert_eq!(classify(false, 2_000, "x/y.adx", &t), SoundKind::Se);
-    assert_eq!(classify(true, 5_000, "SE/rain_loop.adx", &t), SoundKind::Se, "a looping ambience in an SE folder");
-    assert_eq!(classify(false, 12_000, "BGM/ending.adx", &t), SoundKind::Bgm, "a BGM folder lifts a jingle-length track");
-    assert_eq!(classify(false, 30_000, "voice/v_001.at3", &t), SoundKind::Jingle, "a long voice line is not BGM");
-    assert_eq!(classify(false, 4_000, "music/sting01.ads", &t), SoundKind::Jingle);
-    assert_eq!(classify(false, 30_000, "Data/Sound/stage1.wma", &t), SoundKind::Bgm, "a Sound folder holds music too");
-    assert_eq!(classify(false, 400_000, "SE/ambience.adx", &t), SoundKind::Bgm, "far past the BGM length, the folder does not decide");
+    assert_eq!(classify(&shape(true, 3_500, 2), "x/y.adx", &t), SoundKind::Bgm, "a short loop is still music");
+    assert_eq!(classify(&shape(false, 65_000, 2), "x/y.adx", &t), SoundKind::Bgm);
+    assert_eq!(classify(&shape(false, 45_000, 2), "x/y.adx", &t), SoundKind::Jingle, "under a minute without a loop is not BGM");
+    assert_eq!(classify(&shape(false, 2_000, 2), "sound/me_levelup.aac", &t), SoundKind::Jingle, "a music effect by name");
+    assert_eq!(classify(&shape(true, 6_000, 2), "sound/me_shop.aac", &t), SoundKind::Jingle, "even when it loops");
+    assert_eq!(classify(&shape(false, 300, 2), "sound/me_blank.aac", &t), SoundKind::Se, "too short to be one");
+    assert_eq!(classify(&Shape { cd_track: 5, ..shape(false, 45_000, 2) }, "/Track 05", &t), SoundKind::Bgm, "but a CD audio track is from 20 s");
+    assert_eq!(classify(&Shape { cd_track: 2, ..shape(false, 25_000, 2) }, "/Track 02", &t), SoundKind::Se, "the spoken disc warning");
+    assert_eq!(classify(&Shape { cd_track: 2, ..shape(false, 90_000, 2) }, "/Track 02", &t), SoundKind::Bgm, "a long first track is music");
+    assert_eq!(classify(&Shape { rip: true, ..shape(false, 52_000, 2) }, "set.zip|game.sgc/Old Town", &t), SoundKind::Bgm, "a rip-set track is music from 20 s too");
+    assert_eq!(classify(&Shape { rip: true, ..shape(false, 9_000, 2) }, "set.zip|game.sgc/Cue", &t), SoundKind::Jingle);
+    assert_eq!(classify(&shape(false, 10_000, 2), "x/y.adx", &t), SoundKind::Jingle);
+    assert_eq!(classify(&shape(false, 2_000, 2), "x/y.adx", &t), SoundKind::Se);
+    assert_eq!(classify(&shape(true, 5_000, 2), "SE/rain_loop.adx", &t), SoundKind::Se, "a looping ambience in an SE folder");
+    assert_eq!(classify(&shape(false, 12_000, 2), "BGM/ending.adx", &t), SoundKind::Bgm, "a BGM folder lifts a jingle-length track");
+    assert_eq!(classify(&shape(false, 30_000, 2), "voice/v_001.at3", &t), SoundKind::Se, "a voice line is not music");
+    assert_eq!(classify(&shape(false, 400_000, 2), "VOICE/event_01.adx", &t), SoundKind::Se, "however long it runs");
+    assert_eq!(classify(&shape(false, 4_000, 2), "music/sting01.ads", &t), SoundKind::Jingle);
+    assert_eq!(classify(&shape(false, 90_000, 2), "Data/Sound/stage1.wma", &t), SoundKind::Bgm, "a Sound folder holds music too");
+    assert_eq!(classify(&shape(false, 400_000, 2), "SE/ambience.adx", &t), SoundKind::Bgm, "far past the BGM length, the folder does not decide");
+    assert_eq!(classify(&shape(false, 400_000, 1), "x/talk.adx", &t), SoundKind::Jingle, "long mono without a loop is likely speech");
+    assert_eq!(classify(&shape(false, 30_000, 1), "bgm/b01.adx", &t), SoundKind::Bgm, "unless its name says music");
+    assert_eq!(classify(&shape(false, 10_000, 2), "STREAM/s_03.adx", &t), SoundKind::Jingle, "a stream folder is not a BGM name");
 }
 
 fn by_name(tracks: &[rom_audio::FoundTrack], name: &str) -> rom_audio::FoundTrack {
@@ -230,7 +250,7 @@ fn a_cue_sheet_gives_its_cd_audio_tracks_and_its_data_track() {
     }
     let dir = TempDir::new("cue");
     std::fs::write(dir.path("game (Track 1).bin"), game_audio::raw_2352(&game_audio::iso9660(&sound_tree()))).unwrap();
-    std::fs::write(dir.path("game (Track 2).bin"), game_audio::cdda(42.0)).unwrap();
+    std::fs::write(dir.path("game (Track 2).bin"), game_audio::cdda(72.0)).unwrap();
     std::fs::write(dir.path("game (Track 3).bin"), game_audio::cdda(0.5)).unwrap();
     let cue = dir.path("game.cue");
     std::fs::write(
@@ -242,7 +262,7 @@ fn a_cue_sheet_gives_its_cd_audio_tracks_and_its_data_track() {
     let cd = by_name(&tracks, "Track 02");
     assert_eq!(cd.location, TrackLocation::Cdda { track: 2 });
     assert_eq!(cd.kind, SoundKind::Bgm);
-    assert_eq!(cd.duration_ms / 1000, 40, "played from INDEX 01, two seconds in");
+    assert_eq!(cd.duration_ms / 1000, 70, "played from INDEX 01, two seconds in");
     assert!(tracks.iter().all(|t| t.name != "Track 03"), "a half-second track is skipped");
     assert_eq!(by_name(&tracks, "TITLE.WAV").location, TrackLocation::File { view: 0, path: "SOUND/BGM/TITLE.WAV".into(), subsong: 0 });
 
@@ -410,4 +430,88 @@ fn ffmpeg_codecs_decode_when_linked_in() {
         assert!(pcm.iter().any(|&s| s.abs() > 1000), "{name} decodes to silence");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Indexes `image` (written as `name`) and returns the tracks with their names.
+fn index_image(name: &str, image: Vec<u8>) -> (TempDir, PathBuf, Vec<rom_audio::FoundTrack>) {
+    let dir = TempDir::new("inner");
+    let path = dir.path(name);
+    std::fs::write(&path, image).unwrap();
+    let tracks = rom_audio::index_rom(&path, &Thresholds::default(), |_| {}).unwrap();
+    (dir, path, tracks)
+}
+
+fn plays(path: &Path, track: &rom_audio::FoundTrack, samples: u64) {
+    let mut stream = rom_audio::open_track(path, &track.location, vgmstream::PlayConfig::AS_STORED).unwrap();
+    assert_eq!(stream.total_samples(), Some(samples));
+    assert!(stream.next_chunk().unwrap().is_some());
+}
+
+#[test]
+fn ds_sound_archive_streams_are_found_on_the_cartridge_and_named() {
+    if !need_lib() {
+        return;
+    }
+    let pcm = game_audio::tone(16_000, 1, 16_000 * 25, 330.0);
+    let archive = game_audio::sdat(&[("STRM_TITLE", game_audio::nds_strm(16_000, &pcm))]);
+    let (_dir, path, tracks) = index_image("game.nds", game_audio::nds("sound", &[("sound_data.sdat", archive)]));
+    assert_eq!(tracks.len(), 1, "{tracks:#?}");
+    let t = &tracks[0];
+    assert_eq!(t.location, TrackLocation::File { view: 0, path: "sound/sound_data.sdat#0.strm".into(), subsong: 0 });
+    assert_eq!((t.name.as_str(), t.kind, t.looping), ("STRM_TITLE", SoundKind::Bgm, true));
+    plays(&path, t, 16_000 * 25);
+}
+
+#[test]
+fn gamecube_archives_stored_or_yaz0_give_up_their_sounds() {
+    if !need_lib() {
+        return;
+    }
+    let song = game_audio::wav(22_050, 2, &game_audio::tone(22_050, 2, 22_050 * 30, 330.0), None);
+    let arc = game_audio::rarc(&[("readme.txt", b"not audio".repeat(20)), ("stage_bgm.wav", song.clone())]);
+    let disc = game_audio::gamecube(&[("plain.arc", arc.clone()), ("packed.szs", game_audio::yaz0_stored(&arc))]);
+    let (_dir, path, tracks) = index_image("game.iso", disc);
+    let mut paths: Vec<_> = tracks.iter().map(|t| match &t.location {
+        TrackLocation::File { path, .. } => path.clone(),
+        other => panic!("{other:?}"),
+    }).collect();
+    paths.sort();
+    assert_eq!(paths, ["audio/packed.szs#1.wav", "audio/plain.arc#1.wav"]);
+    assert!(tracks.iter().all(|t| t.name == "stage_bgm.wav" && t.kind == SoundKind::Bgm), "{tracks:#?}");
+    for t in &tracks {
+        plays(&path, t, 22_050 * 30);
+    }
+}
+
+#[test]
+fn cpk_members_are_found_by_their_table_of_contents() {
+    if !need_lib() {
+        return;
+    }
+    let song = game_audio::wav(22_050, 2, &game_audio::tone(22_050, 2, 22_050 * 30, 330.0), None);
+    let cpk = game_audio::cpk(&[("data", "font.bin", b"no".repeat(100)), ("bgm", "title.wav", song)]);
+    let iso = game_audio::iso9660(&[Entry::File("DATA.CPK", cpk)]);
+    let (_dir, path, tracks) = index_image("game.iso", iso);
+    assert_eq!(tracks.len(), 1, "{tracks:#?}");
+    assert_eq!(tracks[0].location, TrackLocation::File { view: 0, path: "DATA.CPK#1.wav".into(), subsong: 0 });
+    assert_eq!(tracks[0].name, "title.wav");
+    plays(&path, &tracks[0], 22_050 * 30);
+}
+
+#[test]
+fn a_decrypted_3ds_image_has_its_romfs_read() {
+    if !need_lib() {
+        return;
+    }
+    let song = game_audio::wav(32_000, 2, &game_audio::tone(32_000, 2, 32_000 * 30, 330.0), None);
+    let (_dir, path, tracks) = index_image("game.3ds", game_audio::ctr_romfs(&[("notes.bin", b"x".repeat(300)), ("field.wav", song)]));
+    assert_eq!(tracks.len(), 1, "{tracks:#?}");
+    assert_eq!(tracks[0].location, TrackLocation::File { view: 0, path: "field.wav".into(), subsong: 0 });
+    plays(&path, &tracks[0], 32_000 * 30);
+    let mut encrypted = game_audio::ctr_romfs(&[]);
+    encrypted[0x4000 + 0x18F] = 0;
+    let dir = TempDir::new("enc");
+    let p = dir.path("enc.3ds");
+    std::fs::write(&p, encrypted).unwrap();
+    assert!(rom_audio::index_rom(&p, &Thresholds::default(), |_| {}).unwrap_err().contains("encrypted"));
 }

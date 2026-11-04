@@ -115,6 +115,10 @@ pub enum FsKind {
     Iso9660,
     Xdvdfs,
     GameCube,
+    /// A Nintendo DS / DSi cartridge's NitroFS.
+    Nitro,
+    /// A 3DS cartridge's RomFS (decrypted images only).
+    RomFs3ds,
 }
 
 impl FsKind {
@@ -123,6 +127,8 @@ impl FsKind {
             Self::Iso9660 => "iso9660",
             Self::Xdvdfs => "xdvdfs",
             Self::GameCube => "gamecube",
+            Self::Nitro => "nitro",
+            Self::RomFs3ds => "3ds_romfs",
         }
     }
 }
@@ -142,6 +148,13 @@ const MAX_FILES: usize = 500_000;
 pub fn list(view: &DiscView) -> Result<Listing, String> {
     if view.size() >= 0x440 {
         let head = view.bytes(0, 0x440)?;
+        // The Nintendo logo's CRC every DS / DSi cartridge header carries.
+        if head[0x15C..0x15E] == [0x56, 0xCF] {
+            return nitro(view, &head).map(|files| Listing { fs: FsKind::Nitro, files });
+        }
+        if &head[0x100..0x104] == b"NCSD" {
+            return romfs_3ds(view, &head).map(|files| Listing { fs: FsKind::RomFs3ds, files });
+        }
         if head[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] {
             return Err("a Wii disc: its data partition is encrypted and is not read yet".into());
         }
@@ -155,7 +168,141 @@ pub fn list(view: &DiscView) -> Result<Listing, String> {
     if let Some(files) = iso9660(view)? {
         return Ok(Listing { fs: FsKind::Iso9660, files });
     }
-    Err("no ISO9660, XDVDFS or GameCube filesystem found".into())
+    Err("no ISO9660, XDVDFS, GameCube, DS or 3DS filesystem found".into())
+}
+
+// --- Nintendo DS NitroFS ----------------------------------------------------------------
+
+/// The NitroFS of a DS / DSi cartridge: the name table (directories, then each one's
+/// entries) and the allocation table of absolute start / end offsets.
+fn nitro(view: &DiscView, head: &[u8]) -> Result<Vec<DiscFile>, String> {
+    let fnt_at = u64::from(le32(head, 0x40).unwrap_or(0));
+    let fnt_len = le32(head, 0x44).unwrap_or(0) as usize;
+    let fat_at = u64::from(le32(head, 0x48).unwrap_or(0));
+    let fat_len = le32(head, 0x4C).unwrap_or(0) as usize;
+    if fnt_len < 8 || fat_len < 8 || fnt_len > 16 << 20 || fat_len > 16 << 20 || fnt_at + fnt_len as u64 > view.size() || fat_at + fat_len as u64 > view.size() {
+        return Err("a DS cartridge with no file system".into());
+    }
+    let fnt = view.bytes(fnt_at, fnt_len)?;
+    let fat = view.bytes(fat_at, fat_len)?;
+    let dirs = usize::from(le16(&fnt, 6).unwrap_or(1)).clamp(1, fnt_len / 8);
+    let mut files = Vec::new();
+    let mut stack = vec![(0usize, String::new(), 0usize)];
+    while let Some((dir, prefix, depth)) = stack.pop() {
+        if dir >= dirs || depth > MAX_DEPTH {
+            continue;
+        }
+        let mut at = le32(&fnt, dir * 8).unwrap_or(0) as usize;
+        let mut id = usize::from(le16(&fnt, dir * 8 + 4).unwrap_or(0));
+        while let Some(&kind) = fnt.get(at) {
+            if kind == 0 || files.len() >= MAX_FILES {
+                break;
+            }
+            let len = usize::from(kind & 0x7F);
+            let Some(name) = fnt.get(at + 1..at + 1 + len) else { break };
+            let name = String::from_utf8_lossy(name).into_owned();
+            let path = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+            at += 1 + len;
+            if kind & 0x80 != 0 {
+                let Some(sub) = le16(&fnt, at) else { break };
+                at += 2;
+                stack.push((usize::from(sub & 0x0FFF), path, depth + 1));
+            } else {
+                let (start, end) = (le32(&fat, id * 8).unwrap_or(0), le32(&fat, id * 8 + 4).unwrap_or(0));
+                id += 1;
+                if end > start && u64::from(end) <= view.size() {
+                    files.push(DiscFile { path, size: u64::from(end - start), extent: Extent::Linear { offset: u64::from(start) } });
+                }
+            }
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+// --- Nintendo 3DS RomFS -----------------------------------------------------------------
+
+const MEDIA_UNIT: u64 = 0x200;
+
+fn le64(b: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
+}
+
+fn utf16_name(b: &[u8]) -> String {
+    let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// The RomFS of a 3DS cartridge image (NCSD): its first partition's NCCH, which must be
+/// stored decrypted (the NoCrypto flag), then the IVFC tree's level 3, the files themselves.
+fn romfs_3ds(view: &DiscView, head: &[u8]) -> Result<Vec<DiscFile>, String> {
+    let ncch_at = u64::from(le32(head, 0x120).unwrap_or(0)) * MEDIA_UNIT;
+    if ncch_at == 0 || ncch_at + 0x200 > view.size() {
+        return Err("a 3DS image with no content partition".into());
+    }
+    let ncch = view.bytes(ncch_at, 0x200)?;
+    if &ncch[0x100..0x104] != b"NCCH" {
+        return Err("a 3DS image whose content partition is not NCCH".into());
+    }
+    if ncch[0x18F] & 0x04 == 0 {
+        return Err("a 3DS image that is encrypted: decrypted images are read, this one is not yet".into());
+    }
+    let romfs_at = ncch_at + u64::from(le32(&ncch, 0x1B0).unwrap_or(0)) * MEDIA_UNIT;
+    let romfs_len = u64::from(le32(&ncch, 0x1B4).unwrap_or(0)) * MEDIA_UNIT;
+    if romfs_len < 0x60 || romfs_at + romfs_len > view.size() {
+        return Err("a 3DS image with no RomFS".into());
+    }
+    let ivfc = view.bytes(romfs_at, 0x60)?;
+    if &ivfc[..4] != b"IVFC" {
+        return Err("a 3DS RomFS without its IVFC header".into());
+    }
+    let master = u64::from(le32(&ivfc, 0x08).unwrap_or(0));
+    let block = 1u64 << le32(&ivfc, 0x4C).unwrap_or(12).min(24);
+    let l3 = romfs_at + (0x60 + master).div_ceil(block) * block;
+    if l3 + 0x28 > view.size() {
+        return Err("a 3DS RomFS cut short".into());
+    }
+    let h = view.bytes(l3, 0x28)?;
+    let part = |at: usize| -> Result<Vec<u8>, String> {
+        let (off, len) = (u64::from(le32(&h, at).unwrap_or(0)), le32(&h, at + 4).unwrap_or(0) as usize);
+        if len > 64 << 20 || l3 + off + len as u64 > view.size() {
+            return Err("a 3DS RomFS with a damaged table".into());
+        }
+        view.bytes(l3 + off, len)
+    };
+    let dirs = part(0x0C)?;
+    let metas = part(0x1C)?;
+    let data_at = l3 + u64::from(le32(&h, 0x24).unwrap_or(0));
+    let mut files = Vec::new();
+    let mut stack = vec![(0usize, String::new(), 0usize)];
+    const NONE: u32 = u32::MAX;
+    while let Some((dir, prefix, depth)) = stack.pop() {
+        if depth > MAX_DEPTH || dir + 0x18 > dirs.len() {
+            continue;
+        }
+        let mut child = le32(&dirs, dir + 0x08).unwrap_or(NONE);
+        while child != NONE && (child as usize) + 0x18 <= dirs.len() && stack.len() < MAX_FILES {
+            let c = child as usize;
+            let len = le32(&dirs, c + 0x14).unwrap_or(0) as usize;
+            let name = utf16_name(dirs.get(c + 0x18..c + 0x18 + len).unwrap_or(&[]));
+            stack.push((c, if prefix.is_empty() { name } else { format!("{prefix}/{name}") }, depth + 1));
+            child = le32(&dirs, c + 0x04).unwrap_or(NONE);
+        }
+        let mut file = le32(&dirs, dir + 0x0C).unwrap_or(NONE);
+        while file != NONE && (file as usize) + 0x20 <= metas.len() && files.len() < MAX_FILES {
+            let f = file as usize;
+            let (offset, size) = (le64(&metas, f + 0x08).unwrap_or(0), le64(&metas, f + 0x10).unwrap_or(0));
+            let len = le32(&metas, f + 0x1C).unwrap_or(0) as usize;
+            let name = utf16_name(metas.get(f + 0x20..f + 0x20 + len).unwrap_or(&[]));
+            if size > 0 && data_at + offset + size <= view.size() {
+                let path = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+                files.push(DiscFile { path, size, extent: Extent::Linear { offset: data_at + offset } });
+            }
+            file = le32(&metas, f + 0x04).unwrap_or(NONE);
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
 }
 
 // --- GameCube --------------------------------------------------------------------------
