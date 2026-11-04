@@ -609,13 +609,57 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
     }
     drop(first);
     let alone = count > NAMED_SUBSONGS;
+    // Banks sometimes point two entries at the same sound: subsongs alike in length, loop
+    // and format are compared by their first samples, and a repeat is left out.
+    let mut alike: HashMap<AlikeKey, Vec<(u32, Option<u64>)>> = HashMap::new();
     for subsong in 1..=count.min(MAX_SUBSONGS) {
-        let Some(stream) = Stream::open(open(alone), path, subsong, PlayConfig::AS_STORED) else { continue };
+        let Some(mut stream) = Stream::open(open(alone), path, subsong, PlayConfig::AS_STORED) else { continue };
         let info = stream.info().clone();
+        let key = (info.stream_samples, info.loop_start, info.loop_end, info.looping, info.channels, info.sample_rate, info.codec.clone());
+        let earlier = alike.entry(key).or_default();
+        if !earlier.is_empty() {
+            let mine = first_samples_hash(&mut stream);
+            let mut repeat = false;
+            for (other, hash) in earlier.iter_mut() {
+                if hash.is_none() {
+                    *hash = Stream::open(open(true), path, *other, PlayConfig::AS_STORED).map(|mut s| first_samples_hash(&mut s));
+                }
+                if *hash == Some(mine) {
+                    repeat = true;
+                    break;
+                }
+            }
+            if repeat {
+                continue;
+            }
+            earlier.push((subsong, Some(mine)));
+        } else {
+            earlier.push((subsong, None));
+        }
         let words = format!("{path}/{}", info.stream_name);
         let name = if info.stream_name.is_empty() { format!("{file_name} #{subsong}") } else { info.stream_name.clone() };
         out.push(found(TrackLocation::File { view, path: path.to_string(), subsong }, name, &info, size, &words, t));
     }
+}
+
+/// Length, loop and format: subsongs that share these may be the same sound.
+type AlikeKey = (u64, u64, u64, bool, u16, u32, String);
+
+/// A hash of a stream's first second or so of samples: enough to tell two sounds apart.
+fn first_samples_hash(stream: &mut Stream) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut taken = 0usize;
+    while taken < 96_000 {
+        match stream.render() {
+            Ok(Some(chunk)) => {
+                chunk.hash(&mut h);
+                taken += chunk.len();
+            }
+            _ => break,
+        }
+    }
+    h.finish()
 }
 
 /// Every playable member of the archive at `path` (AFS, SDAT, RARC/U8, CPK), as
