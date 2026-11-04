@@ -85,7 +85,7 @@ use romexplorer::rom::disc_files::{self, DiscView, FsKind};
 use romexplorer::rom::rom_audio::{self, classify, Shape, SoundKind, Thresholds, TrackLocation};
 
 fn shape(looping: bool, duration_ms: u64, channels: u16) -> Shape {
-    Shape { looping, duration_ms, channels, cd_track: 0 }
+    Shape { looping, duration_ms, channels, cd_track: 0, rip: false }
 }
 
 #[path = "support/disc_images.rs"]
@@ -195,6 +195,8 @@ fn classify_by_loop_length_and_folder() {
     assert_eq!(classify(&Shape { cd_track: 5, ..shape(false, 45_000, 2) }, "/Track 05", &t), SoundKind::Bgm, "but a CD audio track is from 20 s");
     assert_eq!(classify(&Shape { cd_track: 2, ..shape(false, 25_000, 2) }, "/Track 02", &t), SoundKind::Se, "the spoken disc warning");
     assert_eq!(classify(&Shape { cd_track: 2, ..shape(false, 90_000, 2) }, "/Track 02", &t), SoundKind::Bgm, "a long first track is music");
+    assert_eq!(classify(&Shape { rip: true, ..shape(false, 52_000, 2) }, "set.zip|game.sgc/Old Town", &t), SoundKind::Bgm, "a rip-set track is music from 20 s too");
+    assert_eq!(classify(&Shape { rip: true, ..shape(false, 9_000, 2) }, "set.zip|game.sgc/Cue", &t), SoundKind::Jingle);
     assert_eq!(classify(&shape(false, 10_000, 2), "x/y.adx", &t), SoundKind::Jingle);
     assert_eq!(classify(&shape(false, 2_000, 2), "x/y.adx", &t), SoundKind::Se);
     assert_eq!(classify(&shape(true, 5_000, 2), "SE/rain_loop.adx", &t), SoundKind::Se, "a looping ambience in an SE folder");

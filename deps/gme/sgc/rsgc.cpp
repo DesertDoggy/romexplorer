@@ -3,6 +3,7 @@
 // an `rsgc_` prefix, so src/rom/gme.rs drives both libraries the same way. Only the rsgc_
 // functions are exported; the fork's own gme_* stay inside this library.
 #include "gme.h"
+#include "Music_Emu.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,7 +22,25 @@ struct rsgc_info_t {
 	gme_info_t* inner;
 };
 
-RSGC_EXPORT gme_err_t rsgc_open_data(void const* data, long size, gme_t** out, int rate) { return gme_open_data(data, size, out, rate); }
+// The fork's SGC player runs about 8 dB hotter than upstream libgme's other players (and
+// clips): brought down to sit with them.
+static double const sgc_gain = 0.4;
+
+// gme_open_data with the gain set between creating the player and loading the file, which
+// is when the SGC player reads it. (set_gain asserts no sample rate is set yet; the gain is
+// only read at load, so setting it here is safe, and Release builds compile the assert out.)
+RSGC_EXPORT gme_err_t rsgc_open_data(void const* data, long size, gme_t** out, int rate) {
+	*out = 0;
+	gme_type_t type = size >= 4 ? gme_identify_extension(gme_identify_header(data)) : 0;
+	if (!type) return "Wrong file type for this emulator";
+	Music_Emu* emu = gme_new_emu(type, rate);
+	if (!emu) return "Out of memory";
+	emu->set_gain(sgc_gain);
+	gme_err_t err = gme_load_data(emu, data, size);
+	if (err) { delete emu; return err; }
+	*out = emu;
+	return 0;
+}
 RSGC_EXPORT int rsgc_track_count(const gme_t* e) { return gme_track_count(e); }
 RSGC_EXPORT gme_err_t rsgc_start_track(gme_t* e, int i) { return gme_start_track(e, i); }
 RSGC_EXPORT gme_err_t rsgc_play(gme_t* e, int n, short* out) { return gme_play(e, n, out); }
