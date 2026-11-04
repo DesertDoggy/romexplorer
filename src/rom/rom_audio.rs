@@ -563,7 +563,8 @@ const MIN_FILE_BYTES: u64 = 0x40;
 
 fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, path_for_words: &str, t: &Thresholds) -> FoundTrack {
     let duration_ms = info.duration_ms();
-    let video = is_video(location_path(&location));
+    let inner = location_path(&location);
+    let video = is_video(inner_archives::split(inner).map_or(inner, |(base, _)| base));
     FoundTrack {
         location,
         name,

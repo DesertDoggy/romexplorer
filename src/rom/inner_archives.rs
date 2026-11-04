@@ -7,6 +7,8 @@
 //! - RARC and U8 (GameCube, Wii), either stored or Yaz0-compressed (`.szs`).
 //! - CPK (CRI, many PS2 / PSP / later games): its table of contents, members stored or
 //!   CRILAYLA-compressed.
+//! - PSMF (PSP .pmf movies): the ATRAC3plus sound is taken out of the MPEG program stream
+//!   and given to vgmstream as an .at3 (RIFF) in memory.
 //!
 //! A member is addressed as `<archive path>#<index>.<ext>`: the index is the archive's own
 //! (AFS / SDAT file id, CPK id, the RARC / U8 entry), the extension the one vgmstream needs.
@@ -57,6 +59,8 @@ pub enum Kind {
     /// RARC or U8, maybe Yaz0-compressed: told apart by the bytes.
     Nintendo,
     Cpk,
+    /// A PSP movie: one member, its sound.
+    Psmf,
 }
 
 /// The archive kind `path`'s extension names, if it is one these are read for.
@@ -67,6 +71,7 @@ pub fn kind_of(path: &str) -> Option<Kind> {
         "sdat" => Some(Kind::Sdat),
         "arc" | "szs" | "rarc" | "u8" | "carc" => Some(Kind::Nintendo),
         "cpk" => Some(Kind::Cpk),
+        "pmf" => Some(Kind::Psmf),
         _ => None,
     }
 }
@@ -90,6 +95,7 @@ pub fn members(src: &mut dyn VgmSource, kind: Kind) -> Vec<Member> {
         Kind::Sdat => sdat(src),
         Kind::Nintendo => read_all(src).map(|b| nintendo(Arc::new(b))).unwrap_or_default(),
         Kind::Cpk => cpk(src),
+        Kind::Psmf => read_all(src).and_then(|b| psmf_audio(&b)).map(|riff| vec![Member { index: 0, ext: "at3".into(), name: None, data: MemberData::Bytes(Arc::new(riff)) }]).unwrap_or_default(),
     };
     found.into_iter().filter(|m| m.size() >= MIN_MEMBER).take(MAX_MEMBERS).collect()
 }
@@ -674,6 +680,109 @@ fn cpk(src: &mut dyn VgmSource) -> Vec<Member> {
     out
 }
 
+// --- PSMF -------------------------------------------------------------------------------
+
+/// Samples in one ATRAC3plus frame.
+const AT3P_FRAME_SAMPLES: u32 = 2048;
+
+/// The ATRAC3plus sound of a PSP movie, as a RIFF .at3. The program stream carries it in
+/// private stream 1 (0xBD), sub-stream 0, after a 4-byte prefix; the frames in it each have
+/// an 8-byte header (0x0FD0, two bytes of codec setup, four zero bytes) that RIFF leaves out.
+pub fn psmf_audio(b: &[u8]) -> Option<Vec<u8>> {
+    if b.get(..4)? != b"PSMF" {
+        return None;
+    }
+    let start = be32(b, 0x08)? as usize;
+    let end = b.len().min(start.saturating_add(be32(b, 0x0C)? as usize));
+    let mut es = Vec::new();
+    let mut at = start;
+    while at + 6 <= end {
+        if b[at..at + 3] != [0, 0, 1] {
+            at += 1;
+            continue;
+        }
+        let id = b[at + 3];
+        match id {
+            // Pack header: 14 bytes and its stuffing.
+            0xBA => at += 14 + usize::from(*b.get(at + 13)? & 7),
+            0xB9 => at += 4,
+            _ if id >= 0xBB => {
+                let len = usize::from(be16(b, at + 4)?);
+                let next = at + 6 + len;
+                if id == 0xBD && len > 3 {
+                    let payload = at + 9 + usize::from(*b.get(at + 8)?);
+                    if payload + 4 <= next.min(end) && b[payload] == 0 {
+                        es.extend_from_slice(&b[payload + 4..next.min(end)]);
+                    }
+                }
+                at = next;
+            }
+            _ => at += 1,
+        }
+    }
+    at3p_riff(&es)
+}
+
+/// RIFF .at3 from ATRAC3plus frames that each carry their 8-byte header.
+fn at3p_riff(es: &[u8]) -> Option<Vec<u8>> {
+    let first = es.windows(2).position(|w| w == [0x0F, 0xD0])?;
+    let setup = be16(es, first + 2)?;
+    let frame = (usize::from(setup & 0x3FF) + 1) * 8;
+    let rate = [32_000u32, 44_100, 48_000, 88_200, 96_000].get(usize::from(setup >> 13)).copied()?;
+    let channels = [0u16, 1, 2, 3, 4, 6, 7, 8][usize::from((setup >> 10) & 7)];
+    if channels == 0 {
+        return None;
+    }
+    let mut data = Vec::new();
+    let mut at = first;
+    while at + 8 + frame <= es.len() {
+        if es[at..at + 2] == [0x0F, 0xD0] && be16(es, at + 2) == Some(setup) {
+            data.extend_from_slice(&es[at + 8..at + 8 + frame]);
+            at += 8 + frame;
+        } else {
+            // Lost sync: look for the next header with the same setup.
+            let skip = es[at + 1..].windows(4).position(|w| w[..2] == [0x0F, 0xD0] && u16::from_be_bytes([w[2], w[3]]) == setup)?;
+            at += 1 + skip;
+        }
+    }
+    if data.is_empty() {
+        return None;
+    }
+    let frames = (data.len() / frame) as u32;
+    let mut fmt = Vec::with_capacity(0x34);
+    fmt.extend_from_slice(&0xFFFEu16.to_le_bytes());
+    fmt.extend_from_slice(&channels.to_le_bytes());
+    fmt.extend_from_slice(&rate.to_le_bytes());
+    fmt.extend_from_slice(&((frame as u64 * u64::from(rate) / u64::from(AT3P_FRAME_SAMPLES)) as u32).to_le_bytes());
+    fmt.extend_from_slice(&(frame as u16).to_le_bytes());
+    fmt.extend_from_slice(&0u16.to_le_bytes());
+    fmt.extend_from_slice(&0x22u16.to_le_bytes());
+    fmt.extend_from_slice(&(AT3P_FRAME_SAMPLES as u16).to_le_bytes());
+    let mask: u32 = match channels {
+        1 => 0x4,
+        2 => 0x3,
+        _ => 0,
+    };
+    fmt.extend_from_slice(&mask.to_le_bytes());
+    fmt.extend_from_slice(&[0xBF, 0xAA, 0x23, 0xE9, 0x58, 0xCB, 0x71, 0x44, 0xA1, 0x19, 0xFF, 0xFA, 0x01, 0xE4, 0xCE, 0x62]);
+    fmt.extend_from_slice(&[0x01, 0x00]);
+    fmt.extend_from_slice(&setup.to_be_bytes());
+    fmt.extend_from_slice(&[0; 8]);
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&((4 + 8 + fmt.len() + 8 + 8 + 8 + data.len()) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+    out.extend_from_slice(&fmt);
+    out.extend_from_slice(b"fact");
+    out.extend_from_slice(&8u32.to_le_bytes());
+    out.extend_from_slice(&(frames * AT3P_FRAME_SAMPLES).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&data);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,6 +798,45 @@ mod tests {
         src.extend_from_slice(&[0x40, 0x02]);
         src.push(b'X');
         assert_eq!(yaz0(&src).unwrap(), b"abcabcabcX");
+    }
+
+    #[test]
+    fn psmf_sound_is_taken_out_of_the_program_stream() {
+        // Two frames of a stereo 44.1 kHz setup (frame 744 bytes), split across three
+        // private-stream packets between video packets.
+        let setup: u16 = 0x285C;
+        let mut es = Vec::new();
+        for fill in [0x11u8, 0x22] {
+            es.extend_from_slice(&[0x0F, 0xD0]);
+            es.extend_from_slice(&setup.to_be_bytes());
+            es.extend_from_slice(&[0; 4]);
+            es.extend_from_slice(&[fill; 744]);
+        }
+        let pes = |id: u8, body: &[u8]| {
+            let mut p = vec![0, 0, 1, id];
+            p.extend_from_slice(&((3 + 4 + body.len()) as u16).to_be_bytes());
+            p.extend_from_slice(&[0x81, 0x80, 0x00]);
+            p.extend_from_slice(&[0, 0, 0, 0]);
+            p.extend_from_slice(body);
+            p
+        };
+        let mut file = b"PSMF0015".to_vec();
+        file.extend_from_slice(&0x800u32.to_be_bytes());
+        file.resize(0x800, 0);
+        let mut ps = Vec::new();
+        for chunk in es.chunks(600) {
+            ps.extend_from_slice(&pes(0xE0, &[0x55; 100]));
+            ps.extend_from_slice(&pes(0xBD, chunk));
+        }
+        file[0x0C..0x10].copy_from_slice(&(ps.len() as u32).to_be_bytes());
+        file.extend_from_slice(&ps);
+        let riff = psmf_audio(&file).expect("the sound");
+        assert_eq!(&riff[..4], b"RIFF");
+        let data = riff.windows(4).position(|w| w == b"data").unwrap() + 8;
+        assert_eq!(riff.len() - data, 2 * 744);
+        assert!(riff[data..data + 744].iter().all(|&b| b == 0x11) && riff[data + 744..].iter().all(|&b| b == 0x22));
+        assert_eq!(u16::from_le_bytes([riff[0x16], riff[0x17]]), 2, "channels");
+        assert_eq!(u32::from_le_bytes(riff[0x18..0x1C].try_into().unwrap()), 44_100);
     }
 
     #[test]
