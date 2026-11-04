@@ -837,6 +837,17 @@ async fn audio_tag_remove(State(s): State<Shared>, Json(b): Json<api::audio::Aud
     Ok(Json(json!({ "changed": api::audio::remove_tag(&s.app, &b).await? })))
 }
 
+#[derive(Deserialize)]
+struct RomTitleChoice {
+    videos: String,
+}
+
+/// A title's own choice on video sound (`default` | `on` | `off`), for the switch on its page.
+async fn audio_rom_title(State(s): State<Shared>, Path(id): Path<u64>, Json(body): Json<RomTitleChoice>) -> ApiResult<api::audio::TitleVideos> {
+    api::rom_audio::set_title_choice(&s.app, id, &body.videos).await?;
+    Ok(Json(api::rom_audio::title_videos(&s.app, id).await?))
+}
+
 async fn audio_playlist(State(s): State<Shared>, Query(q): Query<api::audio::PlaylistQuery>) -> ApiResult<api::audio::Playlist> {
     Ok(Json(api::audio::playlist(&s.app, &q).await?))
 }
@@ -2564,6 +2575,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
         .route("/api/v1/audio/rom/{id}/file", get(audio_rom_file))
         .route("/api/v1/audio/remote/rom/{id}/file", get(audio_remote_rom))
+        .route("/api/v1/audio/rom/title/{id}", axum::routing::put(audio_rom_title))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/ai", get(ai_overview))

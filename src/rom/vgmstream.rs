@@ -167,7 +167,7 @@ unsafe extern "C" fn cb_close(user: *mut c_void) {
 static IO: RvgmIo = RvgmIo { read: cb_read, open: cb_open, close: cb_close };
 
 /// How a stream is played.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayConfig {
     /// Times a looping stream plays its loop section (vgmstream's own default is 1).
     pub loops: f64,

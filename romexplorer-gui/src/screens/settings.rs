@@ -42,7 +42,7 @@ const EDITORS: &[&str] = &[
     "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
-    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
+    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
     "merge_review_order", "gemini_model", "dat_sync_platforms",
 ];
@@ -104,6 +104,7 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
     ("scan_pkg_titles", false, "read the title inside PS3 and PSP .pkg files", "name them from the content id only (default)"),
     ("media_reuse_existing", true, "take art already in the media folder instead of downloading it again (default)", "always download"),
     ("audio_keep_playing", true, "keep a title's music playing on other screens until another title page opens (default)", "stop the music when the page is left"),
+    ("audio_rom_videos", false, "play the sound of video files in ROMs, such as title movies", "leave video sound out (default)"),
 ];
 
 /// Hashes a file scan can compute, in the order they are shown. Default: all but sha256.

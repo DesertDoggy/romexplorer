@@ -291,7 +291,7 @@ fn afs(members: &[Vec<u8>]) -> Vec<u8> {
 }
 
 #[test]
-fn afs_members_are_indexed_and_play_and_videos_are_not() {
+fn afs_members_are_indexed_and_play_and_videos_are_marked() {
     if !need_lib() {
         return;
     }
@@ -302,10 +302,13 @@ fn afs_members_are_indexed_and_play_and_videos_are_not() {
     let image = dir.path("game.iso");
     std::fs::write(&image, iso).unwrap();
     let tracks = rom_audio::index_rom(&image, &Thresholds::default(), |_| {}).unwrap();
-    assert_eq!(tracks.len(), 1, "one playable member, and no video: {tracks:#?}");
-    assert_eq!(tracks[0].location, TrackLocation::File { view: 0, path: "SOUND/BGM.AFS#1.wav".into(), subsong: 0 });
-    assert_eq!((tracks[0].kind, tracks[0].duration_ms), (SoundKind::Bgm, 30_000));
-    let mut stream = rom_audio::open_track(&image, &tracks[0].location, vgmstream::PlayConfig::AS_STORED).unwrap();
+    assert_eq!(tracks.len(), 2, "one playable member and the video: {tracks:#?}");
+    let member = tracks.iter().find(|t| !t.video).expect("the AFS member");
+    assert_eq!(member.location, TrackLocation::File { view: 0, path: "SOUND/BGM.AFS#1.wav".into(), subsong: 0 });
+    assert_eq!((member.kind, member.duration_ms), (SoundKind::Bgm, 30_000));
+    let video = tracks.iter().find(|t| t.video).expect("the video's sound, marked");
+    assert!(matches!(&video.location, TrackLocation::File { path, .. } if path == "INTRO.XMV"), "{video:?}");
+    let mut stream = rom_audio::open_track(&image, &member.location, vgmstream::PlayConfig::AS_STORED).unwrap();
     assert_eq!(stream.total_samples(), Some(22_050 * 30));
     assert!(stream.next_chunk().unwrap().is_some());
 }
@@ -330,7 +333,7 @@ fn a_track_is_decoded_into_a_flac_for_the_player() {
     let tracks = rom_audio::index_rom(&iso, &Thresholds::default(), |_| {}).unwrap();
     let title = by_name(&tracks, "TITLE.WAV");
     let out = dir.path("cache/rom1-flac-0.flac");
-    romexplorer::api::rom_audio::decode_to(&iso, &title.location, &out, Target::Flac).unwrap();
+    romexplorer::api::rom_audio::decode_to(&iso, &title.location, &out, Target::Flac, vgmstream::PlayConfig::LISTEN).unwrap();
     assert!(!dir.path("cache/rom1-flac-0.flac.part").exists(), "only the whole file is left");
     let mut samples = 0usize;
     let (rate, channels) = romexplorer::rom::audio_decode::decode_file_with(&out, |pcm, _, _| {

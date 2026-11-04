@@ -33,6 +33,8 @@ replacing a build.
   too, and what a title you don't own plays (another version, such as the original of a
   remake, or a random one).
 - The music can keep playing on other screens until you open another title page.
+- The sound of title movies and other videos in a ROM can play too. It is off by default, and
+  each title page can turn it on or off for that title.
 
 # romexplorer 0.1.8 (alpha)
 

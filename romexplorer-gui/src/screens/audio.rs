@@ -256,7 +256,7 @@ pub fn Audio() -> Element {
 #[component]
 pub fn PagePlayer(query: String) -> Element {
     let host = use_hook(|| format!("rx-player-host-{}", query.replace('=', "-")));
-    let playlist = use_resource({
+    let mut playlist = use_resource({
         let query = query.clone();
         move || {
             let query = query.clone();
@@ -310,7 +310,37 @@ pub fn PagePlayer(query: String) -> Element {
     use_drop(|| {
         let _ = document::eval("if (window.rxPlayer) window.rxPlayer.leave();");
     });
+    // A title page whose ROMs have video sound (a title movie): this title's own on / off,
+    // over the audio_rom_videos setting.
+    let videos = playlist.read().as_ref().and_then(|p| p.get("title_videos").cloned()).filter(|tv| api::b(tv, "has_video") || s(tv, "choice") != "default");
+    let switch = videos.map(|tv| {
+        let title = u(&tv, "title_id");
+        let choice = s(&tv, "choice");
+        rsx! {
+            div { class: "toolbar rx-videos",
+                label { {state::tr("Video sound for this title")} " "
+                    select {
+                        onchange: move |e| {
+                            let value = e.value();
+                            spawn(async move {
+                                match api::put(&format!("/api/v1/audio/rom/title/{title}"), json!({ "videos": value })).await {
+                                    Ok(_) => {
+                                        ui::toast(state::tr("saved"), false);
+                                        playlist.restart();
+                                    }
+                                    Err(e) => ui::toast(e.to_string(), true),
+                                }
+                            });
+                        },
+                        for (v, l) in [("default", state::tr("as in Settings")), ("on", state::tr("on")), ("off", state::tr("off"))] {
+                            option { value: "{v}", selected: choice == v, "{l}" }
+                        }
+                    }
+                }
+            }
+        }
+    });
     // An empty element the script draws the bar into. It holds nothing Dioxus renders, so a
     // re-render leaves what the script put there alone.
-    rsx! { div { id: "{host}" } Html { html: String::new() } }
+    rsx! { div { id: "{host}" } Html { html: String::new() } {switch} }
 }

@@ -7,7 +7,9 @@
 -- `subsong` for a bank that holds many streams). Whether a track is BGM, a jingle or a sound
 -- effect is worked out when a playlist is made, from the loop, the length and the
 -- thresholds in Settings > Audio, so changing them needs no re-index; `kind_manual` is a
--- user's own choice, kept through a re-index.
+-- user's own choice, kept through a re-index. `video` marks the sound of a video file (a
+-- title movie): played only when `audio_rom_videos` or the title's own choice in
+-- `rom_audio_title` says so.
 CREATE TABLE rom_audio_index (
     rom_id     BIGINT UNSIGNED NOT NULL PRIMARY KEY,
     indexed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -35,8 +37,17 @@ CREATE TABLE rom_audio_tracks (
     codec        VARCHAR(128) NOT NULL DEFAULT '',
     format       VARCHAR(128) NOT NULL DEFAULT '',
     bytes        BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    video        BOOLEAN NOT NULL DEFAULT FALSE,
     INDEX idx_rat_rom (rom_id),
     CONSTRAINT fk_rat_rom FOREIGN KEY (rom_id) REFERENCES local_rom(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- A title's own answer to whether its ROMs' video sound plays, over `audio_rom_videos`. No
+-- row: the setting decides.
+CREATE TABLE rom_audio_title (
+    title_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+    videos   BOOLEAN NOT NULL,
+    CONSTRAINT fk_rat_title FOREIGN KEY (title_id) REFERENCES title(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 ALTER TABLE jobs

@@ -688,6 +688,9 @@ pub struct PlaylistQuery {
     pub loop_min_s: Option<f64>,
     pub bgm_min_s: Option<f64>,
     pub jingle_min_s: Option<f64>,
+    /// Whether video sound plays, for every title of the page (`audio_rom_videos` and the
+    /// title's own choice, as the client worked it out).
+    pub videos: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -703,6 +706,19 @@ pub struct Playlist {
     /// title page opens.
     #[serde(default)]
     pub keep_playing: bool,
+    /// A title page's video sound choice, for the switch next to the player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_videos: Option<TitleVideos>,
+}
+
+/// A title's own choice on whether its ROMs' video sound plays.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TitleVideos {
+    pub title_id: u64,
+    /// `default` (the `audio_rom_videos` setting decides), `on` or `off`.
+    pub choice: String,
+    /// Whether the title's ROMs (here, or on the main server for a client) have video sound.
+    pub has_video: bool,
 }
 
 /// `audio_fallback`: what a title with no audio of its own plays.
@@ -766,9 +782,22 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
     if !crate::database::settings::MediaRules::load(&app.pool).await?.shows("bgm") {
         return Ok(Playlist::default());
     }
-    let rom = super::rom_audio::Settings::load(app).await?.overridden(q)?;
+    let mut rom = super::rom_audio::Settings::load(app).await?.overridden(q)?;
+    // A client answers for its own titles' choices on video sound when it asks the main
+    // server, which then takes that answer for the page.
+    if !rom.videos_forced && crate::database::settings::instance_mode(&app.pool).await? == crate::database::settings::InstanceMode::Client {
+        if let Some(title) = titles_of(app, q).await?.first() {
+            rom.videos = super::rom_audio::videos_for(app, *title, &rom).await?;
+        }
+    }
     let mut list = playlist_inner(app, q, &rom).await?;
     list.keep_playing = rom.keep_playing;
+    if let Some(title) = q.title_id {
+        let remote = list.title_videos.take().is_some_and(|t| t.has_video);
+        let mut mine = super::rom_audio::title_videos(app, title).await?;
+        mine.has_video |= remote;
+        list.title_videos = Some(mine);
+    }
     Ok(list)
 }
 
@@ -841,6 +870,9 @@ async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, rom: &s
                     .fetch_all(&app.pool)
                     .await?;
                 list.tracks.extend(theirs.tracks.into_iter().filter(|t| t.rom || !held.contains(&t.id)).map(|t| AudioRow { remote: true, ..t }));
+                if theirs.title_videos.as_ref().is_some_and(|t| t.has_video) {
+                    list.title_videos.get_or_insert_with(Default::default).has_video = true;
+                }
                 if list.fallback.is_none() && !list.tracks.is_empty() {
                     list.fallback = theirs.fallback;
                 }
@@ -895,7 +927,7 @@ async fn local_playlist(app: &App, titles: &[u64]) -> Result<Playlist> {
         "SELECT DISTINCT m.name FROM audio_file_tags m JOIN audio_files a ON a.id = m.audio_file_id AND a.deleted = FALSE AND a.playable = TRUE WHERE m.name IN ({keyword_names}) ORDER BY m.name"
     );
     let tags: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(tags_sql)).fetch_all(&app.pool).await?;
-    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false })
+    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false, title_videos: None })
 }
 
 #[cfg(test)]
