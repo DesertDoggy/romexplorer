@@ -85,6 +85,10 @@ name = "test_rom_audio"
 path = "tests/src/test_rom_audio.rs"
 
 [[test]]
+name = "test_gme"
+path = "tests/src/test_gme.rs"
+
+[[test]]
 name = "test_tls"
 path = "tests/src/test_tls.rs"
 
