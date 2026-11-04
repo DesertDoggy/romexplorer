@@ -183,7 +183,7 @@ fn seed_link_providers() -> String {
 }
 
 /// Ownership and configuration: everything this machine cannot get back by re-importing.
-pub const DATABASE_TABLES: [&str; 38] = [
+pub const DATABASE_TABLES: [&str; 41] = [
     // AI answers that were paid for (`api::ai`), keyed by stable ids, not row ids
     "ai_answers",
     // the user's order of a release's local copies
@@ -210,6 +210,11 @@ pub const DATABASE_TABLES: [&str; 38] = [
     "local_game",
     "local_game_roms",
     "local_release_games",
+    // the tracks found inside this machine's ROMs: a re-index finds them again, but not the
+    // kinds a user set by hand
+    "rom_audio_index",
+    "rom_audio_title",
+    "rom_audio_tracks",
     // art and where it lives -- the files themselves are not in here, only the rows
     "media",
     "title_media",

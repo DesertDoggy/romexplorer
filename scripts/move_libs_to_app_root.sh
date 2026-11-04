@@ -242,6 +242,7 @@ set_lib_paths_for_os() {
             rahasher_lib_path() { echo "$1/dynamic/libRAHasher.dylib"; }
             sevenzip_lib_path() { echo "$1/7z.dylib"; }
             rxaac_lib_path() { echo "$1/dynamic/librxaac.dylib"; }
+            rvgm_lib_path() { echo "$1/dynamic/librvgmstream.dylib"; }
             cemuwua_lib_path() { echo "$1/dynamic/libcemuwua.dylib"; }
             exiso_lib_path() { echo "$1/dynamic/libexiso.dylib"; }
             psxpbp_lib_path() { echo "$1/dynamic/libpsxpbp.dylib"; }
@@ -253,6 +254,7 @@ set_lib_paths_for_os() {
             rahasher_lib_path() { echo "$1/dynamic/libRAHasher.dll"; } # keeps its lib prefix on Windows, unlike chdman/dolphinrvz (see hash.rs)
             sevenzip_lib_path() { echo "$1/7z.dll"; }
             rxaac_lib_path() { echo "$1/dynamic/rxaac.dll"; }
+            rvgm_lib_path() { echo "$1/dynamic/rvgmstream.dll"; }
             cemuwua_lib_path() { echo "$1/dynamic/cemuwua.dll"; }
             exiso_lib_path() { echo "$1/dynamic/exiso.dll"; }
             psxpbp_lib_path() { echo "$1/dynamic/psxpbp.dll"; }
@@ -264,6 +266,7 @@ set_lib_paths_for_os() {
             rahasher_lib_path() { echo "$1/dynamic/libRAHasher.so"; }
             sevenzip_lib_path() { echo "$1/7z.so"; } # flat, no dynamic/ subdir -- this build's own layout
             rxaac_lib_path() { echo "$1/dynamic/librxaac.so"; }
+            rvgm_lib_path() { echo "$1/dynamic/librvgmstream.so"; }
             cemuwua_lib_path() { echo "$1/dynamic/libcemuwua.so"; }
             exiso_lib_path() { echo "$1/dynamic/libexiso.so"; }
             psxpbp_lib_path() { echo "$1/dynamic/libpsxpbp.so"; }
@@ -288,6 +291,7 @@ copy_single_lib "zlib-ng" "$ROOT_DIR/deps/zlib-ng/release" zlibng_lib_path 0
 copy_single_lib "RALibretro" "$ROOT_DIR/deps/RALibretro/release" rahasher_lib_path 0
 copy_single_lib "7-Zip-zstd" "$ROOT_DIR/deps/7-Zip-zstd/release" sevenzip_lib_path
 copy_single_lib "libxaac" "$ROOT_DIR/deps/libxaac/release" rxaac_lib_path 0
+copy_single_lib "vgmstream" "$ROOT_DIR/deps/vgmstream/release" rvgm_lib_path 0
 copy_single_lib "cemu" "$ROOT_DIR/deps/cemu/release" cemuwua_lib_path 0
 copy_single_lib "extract-xiso" "$ROOT_DIR/deps/extract-xiso/release" exiso_lib_path 0
 copy_single_lib "beetle-psx-libretro" "$ROOT_DIR/deps/beetle-psx-libretro/release" psxpbp_lib_path 0

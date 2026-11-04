@@ -81,6 +81,10 @@ name = "test_sheets"
 path = "tests/src/test_sheets.rs"
 
 [[test]]
+name = "test_rom_audio"
+path = "tests/src/test_rom_audio.rs"
+
+[[test]]
 name = "test_tls"
 path = "tests/src/test_tls.rs"
 

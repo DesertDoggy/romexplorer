@@ -2,12 +2,15 @@
 // evaluates the same text). One `<audio>` element, a thin bar that goes at the top of a
 // title / release page, and the playlist as a panel down the right edge of the window.
 //
-// rxPlayer.start(barHost, tracks, labels)
+// rxPlayer.start(barHost, tracks, labels, options)
 //   barHost: the element the bar is drawn into (the page puts it at its very top)
 //   tracks:  [{ id, url, title, artist, album, file_name, duration_ms, loudness_lufs }]
 //   labels:  translated text for the buttons (the UI's own language layer supplies them)
-// rxPlayer.stop(): stops playback and removes the bar and the playlist -- called when the
-//   page is left, because the music belongs to the page.
+//   options: { keep: true } -- the `audio_keep_playing` setting (the playlist says it)
+// rxPlayer.leave(): the page is being left. With `keep`, the bar moves to a strip along the
+//   bottom of the window and the music goes on until another title page starts its own (or
+//   stops it); without, this is stop().
+// rxPlayer.stop(): stops playback and removes the bar and the playlist.
 //
 // Volume and "normalise" are remembered on this machine. Normalise scales each track by its
 // measured loudness (`loudness_lufs`, from the audio scan) towards -16 LUFS, turning loud
@@ -37,6 +40,9 @@
     #rx-player-list .rxp-sub { opacity:.65; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     body.rx-has-playlist main { margin-right:270px; }
     @media (max-width: 900px) { #rx-player-list { display:none; } body.rx-has-playlist main { margin-right:0; } }
+    #rx-player-dock { position:fixed; left:8px; right:8px; bottom:8px; z-index:5; }
+    #rx-player-dock #rx-player-bar { margin:0; box-shadow:0 2px 12px rgba(0,0,0,.45); }
+    body.rx-docked { padding-bottom:48px; }
   `;
 
   const TARGET_LUFS = -16;
@@ -44,7 +50,7 @@
   // full volume, un-normalised, every time.
   const recall = (key, fallback) => { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } };
   const remember = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* not remembered */ } };
-  const state = { audio: null, tracks: [], order: [], at: 0, shuffle: true, bar: null, list: null, labels: {}, volume: 1, normalise: false };
+  const state = { audio: null, tracks: [], order: [], at: 0, shuffle: true, bar: null, list: null, labels: {}, volume: 1, normalise: false, keep: false };
 
   // The factor for one track: 1 unless normalising and the track is louder than the target.
   function gainFor(track) {
@@ -102,12 +108,32 @@
     if (state.bar) state.bar.remove();
     if (state.list) state.list.remove();
     document.body.classList.remove('rx-has-playlist');
+    undock();
     state.audio = null; state.bar = null; state.list = null; state.tracks = [];
   }
 
-  function start(host, tracks, labels) {
+  function undock() {
+    const dock = document.getElementById('rx-player-dock');
+    if (dock) dock.remove();
+    document.body.classList.remove('rx-docked');
+  }
+
+  // The page is going away: keep the music in a strip at the bottom, or stop it.
+  function leave() {
+    if (!state.keep || !state.audio || !state.bar || !state.tracks.length) { stop(); return; }
+    let dock = document.getElementById('rx-player-dock');
+    if (!dock) { dock = document.createElement('div'); dock.id = 'rx-player-dock'; document.body.appendChild(dock); }
+    dock.appendChild(state.bar);
+    document.body.classList.add('rx-docked');
+    // The playlist panel takes a column of the page; the strip is enough on other screens.
+    if (state.list) state.list.style.display = 'none';
+    document.body.classList.remove('rx-has-playlist');
+  }
+
+  function start(host, tracks, labels, options) {
     stop();
     if (!host || !tracks || !tracks.length) return;
+    state.keep = !!(options && options.keep);
     if (!document.getElementById('rx-player-css')) { const s = document.createElement('style'); s.id = 'rx-player-css'; s.textContent = CSS; document.head.appendChild(s); }
     state.labels = labels || {};
     state.tracks = tracks; state.shuffle = true; state.at = 0; makeOrder();
@@ -173,5 +199,5 @@
     load(true);
   }
 
-  window.rxPlayer = { start, stop };
+  window.rxPlayer = { start, stop, leave };
 })();

@@ -688,6 +688,9 @@ pub fn lane_of(job_type: JobType, payload: &serde_json::Value) -> String {
         // ROM scan does not hold the music back or the other way round.
         // One lane with the scan: both write the audio tables.
         JobType::AudioScan | JobType::AudioSync | JobType::AudioAutotag => "audio".to_string(),
+        // Reads the ROM collection like a scan does, but writes only its own tables: a lane
+        // of its own, so it neither waits for a scan nor holds the music library back.
+        JobType::RomAudioIndex => "rom_audio".to_string(),
         // Reads every title name and rewrites a table of its own: beside a scan, not behind it.
         JobType::DictionaryBuild => "dictionary".to_string(),
         // Downloads and reads game files for one table of its own: beside the rest.

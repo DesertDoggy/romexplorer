@@ -116,10 +116,14 @@ pub enum JobType {
     /// Writes art into an emulator's own folders (RetroArch thumbnails, PCSX2 / DuckStation
     /// covers), converted to the formats it reads. Payload: [`ArtworkExportRequest`].
     ArtworkExport,
+    /// Looks inside this machine's ROMs (disc images, dumped folders) for music and sound
+    /// banks and records each track, so a title page can play them like a CD player.
+    /// Payload: [`RomAudioIndexRequest`].
+    RomAudioIndex,
 }
 
 impl JobType {
-    pub const ALL: [JobType; 36] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport];
+    pub const ALL: [JobType; 37] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::RomAudioIndex];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -159,6 +163,7 @@ impl JobType {
             Self::AudioAutotag => "audio_autotag",
             Self::DisplayData => "display_data",
             Self::ArtworkExport => "artwork_export",
+            Self::RomAudioIndex => "rom_audio_index",
         }
     }
 
@@ -360,6 +365,15 @@ pub struct AudioScanRequest {
     pub mode: FileScanMode,
 }
 
+/// `mode`: `full` reads every ROM again; `new_only` only ROMs with no index yet.
+/// `title_id`: only that title's ROMs (the title page's button).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RomAudioIndexRequest {
+    pub mode: FileScanMode,
+    #[serde(default)]
+    pub title_id: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HashMatchRequest {
     pub directory_id: u64,
@@ -520,6 +534,8 @@ pub enum JobRequest {
     DisplayData(DisplayDataRequest),
     /// Writes art into an emulator's own folders.
     ArtworkExport(ArtworkExportRequest),
+    /// Indexes the music and sound banks inside this machine's ROMs.
+    RomAudioIndex(RomAudioIndexRequest),
 }
 
 /// Art into a folder: for the files a copy just wrote (`files`), or for what a selection
@@ -728,6 +744,7 @@ impl JobRequest {
             Self::AudioAutotag => JobType::AudioAutotag,
             Self::DisplayData(_) => JobType::DisplayData,
             Self::ArtworkExport(_) => JobType::ArtworkExport,
+            Self::RomAudioIndex(_) => JobType::RomAudioIndex,
         }
     }
 
