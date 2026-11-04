@@ -29,6 +29,7 @@ pub mod sheet_build;
 pub mod source;
 pub mod audio_decode;
 pub mod m4a;
+pub mod vgmstream;
 pub mod xaac;
 pub mod xbox;
 pub mod zlib_ng;
