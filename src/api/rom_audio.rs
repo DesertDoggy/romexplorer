@@ -138,11 +138,16 @@ pub struct Settings {
     pub not_owned: NotOwned,
     pub thresholds: Thresholds,
     pub keep_playing: bool,
+    /// `audio_rom_videos`: video sound plays.
+    pub videos: bool,
+    /// `videos` came with the request (a client's answer for its page): it goes over the
+    /// titles' own choices here.
+    pub videos_forced: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sources: TitleSources::Both, kinds: Kinds::Bgm, not_owned: NotOwned::Related, thresholds: Thresholds::default(), keep_playing: true }
+        Self { sources: TitleSources::Both, kinds: Kinds::Bgm, not_owned: NotOwned::Related, thresholds: Thresholds::default(), keep_playing: true, videos: false, videos_forced: false }
     }
 }
 
@@ -169,6 +174,8 @@ impl Settings {
                 jingle_min_ms: seconds(app, db_settings::KEY_AUDIO_ROM_JINGLE_MIN_S, t.jingle_min_ms).await?,
             },
             keep_playing: db_settings::get::<bool>(&app.pool, db_settings::KEY_AUDIO_KEEP_PLAYING).await?.unwrap_or(d.keep_playing),
+            videos: db_settings::get::<bool>(&app.pool, db_settings::KEY_AUDIO_ROM_VIDEOS).await?.unwrap_or(d.videos),
+            videos_forced: false,
         })
     }
 
@@ -178,10 +185,11 @@ impl Settings {
         let t = self.thresholds;
         let s = |ms: u64| ms as f64 / 1000.0;
         format!(
-            "sources={}&kinds={}&not_owned={}&loop_min_s={}&bgm_min_s={}&jingle_min_s={}",
+            "sources={}&kinds={}&not_owned={}&videos={}&loop_min_s={}&bgm_min_s={}&jingle_min_s={}",
             self.sources.key(),
             self.kinds.key(),
             not_owned.key(),
+            self.videos,
             s(t.loop_min_ms),
             s(t.bgm_min_ms),
             s(t.jingle_min_ms)
@@ -201,6 +209,10 @@ impl Settings {
         }
         if let Some(v) = q.not_owned.as_deref() {
             self.not_owned = NotOwned::parse(v).ok_or_else(|| bad("not_owned"))?;
+        }
+        if let Some(v) = q.videos {
+            self.videos = v;
+            self.videos_forced = true;
         }
         let ms = |v: Option<f64>, what: &str, current: u64| -> Result<u64> {
             match v {
@@ -377,7 +389,7 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
     sqlx::query("DELETE FROM rom_audio_tracks WHERE rom_id = ?").bind(rom_id).execute(&mut *tx).await?;
     for chunk in tracks.chunks(500) {
         let mut q = sqlx::QueryBuilder::<sqlx::MySql>::new(
-            "INSERT INTO rom_audio_tracks (rom_id, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes) ",
+            "INSERT INTO rom_audio_tracks (rom_id, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video) ",
         );
         q.push_values(chunk, |mut b, t| {
             let (location, cd_track, data_track, inner, subsong) = place(&t.location);
@@ -398,7 +410,8 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
                 .push_bind(t.loop_end)
                 .push_bind(t.codec.chars().take(128).collect::<String>())
                 .push_bind(t.format.chars().take(128).collect::<String>())
-                .push_bind(t.bytes);
+                .push_bind(t.bytes)
+                .push_bind(t.video);
         });
         q.build().execute(&mut *tx).await?;
     }
@@ -503,12 +516,61 @@ async fn tracks_where(app: &App, condition: &str, order: &str, s: &Settings, tak
     Ok(out)
 }
 
-/// The tracks in the ROMs of `titles` that `s` says a page plays, in disc order.
+/// The tracks in the ROMs of `titles` that `s` says a page plays, in disc order. Video
+/// sound comes in by each title's own choice, else `audio_rom_videos`.
 pub async fn title_tracks(app: &App, titles: &[u64], s: &Settings) -> Result<Vec<AudioRow>> {
     if titles.is_empty() {
         return Ok(Vec::new());
     }
-    tracks_where(app, &format!("t.rom_id IN ({})", roms_of(titles)), "r.main_path, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong", s, MAX_TRACKS).await
+    let mut groups = Vec::new();
+    for &title in titles {
+        let videos = videos_for(app, title, s).await?;
+        groups.push(format!("(t.rom_id IN ({}){})", roms_of(&[title]), if videos { "" } else { " AND t.video = FALSE" }));
+    }
+    tracks_where(app, &format!("({})", groups.join(" OR ")), "r.main_path, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong", s, MAX_TRACKS).await
+}
+
+/// A title's own choice on video sound, when it has one.
+pub async fn title_choice(app: &App, title: u64) -> Result<Option<bool>> {
+    Ok(sqlx::query_scalar("SELECT videos FROM rom_audio_title WHERE title_id = ?").bind(title).fetch_optional(&app.pool).await?)
+}
+
+/// Whether `title`'s video sound plays under `s`.
+pub async fn videos_for(app: &App, title: u64, s: &Settings) -> Result<bool> {
+    if s.videos_forced {
+        return Ok(s.videos);
+    }
+    Ok(title_choice(app, title).await?.unwrap_or(s.videos))
+}
+
+/// Sets a title's own choice on video sound: `on`, `off`, or `default` (the setting decides).
+pub async fn set_title_choice(app: &App, title: u64, choice: &str) -> Result<()> {
+    match choice {
+        "default" => {
+            sqlx::query("DELETE FROM rom_audio_title WHERE title_id = ?").bind(title).execute(&app.pool).await?;
+        }
+        "on" | "off" => {
+            sqlx::query("INSERT INTO rom_audio_title (title_id, videos) VALUES (?, ?) ON DUPLICATE KEY UPDATE videos = VALUES(videos)")
+                .bind(title)
+                .bind(choice == "on")
+                .execute(&app.pool)
+                .await
+                .map_err(|e| if e.as_database_error().is_some_and(|d| d.is_foreign_key_violation()) { Error::not_found(format!("no title {title}")) } else { e.into() })?;
+        }
+        _ => return Err(Error::invalid("videos must be default, on or off")),
+    }
+    Ok(())
+}
+
+/// What a title page shows about video sound: its own choice, and whether its ROMs have any.
+pub async fn title_videos(app: &App, title: u64) -> Result<super::audio::TitleVideos> {
+    let choice = match title_choice(app, title).await? {
+        None => "default",
+        Some(true) => "on",
+        Some(false) => "off",
+    };
+    let has_video: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS (SELECT 1 FROM rom_audio_tracks t WHERE t.video = TRUE AND t.rom_id IN ({}))", roms_of(&[title])))).fetch_one(&app.pool).await?;
+    Ok(super::audio::TitleVideos { title_id: title, choice: choice.to_string(), has_video })
 }
 
 /// The other versions of `titles`: the rest of their Definitive family (the original of a
@@ -535,7 +597,7 @@ pub async fn stand_in(app: &App, titles: &[u64], s: &Settings) -> Result<(Vec<Au
             let related = related_titles(app, titles).await?;
             Ok((title_tracks(app, &related, s).await?, NotOwned::Related))
         }
-        NotOwned::Random => Ok((tracks_where(app, "1 = 1", "RAND()", s, RANDOM_TRACKS).await?, NotOwned::Random)),
+        NotOwned::Random => Ok((tracks_where(app, if s.videos { "1 = 1" } else { "t.video = FALSE" }, "RAND()", s, RANDOM_TRACKS).await?, NotOwned::Random)),
     }
 }
 
@@ -552,7 +614,7 @@ fn cache_name(id: u64, target: Target, stamp: i64) -> String {
 /// What a track is decoded to: AAC when the encoder is built and takes the track's shape,
 /// FLAC otherwise or when `audio_dsd_cache_format` asks for lossless.
 fn target_for(lossless: bool, sample_rate: u32, channels: u16) -> Target {
-    if lossless || !xaac::available() || !xaac::SAMPLE_RATES.contains(&sample_rate) || channels > 2 {
+    if lossless || !xaac::available() || near_aac_rate(sample_rate).is_none() || channels > 2 {
         Target::Flac
     } else {
         Target::Aac { kbps: super::audio_convert::CACHE_AAC_KBPS }
@@ -562,7 +624,7 @@ fn target_for(lossless: bool, sample_rate: u32, channels: u16) -> Target {
 /// The file to play for ROM track `id`: decoded from the ROM on first play, then cached.
 pub async fn serve(app: &App, id: u64) -> Result<Served> {
     let row = sqlx::query(
-        "SELECT t.location, t.cd_track, t.data_track, t.inner_path, t.subsong, t.sample_rate, t.channels, r.main_path, i.indexed_at \
+        "SELECT t.location, t.cd_track, t.data_track, t.inner_path, t.subsong, t.sample_rate, t.channels, t.looping, t.loop_start, t.loop_end, r.main_path, i.indexed_at \
          FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE LEFT JOIN rom_audio_index i ON i.rom_id = t.rom_id WHERE t.id = ?",
     )
     .bind(id)
@@ -583,7 +645,10 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
         _ => TrackLocation::File { view: u32::from(row.try_get::<u16, _>("data_track")?), path: row.try_get::<Option<String>, _>("inner_path")?.unwrap_or_default(), subsong: row.try_get("subsong")? },
     };
     let lossless = db_settings::get::<String>(&app.pool, db_settings::KEY_AUDIO_DSD_CACHE_FORMAT).await?.as_deref() == Some("flac");
-    let target = target_for(lossless, row.try_get("sample_rate")?, row.try_get::<u8, _>("channels").map(u16::from)?);
+    let rate: u32 = row.try_get("sample_rate")?;
+    let target = target_for(lossless, rate, row.try_get::<u8, _>("channels").map(u16::from)?);
+    let loop_min_ms = Settings::load(app).await?.thresholds.loop_min_ms;
+    let config = play_config(row.try_get("looping")?, row.try_get("loop_start")?, row.try_get("loop_end")?, rate, loop_min_ms);
     let stamp = row.try_get::<Option<chrono::NaiveDateTime>, _>("indexed_at")?.map(|t| t.and_utc().timestamp()).unwrap_or(0);
 
     let dir = super::audio_convert::cache_dir(app);
@@ -591,7 +656,7 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
     let _turn = super::audio_convert::CONVERTING.lock().await;
     if !cached.is_file() {
         let out = cached.clone();
-        let made = tokio::task::spawn_blocking(move || decode_to(&path, &location, &out, target)).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+        let made = tokio::task::spawn_blocking(move || decode_to(&path, &location, &out, target, config)).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
         if let Err(reason) = made {
             return Err(Error::unavailable(format!("ROM audio track {id} could not be decoded: {reason}")));
         }
@@ -606,14 +671,33 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
 
 /// Decodes one track out of the ROM at `rom` into `out`, written beside it and renamed so
 /// the cache only ever holds whole files.
-pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target) -> std::result::Result<(), String> {
+/// How a track is decoded for the player: its loop played twice and faded out, unless the
+/// loop is shorter than `loop_min_ms` (a voice blip or a click flagged as looping would
+/// otherwise become ten seconds of fade).
+pub fn play_config(looping: bool, loop_start: u64, loop_end: u64, sample_rate: u32, loop_min_ms: u64) -> vgmstream::PlayConfig {
+    let loop_ms = loop_end.saturating_sub(loop_start) * 1000 / u64::from(sample_rate.max(1));
+    if looping && loop_ms >= loop_min_ms {
+        vgmstream::PlayConfig::LISTEN
+    } else {
+        vgmstream::PlayConfig::AS_STORED
+    }
+}
+
+/// An AAC rate within half a percent of `rate`: some banks (Xbox 360's XMA) store 47,998 or
+/// 48,003 Hz for what was made at 48,000, a pitch difference nobody hears.
+fn near_aac_rate(rate: u32) -> Option<u32> {
+    xaac::SAMPLE_RATES.iter().copied().find(|&r| (i64::from(rate) - i64::from(r)).unsigned_abs() * 200 <= u64::from(r))
+}
+
+pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig) -> std::result::Result<(), String> {
     let dir = out.parent().ok_or("no cache directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let partial = out.with_extension(format!("{}.part", target.ext()));
     let _ = std::fs::remove_file(&partial);
     let made = super::audio_convert::encode_with(&partial, target, |sink| {
-        let mut stream = rom_audio::open_track(rom, location, vgmstream::PlayConfig::LISTEN)?;
+        let mut stream = rom_audio::open_track(rom, location, config)?;
         let (rate, channels) = (stream.sample_rate(), stream.channels());
+        let rate = if matches!(target, Target::Aac { .. }) { near_aac_rate(rate).unwrap_or(rate) } else { rate };
         while let Some(pcm) = stream.next_chunk()? {
             sink(&pcm, rate, channels)?;
         }
@@ -647,11 +731,13 @@ mod tests {
         mine.sources = TitleSources::Tagged;
         mine.kinds = Kinds::BgmJingle;
         mine.thresholds = Thresholds { loop_min_ms: 2500, bgm_min_ms: 1000, jingle_min_ms: 4000 };
+        mine.videos = true;
         let uri: axum::http::Uri = format!("/p?title_id=1&{}", mine.query(NotOwned::Random)).parse().unwrap();
         let axum::extract::Query(query) = axum::extract::Query::<super::super::audio::PlaylistQuery>::try_from_uri(&uri).unwrap();
         let theirs = Settings::default().overridden(&query).unwrap();
         assert_eq!((theirs.sources, theirs.kinds, theirs.not_owned), (TitleSources::Tagged, Kinds::BgmJingle, NotOwned::Random));
         assert_eq!((theirs.thresholds.loop_min_ms, theirs.thresholds.bgm_min_ms, theirs.thresholds.jingle_min_ms), (2500, 1000, 4000));
+        assert!(theirs.videos && theirs.videos_forced, "the client's answer on video sound goes over the server's titles' own");
         let bad = super::super::audio::PlaylistQuery { kinds: Some("loud".into()), ..Default::default() };
         assert!(Settings::default().overridden(&bad).is_err());
     }
@@ -676,6 +762,17 @@ mod tests {
         assert_eq!(target_for(true, 44_100, 2), Target::Flac);
         assert_eq!(target_for(false, 37_800, 2), Target::Flac, "XA's rate is not an AAC rate");
         assert_eq!(target_for(false, 44_100, 6), Target::Flac);
+        assert_eq!(near_aac_rate(47_998), Some(48_000));
+        assert_eq!(near_aac_rate(48_003), Some(48_000));
+        assert_eq!(near_aac_rate(47_758), None, "half a percent off is where pitch starts to tell");
+        assert_eq!(near_aac_rate(51_200), None, "too far from any AAC rate to relabel");
+    }
+
+    #[test]
+    fn a_short_loop_is_not_played_twice_and_faded() {
+        assert_eq!(play_config(true, 0, 480, 48_000, 3000), vgmstream::PlayConfig::AS_STORED, "a 10 ms loop");
+        assert_eq!(play_config(true, 0, 48_000 * 30, 48_000, 3000), vgmstream::PlayConfig::LISTEN);
+        assert_eq!(play_config(false, 0, 48_000 * 30, 48_000, 3000), vgmstream::PlayConfig::AS_STORED);
     }
 
     #[test]

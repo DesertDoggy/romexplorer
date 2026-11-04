@@ -148,6 +148,8 @@ pub struct FoundTrack {
     pub format: String,
     /// The stored size: the whole file for a bank (shared by its subsongs), the track for CD audio.
     pub bytes: u64,
+    /// The sound of a video file (a title movie), played only when asked for.
+    pub video: bool,
 }
 
 /// A ROM opened for reading its audio.
@@ -594,10 +596,11 @@ fn split_afs(path: &str) -> Option<(&str, u32)> {
     Some((base, member.split('.').next()?.parse().ok()?))
 }
 
-/// Video files: their sound is a film's mix of voice, effects and music, not a game's BGM.
+/// Video files: their sound is a film's mix of voice, effects and music. Indexed, marked
+/// `video`, and played only when `audio_rom_videos` or the title's own choice asks for it.
 const VIDEO_EXTENSIONS: [&str; 17] = ["xmv", "sfd", "bik", "bk2", "usm", "str", "pss", "pmf", "mps", "wmv", "avi", "mp4", "mov", "m2v", "thp", "mods", "vid"];
 
-fn is_video(name: &str) -> bool {
+pub fn is_video(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, ext)| VIDEO_EXTENSIONS.iter().any(|v| ext.eq_ignore_ascii_case(v)))
 }
 
@@ -631,6 +634,7 @@ const MIN_FILE_BYTES: u64 = 0x40;
 
 fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, path_for_words: &str, t: &Thresholds) -> FoundTrack {
     let duration_ms = info.duration_ms();
+    let video = is_video(location_path(&location));
     FoundTrack {
         location,
         name,
@@ -644,6 +648,14 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
         codec: info.codec.clone(),
         format: info.meta.clone(),
         bytes,
+        video,
+    }
+}
+
+fn location_path(location: &TrackLocation) -> &str {
+    match location {
+        TrackLocation::File { path, .. } => path,
+        TrackLocation::Cdda { .. } => "",
     }
 }
 
@@ -716,7 +728,7 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
         };
         let cache = Companions::default();
         for file in listing.iter() {
-            if file.size < MIN_FILE_BYTES || is_video(file.name()) {
+            if file.size < MIN_FILE_BYTES {
                 continue;
             }
             let source = DiscFileSource { view: view.clone(), listing: listing.clone(), file: file.clone() };
@@ -737,7 +749,7 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
         let cache = Companions::default();
         for (rel, size) in folder_files(root) {
             let name = vgmstream::file_name_of(&rel);
-            if size < MIN_FILE_BYTES || is_video(name) {
+            if size < MIN_FILE_BYTES {
                 continue;
             }
             let file = || FolderSource::open_rel(root, &rel).map(|s| Box::new(s) as Box<dyn VgmSource>).unwrap_or_else(|| Box::new(vgmstream::MemorySource::new("missing", Vec::new())));

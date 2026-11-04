@@ -6,6 +6,9 @@
 
 #include "libvgmstream.h"
 #include "libvgmstream_streamfile.h"
+#ifdef VGM_USE_FFMPEG
+#include <libavutil/log.h>
+#endif
 
 struct rvgm {
     libvgmstream_t *lib;
@@ -109,6 +112,10 @@ rvgm *rvgm_open(const rvgm_io *io, void *user, int64_t size, const char *name, i
         return NULL;
     }
     libvgmstream_set_log(LIBVGMSTREAM_LOG_LEVEL_NONE, NULL);
+#ifdef VGM_USE_FFMPEG
+    /* FFmpeg logs to stderr on its own, e.g. while vgmstream probes a file that is not audio. */
+    av_log_set_level(AV_LOG_QUIET);
+#endif
 
     libvgmstream_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));

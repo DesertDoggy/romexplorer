@@ -2314,8 +2314,19 @@ async function showAudio() {
 async function pagePlayer(query) {
   if (!window.rxPlayer) return;
   let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { window.rxPlayer.stop(); return; }
+  for (const old of view.querySelectorAll('.rx-videos')) old.remove();
+  // A title page whose ROMs have video sound (a title movie): this title's own on / off,
+  // over the audio_rom_videos setting.
+  const tv = list.title_videos;
+  if (tv && (tv.has_video || tv.choice !== 'default')) {
+    const row = el(`<div class="toolbar rx-videos"><label>${tr('Video sound for this title')} <select>${[['default', tr('as in Settings')], ['on', tr('on')], ['off', tr('off')]].map(([v, l]) => `<option value="${v}"${v === tv.choice ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label></div>`);
+    row.querySelector('select').onchange = async e => {
+      try { await api(`/api/v1/audio/rom/title/${tv.title_id}`, { method: 'PUT', body: { videos: e.target.value } }); toast(tr('saved')); for (const h of view.querySelectorAll('.rx-player-host')) h.remove(); pagePlayer(query); } catch (err) { toast(err.message, true); }
+    };
+    view.insertBefore(row, view.firstChild);
+  }
   if (!list.tracks.length) { window.rxPlayer.stop(); return; }
-  const host = el('<div></div>'); view.insertBefore(host, view.firstChild);
+  const host = el('<div class="rx-player-host"></div>'); view.insertBefore(host, view.firstChild);
   window.rxPlayer.start(host, list.tracks.map(t => Object.assign({}, t, { url: audioUrl(t.id, t.remote, t.rom), album: t.rom ? [t.album, t.rom_kind && tr(t.rom_kind)].filter(Boolean).join(' · ') : t.album })),
     { previous: tr('previous'), next: tr('next'), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down)': tr('normalise: play every track at about the same loudness (loud tracks are turned down)') },
     { keep: !!list.keep_playing });
@@ -4707,7 +4718,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -4721,6 +4732,7 @@ function settingEditor(key, value) {
         scan_pkg_titles: [false, tr('read the title inside PS3 and PSP .pkg files'), tr('name them from the content id only (default)')],
         media_reuse_existing: [true, tr('take art already in the media folder instead of downloading it again (default)'), tr('always download')],
         audio_keep_playing: [true, tr("keep a title's music playing on other screens until another title page opens (default)"), tr('stop the music when the page is left')],
+        audio_rom_videos: [false, tr('play the sound of video files in ROMs, such as title movies'), tr('leave video sound out (default)')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));

@@ -595,9 +595,9 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid("audio_rom_not_owned must be related, random or none"));
             }
         }
-        db_settings::KEY_AUDIO_KEEP_PLAYING => {
+        db_settings::KEY_AUDIO_KEEP_PLAYING | db_settings::KEY_AUDIO_ROM_VIDEOS => {
             if !value.is_boolean() {
-                return Err(Error::invalid("audio_keep_playing must be true or false"));
+                return Err(Error::invalid(format!("{key} must be true or false")));
             }
         }
         db_settings::KEY_AUDIO_ROM_LOOP_MIN_S | db_settings::KEY_AUDIO_ROM_BGM_MIN_S | db_settings::KEY_AUDIO_ROM_JINGLE_MIN_S => {
