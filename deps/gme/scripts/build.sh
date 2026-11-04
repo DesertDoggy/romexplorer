@@ -16,7 +16,8 @@ set -euo pipefail
 #   - Nuked YM2612 (LGPL), not MAME's (GPL), so the library stays LGPL.
 #   - No zlib: .vgz is gunzipped on the Rust side through rom::zlib_ng, so the DLL has no
 #     dependency of its own to deploy.
-#   - On Windows libstdc++ and libgcc are linked in statically, so no MinGW runtime DLLs ship.
+#   - On Windows the MinGW runtime (libstdc++, libgcc, winpthread) is linked in statically, so
+#     gme.dll imports only system DLLs.
 #
 # The compiler is CXX/CC from the environment when set (scripts/build_native_deps.sh exports the
 # cross compiler that way), else the host's default. On Windows run it from an MSYS2 MINGW64
@@ -78,7 +79,9 @@ cmake_args=(-S "$repo_root" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 if [[ "$platform" == "windows" ]]; then
-  cmake_args+=("-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -Wl,-Bdynamic")
+  # -static, not just -static-libstdc++: the winpthread that libstdc++ pulls in is resolved
+  # after the objects, so anything less leaves gme.dll importing libwinpthread-1.dll.
+  cmake_args+=("-DCMAKE_SHARED_LINKER_FLAGS=-static -static-libgcc -static-libstdc++")
 fi
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
 if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then

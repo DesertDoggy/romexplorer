@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use super::gme::{self, Emu};
-use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, Thresholds, TrackLocation};
+use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
 
 /// The `data_track` a rip-set track is stored with: no disc has this many data tracks.
@@ -55,12 +55,25 @@ struct RipFile {
     playlist: Vec<u8>,
 }
 
+/// A playlist's text as UTF-8. Rip sets' playlists are often not: Shift-JIS for Japanese
+/// sets, Windows-1252 (a `©` byte) for the rest.
+fn m3u_text(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+    let (sjis, _, bad) = encoding_rs::SHIFT_JIS.decode(bytes);
+    if !bad && sjis.chars().any(|c| ('\u{3040}'..='\u{30ff}').contains(&c) || ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+        return sjis.into_owned();
+    }
+    encoding_rs::WINDOWS_1252.decode(bytes).0.into_owned()
+}
+
 /// The lines of `m3u` files that name `file` (by its base name, any case), in file order.
 fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
     let want = base_name(file).to_ascii_lowercase();
     let mut out = Vec::new();
     for (_, text) in m3us {
-        for line in String::from_utf8_lossy(text).lines() {
+        for line in m3u_text(text).lines() {
             let line = line.trim_start_matches('\u{feff}').trim();
             let Some((name, _)) = line.split_once("::") else { continue };
             if line.starts_with('#') || base_name(name.trim()).to_ascii_lowercase() != want {
@@ -234,17 +247,41 @@ fn own_length(info: &gme::TrackInfo) -> Option<(u32, u32, bool)> {
     info.length_ms.map(|len| (len, info.fade_ms.unwrap_or(0), false))
 }
 
-fn track_name(file: &RipFile, info: &gme::TrackInfo, track: u32, count: u32) -> String {
-    if !info.song.is_empty() {
-        return info.song.clone();
+/// A track title from a playlist. Some sites write `<title> - <artist> - <game> - ©<date>
+/// <company>` there; only the title is the track's name.
+fn song_title(song: &str) -> &str {
+    let parts: Vec<&str> = song.split(" - ").collect();
+    if parts.len() >= 3 {
+        parts[0].trim()
+    } else {
+        song.trim()
     }
+}
+
+fn track_name(file: &RipFile, info: &gme::TrackInfo, track: u32, count: u32) -> String {
+    let song = song_title(&info.song);
+    if !song.is_empty() {
+        return song.to_string();
+    }
+    // The file's own title (an NSF's header) before its file name, which is often long.
     let file_name = base_name(file.rel.rsplit('|').next().unwrap_or(&file.rel));
-    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+    let stem = if info.game.is_empty() { file_name.rsplit_once('.').map_or(file_name, |(s, _)| s) } else { info.game.as_str() };
     if count > 1 {
         format!("{stem} #{}", track + 1)
     } else {
         stem.to_string()
     }
+}
+
+/// Track titles that name a jingle however short it is: rip sets title their tracks, and a
+/// two-second "Stage Clear" is a jingle, not a sound effect.
+const JINGLE_TITLES: [&str; 12] = ["game over", "stage clear", "level clear", "area clear", "round clear", "course clear", "get ready", "victory", "fanfare", "jingle", "you win", "game clear"];
+/// Shorter than this is a click even with a jingle's title.
+const TITLED_JINGLE_MIN_MS: u32 = 400;
+
+fn titled_jingle(name: &str) -> bool {
+    let name = name.to_lowercase();
+    JINGLE_TITLES.iter().any(|t| name.contains(t))
 }
 
 /// Every track of every rip set under `folder`. `progress` is told which file is being read.
@@ -286,8 +323,12 @@ pub fn index(folder: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) -> V
                 (Some(i), Some(l)) if l > 0 => (u64::from(i) * rate / 1000, u64::from(i + l) * rate / 1000),
                 _ => (0, 0),
             };
+            let mut kind = classify(&shape, &format!("{}/{name}", file.rel), t);
+            if kind == SoundKind::Se && duration_ms >= TITLED_JINGLE_MIN_MS && titled_jingle(&name) {
+                kind = SoundKind::Jingle;
+            }
             out.push(FoundTrack {
-                kind: classify(&shape, &format!("{}/{name}", file.rel), t),
+                kind,
                 location: TrackLocation::Rip { path: file.rel.clone(), track },
                 name,
                 sample_rate: Emu::SAMPLE_RATE,
@@ -368,6 +409,27 @@ mod tests {
         ];
         let got = String::from_utf8(playlist_for("music/Game.nsf", &m3us)).unwrap();
         assert_eq!(got, "Game.nsf::NSF,1,Title,2:00,,10\nsub/GAME.NSF::NSF,3,Ending,1:30\n");
+    }
+
+    #[test]
+    fn a_playlist_title_keeps_only_the_title() {
+        assert_eq!(song_title("BGM #01 - ? - Some Game - \u{a9}1991-08-02 Company"), "BGM #01");
+        assert_eq!(song_title("Boss - Remix"), "Boss - Remix");
+        assert_eq!(song_title("  Title  "), "Title");
+    }
+
+    #[test]
+    fn a_playlist_not_in_utf8_is_decoded() {
+        assert_eq!(m3u_text(b"a.gbs::GBS,1,Song - x - y - \xa91991"), "a.gbs::GBS,1,Song - x - y - \u{a9}1991");
+        let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("a.nsf::NSF,1,タイトル");
+        assert_eq!(m3u_text(&sjis), "a.nsf::NSF,1,タイトル");
+    }
+
+    #[test]
+    fn short_tracks_titled_as_jingles_are_jingles() {
+        assert!(titled_jingle("Stage Clear"));
+        assert!(titled_jingle("GAME OVER"));
+        assert!(!titled_jingle("Overworld"));
     }
 
     #[test]
