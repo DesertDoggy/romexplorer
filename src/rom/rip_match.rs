@@ -62,8 +62,13 @@ pub fn rom_image(data: &[u8]) -> Option<(RipSystem, &[u8])> {
         [b'G', b'B', b'S', _] => Some((RipSystem::GameBoy, data.get(0x70..)?)),
         b"SNES" => Some((RipSystem::Snes, data.get(0x100..0x10100.min(data.len()))?)),
         b"HESM" => Some((RipSystem::PcEngine, data.get(0x20..)?)),
-        b"KSCC" => Some((RipSystem::Msx, data.get(0x10..)?)),
-        b"KSSX" => Some((RipSystem::Msx, data.get(0x20..)?)),
+        // A KSS with the SN76489 flag (device flags bit 1) is Master System / Game Gear music,
+        // not MSX. A KSSX header is 0x10 bytes plus its own extra length.
+        b"KSCC" | b"KSSX" => {
+            let flags = *data.get(0x0F)?;
+            let start = if tag == b"KSSX" { 0x10 + usize::from(*data.get(0x0E)?) } else { 0x10 };
+            Some((if flags & 0x02 != 0 { RipSystem::MasterSystem } else { RipSystem::Msx }, data.get(start..)?))
+        }
         [b'S', b'G', b'C', 0x1A] => {
             let system = match data.get(0x28) {
                 Some(1) => RipSystem::GameGear,
@@ -447,6 +452,13 @@ mod tests {
         sgc[..4].copy_from_slice(b"SGC\x1A");
         sgc[0x28] = 1;
         assert_eq!(rom_image(&sgc).map(|(s, i)| (s, i.len())), Some((RipSystem::GameGear, 64)));
+        let mut kss = vec![0u8; 0x20 + 64];
+        kss[..4].copy_from_slice(b"KSSX");
+        kss[0x0E] = 0x10;
+        kss[0x0F] = 0x02;
+        assert_eq!(rom_image(&kss).map(|(s, i)| (s, i.len())), Some((RipSystem::MasterSystem, 64)), "an SN76489 KSS is Sega music");
+        kss[0x0F] = 0;
+        assert_eq!(rom_image(&kss).map(|(s, _)| s), Some(RipSystem::Msx));
     }
 
     #[test]
