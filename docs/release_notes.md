@@ -46,6 +46,21 @@ replacing a build.
   audio matches each set to your ROMs by their content, so one set plays for every region of
   the game whatever its name.
 
+**Merge review and combined titles**
+- Releases on a card can be dragged to the title they belong to, or onto "+" for a new title
+  named after the first one. Tapping a release and then a title works too.
+- Cards already taken or turned down can be shown again with the new state filter. They are
+  hidden by default.
+- Splits are now listed under Edit › Combined titles and can be undone there. Splits made
+  from Merge review before this update are added to the list.
+
+## Bug fixes
+
+- Pirate and unlicensed games were merged into retail games' titles. They are now kept
+  apart, and those already merged are split out once after the update.
+- The "another game inside" card left pirate and unlicensed games from other regions in the
+  title.
+
 # romexplorer 0.1.8 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
