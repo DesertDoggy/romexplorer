@@ -380,7 +380,7 @@ fn num_spec(key: &str) -> Option<(i64, i64, Option<i64>, &'static str, &'static 
         "definitive_pc_max_age" => (10, 0, Some(100), "years", "Collection › Definitive: a PC version less than this many years older than the newest version takes the \"PC (Definitive tab)\" place in the platform priority; an older one ranks by its own year. 0 = PC versions never move up."),
         "media_export_cache_max_mb" => (1024, 0, None, "MiB", "Size cap of the cache of pictures converted for emulators; 0 = no cap. The least recently used go first."),
         "audio_rom_loop_min_s" => (3, 0, None, "s", "ROM audio: a sound that loops is music from this length."),
-        "audio_rom_bgm_min_s" => (20, 0, None, "s", "ROM audio: a sound that does not loop is music from this length."),
+        "audio_rom_bgm_min_s" => (60, 0, None, "s", "ROM audio: a sound that does not loop is music from this length."),
         "audio_rom_jingle_min_s" => (8, 0, None, "s", "ROM audio: a sound that does not loop is a jingle from this length; shorter is a sound effect."),
         _ => return None,
     })
