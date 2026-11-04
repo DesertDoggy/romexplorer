@@ -327,10 +327,9 @@ fn iso9660(view: &DiscView) -> Result<Option<Vec<DiscFile>>, String> {
     let root = &pvd[156..156 + 34];
     let root_lba = u64::from(le32(root, 2).unwrap_or(0));
     let root_len = le32(root, 10).unwrap_or(0);
-    // A Dreamcast GD-ROM's high-density track starts at LBA 45000 and its filesystem counts
-    // from the start of the disc, not the track: shift when the root would not fit.
-    let lba_base = if (root_lba + 1) * stride + user > view.size() && root_lba >= 45_000 { 45_000 } else { 0 };
-    let layout = IsoLayout { stride, user, lba_base };
+    // LBAs count from the start of the image: a GD-ROM's high-density area comes here as
+    // `rom_audio`'s whole-area view, which keeps them disc-relative.
+    let layout = IsoLayout { stride, user, lba_base: 0 };
     let mut files = Vec::new();
     iso_dir(view, layout, root_lba, root_len, "", 0, &mut files)?;
     Ok(Some(files))
