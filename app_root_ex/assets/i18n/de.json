@@ -2580,5 +2580,22 @@
   "A serial in the file name, per platform:": "Eine Seriennummer im Dateinamen, pro Plattform:",
   "(as above)": "(wie oben)",
   "use it": "verwenden",
-  "don't use it": "nicht verwenden"
+  "don't use it": "nicht verwenden",
+  "split out of": "abgespalten von",
+  "undo split": "Abspaltung rückgängig",
+  "rejoined {date} →": "{date} zurückgeführt →",
+  "Put \"{merged}\" back into \"{current}\"?": "„{merged}“ wieder in „{current}“ einfügen?",
+  "back in title #{id}": "wieder in Titel #{id}",
+  "Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.": "Abspaltungen stehen auch hier (Grund: split): „Abspaltung rückgängig“ legt die Releases zurück in den Titel, aus dem sie kamen.",
+  "to do": "offen",
+  "taken": "übernommen",
+  "said no": "abgelehnt",
+  "Arrange yourself": "Selbst zuordnen",
+  "Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.": "Ziehe Releases zu dem Titel, zu dem sie gehören, oder auf + für einen neuen Titel, benannt nach dem ersten. Oder tippe ein Release an und dann ein Feld.",
+  "new title": "neuer Titel",
+  "(left empty: removed)": "(bleibt leer: wird entfernt)",
+  "a new title": "ein neuer Titel",
+  "apply this grouping": "diese Zuordnung übernehmen",
+  "start from the titles as they are": "mit den Titeln wie jetzt beginnen",
+  "start from the suggestion": "mit dem Vorschlag beginnen"
 }

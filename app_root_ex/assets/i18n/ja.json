@@ -2793,5 +2793,22 @@
   "When this finds nothing, audio_fallback decides.": "見つからないときは audio_fallback に従います。",
   "Seconds. A ROM sound that loops and is at least this long is music (default 3).": "秒数です。ループする ROM の音で、この長さ以上のものを BGM とします（既定 3）。",
   "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.": "秒数です。ループしない ROM の音は、この長さ（既定 20）から BGM、audio_rom_jingle_min_s（既定 8）からジングル、それより短いものは効果音とします。",
-  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "音はループするかどうかと長さ（下の 3 つの設定）で分けます。"
+  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "音はループするかどうかと長さ（下の 3 つの設定）で分けます。",
+  "split out of": "分割元",
+  "undo split": "分割を元に戻す",
+  "rejoined {date} →": "{date} に戻しました →",
+  "Put \"{merged}\" back into \"{current}\"?": "「{merged}」を「{current}」に戻しますか？",
+  "back in title #{id}": "タイトル #{id} に戻しました",
+  "Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.": "分割もここに表示されます（理由: split）。「分割を元に戻す」で、リリースを元のタイトルに戻します。",
+  "to do": "未処理",
+  "taken": "採用済み",
+  "said no": "却下済み",
+  "Arrange yourself": "自分で振り分ける",
+  "Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.": "リリースを正しいタイトルへドラッグします。+ にドロップすると新しいタイトルになり、最初のリリースの名前が付きます。リリースをタップしてから枠をタップしても移動できます。",
+  "new title": "新しいタイトル",
+  "(left empty: removed)": "（空になるため削除）",
+  "a new title": "新しいタイトル",
+  "apply this grouping": "この振り分けを適用",
+  "start from the titles as they are": "今のタイトルから始める",
+  "start from the suggestion": "提案から始める"
 }
