@@ -94,3 +94,78 @@ fn garbage_is_refused() {
     assert!(Emu::open(vec![0x1F, 0x8B, 8, 0, 1, 2, 3], Emu::SAMPLE_RATE).is_err());
     assert!(gme::gunzip(b"plain").is_none());
 }
+
+/// A folder under the system temp directory, removed when dropped.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("romexplorer-gme-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn rip_sets_in_a_game_folder_are_indexed_and_played() {
+    use romexplorer::rom::rip_sets;
+    use romexplorer::rom::rom_audio::{self, SoundKind, Thresholds, TrackLocation};
+    if !need_lib() {
+        return;
+    }
+    let dir = TempDir::new("rips");
+    let music = dir.0.join("music");
+    std::fs::create_dir_all(&music).unwrap();
+    std::fs::write(dir.0.join("game.rom"), [0u8; 64]).unwrap();
+    std::fs::write(music.join("Game.nsf"), chip_music::nsf(4, "Test Game")).unwrap();
+    // The playlist names two of the four songs, with a title and a length for each.
+    std::fs::write(music.join("Game.m3u"), "Game.nsf::NSF,2,Overworld,1:10,,3\nGame.nsf::NSF,4,Fanfare,0:04,,1\n").unwrap();
+    std::fs::write(dir.0.join("Title.vgm"), chip_music::vgm_psg(2, 3, "Title Theme", "Test Game", "Test System")).unwrap();
+
+    let t = Thresholds::default();
+    let mut tracks = rip_sets::index(&dir.0, &t, |_| {});
+    tracks.sort_by(|a, b| a.name.cmp(&b.name));
+    let names: Vec<&str> = tracks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["Fanfare", "Overworld", "Title Theme"], "{tracks:#?}");
+
+    let overworld = &tracks[1];
+    assert_eq!(overworld.location, TrackLocation::Rip { path: "music/Game.nsf".into(), track: 0 });
+    assert_eq!(overworld.duration_ms, 70_000);
+    assert_eq!(overworld.kind, SoundKind::Bgm);
+    assert_eq!(overworld.codec, "NSF");
+    assert_eq!(tracks[0].kind, SoundKind::Jingle, "a fanfare by name");
+    let title = &tracks[2];
+    assert!(title.looping && title.kind == SoundKind::Bgm, "{title:?}");
+
+    // Played from the folder: the playlist's 70 s plus its 3 s fade.
+    let mut stream = rom_audio::open_track(&dir.0, &overworld.location, romexplorer::rom::vgmstream::PlayConfig::LISTEN).unwrap();
+    assert_eq!((stream.sample_rate(), stream.channels()), (44_100, 2));
+    assert_eq!(stream.total_samples(), Some(73 * 44_100));
+    let first = stream.next_chunk().unwrap().unwrap();
+    assert!(peak(&first) > 1000);
+}
+
+#[test]
+fn a_track_with_no_length_is_measured() {
+    use romexplorer::rom::rip_sets;
+    use romexplorer::rom::rom_audio::Thresholds;
+    if !need_lib() {
+        return;
+    }
+    let dir = TempDir::new("measure");
+    std::fs::write(dir.0.join("Game.nsf"), chip_music::nsf(1, "Test Game")).unwrap();
+    let tracks = rip_sets::index(&dir.0, &Thresholds::default(), |_| {});
+    assert_eq!(tracks.len(), 1);
+    // The tone never stops: it runs on, so it loops.
+    assert!(tracks[0].looping, "{:?}", tracks[0]);
+    assert!(tracks[0].duration_ms >= u64::from(rip_sets::RUN_ON_MS) - 1000, "{:?}", tracks[0]);
+}

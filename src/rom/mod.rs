@@ -24,6 +24,7 @@ pub mod parallel;
 pub mod pbp;
 pub mod pipeline;
 pub mod rom_audio;
+pub mod rip_sets;
 pub mod platforms;
 pub mod ra_disc;
 pub mod scan;

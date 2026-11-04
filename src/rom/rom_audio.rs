@@ -171,6 +171,9 @@ pub enum TrackLocation {
     /// Subsong `subsong` (0 = the file has none) of the file at `path` in data view `view`
     /// (0 = the first data track, or the whole image; for a folder, always 0).
     File { view: u32, path: String, subsong: u32 },
+    /// Track `track` (0-based) of a rip-set file in the game's folder, by its path there
+    /// (`<archive>|<member>` inside a zip or 7z); see [`super::rip_sets`].
+    Rip { path: String, track: u32 },
 }
 
 /// One sound found by [`index_rom`].
@@ -599,7 +602,7 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
     let video = is_video(inner_archives::split(inner).map_or(inner, |(base, _)| base));
     let shape = Shape { looping: info.looping, duration_ms, channels: info.channels, cd_track: match location {
         TrackLocation::Cdda { track } => u16::try_from(track).unwrap_or(u16::MAX),
-        TrackLocation::File { .. } => 0,
+        TrackLocation::File { .. } | TrackLocation::Rip { .. } => 0,
     } };
     FoundTrack {
         location,
@@ -620,7 +623,7 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
 
 fn location_path(location: &TrackLocation) -> &str {
     match location {
-        TrackLocation::File { path, .. } => path,
+        TrackLocation::File { path, .. } | TrackLocation::Rip { path, .. } => path,
         TrackLocation::Cdda { .. } => "",
     }
 }
@@ -850,7 +853,11 @@ impl PcmStream for VgmPcm {
 }
 
 /// Opens the track at `location` in the ROM at `path` for playing, with `config`'s loops.
+/// For a [`TrackLocation::Rip`] `path` is the game's folder, not the ROM.
 pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> Result<Box<dyn PcmStream>, String> {
+    if let TrackLocation::Rip { path: rel, track } = location {
+        return super::rip_sets::open(path, rel, *track);
+    }
     let rom = open_rom(path)?;
     match location {
         TrackLocation::Cdda { track } => {
@@ -876,6 +883,7 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
             let stream = Stream::open(source, inner, *subsong, config).ok_or_else(|| format!("{inner} would not open"))?;
             Ok(Box::new(VgmPcm(stream)))
         }
+        TrackLocation::Rip { .. } => unreachable!("handled above"),
     }
 }
 
