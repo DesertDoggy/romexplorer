@@ -189,3 +189,59 @@ fn sgc_plays_through_the_second_library() {
     emu.play(&mut buf).unwrap();
     assert!(peak(&buf) > 1000, "the PSG tone is audible");
 }
+
+#[test]
+fn a_rip_library_set_is_matched_to_every_rom_that_carries_it() {
+    use romexplorer::common::models::Platform;
+    use romexplorer::rom::rip_match::Library;
+    use romexplorer::rom::rip_sets;
+    use romexplorer::rom::rom_audio::{self, Thresholds, TrackLocation};
+    if !need_lib() {
+        return;
+    }
+    let lib_dir = TempDir::new("library");
+    let roms = TempDir::new("library-roms");
+    let set = lib_dir.0.join("Some Game (NSF)");
+    std::fs::create_dir_all(&set).unwrap();
+    // The NSF's code plus a block of song data that looks like real bytes.
+    let mut nsf = chip_music::nsf(2, "Test Game");
+    let mut x = 0x1234_5678u32;
+    nsf.extend((0..4096).map(|_| {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x as u8
+    }));
+    std::fs::write(set.join("game.nsf"), &nsf).unwrap();
+    // Two regions: the same music at different places; and a ROM of another game.
+    let image = &nsf[0x80..];
+    for (name, pad) in [("Game (Japan).nes", 0x4010usize), ("Game (USA).nes", 0x8010)] {
+        let mut rom = vec![0x55u8; pad];
+        rom.extend_from_slice(image);
+        rom.resize(rom.len() + 0x2000, 0xEA);
+        std::fs::write(roms.0.join(name), rom).unwrap();
+    }
+    std::fs::write(roms.0.join("Other (USA).nes"), vec![0xA9u8; 0x10000]).unwrap();
+
+    let cache = roms.0.join("cache.json");
+    let library = Library::build(&[lib_dir.0.clone()], Some(&cache), |_, _| {});
+    assert_eq!(library.len(), 1);
+    let nes = Platform::Nes as u16;
+    assert!(library.covers(nes) && !library.covers(Platform::Snes as u16));
+    for name in ["Game (Japan).nes", "Game (USA).nes"] {
+        let got = library.match_rom(&roms.0.join(name), nes).unwrap();
+        assert_eq!(got.len(), 1, "{name}: {got:?}");
+        assert_eq!(got[0].0, set);
+    }
+    assert!(library.match_rom(&roms.0.join("Other (USA).nes"), nes).unwrap().is_empty());
+    // The cache is used the second time, and gives the same answer.
+    assert!(cache.is_file());
+    assert_eq!(Library::build(&[lib_dir.0.clone()], Some(&cache), |_, _| {}).len(), 1);
+
+    let tracks = rip_sets::index_set(&set, &Thresholds::default(), |_| {});
+    assert_eq!(tracks.len(), 2);
+    let TrackLocation::Rip { path, .. } = &tracks[0].location else { panic!("{:?}", tracks[0].location) };
+    assert!(std::path::Path::new(path).is_absolute(), "{path}");
+    let mut stream = rom_audio::open_track(std::path::Path::new(""), &tracks[0].location, romexplorer::rom::vgmstream::PlayConfig::LISTEN).unwrap();
+    assert!(peak(&stream.next_chunk().unwrap().unwrap()) > 1000);
+}

@@ -167,6 +167,94 @@ fn collect(folder: &Path) -> Vec<RipFile> {
     with_playlists(music, &m3us)
 }
 
+// --- rip libraries ----------------------------------------------------------------------
+
+/// Whether `name` is a file a rip set is made of: music gme plays, or a playlist.
+fn is_rip_member(name: &str) -> bool {
+    gme::known_extension(name) || ext_of(name) == "m3u"
+}
+
+/// The sets in a rip library folder: each zip or 7z holding rip files, and each folder
+/// holding loose ones. Sorted, so a run is repeatable.
+pub fn sets_in(library: &Path) -> Vec<PathBuf> {
+    let mut sets = std::collections::BTreeSet::new();
+    let mut stack = vec![(library.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if kind.is_dir() && depth < 4 {
+                stack.push((entry.path(), depth + 1));
+            } else if kind.is_file() {
+                if archive_format(&name).is_some() {
+                    sets.insert(entry.path());
+                } else if gme::known_extension(&name) {
+                    sets.insert(dir.clone());
+                }
+            }
+        }
+    }
+    sets.into_iter().collect()
+}
+
+/// A set's files, read, placed by absolute path (`<archive>|<member>` inside a zip or 7z).
+/// An archive with no rip files in it (a zipped ROM) gives nothing.
+fn collect_set(set: &Path) -> Vec<RipFile> {
+    let mut music = Vec::new();
+    let mut m3us: Vec<(String, String, Vec<u8>)> = Vec::new();
+    let base = set.to_string_lossy().into_owned();
+    if let Some(format) = archive_format(&base) {
+        let Ok(archive) = SevenZipArchive::open(set, format, |_, _| true) else { return Vec::new() };
+        let wanted: Vec<i32> = (0..archive.entry_count()).filter(|&i| archive.entry(i).is_ok_and(|e| !e.is_dir && e.size <= MAX_FILE_BYTES && is_rip_member(&e.path))).collect();
+        if !wanted.iter().any(|&i| archive.entry(i).is_ok_and(|e| gme::known_extension(&e.path))) {
+            return Vec::new();
+        }
+        for i in wanted {
+            let (Ok(entry), Ok(data)) = (archive.entry(i), archive.read_entry(i)) else { continue };
+            let rel = format!("{base}|{}", entry.path);
+            if ext_of(&entry.path) == "m3u" {
+                m3us.push((String::new(), rel, data));
+            } else {
+                music.push((rel, data));
+            }
+        }
+    } else {
+        let Ok(entries) = std::fs::read_dir(set) else { return Vec::new() };
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+        files.sort();
+        for path in files {
+            let name = path.to_string_lossy().into_owned();
+            let size = path.metadata().map(|m| m.len()).unwrap_or(u64::MAX);
+            if !is_rip_member(&name) || size > MAX_FILE_BYTES {
+                continue;
+            }
+            let Ok(data) = std::fs::read(&path) else { continue };
+            if ext_of(&name) == "m3u" {
+                m3us.push((String::new(), name, data));
+            } else {
+                music.push((name, data));
+            }
+        }
+    }
+    // One set is one group: its playlists may name any of its files.
+    music
+        .into_iter()
+        .map(|(rel, data)| {
+            let beside: Vec<(String, Vec<u8>)> = m3us.iter().map(|(_, n, t)| (n.clone(), t.clone())).collect();
+            let playlist = playlist_for(rel.rsplit('|').next().unwrap_or(&rel), &beside);
+            RipFile { rel, data, playlist }
+        })
+        .collect()
+}
+
+/// A set's fingerprint for matching it to ROMs by content; `None` when its files carry no
+/// ROM bytes (VGM logs and the like).
+pub fn set_fingerprint(set: &Path) -> Option<super::rip_match::Fingerprint> {
+    let files = collect_set(set);
+    super::rip_match::fingerprint(files.iter().map(|f| f.data.as_slice()))
+}
+
 /// Reads one rip-set file again, by its place, with its playlist.
 fn read_one(folder: &Path, rel: &str) -> Result<RipFile, String> {
     let (data, m3us) = match rel.split_once('|') {
@@ -285,12 +373,24 @@ fn titled_jingle(name: &str) -> bool {
 }
 
 /// Every track of every rip set under `folder`. `progress` is told which file is being read.
-pub fn index(folder: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) -> Vec<FoundTrack> {
+pub fn index(folder: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<FoundTrack> {
     if !gme::available() {
         return Vec::new();
     }
+    index_files(collect(folder), t, progress)
+}
+
+/// Every track of one set of a rip library ([`sets_in`]), placed by absolute path.
+pub fn index_set(set: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<FoundTrack> {
+    if !gme::available() {
+        return Vec::new();
+    }
+    index_files(collect_set(set), t, progress)
+}
+
+fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&str)) -> Vec<FoundTrack> {
     let mut out = Vec::new();
-    for file in collect(folder) {
+    for file in files {
         progress(&file.rel);
         let mut emu = match load(&file) {
             Ok(emu) => emu,
@@ -381,6 +481,7 @@ impl PcmStream for GmePcm {
 /// Opens track `track` of the rip-set file at `rel` under the game folder `folder` for
 /// playing: to its own length and fade, its loop twice and faded, or until it falls silent
 /// (a track that runs on is faded at [`RUN_ON_MS`]).
+/// A library set's `rel` is absolute, and `folder` is then not used.
 pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, String> {
     if !gme::available() {
         return Err("the chip music player (gme) is not built for this machine".into());

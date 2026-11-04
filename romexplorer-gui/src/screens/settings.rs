@@ -42,7 +42,7 @@ const EDITORS: &[&str] = &[
     "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
-    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
+    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
     "merge_review_order", "gemini_model", "dat_sync_platforms",
 ];
@@ -262,7 +262,7 @@ fn initial(key: &str, value: &Value) -> Value {
         "copy_populate_hash" | "integrity_populate_hash" => if value.is_null() { json!("xxh3_128") } else { value.clone() },
         "backup_dir" => json!(value.as_str().unwrap_or("")),
         "backup_keep" => if value.is_null() { json!(0) } else { value.clone() },
-        "copy_recent_destinations" => json!(str_list(value)),
+        "copy_recent_destinations" | "audio_rip_folders" => json!(str_list(value)),
         "scan_hashes" => {
             let mut m = Map::new();
             for (name, def) in SCAN_HASHES {
@@ -359,7 +359,7 @@ fn finalize(key: &str, cur: &Value) -> Value {
             if EXPORT_SLOTS.iter().all(|slot| str_list(&cur[*slot]) == export_slot_default(slot)) { Value::Null } else { cur.clone() }
         }
         "backup_dir" => if cur.as_str().is_some_and(|d| d.trim().is_empty()) { Value::Null } else { json!(cur.as_str().unwrap_or("").trim()) },
-        "copy_recent_destinations" => if cur.as_array().is_some_and(|a| a.is_empty()) { Value::Null } else { cur.clone() },
+        "copy_recent_destinations" | "audio_rip_folders" => if cur.as_array().is_some_and(|a| a.is_empty()) { Value::Null } else { cur.clone() },
         _ => cur.clone(),
     }
 }
@@ -619,6 +619,32 @@ fn ParallelEditor(name: String, cur: Signal<Value>) -> Element {
 
 /// `dat_sync_platforms`: which platforms a DAT sync downloads and imports -- all, the
 /// scanned ones (as the scan placed them, or strictly the hash-matched ones), or ticked here.
+/// Folders of music rip sets: a list to reorder or remove from, and a box to add one.
+#[component]
+fn RipFoldersEditor(cur: Signal<Value>) -> Element {
+    let mut cur = cur;
+    let mut draft = use_signal(String::new);
+    let items = str_list(&cur());
+    let labels = items.iter().map(|d| esc(d)).collect();
+    let mut add = move || {
+        let folder = draft().trim().to_string();
+        let mut list = str_list(&cur());
+        if !folder.is_empty() && !list.contains(&folder) {
+            list.push(folder);
+            cur.set(json!(list));
+        }
+        draft.set(String::new());
+    };
+    rsx! {
+        div { class: "muted", {state::tr("Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.")} }
+        OrderList { items, labels, removable: true, on_change: move |o: Vec<String>| cur.set(json!(o)) }
+        div { class: "toolbar",
+            input { r#type: "text", style: "min-width:420px", placeholder: "D:\\Emulator\\ripsets", value: "{draft}", oninput: move |e| draft.set(e.value()), onkeydown: move |e| if e.key() == Key::Enter { add() } }
+            button { class: "btn small", r#type: "button", onclick: move |_| add(), {state::tr("add folder")} }
+        }
+    }
+}
+
 #[component]
 fn DatPlatformsEditor(cur: Signal<Value>) -> Element {
     let mut cur = cur;
@@ -677,6 +703,7 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
     match key.as_str() {
         "scan_parallel_files" | "copy_parallel_files" => rsx! { ParallelEditor { name: key.clone(), cur } },
         "dat_sync_platforms" => rsx! { DatPlatformsEditor { cur } },
+        "audio_rip_folders" => rsx! { RipFoldersEditor { cur } },
         "provider_priority" => {
             let items = str_list(&v);
             let labels = items.iter().map(|p| format!("{}{}", html::provider_icon(p), esc(p))).collect();

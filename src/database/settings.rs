@@ -167,6 +167,8 @@ pub const KEY_AUDIO_ROM_VIDEOS: &str = "audio_rom_videos";
 pub const KEY_AUDIO_ROM_LOOP_MIN_S: &str = "audio_rom_loop_min_s";
 pub const KEY_AUDIO_ROM_BGM_MIN_S: &str = "audio_rom_bgm_min_s";
 pub const KEY_AUDIO_ROM_JINGLE_MIN_S: &str = "audio_rom_jingle_min_s";
+/// Folders of music rip sets, matched to the ROMs by content when ROM audio is indexed.
+pub const KEY_AUDIO_RIP_FOLDERS: &str = "audio_rip_folders";
 /// This installation's own identity, created on first use and never changed.
 ///
 /// Needed the moment data moves between machines: a SQLite cache or a backup carries it, so
@@ -396,7 +398,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 101] = [
+pub const KNOWN_KEYS: [(&str, &str); 102] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -446,6 +448,7 @@ pub const KNOWN_KEYS: [(&str, &str); 101] = [
     (KEY_AUDIO_ROM_LOOP_MIN_S, "A ROM sound that loops is music from this many seconds (default 3)."),
     (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 60)."),
     (KEY_AUDIO_ROM_JINGLE_MIN_S, "A ROM sound that does not loop is a jingle from this many seconds (default 8); shorter is a sound effect."),
+    (KEY_AUDIO_RIP_FOLDERS, "Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region. Default: none."),
     (KEY_INSTANCE_ID, "This installation's own id, generated once. Stamped into exports so an import can tell your own data from another machine's."),
     (KEY_BACKUP_DIR, "Where backup zips are written. Empty = <data root>/backups."),
     (KEY_BACKUP_KEEP, "How many backups of each kind to keep (0 = all). Counted per kind, so a database backup never prunes a catalogue one."),

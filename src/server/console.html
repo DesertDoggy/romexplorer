@@ -4831,6 +4831,19 @@ function settingEditor(key, value) {
       }).catch(err => { t.replaceWith(el(`<div class="muted">${esc(err.message)}</div>`)); });
       return { el: box, get: () => Object.keys(current).length ? current : null };
     }
+    case 'audio_rip_folders': {
+      let list = Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
+      box.appendChild(el(`<div class="muted">${tr('Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.')}</div>`));
+      const holder = el('<div></div>'); box.appendChild(holder);
+      const draw = () => { holder.innerHTML = ''; holder.appendChild(orderList(list, d => esc(d), o => { list = o; }, true).el); };
+      draw();
+      const add = el(`<div class="toolbar"><input type="text" style="min-width:420px" placeholder="D:\\Emulator\\ripsets"><button class="btn small" type="button">${tr('add folder')}</button></div>`);
+      const input = add.querySelector('input');
+      const push = () => { const v = input.value.trim(); if (v && !list.includes(v)) { list = [...list, v]; draw(); } input.value = ''; };
+      add.querySelector('button').onclick = push; input.onkeydown = e => { if (e.key === 'Enter') push(); };
+      box.appendChild(add);
+      return { el: box, get: () => list.length ? list : null };
+    }
     case 'copy_recent_destinations': {
       let list = Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
       box.appendChild(el(`<div class="muted">${tr('The destination folders the copy dialog offers again, most recent first. Written by the app; remove the ones you no longer want.')}</div>`));
