@@ -441,8 +441,8 @@ fn roms_of(titles: &[u64]) -> String {
 }
 
 /// The kind a track plays as: the user's, or the one its loop and length say.
-pub fn kind_of(manual: Option<&str>, looping: bool, duration_ms: u64, inner_path: &str, name: &str, t: &Thresholds) -> SoundKind {
-    manual.and_then(SoundKind::from_name).unwrap_or_else(|| rom_audio::classify(looping, duration_ms, &format!("{inner_path}/{name}"), t))
+pub fn kind_of(manual: Option<&str>, looping: bool, duration_ms: u64, channels: u16, inner_path: &str, name: &str, t: &Thresholds) -> SoundKind {
+    manual.and_then(SoundKind::from_name).unwrap_or_else(|| rom_audio::classify(looping, duration_ms, channels, &format!("{inner_path}/{name}"), t))
 }
 
 /// SQL that leaves out what can only be a sound effect, when sound effects are not wanted:
@@ -462,7 +462,8 @@ fn row_to_track(row: &sqlx::mysql::MySqlRow, s: &Settings) -> Result<Option<Audi
     let duration: u32 = row.try_get("duration_ms")?;
     let looping: bool = row.try_get("looping")?;
     let manual: Option<String> = row.try_get("kind_manual")?;
-    let kind = kind_of(manual.as_deref(), looping, u64::from(duration), inner.as_deref().unwrap_or(""), &name, &s.thresholds);
+    let channels: u8 = row.try_get("channels")?;
+    let kind = kind_of(manual.as_deref(), looping, u64::from(duration), u16::from(channels), inner.as_deref().unwrap_or(""), &name, &s.thresholds);
     if !s.kinds.plays(kind) {
         return Ok(None);
     }
@@ -745,9 +746,9 @@ mod tests {
     #[test]
     fn a_kind_set_by_hand_wins_over_the_lengths() {
         let t = Thresholds::default();
-        assert_eq!(kind_of(None, true, 60_000, "", "x", &t), SoundKind::Bgm);
-        assert_eq!(kind_of(Some("se"), true, 60_000, "", "x", &t), SoundKind::Se);
-        assert_eq!(kind_of(None, false, 1_000, "", "x", &t), SoundKind::Se);
+        assert_eq!(kind_of(None, true, 60_000, 2, "", "x", &t), SoundKind::Bgm);
+        assert_eq!(kind_of(Some("se"), true, 60_000, 2, "", "x", &t), SoundKind::Se);
+        assert_eq!(kind_of(None, false, 1_000, 2, "", "x", &t), SoundKind::Se);
     }
 
     #[test]
