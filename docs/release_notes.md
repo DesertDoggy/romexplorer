@@ -39,7 +39,7 @@ replacing a build.
   files of 3DS images that are stored decrypted.
 - Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
 - The sound of PSP movies (.pmf) can play too, like other title movies.
-- Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s).
+- Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s). Files named as fanfares or music effects ("me") count as jingles.
 
 # romexplorer 0.1.8 (alpha)
 

@@ -87,6 +87,10 @@ const BGM_WORDS: [&str; 5] = ["bgm", "music", "mus", "song", "bgms"];
 /// "sound" and "sounds" are not here: games name the folder holding all their audio, music
 /// included, that way.
 const SE_WORDS: [&str; 3] = ["se", "sfx", "snd"];
+/// Jingles by name: "me" is the "music effect" (fanfare, short tune) of many games' file names.
+const JINGLE_WORDS: [&str; 5] = ["me", "jingle", "jingles", "fanfare", "fanfares"];
+/// A jingle by name still has to be this long; shorter is a click or silence.
+const NAMED_JINGLE_MIN_MS: u64 = 1_000;
 /// Speech is never music, however long it runs.
 const VOICE_WORDS: [&str; 5] = ["voice", "vo", "voices", "vox", "speech"];
 /// A stereo sound that does not loop and runs this many times the BGM length is music,
@@ -129,6 +133,9 @@ pub fn classify(sound: &Shape, path: &str, t: &Thresholds) -> SoundKind {
     let says_bgm = has(&BGM_WORDS);
     if !says_bgm && has(&VOICE_WORDS) {
         return SoundKind::Se;
+    }
+    if !says_bgm && has(&JINGLE_WORDS) {
+        return if duration_ms >= NAMED_JINGLE_MIN_MS { SoundKind::Jingle } else { SoundKind::Se };
     }
     let says_se = !says_bgm && has(&SE_WORDS);
     if looping && duration_ms >= t.loop_min_ms {
