@@ -35,6 +35,10 @@ replacing a build.
 - The music can keep playing on other screens until you open another title page.
 - The sound of title movies and other videos in a ROM can play too. It is off by default, and
   each title page can turn it on or off for that title.
+- DS and 3DS cartridges are read too: the music streams in DS sound archives, and the music
+  files of 3DS images that are stored decrypted.
+- Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
+- Voice files no longer count as BGM, however long they are.
 
 # romexplorer 0.1.8 (alpha)
 
