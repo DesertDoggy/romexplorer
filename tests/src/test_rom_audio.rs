@@ -85,7 +85,7 @@ use romexplorer::rom::disc_files::{self, DiscView, FsKind};
 use romexplorer::rom::rom_audio::{self, classify, Shape, SoundKind, Thresholds, TrackLocation};
 
 fn shape(looping: bool, duration_ms: u64, channels: u16) -> Shape {
-    Shape { looping, duration_ms, channels, cd_audio: false }
+    Shape { looping, duration_ms, channels, cd_track: 0 }
 }
 
 #[path = "support/disc_images.rs"]
@@ -192,7 +192,9 @@ fn classify_by_loop_length_and_folder() {
     assert_eq!(classify(&shape(false, 2_000, 2), "sound/me_levelup.aac", &t), SoundKind::Jingle, "a music effect by name");
     assert_eq!(classify(&shape(true, 6_000, 2), "sound/me_shop.aac", &t), SoundKind::Jingle, "even when it loops");
     assert_eq!(classify(&shape(false, 300, 2), "sound/me_blank.aac", &t), SoundKind::Se, "too short to be one");
-    assert_eq!(classify(&Shape { cd_audio: true, ..shape(false, 45_000, 2) }, "/Track 05", &t), SoundKind::Bgm, "but a CD audio track is from 20 s");
+    assert_eq!(classify(&Shape { cd_track: 5, ..shape(false, 45_000, 2) }, "/Track 05", &t), SoundKind::Bgm, "but a CD audio track is from 20 s");
+    assert_eq!(classify(&Shape { cd_track: 2, ..shape(false, 25_000, 2) }, "/Track 02", &t), SoundKind::Se, "the spoken disc warning");
+    assert_eq!(classify(&Shape { cd_track: 2, ..shape(false, 90_000, 2) }, "/Track 02", &t), SoundKind::Bgm, "a long first track is music");
     assert_eq!(classify(&shape(false, 10_000, 2), "x/y.adx", &t), SoundKind::Jingle);
     assert_eq!(classify(&shape(false, 2_000, 2), "x/y.adx", &t), SoundKind::Se);
     assert_eq!(classify(&shape(true, 5_000, 2), "SE/rain_loop.adx", &t), SoundKind::Se, "a looping ambience in an SE folder");
@@ -246,7 +248,7 @@ fn a_cue_sheet_gives_its_cd_audio_tracks_and_its_data_track() {
     }
     let dir = TempDir::new("cue");
     std::fs::write(dir.path("game (Track 1).bin"), game_audio::raw_2352(&game_audio::iso9660(&sound_tree()))).unwrap();
-    std::fs::write(dir.path("game (Track 2).bin"), game_audio::cdda(42.0)).unwrap();
+    std::fs::write(dir.path("game (Track 2).bin"), game_audio::cdda(72.0)).unwrap();
     std::fs::write(dir.path("game (Track 3).bin"), game_audio::cdda(0.5)).unwrap();
     let cue = dir.path("game.cue");
     std::fs::write(
@@ -258,7 +260,7 @@ fn a_cue_sheet_gives_its_cd_audio_tracks_and_its_data_track() {
     let cd = by_name(&tracks, "Track 02");
     assert_eq!(cd.location, TrackLocation::Cdda { track: 2 });
     assert_eq!(cd.kind, SoundKind::Bgm);
-    assert_eq!(cd.duration_ms / 1000, 40, "played from INDEX 01, two seconds in");
+    assert_eq!(cd.duration_ms / 1000, 70, "played from INDEX 01, two seconds in");
     assert!(tracks.iter().all(|t| t.name != "Track 03"), "a half-second track is skipped");
     assert_eq!(by_name(&tracks, "TITLE.WAV").location, TrackLocation::File { view: 0, path: "SOUND/BGM/TITLE.WAV".into(), subsong: 0 });
 
