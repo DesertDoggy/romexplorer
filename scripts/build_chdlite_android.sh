@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # Builds the chdlite Android app (arm64 APK): the native libraries for android/arm64 if asked,
-# then the Dioxus app with `dx`, then the APK again with those libraries inside it.
+# then the Dioxus app with `dx`, then the APK again with those libraries inside it. With --cli,
+# also the command-line tool for Android (chdlite), one file with the libraries inside it.
+# Only chdlite: chdcomp / chdread / chdhash are the same program under another name, which
+# matters for drag and drop on a desktop, not in a phone's terminal, and each would carry its
+# own ~44 MB copy of the libraries.
 #
-# Usage: scripts/build_chdlite_android.sh [--natives] [--release] [--check]
+# Usage: scripts/build_chdlite_android.sh [--natives] [--release] [--cli|--cli-only] [--check]
 #   --natives   first build every native library chdlite uses (zlib-ng, chdman-simd, dolphin,
 #               cemu, extract-xiso, beetle-psx-libretro) for android/arm64
 #               (scripts/build_native_deps.sh --only ...) and deploy them to
 #               app_root_ex/lib/android/arm64/. Needed once, and after a native change.
 #   --release   a release APK (`dx bundle`); signing comes from Dioxus.toml's
 #               [android.signing] if set there, otherwise the APK is unsigned.
+#   --cli       also the command-line tool for android/arm64 (cargo, the NDK's clang as
+#               linker, `bundled-natives`), into release/cli/<chdlite version>/android/arm64/
+#               -- run them from a terminal app on the device (Termux) or `adb shell`.
+#               Release builds with --release, debug otherwise.
+#   --cli-only  the command-line tool alone, no APK.
 #   --check     report what is found and missing, build nothing.
 #
 # What it needs (none of it is installed by this script):
@@ -23,6 +32,7 @@
 #   * Network access on the first run: Gradle fetches itself and the Android build plugins.
 #
 # The APK ends up under target/dx/chdlite-gui/<debug|release>/android/app/app/build/outputs/.
+# The command-line tool (--cli) under release/cli/<chdlite version>/android/arm64/.
 # Sideload it (`adb install -r <apk>`). On first start chdlite asks for All files access.
 #
 
@@ -34,11 +44,15 @@ CRATE_DIR="$ROOT_DIR/chdlite"
 TARGET=aarch64-linux-android
 ABI=arm64-v8a
 
-NATIVES=0 RELEASE=0 CHECK=0
+NATIVES=0 RELEASE=0 CHECK=0 CLI=0 APP=1
+# The API level the command-line tools are linked for (Android 10); the app's own comes from dx.
+CLI_API=29
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --natives) NATIVES=1 ;;
         --release) RELEASE=1 ;;
+        --cli) CLI=1 ;;
+        --cli-only) CLI=1 APP=0 ;;
         --check) CHECK=1 ;;
         -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "error: unknown option '$1' (try --help)" >&2; exit 2 ;;
@@ -86,7 +100,7 @@ fi
 if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
     MISSING+=("the Rust target (rustup target add $TARGET)")
 fi
-command -v dx >/dev/null 2>&1 || MISSING+=("the Dioxus CLI (cargo install dioxus-cli --version 0.7.10)")
+[[ "$APP" -eq 1 ]] && { command -v dx >/dev/null 2>&1 || MISSING+=("the Dioxus CLI (cargo install dioxus-cli --version 0.7.10)"); }
 
 echo "SDK:  ${ANDROID_HOME:-<none>}"
 echo "NDK:  ${ANDROID_NDK_HOME:-<none>}"
@@ -108,6 +122,34 @@ fi
 for lib in libchdman.so libdolphinrvz.so; do
     [[ -f "$LIB_DIR/$lib" ]] || echo "warning: $LIB_DIR/$lib is not built (run with --natives); the APK can't convert without it" >&2
 done
+
+# --- the command-line tools --------------------------------------------------------------------
+if [[ "$CLI" -eq 1 ]]; then
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) HOST_TAG=windows-x86_64; EXE=.cmd ;;
+        Darwin) HOST_TAG=darwin-x86_64; EXE= ;;
+        *) HOST_TAG=linux-x86_64; EXE= ;;
+    esac
+    BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+    LINKER="$BIN/aarch64-linux-android${CLI_API}-clang$EXE"
+    [[ -f "$LINKER" ]] || { echo "error: no NDK linker at $LINKER" >&2; exit 1; }
+    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
+    export CC_aarch64_linux_android="$LINKER" CXX_aarch64_linux_android="$BIN/aarch64-linux-android${CLI_API}-clang++$EXE"
+    export AR_aarch64_linux_android="$BIN/llvm-ar${EXE:+.exe}"
+    export CHDLITE_NATIVE_LIB_DIR="$LIB_DIR"
+    CLI_PROFILE=debug CARGO_PROFILE=()
+    if [[ "$RELEASE" -eq 1 ]]; then CLI_PROFILE=release CARGO_PROFILE=(--release); fi
+    (cd "$ROOT_DIR" && cargo build -p chdlite --target "$TARGET" "${CARGO_PROFILE[@]}" --features bundled-natives --bin chdlite)
+    CLI_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$CRATE_DIR/Cargo.toml" | head -1)"
+    CLI_OUT="$ROOT_DIR/release/cli/$CLI_VERSION/android/arm64"
+    mkdir -p "$CLI_OUT"
+    rm -f "$CLI_OUT"/chdcomp "$CLI_OUT"/chdread "$CLI_OUT"/chdhash
+    cp -f "$ROOT_DIR/target/$TARGET/$CLI_PROFILE/chdlite" "$CLI_OUT/chdlite"
+    echo
+    echo "command-line tool ($CLI_PROFILE):"
+    ls -l "$CLI_OUT" | sed 's/^/  /'
+fi
+[[ "$APP" -eq 1 ]] || exit 0
 
 # --- the app ------------------------------------------------------------------------------------
 # dx canonicalizes paths in its session cache under TEMP, which fails ("Incorrect function")

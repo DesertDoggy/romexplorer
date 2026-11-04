@@ -67,6 +67,8 @@ static STARTUP: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static STARTUP_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 fn main() {
+    #[cfg(target_os = "android")]
+    chdlite::android::mark_app();
     // On Android `main` is called from inside the app's process with no command line, and
     // reading the arguments crashed there (std's argv is not set up). Nothing is dropped on
     // an Android app or started as a worker, so there are none to read.

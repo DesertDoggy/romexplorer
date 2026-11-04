@@ -260,7 +260,8 @@ impl Settings {
 /// The Android app's files directory, where its settings and data live; `None` elsewhere.
 #[cfg(target_os = "android")]
 fn android_files_dir() -> Option<PathBuf> {
-    Some(crate::android::files_dir())
+    // The command-line tools are no app: they keep their files like on Linux.
+    crate::android::is_app().then(crate::android::files_dir)
 }
 
 #[cfg(not(target_os = "android"))]

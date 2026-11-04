@@ -25,6 +25,19 @@ fn package_name() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Set by the app (`chdlite-gui`) first thing: the command-line tools on Android run outside
+/// any app, with no Java to ask, and must never touch `ndk_context` (it panics there).
+static IN_APP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_app() {
+    IN_APP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process is the Android app rather than a command-line tool.
+pub fn is_app() -> bool {
+    IN_APP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn vm() -> Result<JavaVM, String> {
     let ctx = ndk_context::android_context();
     if ctx.vm().is_null() {

@@ -20,9 +20,18 @@ mod bundled {
 /// Call once, first thing in `main`, before any thread exists (it may set an environment
 /// variable).
 pub fn ensure() -> Result<(), String> {
+    // The app has its libraries in the APK. The command-line tools on Android (a terminal app,
+    // `adb shell`) are single files like the desktop ones, and unpack what they carry.
     #[cfg(target_os = "android")]
-    link_apk_libraries()?;
-    #[cfg(all(feature = "bundled-natives", not(target_os = "android")))]
+    if crate::android::is_app() {
+        return link_apk_libraries();
+    }
+    #[cfg(target_os = "android")]
+    if std::env::var_os("TMPDIR").is_none() {
+        // chdman needs a temporary folder, and Android sets no TMPDIR outside an app.
+        std::env::set_var("TMPDIR", std::env::temp_dir());
+    }
+    #[cfg(feature = "bundled-natives")]
     unpack()?;
     Ok(())
 }

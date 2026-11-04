@@ -51,6 +51,9 @@ fn bundle_natives(target_os: &str) {
     let (os, names): (&str, [&str; 6]) = match target_os {
         "windows" => ("windows", ["chdman.dll", "dolphinrvz.dll", "cemuwua.dll", "exiso.dll", "psxpbp.dll", "zlib.dll"]),
         "macos" => ("macos", ["libchdman.dylib", "libdolphinrvz.dylib", "libcemuwua.dylib", "libexiso.dylib", "libpsxpbp.dylib", "libz.dylib"]),
+        // Android builds its own libraries (scripts/build_chdlite_android.sh --natives), named
+        // as on Linux, into lib/android/<arch>/.
+        "android" => ("android", ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so"]),
         _ => ("linux", ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so"]),
     };
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
