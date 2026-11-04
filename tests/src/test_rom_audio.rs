@@ -277,3 +277,29 @@ fn wav_header_matches_the_samples() {
     assert_eq!(&h[40..44], &4000u32.to_le_bytes());
     let _ = Path::new("");
 }
+
+#[test]
+fn a_track_is_decoded_into_a_flac_for_the_player() {
+    if !need_lib() {
+        return;
+    }
+    use romexplorer::api::audio_convert::Target;
+    let dir = TempDir::new("cache");
+    let iso = dir.path("game.iso");
+    std::fs::write(&iso, game_audio::iso9660(&sound_tree())).unwrap();
+    let tracks = rom_audio::index_rom(&iso, &Thresholds::default(), |_| {}).unwrap();
+    let title = by_name(&tracks, "TITLE.WAV");
+    let out = dir.path("cache/rom1-flac-0.flac");
+    romexplorer::api::rom_audio::decode_to(&iso, &title.location, &out, Target::Flac).unwrap();
+    assert!(!dir.path("cache/rom1-flac-0.flac.part").exists(), "only the whole file is left");
+    let mut samples = 0usize;
+    let (rate, channels) = romexplorer::rom::audio_decode::decode_file_with(&out, |pcm, _, _| {
+        samples += pcm.len();
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!((rate, channels), (22_050, 2));
+    // Played as a game plays it: the loop twice and a ten-second fade, not the 25 s stored.
+    let seconds = samples as f64 / 2.0 / 22_050.0;
+    assert!((55.0..=65.0).contains(&seconds), "{seconds} s");
+}

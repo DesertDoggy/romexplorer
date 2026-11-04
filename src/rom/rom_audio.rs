@@ -61,8 +61,8 @@ impl SoundKind {
     }
 }
 
-/// The lengths [`classify`] decides by, in milliseconds. Settings
-/// (`audio_rom_loop_min_ms`, `audio_rom_bgm_min_ms`, `audio_rom_jingle_min_ms`).
+/// The lengths [`classify`] decides by, in milliseconds. Settings, in seconds
+/// (`audio_rom_loop_min_s`, `audio_rom_bgm_min_s`, `audio_rom_jingle_min_s`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thresholds {
     /// A looping sound this long or longer is BGM.
@@ -177,6 +177,15 @@ fn whole_file(path: &Path) -> Result<DiscView, String> {
 
 fn extension(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+}
+
+/// ROM files [`open_rom`] can find audio in: disc images and their sheets. Cartridges and
+/// archives are not on the list.
+pub const DISC_EXTENSIONS: [&str; 13] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "cso", "zso"];
+
+/// Whether [`index_rom`] is worth running on `path`: a folder dump or a disc image.
+pub fn may_hold_audio(path: &Path) -> bool {
+    path.is_dir() || DISC_EXTENSIONS.contains(&extension(path).as_str())
 }
 
 /// Opens `path` (a ROM file, a cue/gdi sheet, or a folder dump) for reading its audio.

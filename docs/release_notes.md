@@ -23,6 +23,16 @@ replacing a build.
   can be cleared (all or one feature, pinned ones kept if you like), exported and imported
   as JSON.
 
+**ROM audio**
+- Title pages can play the music inside your ROMs, straight from the disc image like a CD
+  player: CD audio tracks and the music files on the disc (PlayStation, Saturn, Dreamcast,
+  GameCube, Xbox, PSP and more, and dumped folders). Run Index ROM audio on the Audio tab
+  first. Zip and 7z archives and Wii discs are not read yet.
+- Settings choose tagged audio, ROM music or both, whether jingles and sound effects play
+  too, and what a title you don't own plays (another version, such as the original of a
+  remake, or a random one).
+- The music can keep playing on other screens until you open another title page.
+
 # romexplorer 0.1.8 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before

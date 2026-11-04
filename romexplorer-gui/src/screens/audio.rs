@@ -213,6 +213,14 @@ pub fn Audio() -> Element {
             }
         });
     };
+    let rom_index = move |mode: &'static str| {
+        spawn(async move {
+            match api::post("/api/v1/jobs", json!({ "job_type": "rom_audio_index", "mode": mode })).await {
+                Ok(r) => job.set(Some(u(&r, "id"))),
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
     let Some(facets) = facets.read().clone() else { return rsx! { div { class: "muted", {state::tr("loading…")} } } };
     let spec = Spec(Rc::new(audio_spec(&facets)));
     rsx! {
@@ -227,6 +235,10 @@ pub fn Audio() -> Element {
                 crate::ui::QueueButton {}
                 button { class: "btn", r#type: "button", title: state::tr("Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep."), onclick: fetch, {state::tr("Fetch from the main server")} }
                 crate::ui::QueueButton {}
+                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, so title pages can play them from the ROM"), onclick: move |_| rom_index("full"), {state::tr("Index ROM audio")} }
+                crate::ui::QueueButton {}
+                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, so title pages can play them from the ROM"), onclick: move |_| rom_index("new_only"), {state::tr("Index ROM audio (new only)")} }
+                crate::ui::QueueButton {}
             }
             if let Some(id) = job() {
                 JobWatch { key: "{id}", job_id: id, on_done: move |_| bump(reload) }
@@ -238,32 +250,46 @@ pub fn Audio() -> Element {
 }
 
 /// The player for a title / release / RA game page: `query` is `title_id=…`, `release_id=…`
-/// or `ra_game_id=…`. Draws nothing unless the page has music; starts it (shuffled) when it
-/// does, and stops it when the page is left.
+/// or `ra_game_id=…`. Draws nothing unless the page has music (tagged files, and the music in
+/// its ROMs); starts it (shuffled) when it does. When the page is left it stops, or with
+/// `audio_keep_playing` moves to a strip at the bottom until another title page opens.
 #[component]
 pub fn PagePlayer(query: String) -> Element {
     let host = use_hook(|| format!("rx-player-host-{}", query.replace('=', "-")));
-    let tracks = use_resource({
+    let playlist = use_resource({
         let query = query.clone();
         move || {
             let query = query.clone();
-            async move { api::get(&format!("/api/v1/audio/playlist?{query}")).await.ok().map(|v| api::arr(&v, "tracks").to_vec()).unwrap_or_default() }
+            async move { api::get(&format!("/api/v1/audio/playlist?{query}")).await.unwrap_or_else(|_| json!({})) }
         }
     });
-    let list = tracks.read().clone().unwrap_or_default();
+    // `None` until it has loaded.
+    let loaded = playlist.read().clone();
     let start_host = host.clone();
-    use_effect(use_reactive!(|list| {
+    use_effect(use_reactive!(|loaded| {
+        let Some(playlist) = loaded else { return };
+        let list = api::arr(&playlist, "tracks").to_vec();
         if list.is_empty() {
+            // A title page with nothing to play ends music kept from an earlier one.
+            let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
             return;
         }
+        let keep = api::b(&playlist, "keep_playing");
         // The page's own URL for each track, then the shared script takes over.
         let playable: Vec<Value> = list
             .iter()
             .map(|t| {
                 let mut t = t.clone();
                 // A track on the main server is streamed from it; one held here is read here.
-                let route = if api::b(&t, "remote") { format!("/api/v1/audio/remote/{}/file", u(&t, "id")) } else { format!("/api/v1/audio/{}/file", u(&t, "id")) };
+                // A ROM track is decoded out of the ROM on its first play.
+                let remote = if api::b(&t, "remote") { "remote/" } else { "" };
+                let rom = api::b(&t, "rom");
+                let route = format!("/api/v1/audio/{remote}{}{}/file", if rom { "rom/" } else { "" }, u(&t, "id"));
                 t["url"] = json!(api::media_url(&route));
+                if rom {
+                    let album = [s(&t, "album"), s(&t, "rom_kind")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+                    t["album"] = json!(album);
+                }
                 t
             })
             .collect();
@@ -273,7 +299,7 @@ pub fn PagePlayer(query: String) -> Element {
             "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down)"),
         });
         let js = format!(
-            "{}\nwindow.rxPlayer.start(document.getElementById({}), {}, {});",
+            "{}\nwindow.rxPlayer.start(document.getElementById({}), {}, {}, {{ keep: {keep} }});",
             romexplorer_types::PLAYER_JS,
             serde_json::to_string(&start_host).unwrap_or_default(),
             serde_json::to_string(&playable).unwrap_or_default(),
@@ -282,7 +308,7 @@ pub fn PagePlayer(query: String) -> Element {
         let _ = document::eval(&js);
     }));
     use_drop(|| {
-        let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
+        let _ = document::eval("if (window.rxPlayer) window.rxPlayer.leave();");
     });
     // An empty element the script draws the bar into. It holds nothing Dioxus renders, so a
     // re-render leaves what the script put there alone.

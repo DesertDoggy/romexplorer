@@ -132,6 +132,8 @@ const READ: &[Rule] = &[
     ("GET", "/api/v1/audio/facets"),
     ("GET", "/api/v1/audio/{id}/file"),
     ("GET", "/api/v1/audio/remote/{id}/file"),
+    ("GET", "/api/v1/audio/rom/{id}/file"),
+    ("GET", "/api/v1/audio/remote/rom/{id}/file"),
     ("GET", "/api/v1/media/strip"),
     ("GET", "/api/v1/media/remote/{id}"),
     ("POST", "/api/v1/media/{id}/refetch"),
