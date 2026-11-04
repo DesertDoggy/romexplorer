@@ -38,6 +38,7 @@ replacing a build.
 - DS and 3DS cartridges are read too: the music streams in DS sound archives, and the music
   files of 3DS images that are stored decrypted.
 - Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
+- The sound of PSP movies (.pmf) can play too, like other title movies.
 - Voice files no longer count as BGM, however long they are.
 
 # romexplorer 0.1.8 (alpha)
