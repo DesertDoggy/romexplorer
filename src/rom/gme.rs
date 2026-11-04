@@ -57,6 +57,7 @@ type SeekFn = unsafe extern "C" fn(*mut c_void, c_int) -> Err;
 type TrackInfoFn = unsafe extern "C" fn(*const c_void, *mut *mut GmeInfo, c_int) -> Err;
 type FreeInfoFn = unsafe extern "C" fn(*mut GmeInfo);
 type IdentifyHeaderFn = unsafe extern "C" fn(*const c_void) -> *const c_char;
+type LoadM3uDataFn = unsafe extern "C" fn(*mut c_void, *const c_void, c_long) -> Err;
 
 struct Api {
     _lib: Library,
@@ -73,6 +74,7 @@ struct Api {
     track_info: TrackInfoFn,
     free_info: FreeInfoFn,
     identify_header: IdentifyHeaderFn,
+    load_m3u_data: LoadM3uDataFn,
 }
 
 fn find_library() -> Option<PathBuf> {
@@ -103,6 +105,7 @@ fn api() -> Option<&'static Api> {
                 track_info: *lib.get(b"gme_track_info").ok()?,
                 free_info: *lib.get(b"gme_free_info").ok()?,
                 identify_header: *lib.get(b"gme_identify_header").ok()?,
+                load_m3u_data: *lib.get(b"gme_load_m3u_data").ok()?,
                 _lib: lib,
             })
         }
@@ -242,6 +245,15 @@ impl Emu {
         // Without this gme cuts a track at its "play length" by itself; the app decides that.
         unsafe { (api.set_autoload_limit)(handle, 0) };
         Ok(Self { api, handle, _data: data, sample_rate })
+    }
+
+    /// Applies a playlist (the NEZplug-style `.m3u` rip sets ship beside an NSF, GBS, HES or
+    /// KSS): its entries become the tracks, with their titles and lengths.
+    pub fn load_m3u(&mut self, text: &[u8]) -> Result<(), String> {
+        if text.is_empty() || text.len() > c_long::MAX as usize {
+            return Err("empty or oversized playlist".into());
+        }
+        err_text(unsafe { (self.api.load_m3u_data)(self.handle, text.as_ptr().cast(), text.len() as c_long) }).map_or(Ok(()), Err)
     }
 
     pub fn sample_rate(&self) -> u32 {

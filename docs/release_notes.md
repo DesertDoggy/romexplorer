@@ -40,6 +40,8 @@ replacing a build.
 - Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
 - The sound of PSP movies (.pmf) can play too, like other title movies.
 - Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s). Files named as fanfares or music effects ("me") count as jingles. A short first audio track (the spoken "this is a game disc" warning) counts as a sound effect.
+- Music rips kept in a game's folder (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP, loose or zipped)
+  play on its title page too, with the track names and lengths from their playlists.
 
 # romexplorer 0.1.8 (alpha)
 
