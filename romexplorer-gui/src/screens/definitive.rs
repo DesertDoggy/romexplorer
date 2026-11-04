@@ -38,7 +38,7 @@ pub fn rank_filters() -> Vec<Filter> {
         Filter::Select {
             key: "rank_source",
             label: state::tr("rank from"),
-            options: Rc::new(|| vec![(String::new(), state::tr("curated notes only")), ("bundled".into(), state::tr("curated + bundled AI")), ("all".into(), state::tr("curated + all AI (bundled and your own answers)"))]),
+            options: Rc::new(|| vec![(String::new(), state::tr("Reviewed only")), ("bundled".into(), state::tr("Reviewed + bundled AI")), ("all".into(), state::tr("Reviewed + all AI (bundled and your own answers)"))]),
         },
         Filter::Check { key: "skip_newer", label: state::tr("skip ranks with a newer version"), off: String::new() },
     ]

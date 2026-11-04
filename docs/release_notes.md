@@ -25,16 +25,16 @@ replacing a build.
 
 **AI on the Definitive tab**
 - Each game's page can ask the AI which version has the most content and the best graphics, sound
-  and quality of life. The answer comes with a rank like the curated notes, shown as an AI rank.
+  and quality of life. The answer comes with a rank like the reviewed notes, shown as an AI rank.
 - An answer from a browser link can be pasted in, or saved from the clipboard in one click, and is
   kept like an API answer, marked with the site it came from. Config › AI sets
-  which answer is shown first, the curated note included, and clears saved answers by source.
+  which answer is shown first, the reviewed note included, and clears saved answers by source.
 - The first question shows a cost warning. Config › AI links to each provider's spending limits.
 - "Batch rate with AI" asks about many games as one job: the selected games on the Definitive tab,
   or a set's selected rows or the whole set. It shows the number of questions and an approximate
   cost first, skips games already answered, and can be scheduled for a set.
 - AI ratings now ship with the app ("bundled AI"). The rank filter on the Definitive tab and a
-  set's page can include them, or your own answers too; the curated notes still come first.
+  set's page can include them, or your own answers too; the reviewed notes still come first.
 - A rank made before a newer version of the game came out is marked "New version since rating",
   and the filter can skip such ranks.
 

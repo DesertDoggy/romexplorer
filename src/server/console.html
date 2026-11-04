@@ -3689,7 +3689,7 @@ function noteText(note, field) { const t = (note && note[field]) || {}; return t
 function rankFilters() {
   return [
     { key: 'noted', label: tr('version note'), type: 'select', options: () => `<option value="">${tr('no filter')}</option><option value="S">${tr('rank S')}</option><option value="A">${tr('rank A and above')}</option><option value="B">${tr('rank B and above')}</option>` },
-    { key: 'rank_source', label: tr('rank from'), type: 'select', options: () => `<option value="">${tr('curated notes only')}</option><option value="bundled">${tr('curated + bundled AI')}</option><option value="all">${tr('curated + all AI (bundled and your own answers)')}</option>` },
+    { key: 'rank_source', label: tr('rank from'), type: 'select', options: () => `<option value="">${tr('Reviewed only')}</option><option value="bundled">${tr('Reviewed + bundled AI')}</option><option value="all">${tr('Reviewed + all AI (bundled and your own answers)')}</option>` },
     { key: 'skip_newer', label: tr('skip ranks with a newer version'), type: 'check' },
   ];
 }
@@ -3796,7 +3796,7 @@ async function aiCostWarningOk() {
 const AI_SITE_LABELS = { google: 'Google AI Mode', claude: 'Claude', chatgpt: 'ChatGPT', perplexity: 'Perplexity' };
 function aiSourceLabel(key) {
   if (!key) return '';
-  if (key === 'curated') return tr('curated note');
+  if (key === 'curated') return tr('Reviewed');
   if (key === 'bundled') return tr('bundled AI');
   const [src, who] = key.split(':');
   return src === 'api' ? trf('{provider} API', { provider: AI_PROVIDER_LABELS[who] || who }) : trf('{site} (browser)', { site: AI_SITE_LABELS[who] || who });
@@ -5992,7 +5992,7 @@ async function showAiPage() {
   // Which saved answer is shown when one question has several: an ordered list.
   const order = (o.source_priority && o.source_priority.length ? o.source_priority : ['curated']).slice();
   for (const k of o.source_keys) if (!order.includes(k)) order.push(k);
-  const orderBox = el(`<div style="margin-top:10px"><h3>${tr('Which answer is shown first')}</h3><p class="muted">${tr('When one question has several saved answers (the curated note, API answers, answers pasted from the browser), the one highest here is shown and its rank used. Sources not moved keep the newest first.')}</p><ol id="srcorder"></ol><div class="toolbar"><button class="btn small primary" type="button" id="srcsave">${tr('save')}</button> <button class="btn small" type="button" id="srcreset">${tr('reset to the default (curated first, then newest)')}</button></div></div>`);
+  const orderBox = el(`<div style="margin-top:10px"><h3>${tr('Which answer is shown first')}</h3><p class="muted">${tr('When one question has several saved answers (the reviewed note, API answers, answers pasted from the browser), the one highest here is shown and its rank used. Sources not moved keep the newest first.')}</p><ol id="srcorder"></ol><div class="toolbar"><button class="btn small primary" type="button" id="srcsave">${tr('save')}</button> <button class="btn small" type="button" id="srcreset">${tr('reset to the default (reviewed first, then newest)')}</button></div></div>`);
   main.appendChild(orderBox);
   const drawOrder = () => {
     const ol = orderBox.querySelector('#srcorder');

@@ -175,7 +175,7 @@ fn AiSourceOrder(o: Value, on_saved: EventHandler<()>) -> Element {
     rsx! {
         div { class: "card",
             h3 { {state::tr("Which answer is shown first")} }
-            p { class: "muted", {state::tr("When one question has several saved answers (the curated note, API answers, answers pasted from the browser), the one highest here is shown and its rank used. Sources not moved keep the newest first.")} }
+            p { class: "muted", {state::tr("When one question has several saved answers (the reviewed note, API answers, answers pasted from the browser), the one highest here is shown and its rank used. Sources not moved keep the newest first.")} }
             ol {
                 for (i, k) in order().into_iter().enumerate() {
                     li { key: "{k}",
@@ -189,7 +189,7 @@ fn AiSourceOrder(o: Value, on_saved: EventHandler<()>) -> Element {
             div { class: "toolbar",
                 button { class: "btn small primary", r#type: "button", onclick: save, {state::tr("save")} }
                 " "
-                button { class: "btn small", r#type: "button", onclick: reset, {state::tr("reset to the default (curated first, then newest)")} }
+                button { class: "btn small", r#type: "button", onclick: reset, {state::tr("reset to the default (reviewed first, then newest)")} }
             }
         }
     }
@@ -415,7 +415,7 @@ const AI_SITES: [(&str, &str); 4] = [("google", "Google AI Mode"), ("claude", "C
 /// A saved AI answer's source as a label (the console's `aiSourceLabel`).
 pub fn source_label(key: &str) -> String {
     if key == "curated" {
-        return state::tr("curated note");
+        return state::tr("Reviewed");
     }
     if key == "bundled" {
         return state::tr("bundled AI");
