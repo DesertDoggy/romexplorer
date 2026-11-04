@@ -142,7 +142,7 @@ stream_flag() { [[ "$STREAMING" -eq 1 ]] || echo "--nostreaming"; }
 # --- the build order --------------------------------------------------------------------
 # openssl and zlib-ng first because things link against their *release trees*; everything
 # after them is free. Kept as one list so --list and the run agree by construction.
-ORDER=(openssl zlib-ng 7-Zip-zstd mariadb-connector-c mariadb-server chdman-simd dolphin RALibretro libxaac cemu extract-xiso beetle-psx-libretro)
+ORDER=(openssl zlib-ng 7-Zip-zstd mariadb-connector-c mariadb-server chdman-simd dolphin RALibretro libxaac vgmstream cemu extract-xiso beetle-psx-libretro)
 
 # Whether a submodule has been *verified* to build linux/arm64 or windows/arm64 -- by an
 # actual build whose output was checked to be AArch64, not by reading the script. Every
@@ -163,6 +163,7 @@ declare -A SUPPORTS_ARM64_LINUX=(
     [dolphin]=1
     [RALibretro]=1
     [libxaac]=1
+    [vgmstream]=0
     [cemu]=0
     [extract-xiso]=0
     [beetle-psx-libretro]=0
@@ -177,6 +178,7 @@ declare -A SUPPORTS_ARM64_WINDOWS=(
     [dolphin]=1
     [RALibretro]=1
     [libxaac]=1
+    [vgmstream]=0
     [cemu]=0
     [extract-xiso]=0
     [beetle-psx-libretro]=0
@@ -294,7 +296,7 @@ for name in 7-Zip-zstd chdman-simd RALibretro; do
     break
 done
 if [[ "$PLATFORM/$ARCH" == "windows/arm64" && "$HOST_ARCH" != "arm64" ]]; then
-    for name in zlib-ng 7-Zip-zstd chdman-simd RALibretro libxaac; do
+    for name in zlib-ng 7-Zip-zstd chdman-simd RALibretro libxaac vgmstream; do
         is_selected "$name" || continue
         command -v aarch64-w64-mingw32-clang >/dev/null 2>&1 || PREFLIGHT_ERRORS+=("missing llvm-mingw (aarch64-w64-mingw32-clang) -- needed by $name for windows/arm64; unpack https://github.com/mstorsjo/llvm-mingw to C:\\llvm-mingw or set LLVM_MINGW_ROOT")
         break
@@ -389,6 +391,7 @@ for name in "${SELECTED[@]}"; do
         mariadb-connector-c) script="$ROOT_DIR/deps/mariadb-connector-c/scripts/build_connector_c.sh" ;;
         mariadb-server) script="$ROOT_DIR/deps/mariadb-server/scripts/build_mariadb_server.sh" ;;
         libxaac)    script="$ROOT_DIR/deps/libxaac/scripts/build.sh" ;;
+        vgmstream)  script="$ROOT_DIR/deps/vgmstream/scripts/build.sh" ;;
         cemu)       script="$ROOT_DIR/deps/cemu/scripts/build.sh" ;;
         extract-xiso) script="$ROOT_DIR/deps/extract-xiso/scripts/build.sh" ;;
         beetle-psx-libretro) script="$ROOT_DIR/deps/beetle-psx-libretro/scripts/build.sh" ;;
@@ -561,6 +564,11 @@ build_one() {
             # The AAC / xHE-AAC encoder behind a flat C shim (deps/libxaac/rxaac.h). No streaming
             # variant and nothing links against it; CC comes from cross_env like 7-Zip's.
             run_step "$name" env $(cross_env) bash "$sub/libxaac/scripts/build.sh" "$PLATFORM" "$ARCH"
+            ;;
+        vgmstream)
+            # Game audio decoding (ADX, HCA, DSP, PS-ADPCM, XA, ATRAC9...) behind a flat C shim
+            # (deps/vgmstream/rvgm.h); built-in decoders only. CC comes from cross_env like 7-Zip's.
+            run_step "$name" env $(cross_env) bash "$sub/vgmstream/scripts/build.sh" "$PLATFORM" "$ARCH"
             ;;
         cemu)
             # cemuwua: Wii U .wud/.wux into .wua through Cemu's own disc and FST code

@@ -20,6 +20,7 @@ Build output stays here too, in `<name>/release/`, `<name>/_build/` and `<name>/
 | dolphin | dolphin-emu/dolphin | none |
 | RALibretro | RetroAchievements/RALibretro | `patches/01_hash3ds_stdlib.patch` |
 | libxaac | ittiam-systems/libxaac | none |
+| vgmstream | vgmstream/vgmstream | none; `rvgm.c` wraps its API, `CMakeLists.txt` compiles its sources with built-in decoders only |
 | cemu | cemu-project/Cemu | none; `wiiu_wua` compiles the files it needs |
 | extract-xiso | XboxDev/extract-xiso | none; `exiso.c` compiles `extract-xiso.c` as it is |
 | beetle-psx-libretro | libretro/beetle-psx-libretro | none; `psxpbp.c` compiles its PBP reader |
