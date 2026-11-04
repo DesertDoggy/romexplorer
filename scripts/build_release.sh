@@ -20,6 +20,12 @@
 #                 and release/<version>/dist/.
 #   5. bundles    appimage.sh for linux desktop, macos_app.sh for macOS desktop, where the
 #                 host can run them.
+#   5b. android   build_chdlite_android.sh --release --cli: the chdlite app (APK) and its
+#                 command-line tool (chdlite alone) for android/arm64, into release/<version>/dist/ as
+#                 chdlite-<v>-android-arm64[-unsigned].apk and chdlite-cli-<v>-android-arm64.zip.
+#                 On whenever the Android SDK, NDK and JDK are found (see that script's
+#                 --check); skipped with the reason otherwise. Uses the libraries already in
+#                 app_root_ex/lib/android/arm64/ (build_chdlite_android.sh --natives makes them).
 #   6. SHA256SUMS over release/<version>/dist/, checkable with `sha256sum -c`.
 #
 # A combination this host cannot build (another OS; an arch cargo cannot target here) is
@@ -41,13 +47,15 @@
 #   --jobs N          build parallelism for the native builds and cargo
 #   --continue        keep going after a failed step and report them all at the end
 #   --unverified-arm64  passed to build_native_deps.sh (see its SUPPORTS_ARM64_* maps)
+#   --android / --no-android   force the Android step on (fail if the toolchain is missing)
+#                     or off (default: on when the toolchain is found)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS="$ROOT_DIR/scripts"
 
 PLATFORMS="" ARCHES="" MODES="server,desktop" VERSION=""
-CLEAN=1 SKIP_NATIVE=0 NATIVE_ONLY=0 CORE=0 GUI_WEB=1 JOBS="" CONTINUE=0 UNVERIFIED=0
+CLEAN=1 SKIP_NATIVE=0 NATIVE_ONLY=0 CORE=0 GUI_WEB=1 JOBS="" CONTINUE=0 UNVERIFIED=0 ANDROID=auto
 
 usage() {
     sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed -n 's/^# \{0,1\}//p'
@@ -68,6 +76,8 @@ while [[ $# -gt 0 ]]; do
         --jobs) JOBS="${2:-}"; shift 2 ;;
         --continue) CONTINUE=1; shift ;;
         --unverified-arm64) UNVERIFIED=1; shift ;;
+        --android) ANDROID=1; shift ;;
+        --no-android) ANDROID=0; shift ;;
         -h|--help) usage 0 ;;
         *) echo "unknown option: $1" >&2; usage 2 ;;
     esac
@@ -311,6 +321,61 @@ for t in "${TARGETS[@]}"; do
         fi
     done
 done
+
+# --- 5b. android: the chdlite app and its command-line tools ------------------------------------
+# Unsigned unless chdlite/Dioxus.toml has an [android.signing] keystore (then Gradle writes
+# app-release.apk); the file name says which.
+android_release() {
+    bash "$SCRIPTS/build_chdlite_android.sh" --release --cli || return 1
+    local cli_version apk_dir apk name cli_dir zip
+    cli_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1)"
+    apk_dir="$ROOT_DIR/target/dx/chdlite-gui/release/android/app/app/build/outputs/apk/release"
+    if [[ -f "$apk_dir/app-release.apk" ]]; then
+        apk="$apk_dir/app-release.apk"; name="chdlite-$cli_version-android-arm64.apk"
+    else
+        apk="$apk_dir/app-release-unsigned.apk"; name="chdlite-$cli_version-android-arm64-unsigned.apk"
+    fi
+    [[ -f "$apk" ]] || { echo "error: no release APK in $apk_dir" >&2; return 1; }
+    mkdir -p "$DIST"
+    cp -f "$apk" "$DIST/$name"
+    # chdlite alone, one file with its libraries inside (chdcomp and the rest are the same program
+    # under another name, which a phone's terminal has no use for); deflate (what a phone's file
+    # manager opens), the executable bit kept for an unzip in a terminal.
+    cli_dir="$ROOT_DIR/release/cli/$cli_version/android/arm64"
+    zip="$DIST/chdlite-cli-$cli_version-android-arm64.zip"
+    python3 - "$cli_dir" "$zip" <<'PY' || return 1
+import os, sys, zipfile
+src, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+    for name in ("chdlite",):
+        info = zipfile.ZipInfo.from_file(os.path.join(src, name), name)
+        info.external_attr = 0o755 << 16
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with open(os.path.join(src, name), "rb") as f:
+            z.writestr(info, f.read())
+PY
+    for f in "$DIST/$name" "$zip"; do
+        (cd "$DIST" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256")
+    done
+    echo "android: $name, $(basename "$zip")"
+}
+if [[ "$ANDROID" != 0 && "$NATIVE_ONLY" -eq 0 ]]; then
+    if [[ ! -f "$ROOT_DIR/app_root_ex/lib/android/arm64/libchdman.so" ]]; then
+        reason="no android/arm64 libraries in app_root_ex/lib/android/arm64 (scripts/build_chdlite_android.sh --natives)"
+    elif ! out="$(bash "$SCRIPTS/build_chdlite_android.sh" --check 2>&1)"; then
+        reason="the Android toolchain is incomplete:"$'\n'"$(grep '^  - ' <<< "$out" | sed 's/^/    /')"
+    else
+        reason=""
+    fi
+    if [[ -n "$reason" && "$ANDROID" == 1 ]]; then
+        echo "error: --android, but $reason" >&2
+        FAILED+=("android: $reason")
+    elif [[ -n "$reason" ]]; then
+        SKIPPED+=("android/arm64: $reason")
+    else
+        step "android/arm64 chdlite (apk + cli)" android_release || true
+    fi
+fi
 
 # --- 6. SHA256SUMS -------------------------------------------------------------------------------
 # One file over everything in dist/, in the format `sha256sum -c` reads; the per-archive
