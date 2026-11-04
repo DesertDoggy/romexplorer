@@ -187,6 +187,8 @@ fn classify_by_loop_length_and_folder() {
     assert_eq!(classify(false, 12_000, "BGM/ending.adx", &t), SoundKind::Bgm, "a BGM folder lifts a jingle-length track");
     assert_eq!(classify(false, 30_000, "voice/v_001.at3", &t), SoundKind::Jingle, "a long voice line is not BGM");
     assert_eq!(classify(false, 4_000, "music/sting01.ads", &t), SoundKind::Jingle);
+    assert_eq!(classify(false, 30_000, "Data/Sound/stage1.wma", &t), SoundKind::Bgm, "a Sound folder holds music too");
+    assert_eq!(classify(false, 400_000, "SE/ambience.adx", &t), SoundKind::Bgm, "far past the BGM length, the folder does not decide");
 }
 
 fn by_name(tracks: &[rom_audio::FoundTrack], name: &str) -> rom_audio::FoundTrack {
@@ -267,6 +269,44 @@ fn a_folder_dump_is_indexed() {
     assert_eq!(tracks[0].location, TrackLocation::File { view: 0, path: "USRDIR/sound/stage.wav".into(), subsong: 0 });
     let mut stream = rom_audio::open_track(&root, &tracks[0].location, vgmstream::PlayConfig::AS_STORED).unwrap();
     assert_eq!(stream.total_samples(), Some(48_000 * 4));
+    assert!(stream.next_chunk().unwrap().is_some());
+}
+
+/// An AFS archive (Dreamcast, Naomi) of `members`, 2048-aligned like the real ones.
+fn afs(members: &[Vec<u8>]) -> Vec<u8> {
+    let align = |n: usize| n.div_ceil(2048) * 2048;
+    let mut out = b"AFS\0".to_vec();
+    out.extend_from_slice(&(members.len() as u32).to_le_bytes());
+    let mut at = align(8 + members.len() * 8 + 8);
+    for m in members {
+        out.extend_from_slice(&(at as u32).to_le_bytes());
+        out.extend_from_slice(&(m.len() as u32).to_le_bytes());
+        at = align(at + m.len());
+    }
+    for m in members {
+        out.resize(align(out.len()), 0);
+        out.extend_from_slice(m);
+    }
+    out
+}
+
+#[test]
+fn afs_members_are_indexed_and_play_and_videos_are_not() {
+    if !need_lib() {
+        return;
+    }
+    let song = game_audio::wav(22_050, 2, &game_audio::tone(22_050, 2, 22_050 * 30, 330.0), None);
+    let archive = afs(&[b"not audio at all".repeat(10), song.clone()]);
+    let iso = game_audio::iso9660(&[Entry::Dir("SOUND", vec![Entry::File("BGM.AFS", archive)]), Entry::File("INTRO.XMV", song)]);
+    let dir = TempDir::new("afs");
+    let image = dir.path("game.iso");
+    std::fs::write(&image, iso).unwrap();
+    let tracks = rom_audio::index_rom(&image, &Thresholds::default(), |_| {}).unwrap();
+    assert_eq!(tracks.len(), 1, "one playable member, and no video: {tracks:#?}");
+    assert_eq!(tracks[0].location, TrackLocation::File { view: 0, path: "SOUND/BGM.AFS#1.wav".into(), subsong: 0 });
+    assert_eq!((tracks[0].kind, tracks[0].duration_ms), (SoundKind::Bgm, 30_000));
+    let mut stream = rom_audio::open_track(&image, &tracks[0].location, vgmstream::PlayConfig::AS_STORED).unwrap();
+    assert_eq!(stream.total_samples(), Some(22_050 * 30));
     assert!(stream.next_chunk().unwrap().is_some());
 }
 
