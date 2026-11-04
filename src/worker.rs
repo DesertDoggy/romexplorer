@@ -789,6 +789,15 @@ impl Worker {
                 log::info!("audio_scan job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());
                 Ok(())
             }
+            JobType::RomAudioIndex => {
+                let request: romexplorer_types::jobs::RomAudioIndexRequest =
+                    serde_json::from_value(job.payload.clone()).map_err(|e| DatabaseError::Config(format!("rom_audio_index: bad payload: {e}")))?;
+                let progress = Progress::new(&self.app.pool, job.id);
+                let summary = api::rom_audio::run_index(&self.app, &request, &progress).await?;
+                progress.finish(summary.roms_seen, Some(summary.roms_seen.max(1)), &api::rom_audio::one_liner(&summary), &summary).await;
+                log::info!("rom_audio_index job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());
+                Ok(())
+            }
             JobType::RaBadges => {
                 let request: romexplorer_types::jobs::RaBadgesRequest =
                     serde_json::from_value(job.payload.clone()).map_err(|e| DatabaseError::Config(format!("ra_badges: bad payload: {e}")))?;

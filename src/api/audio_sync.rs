@@ -321,6 +321,8 @@ mod tests {
     fn track(id: u64, file_name: &str, album: Option<&str>) -> AudioRow {
         AudioRow {
             remote: false,
+            rom: false,
+            rom_kind: None,
             id,
             path: String::new(),
             file_name: file_name.to_string(),

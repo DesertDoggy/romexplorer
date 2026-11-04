@@ -340,6 +340,13 @@ pub struct AudioRow {
     /// On the main server, not here: `id` is the server's, and the file is streamed from it.
     #[serde(default)]
     pub remote: bool,
+    /// Music inside a ROM (`api::rom_audio`): `id` is a `rom_audio_tracks` row, played from
+    /// `/api/v1/audio/rom/{id}/file`, and `path` is the ROM.
+    #[serde(default)]
+    pub rom: bool,
+    /// For a ROM track: bgm | jingle | se.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rom_kind: Option<String>,
     pub id: u64,
     pub path: String,
     pub file_name: String,
@@ -388,6 +395,8 @@ const AUDIO_SELECT: &str = "a.id, a.path, a.file_name, a.size, a.format, a.playa
 fn row_to_audio(row: &sqlx::mysql::MySqlRow) -> Result<AudioRow> {
     Ok(AudioRow {
         remote: false,
+        rom: false,
+        rom_kind: None,
         id: row.try_get("id")?,
         path: row.try_get("path")?,
         file_name: row.try_get("file_name")?,
@@ -681,6 +690,10 @@ pub struct Playlist {
     /// `audio_fallback` mode that chose them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
+    /// `audio_keep_playing`: the page's music keeps going on other screens until another
+    /// title page opens.
+    #[serde(default)]
+    pub keep_playing: bool,
 }
 
 /// `audio_fallback`: what a title with no audio of its own plays.
@@ -744,8 +757,20 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
     if !crate::database::settings::MediaRules::load(&app.pool).await?.shows("bgm") {
         return Ok(Playlist::default());
     }
+    let rom = super::rom_audio::Settings::load(app).await?;
+    let mut list = playlist_inner(app, q, &rom).await?;
+    list.keep_playing = rom.keep_playing;
+    Ok(list)
+}
+
+async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Settings) -> Result<Playlist> {
     let client = crate::database::settings::instance_mode(&app.pool).await? == crate::database::settings::InstanceMode::Client;
-    let mut list = local_playlist(app, q).await?;
+    let titles = titles_of(app, q).await?;
+    let mut list = if rom.sources.tagged() { local_playlist(app, &titles).await? } else { Playlist::default() };
+    // The music inside the title's own ROMs, after the tagged albums.
+    if rom.sources.rom() {
+        list.tracks.extend(super::rom_audio::title_tracks(app, &titles, rom).await?);
+    }
     // A client plays the main server's library too, streamed: its catalogue is the server's,
     // so the same ids name the same title there. A server that cannot be reached, or one too
     // old to have an audio library, just contributes nothing.
@@ -754,6 +779,15 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
     }
     if !list.tracks.is_empty() {
         return Ok(list);
+    }
+    // No ROM of its own: another version's ROM music, or a random title's.
+    if rom.sources.rom() {
+        let (tracks, chose) = super::rom_audio::stand_in(app, &titles, rom).await?;
+        if !tracks.is_empty() {
+            list.tracks = tracks;
+            list.fallback = Some(chose.name().to_string());
+            return Ok(list);
+        }
     }
     let fallback = match q.fallback.as_deref() {
         Some(name) => Fallback::parse(name).ok_or_else(|| Error::invalid("fallback must be none, random or generic_bgm"))?,
@@ -789,7 +823,7 @@ async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, list: &
                 let held: Vec<u64> = sqlx::query_scalar("SELECT a.remote_id FROM audio_files a JOIN remote_sources s ON s.id = a.remote_source_id AND s.role = 'main' AND s.deleted = FALSE WHERE a.deleted = FALSE AND a.remote_id IS NOT NULL")
                     .fetch_all(&app.pool)
                     .await?;
-                list.tracks.extend(theirs.tracks.into_iter().filter(|t| !held.contains(&t.id)).map(|t| AudioRow { remote: true, ..t }));
+                list.tracks.extend(theirs.tracks.into_iter().filter(|t| t.rom || !held.contains(&t.id)).map(|t| AudioRow { remote: true, ..t }));
                 for tag in theirs.tags {
                     if !list.tags.contains(&tag) {
                         list.tags.push(tag);
@@ -824,8 +858,7 @@ async fn fallback_tracks(app: &App, fallback: Fallback) -> Result<Vec<AudioRow>>
     rows.iter().map(row_to_audio).collect()
 }
 
-async fn local_playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
-    let titles = titles_of(app, q).await?;
+async fn local_playlist(app: &App, titles: &[u64]) -> Result<Playlist> {
     if titles.is_empty() {
         return Ok(Playlist::default());
     }
@@ -842,7 +875,7 @@ async fn local_playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
         "SELECT DISTINCT m.name FROM audio_file_tags m JOIN audio_files a ON a.id = m.audio_file_id AND a.deleted = FALSE AND a.playable = TRUE WHERE m.name IN ({keyword_names}) ORDER BY m.name"
     );
     let tags: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(tags_sql)).fetch_all(&app.pool).await?;
-    Ok(Playlist { tags, tracks, fallback: None })
+    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false })
 }
 
 #[cfg(test)]

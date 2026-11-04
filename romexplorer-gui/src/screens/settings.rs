@@ -42,7 +42,7 @@ const EDITORS: &[&str] = &[
     "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
-    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
+    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
     "merge_review_order", "gemini_model", "dat_sync_platforms",
 ];
@@ -103,6 +103,7 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
     ("media_export_prefer_region", true, "exported art: the release's own region first, whatever the provider order (default)", "exported art follows the provider order"),
     ("scan_pkg_titles", false, "read the title inside PS3 and PSP .pkg files", "name them from the content id only (default)"),
     ("media_reuse_existing", true, "take art already in the media folder instead of downloading it again (default)", "always download"),
+    ("audio_keep_playing", true, "keep a title's music playing on other screens until another title page opens (default)", "stop the music when the page is left"),
 ];
 
 /// Hashes a file scan can compute, in the order they are shown. Default: all but sha256.
@@ -302,6 +303,9 @@ fn initial(key: &str, value: &Value) -> Value {
         "audio_dsd_cache_format" => if value.as_str() == Some("flac") { json!("flac") } else { json!("aac") },
         "audio_client_format" => if matches!(value.as_str(), Some("aac" | "xhe_aac" | "none")) { value.clone() } else { json!("aac") },
         "audio_fallback" => if matches!(value.as_str(), Some("random" | "generic_bgm")) { value.clone() } else { json!("none") },
+        "audio_title_sources" => if matches!(value.as_str(), Some("tagged" | "rom")) { value.clone() } else { json!("both") },
+        "audio_rom_kinds" => if matches!(value.as_str(), Some("bgm_jingle" | "all")) { value.clone() } else { json!("bgm") },
+        "audio_rom_not_owned" => if matches!(value.as_str(), Some("random" | "none")) { value.clone() } else { json!("related") },
         "collection_default_tab" => if value.is_null() { json!("titles") } else { value.clone() },
         "collection_hidden_tabs" => json!(str_list(value)),
         "copy_definitive" => if value.as_str() == Some("definitive_only") { value.clone() } else { json!("best_held") },
@@ -374,6 +378,9 @@ fn num_spec(key: &str) -> Option<(i64, i64, Option<i64>, &'static str, &'static 
         "backup_keep" => (0, 0, None, "per kind", "How many backups of each kind to keep; 0 = all. A database backup never prunes a catalogue one."),
         "definitive_pc_max_age" => (10, 0, Some(100), "years", "Collection › Definitive: a PC version less than this many years older than the newest version takes the \"PC (Definitive tab)\" place in the platform priority; an older one ranks by its own year. 0 = PC versions never move up."),
         "media_export_cache_max_mb" => (1024, 0, None, "MiB", "Size cap of the cache of pictures converted for emulators; 0 = no cap. The least recently used go first."),
+        "audio_rom_loop_min_s" => (3, 0, None, "s", "ROM audio: a sound that loops is music from this length."),
+        "audio_rom_bgm_min_s" => (20, 0, None, "s", "ROM audio: a sound that does not loop is music from this length."),
+        "audio_rom_jingle_min_s" => (8, 0, None, "s", "ROM audio: a sound that does not loop is a jingle from this length; shorter is a sound effect."),
         _ => return None,
     })
 }
@@ -812,6 +819,18 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
         "audio_fallback" => rsx! {
             {muted("What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.")}
             {radios(&[("none", "nothing: silent (default)"), ("random", "random tracks from the audio linked to other titles"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("none"))}
+        },
+        "audio_title_sources" => rsx! {
+            {muted("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}
+            {radios(&[("both", "tagged audio files and the music in the title's ROMs (default)"), ("tagged", "tagged audio files only"), ("rom", "the music in the title's ROMs only")], sv("both"))}
+        },
+        "audio_rom_kinds" => rsx! {
+            {muted("Which sounds from a ROM a title page plays. Sounds are sorted by whether they loop and how long they are.")}
+            {radios(&[("bgm", "music only (default)"), ("bgm_jingle", "music and jingles"), ("all", "everything, sound effects too")], sv("bgm"))}
+        },
+        "audio_rom_not_owned" => rsx! {
+            {muted("ROM music for a title with no ROM here. When this finds nothing, audio_fallback decides.")}
+            {radios(&[("related", "another version you have, such as the original of a remake (default)"), ("random", "another title's, picked at random"), ("none", "none")], sv("related"))}
         },
         "release_edition_order" => {
             let items = edition_order(&v);

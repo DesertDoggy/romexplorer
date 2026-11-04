@@ -149,6 +149,21 @@ pub const KEY_AUDIO_CLIENT_BITRATE: &str = "audio_client_bitrate_kbps";
 /// What a title with no audio of its own plays: `none` (default: silence) | `random` |
 /// `generic_bgm` (the files carrying that tag).
 pub const KEY_AUDIO_FALLBACK: &str = "audio_fallback";
+/// Where a title page's music comes from: `tagged` (audio files tagged with the title) |
+/// `rom` (the music inside the title's ROMs) | `both` (default).
+pub const KEY_AUDIO_TITLE_SOURCES: &str = "audio_title_sources";
+/// Which ROM sounds a title page plays: `bgm` (default) | `bgm_jingle` | `all`.
+pub const KEY_AUDIO_ROM_KINDS: &str = "audio_rom_kinds";
+/// A title with no ROM of its own plays ROM music from: `related` (default: another version
+/// in its family, such as the original of a remake) | `random` | `none`.
+pub const KEY_AUDIO_ROM_NOT_OWNED: &str = "audio_rom_not_owned";
+/// Whether a title's music keeps playing on other screens until another title page opens
+/// (default true).
+pub const KEY_AUDIO_KEEP_PLAYING: &str = "audio_keep_playing";
+/// The lengths, in seconds, a ROM sound is sorted by (`rom::rom_audio::classify`).
+pub const KEY_AUDIO_ROM_LOOP_MIN_S: &str = "audio_rom_loop_min_s";
+pub const KEY_AUDIO_ROM_BGM_MIN_S: &str = "audio_rom_bgm_min_s";
+pub const KEY_AUDIO_ROM_JINGLE_MIN_S: &str = "audio_rom_jingle_min_s";
 /// This installation's own identity, created on first use and never changed.
 ///
 /// Needed the moment data moves between machines: a SQLite cache or a backup carries it, so
@@ -378,7 +393,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 93] = [
+pub const KNOWN_KEYS: [(&str, &str); 100] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -420,6 +435,13 @@ pub const KNOWN_KEYS: [(&str, &str); 93] = [
     (KEY_AUDIO_CLIENT_FORMAT, "Client mode: the format this machine's kept copies of the main server's audio are fetched in: none (as they are) | aac (the default on Linux) | xhe_aac (the default elsewhere). AAC is recommended when a Linux client is involved; xHE-AAC saves the most storage and plays on Windows 11, macOS, iOS and Android."),
     (KEY_AUDIO_CLIENT_BITRATE, "Client mode: the bitrate (kbps, 48-320, default 128) a kept copy is converted to. A track already at or below it is copied as it is."),
     (KEY_AUDIO_FALLBACK, "What a title with no audio linked to it plays: none (default; silent) | random (tracks picked at random from the audio linked to other titles) | generic_bgm (the audio files tagged generic_bgm)."),
+    (KEY_AUDIO_TITLE_SOURCES, "Where a title page's music comes from: tagged (audio files tagged with the title) | rom (the music inside the title's ROMs, played from the ROM) | both (default)."),
+    (KEY_AUDIO_ROM_KINDS, "Which sounds from a ROM a title page plays: bgm (default; music only) | bgm_jingle (music and short jingles) | all (sound effects too)."),
+    (KEY_AUDIO_ROM_NOT_OWNED, "ROM music for a title with no ROM here: related (default; another version of the game, such as the original of a remake) | random (another title's) | none."),
+    (KEY_AUDIO_KEEP_PLAYING, "Keep a title's music playing on other screens until another title page opens (true | false; default true)."),
+    (KEY_AUDIO_ROM_LOOP_MIN_S, "A ROM sound that loops is music from this many seconds (default 3)."),
+    (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 20)."),
+    (KEY_AUDIO_ROM_JINGLE_MIN_S, "A ROM sound that does not loop is a jingle from this many seconds (default 8); shorter is a sound effect."),
     (KEY_INSTANCE_ID, "This installation's own id, generated once. Stamped into exports so an import can tell your own data from another machine's."),
     (KEY_BACKUP_DIR, "Where backup zips are written. Empty = <data root>/backups."),
     (KEY_BACKUP_KEEP, "How many backups of each kind to keep (0 = all). Counted per kind, so a database backup never prunes a catalogue one."),
@@ -796,6 +818,24 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
     (KEY_AUDIO_CLIENT_BITRATE, &[
         "Client mode: the bitrate a kept copy is converted to (48-320 kbps, default 128).",
         "A track already at or below it is copied as it is; DSD, ALAC and AIFF are always converted.",
+    ]),
+    (KEY_AUDIO_TITLE_SOURCES, &[
+        "Where a title page's music comes from: the audio files tagged with the title (soundtrack CDs, concerts), the music inside the title's ROMs, or both (default).",
+        "ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first. A track the browser cannot play is converted on first play and kept in the converted-audio cache (audio_cache_max_mb).",
+    ]),
+    (KEY_AUDIO_ROM_KINDS, &[
+        "Which sounds from a ROM a title page plays: music only (default), music and jingles, or everything including sound effects.",
+        "Sounds are sorted by whether they loop and how long they are (the three lengths below).",
+    ]),
+    (KEY_AUDIO_ROM_NOT_OWNED, &[
+        "ROM music for a title with no ROM on this machine: another version of the game you do have (the original of a remake, a port), music from another title picked at random, or none.",
+        "When this finds nothing, audio_fallback decides.",
+    ]),
+    (KEY_AUDIO_ROM_LOOP_MIN_S, &[
+        "Seconds. A ROM sound that loops and is at least this long is music (default 3).",
+    ]),
+    (KEY_AUDIO_ROM_BGM_MIN_S, &[
+        "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.",
     ]),
     (KEY_AUDIO_FALLBACK, &[
         "What a title with no audio linked to it plays: nothing (default), tracks picked at random from the audio linked to other titles, or the audio files tagged generic_bgm.",

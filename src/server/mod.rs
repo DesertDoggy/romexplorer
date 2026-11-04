@@ -873,6 +873,18 @@ async fn media_remote(State(s): State<Shared>, Path(id): Path<u64>, headers: Hea
     relay_from_main(&s.app, &format!("/api/v1/media/{id}"), &headers).await
 }
 
+/// A track inside a ROM, decoded on its first play and then served from the audio cache
+/// (`api::rom_audio::serve`), with `Range` support like any other track.
+async fn audio_rom_file(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    let served = api::rom_audio::serve(&s.app, id).await?;
+    stream_file(&served.path, served.mime, Some(&headers)).await
+}
+
+/// A ROM track of the main server's, streamed.
+async fn audio_remote_rom(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    relay_from_main(&s.app, &format!("/api/v1/audio/rom/{id}/file"), &headers).await
+}
+
 /// A track of the main server's audio library, streamed.
 async fn audio_remote(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
     relay_from_main(&s.app, &format!("/api/v1/audio/{id}/file"), &headers).await
@@ -2550,6 +2562,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/facets", get(audio_facets))
         .route("/api/v1/audio/{id}/file", get(audio_file))
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
+        .route("/api/v1/audio/rom/{id}/file", get(audio_rom_file))
+        .route("/api/v1/audio/remote/rom/{id}/file", get(audio_remote_rom))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/ai", get(ai_overview))

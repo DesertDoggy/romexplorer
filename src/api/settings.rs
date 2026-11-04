@@ -580,6 +580,31 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid("audio_fallback must be none, random or generic_bgm"));
             }
         }
+        db_settings::KEY_AUDIO_TITLE_SOURCES => {
+            if value.as_str().and_then(super::rom_audio::TitleSources::parse).is_none() {
+                return Err(Error::invalid("audio_title_sources must be tagged, rom or both"));
+            }
+        }
+        db_settings::KEY_AUDIO_ROM_KINDS => {
+            if value.as_str().and_then(super::rom_audio::Kinds::parse).is_none() {
+                return Err(Error::invalid("audio_rom_kinds must be bgm, bgm_jingle or all"));
+            }
+        }
+        db_settings::KEY_AUDIO_ROM_NOT_OWNED => {
+            if value.as_str().and_then(super::rom_audio::NotOwned::parse).is_none() {
+                return Err(Error::invalid("audio_rom_not_owned must be related, random or none"));
+            }
+        }
+        db_settings::KEY_AUDIO_KEEP_PLAYING => {
+            if !value.is_boolean() {
+                return Err(Error::invalid("audio_keep_playing must be true or false"));
+            }
+        }
+        db_settings::KEY_AUDIO_ROM_LOOP_MIN_S | db_settings::KEY_AUDIO_ROM_BGM_MIN_S | db_settings::KEY_AUDIO_ROM_JINGLE_MIN_S => {
+            if !value.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0) {
+                return Err(Error::invalid("the ROM audio lengths are a number of seconds, 0 or more"));
+            }
+        }
         db_settings::KEY_AUDIO_CLIENT_BITRATE => {
             if !value.as_u64().is_some_and(|n| super::audio_convert::BITRATE_RANGE.contains(&(n as u32))) {
                 return Err(Error::invalid("audio_client_bitrate_kbps must be an integer 48-320"));
