@@ -67,3 +67,9 @@
 [submodule "external/ffmpeg"]
 	path = external/ffmpeg
 	url = https://github.com/FFmpeg/FFmpeg
+[submodule "external/game-music-emu"]
+	path = external/game-music-emu
+	url = https://github.com/libgme/game-music-emu
+[submodule "external/gme-kode54"]
+	path = external/gme-kode54
+	url = https://github.com/kode54/Game_Music_Emu
