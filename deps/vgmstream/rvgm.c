@@ -218,3 +218,11 @@ int32_t rvgm_known_extension(const char *name) {
     cfg.accept_common = true;
     return libvgmstream_is_valid(name, &cfg) ? 1 : 0;
 }
+
+int32_t rvgm_has_ffmpeg(void) {
+#ifdef VGM_USE_FFMPEG
+    return 1;
+#else
+    return 0;
+#endif
+}

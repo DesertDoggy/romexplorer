@@ -64,3 +64,6 @@
 [submodule "external/vgmstream"]
 	path = external/vgmstream
 	url = https://github.com/vgmstream/vgmstream
+[submodule "external/ffmpeg"]
+	path = external/ffmpeg
+	url = https://github.com/FFmpeg/FFmpeg

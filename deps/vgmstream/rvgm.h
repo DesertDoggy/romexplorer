@@ -89,6 +89,10 @@ RVGM_API void rvgm_close(rvgm *h);
  * reads no data. Common extensions (wav, ogg, mp3...) count as known. */
 RVGM_API int32_t rvgm_known_extension(const char *name);
 
+/* 1 when FFmpeg was linked in (WMA, XMA, ATRAC3...). Added after ABI 1 without a bump: a
+ * caller treats a library without this symbol as 0. */
+RVGM_API int32_t rvgm_has_ffmpeg(void);
+
 #ifdef __cplusplus
 }
 #endif

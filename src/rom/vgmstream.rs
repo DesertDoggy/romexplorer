@@ -73,6 +73,7 @@ struct Api {
     seek: SeekFn,
     close: CloseFn,
     known: KnownFn,
+    has_ffmpeg: bool,
 }
 
 fn find_library() -> Option<PathBuf> {
@@ -100,7 +101,12 @@ fn api() -> Option<&'static Api> {
             let seek = *lib.get::<SeekFn>(b"rvgm_seek").ok()?;
             let close = *lib.get::<CloseFn>(b"rvgm_close").ok()?;
             let known = *lib.get::<KnownFn>(b"rvgm_known_extension").ok()?;
-            Some(Api { _lib: lib, open, info, render, seek, close, known })
+            // Optional: libraries built before it was added have no FFmpeg either.
+            let has_ffmpeg = lib.get::<unsafe extern "C" fn() -> i32>(b"rvgm_has_ffmpeg").map(|f| f() == 1).unwrap_or(false);
+            if !has_ffmpeg {
+                log::info!("rvgmstream: built without FFmpeg, so WMA, XMA and ATRAC3 audio will not play (deps/ffmpeg/scripts/build.sh, then rebuild rvgmstream)");
+            }
+            Some(Api { _lib: lib, open, info, render, seek, close, known, has_ffmpeg })
         }
     })
     .as_ref()
@@ -109,6 +115,11 @@ fn api() -> Option<&'static Api> {
 /// Whether the decoder library is present on this machine.
 pub fn available() -> bool {
     api().is_some()
+}
+
+/// Whether the decoder library has FFmpeg linked in, for WMA, XMA, ATRAC3 and the like.
+pub fn has_ffmpeg() -> bool {
+    api().is_some_and(|a| a.has_ffmpeg)
 }
 
 /// Whether vgmstream knows `name`'s extension. Reads nothing; a first filter before

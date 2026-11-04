@@ -303,3 +303,68 @@ fn a_track_is_decoded_into_a_flac_for_the_player() {
     let seconds = samples as f64 / 2.0 / 22_050.0;
     assert!((55.0..=65.0).contains(&seconds), "{seconds} s");
 }
+
+#[test]
+fn a_gdi_reads_its_high_density_area_as_one_filesystem() {
+    if !need_lib() {
+        return;
+    }
+    let dir = TempDir::new("gdi");
+    // The filesystem starts in track 3 and its files carry on in track 5, after an audio
+    // track: split, as a GD-ROM is.
+    let area = game_audio::iso9660_at(&sound_tree(), 45_000);
+    let split = 22 * 2048;
+    let (head, tail) = area.split_at(split);
+    std::fs::write(dir.path("track01.bin"), game_audio::raw_2352(&game_audio::iso9660(&[Entry::File("ABS.TXT", b"low density".repeat(10))]))).unwrap();
+    std::fs::write(dir.path("track02.raw"), game_audio::cdda(4.0)).unwrap();
+    std::fs::write(dir.path("track03.bin"), game_audio::raw_2352(head)).unwrap();
+    std::fs::write(dir.path("track04.raw"), game_audio::cdda(12.0)).unwrap();
+    std::fs::write(dir.path("track05.bin"), game_audio::raw_2352(tail)).unwrap();
+    let gdi = dir.path("disc.gdi");
+    std::fs::write(&gdi, "5\n1 0 4 2352 track01.bin 0\n2 600 0 2352 track02.raw 0\n3 45000 4 2352 track03.bin 0\n4 45022 0 2352 track04.raw 0\n5 45022 4 2352 track05.bin 0\n").unwrap();
+    let tracks = rom_audio::index_rom(&gdi, &Thresholds::default(), |_| {}).unwrap();
+    assert_eq!(by_name(&tracks, "Track 04").duration_ms / 1000, 12, "a gdi track is its whole file");
+    assert_eq!(by_name(&tracks, "Track 02").duration_ms / 1000, 4);
+    let title = by_name(&tracks, "TITLE.WAV");
+    assert_eq!(title.location, TrackLocation::File { view: 1, path: "SOUND/BGM/TITLE.WAV".into(), subsong: 0 });
+    let mut stream = rom_audio::open_track(&gdi, &title.location, vgmstream::PlayConfig::AS_STORED).unwrap();
+    let first = stream.next_chunk().unwrap().unwrap();
+    assert_eq!(&first[..64], &game_audio::tone(22_050, 2, 32, 440.0)[..], "read across both data tracks");
+}
+
+/// The codecs vgmstream hands to FFmpeg (WMA on Xbox, AAC, AC-3, Opus...). Skips when
+/// rvgmstream was built without FFmpeg, or when no `ffmpeg` command is on PATH to make the
+/// samples: FFmpeg's own encoders are not in our audio-only build.
+#[test]
+fn ffmpeg_codecs_decode_when_linked_in() {
+    if !need_lib() {
+        return;
+    }
+    if !vgmstream::has_ffmpeg() {
+        eprintln!("skipped: rvgmstream was built without FFmpeg (deps/ffmpeg/scripts/build.sh)");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("romexplorer_test_rom_audio_ffmpeg_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (ext, codec) in [("wma", "wmav2"), ("ac3", "ac3"), ("m4a", "aac"), ("opus", "libopus")] {
+        let path = dir.join(format!("tone.{ext}"));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=48000", "-ac", "2", "-c:a", codec])
+            .arg(&path)
+            .status();
+        if !matches!(made, Ok(s) if s.success()) {
+            eprintln!("skipped {ext}: the ffmpeg command could not make a sample");
+            continue;
+        }
+        let name = format!("tone.{ext}");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut stream = Stream::open(Box::new(MemorySource::new(&name, bytes)), &name, 0, PlayConfig::AS_STORED).unwrap_or_else(|| panic!("vgmstream opens {name}"));
+        let info = stream.info().clone();
+        assert_eq!(info.channels, 2, "{name}: {info:?}");
+        let pcm = decode_all(&mut stream).unwrap();
+        let seconds = pcm.len() as f64 / 2.0 / info.sample_rate as f64;
+        assert!((1.9..2.2).contains(&seconds), "{name}: {seconds} s");
+        assert!(pcm.iter().any(|&s| s.abs() > 1000), "{name} decodes to silence");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

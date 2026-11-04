@@ -3,10 +3,12 @@
 # Its own project rather than vgmstream's top-level CMakeLists.txt, so nothing upstream is
 # edited and none of its plugins, players or external codec downloads are configured: this
 # file globs the same source directories upstream's src/CMakeLists.txt does and adds one
-# target. Only vgmstream's built-in decoders are compiled in (ADX, HCA, DSP, PS-ADPCM,
-# CD-XA, ATRAC9, MP3 via minimp3, Xbox/IMA/MS ADPCM, PCM and the rest of its own coding/);
-# FFmpeg, libvorbis, mpg123, CELT and Speex are left for a later step. G.719 and G.722.1
-# are left out on purpose: they come from ITU/Polycom reference code with no clear licence.
+# target. vgmstream's built-in decoders are compiled in (ADX, HCA, DSP, PS-ADPCM, CD-XA,
+# ATRAC9, MP3 via minimp3, Xbox/IMA/MS ADPCM, PCM and the rest of its own coding/). When
+# FFMPEG_ROOT names a deps/ffmpeg release tree, FFmpeg's static audio-only libraries are linked
+# in too (WMA, XMA, ATRAC3/3plus, AAC, AC-3, Opus, Vorbis), still as this one library.
+# libvorbis, mpg123, CELT and Speex are not used. G.719 and G.722.1 are left out on purpose:
+# they come from ITU/Polycom reference code with no clear licence.
 cmake_minimum_required(VERSION 3.10)
 project(rvgmstream C)
 
@@ -40,6 +42,24 @@ target_include_directories(rvgmstream PRIVATE
   "${VGM_SRC}" "${VGM_SRC}/base" "${VGM_SRC}/coding" "${VGM_SRC}/layout" "${VGM_SRC}/meta" "${VGM_SRC}/util"
   "${VGM_ROOT}/ext_includes")
 target_compile_definitions(rvgmstream PRIVATE VGM_USE_ATRAC9)
+if(FFMPEG_ROOT)
+  target_compile_definitions(rvgmstream PRIVATE VGM_USE_FFMPEG)
+  target_include_directories(rvgmstream PRIVATE "${FFMPEG_ROOT}/include")
+  # Link order matters for static archives: users before what they use.
+  foreach(lib avformat avcodec swresample avutil)
+    target_link_libraries(rvgmstream PRIVATE "${FFMPEG_ROOT}/lib/lib${lib}.a")
+  endforeach()
+  if(WIN32)
+    target_link_libraries(rvgmstream PRIVATE bcrypt)
+  elseif(APPLE)
+    target_link_libraries(rvgmstream PRIVATE "-framework CoreFoundation" "-framework Security")
+  else()
+    target_link_libraries(rvgmstream PRIVATE pthread)
+    # FFmpeg's hand-written assembly has no hidden-visibility markers; keep its symbols out
+    # of the export table all the same.
+    target_link_options(rvgmstream PRIVATE "-Wl,--exclude-libs,ALL")
+  endif()
+endif()
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   # Upstream's own warning set is noisy on its own sources; they are not ours to fix.
   target_compile_options(rvgmstream PRIVATE -w)
