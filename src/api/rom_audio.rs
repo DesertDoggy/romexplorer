@@ -55,6 +55,13 @@ impl TitleSources {
     pub fn rom(self) -> bool {
         self != Self::Tagged
     }
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Tagged => "tagged",
+            Self::Rom => "rom",
+            Self::Both => "both",
+        }
+    }
 }
 
 /// `audio_rom_kinds`: which sounds out of a ROM a page plays.
@@ -72,6 +79,13 @@ impl Kinds {
             "bgm_jingle" => Some(Self::BgmJingle),
             "all" => Some(Self::All),
             _ => None,
+        }
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Bgm => "bgm",
+            Self::BgmJingle => "bgm_jingle",
+            Self::All => "all",
         }
     }
     pub fn plays(self, kind: SoundKind) -> bool {
@@ -98,6 +112,13 @@ impl NotOwned {
             "random" => Some(Self::Random),
             "none" => Some(Self::None),
             _ => None,
+        }
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Related => "related",
+            Self::Random => "random",
+            Self::None => "none",
         }
     }
     /// The playlist's `fallback` when this chose the tracks.
@@ -149,6 +170,52 @@ impl Settings {
             },
             keep_playing: db_settings::get::<bool>(&app.pool, db_settings::KEY_AUDIO_KEEP_PLAYING).await?.unwrap_or(d.keep_playing),
         })
+    }
+
+    /// These settings as a playlist request's query, with `not_owned` given apart: how a
+    /// client asks the main server for its own choice of tracks rather than the server's.
+    pub fn query(&self, not_owned: NotOwned) -> String {
+        let t = self.thresholds;
+        let s = |ms: u64| ms as f64 / 1000.0;
+        format!(
+            "sources={}&kinds={}&not_owned={}&loop_min_s={}&bgm_min_s={}&jingle_min_s={}",
+            self.sources.key(),
+            self.kinds.key(),
+            not_owned.key(),
+            s(t.loop_min_ms),
+            s(t.bgm_min_ms),
+            s(t.jingle_min_ms)
+        )
+    }
+
+    /// These settings with what a playlist request spells out in their place.
+    pub fn overridden(mut self, q: &super::audio::PlaylistQuery) -> Result<Self> {
+        fn bad(what: &str) -> Error {
+            Error::invalid(format!("{what} is not one of its values"))
+        }
+        if let Some(v) = q.sources.as_deref() {
+            self.sources = TitleSources::parse(v).ok_or_else(|| bad("sources"))?;
+        }
+        if let Some(v) = q.kinds.as_deref() {
+            self.kinds = Kinds::parse(v).ok_or_else(|| bad("kinds"))?;
+        }
+        if let Some(v) = q.not_owned.as_deref() {
+            self.not_owned = NotOwned::parse(v).ok_or_else(|| bad("not_owned"))?;
+        }
+        let ms = |v: Option<f64>, what: &str, current: u64| -> Result<u64> {
+            match v {
+                None => Ok(current),
+                Some(s) if s.is_finite() && s >= 0.0 => Ok((s * 1000.0).round() as u64),
+                Some(_) => Err(Error::invalid(format!("{what} must be zero or more seconds"))),
+            }
+        };
+        let t = self.thresholds;
+        self.thresholds = Thresholds {
+            loop_min_ms: ms(q.loop_min_s, "loop_min_s", t.loop_min_ms)?,
+            bgm_min_ms: ms(q.bgm_min_s, "bgm_min_s", t.bgm_min_ms)?,
+            jingle_min_ms: ms(q.jingle_min_s, "jingle_min_s", t.jingle_min_ms)?,
+        };
+        Ok(self)
     }
 }
 
@@ -263,12 +330,24 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             }
             Err(e) => {
                 summary.errors.push(format!("{}: {e}", path.display()));
-                store(app, rom_id, &[], Some(&e)).await?;
+                record_error(app, rom_id, &e).await?;
             }
         }
     }
     progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
     Ok(summary)
+}
+
+/// Notes why a ROM could not be read, and keeps the tracks of its last good index: the
+/// failure may pass (a drive not mounted, a file in use), and the kinds set by hand live on
+/// those rows. `indexed_at` is left as it was, so cached decodes keep their names.
+async fn record_error(app: &App, rom_id: u64, error: &str) -> Result<()> {
+    sqlx::query("INSERT INTO rom_audio_index (rom_id, indexed_at, tracks, error) VALUES (?, NOW(), 0, ?) ON DUPLICATE KEY UPDATE error = VALUES(error)")
+        .bind(rom_id)
+        .bind(error.chars().take(1024).collect::<String>())
+        .execute(&app.pool)
+        .await?;
+    Ok(())
 }
 
 /// A track's place in its ROM, as the key a user's own kind is kept by across re-indexes.
@@ -354,12 +433,13 @@ pub fn kind_of(manual: Option<&str>, looping: bool, duration_ms: u64, inner_path
 }
 
 /// SQL that leaves out what can only be a sound effect, when sound effects are not wanted:
-/// nothing shorter than the shortest jingle or loop is music.
+/// nothing shorter than the shortest BGM, jingle or loop is music.
 fn length_filter(s: &Settings) -> String {
     if s.kinds == Kinds::All {
         return String::new();
     }
-    let min = s.thresholds.loop_min_ms.min(s.thresholds.jingle_min_ms);
+    let t = s.thresholds;
+    let min = t.loop_min_ms.min(t.bgm_min_ms).min(t.jingle_min_ms);
     format!(" AND (t.duration_ms >= {min} OR t.kind_manual IS NOT NULL)")
 }
 
@@ -431,14 +511,13 @@ pub async fn title_tracks(app: &App, titles: &[u64], s: &Settings) -> Result<Vec
     tracks_where(app, &format!("t.rom_id IN ({})", roms_of(titles)), "r.main_path, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong", s, MAX_TRACKS).await
 }
 
-/// The other versions of `titles`: their Definitive family (the original of a remake, its
-/// ports).
+/// The other versions of `titles`: the rest of their Definitive family (the original of a
+/// remake, its ports), by `title.family_root_id`. A title with no root heads its own family.
 async fn related_titles(app: &App, titles: &[u64]) -> Result<Vec<u64>> {
     let ids = titles.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT DISTINCT o2.title_id FROM title_family_order o1 JOIN title_family_order o2 ON o2.root_title_id = o1.root_title_id \
-         WHERE o1.title_id IN ({ids}) AND o2.title_id NOT IN ({ids}) \
-         UNION SELECT f.root_title_id FROM title_family_order f WHERE f.title_id IN ({ids}) AND f.root_title_id NOT IN ({ids})"
+        "SELECT DISTINCT m.id FROM title t JOIN title m ON COALESCE(m.family_root_id, m.id) = COALESCE(t.family_root_id, t.id) \
+         WHERE t.id IN ({ids}) AND m.id NOT IN ({ids})"
     )))
     .fetch_all(&app.pool)
     .await?)
@@ -552,6 +631,30 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_length_floor_is_the_lowest_of_the_three_thresholds() {
+        let mut s = Settings::default();
+        s.thresholds = Thresholds { loop_min_ms: 3000, bgm_min_ms: 1000, jingle_min_ms: 8000 };
+        assert!(length_filter(&s).contains(">= 1000 "), "{}", length_filter(&s));
+        s.kinds = Kinds::All;
+        assert_eq!(length_filter(&s), "");
+    }
+
+    #[test]
+    fn a_clients_settings_travel_to_the_main_server_and_back() {
+        let mut mine = Settings::default();
+        mine.sources = TitleSources::Tagged;
+        mine.kinds = Kinds::BgmJingle;
+        mine.thresholds = Thresholds { loop_min_ms: 2500, bgm_min_ms: 1000, jingle_min_ms: 4000 };
+        let uri: axum::http::Uri = format!("/p?title_id=1&{}", mine.query(NotOwned::Random)).parse().unwrap();
+        let axum::extract::Query(query) = axum::extract::Query::<super::super::audio::PlaylistQuery>::try_from_uri(&uri).unwrap();
+        let theirs = Settings::default().overridden(&query).unwrap();
+        assert_eq!((theirs.sources, theirs.kinds, theirs.not_owned), (TitleSources::Tagged, Kinds::BgmJingle, NotOwned::Random));
+        assert_eq!((theirs.thresholds.loop_min_ms, theirs.thresholds.bgm_min_ms, theirs.thresholds.jingle_min_ms), (2500, 1000, 4000));
+        let bad = super::super::audio::PlaylistQuery { kinds: Some("loud".into()), ..Default::default() };
+        assert!(Settings::default().overridden(&bad).is_err());
+    }
 
     #[test]
     fn a_kind_set_by_hand_wins_over_the_lengths() {

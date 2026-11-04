@@ -679,6 +679,15 @@ pub struct PlaylistQuery {
     /// how a client asks the main server for its own setting's answer rather than the
     /// server's.
     pub fallback: Option<String>,
+    /// The ROM audio settings to answer by instead of this machine's (`audio_title_sources`,
+    /// `audio_rom_kinds`, `audio_rom_not_owned`, `audio_rom_*_min_s`): what a client sends
+    /// so the main server picks tracks the way the client is set up to.
+    pub sources: Option<String>,
+    pub kinds: Option<String>,
+    pub not_owned: Option<String>,
+    pub loop_min_s: Option<f64>,
+    pub bgm_min_s: Option<f64>,
+    pub jingle_min_s: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -757,7 +766,7 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
     if !crate::database::settings::MediaRules::load(&app.pool).await?.shows("bgm") {
         return Ok(Playlist::default());
     }
-    let rom = super::rom_audio::Settings::load(app).await?;
+    let rom = super::rom_audio::Settings::load(app).await?.overridden(q)?;
     let mut list = playlist_inner(app, q, &rom).await?;
     list.keep_playing = rom.keep_playing;
     Ok(list)
@@ -775,7 +784,8 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
     // so the same ids name the same title there. A server that cannot be reached, or one too
     // old to have an audio library, just contributes nothing.
     if client {
-        add_from_main(app, q, Fallback::None, &mut list).await?;
+        // Only this title's own tracks for now: the stand-ins below come after.
+        add_from_main(app, q, Fallback::None, &rom.query(super::rom_audio::NotOwned::None), &mut list).await?;
     }
     if !list.tracks.is_empty() {
         return Ok(list);
@@ -788,6 +798,13 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
             list.fallback = Some(chose.name().to_string());
             return Ok(list);
         }
+        // None here: the main server's ROMs, chosen by this machine's `audio_rom_not_owned`.
+        if client && rom.not_owned != super::rom_audio::NotOwned::None {
+            add_from_main(app, q, Fallback::None, &rom.query(rom.not_owned), &mut list).await?;
+            if !list.tracks.is_empty() {
+                return Ok(list);
+            }
+        }
     }
     let fallback = match q.fallback.as_deref() {
         Some(name) => Fallback::parse(name).ok_or_else(|| Error::invalid("fallback must be none, random or generic_bgm"))?,
@@ -798,7 +815,7 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
     }
     list.tracks = fallback_tracks(app, fallback).await?;
     if client {
-        add_from_main(app, q, fallback, &mut list).await?;
+        add_from_main(app, q, fallback, &rom.query(super::rom_audio::NotOwned::None), &mut list).await?;
     }
     if !list.tracks.is_empty() {
         list.fallback = Some(fallback.name().to_string());
@@ -808,14 +825,14 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
 
 /// Adds the main server's playlist for the same page to `list`. `fallback` is passed along
 /// spelled out, so the server answers by this machine's setting and not its own.
-async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, list: &mut Playlist) -> Result<()> {
+async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, rom: &str, list: &mut Playlist) -> Result<()> {
     let query = match (q.title_id, q.release_id, q.ra_game_id) {
         (Some(id), _, _) => format!("title_id={id}"),
         (_, Some(id), _) => format!("release_id={id}"),
         (_, _, Some(id)) => format!("ra_game_id={id}"),
         _ => return Ok(()),
     };
-    match super::media_sync::from_main(app, &format!("/api/v1/audio/playlist?{query}&fallback={}", fallback.name()), None).await {
+    match super::media_sync::from_main(app, &format!("/api/v1/audio/playlist?{query}&fallback={}&{rom}", fallback.name()), None).await {
         Ok(response) => match response.json::<Playlist>().await {
             Ok(theirs) => {
                 // A server track this machine keeps a copy of is already in the list, as
@@ -824,6 +841,9 @@ async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, list: &
                     .fetch_all(&app.pool)
                     .await?;
                 list.tracks.extend(theirs.tracks.into_iter().filter(|t| t.rom || !held.contains(&t.id)).map(|t| AudioRow { remote: true, ..t }));
+                if list.fallback.is_none() && !list.tracks.is_empty() {
+                    list.fallback = theirs.fallback;
+                }
                 for tag in theirs.tags {
                     if !list.tags.contains(&tag) {
                         list.tags.push(tag);
