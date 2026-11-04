@@ -2197,7 +2197,8 @@ async function showCopyConfig(keep) {
 // audio: the library list, tagging, and the player on title / release / RA game pages
 // ---------------------------------------------------------------------------
 // A track on the main server (a client's `remote` one) is streamed through this machine.
-function audioUrl(id, remote) { return '/api/v1/audio/' + (remote ? 'remote/' : '') + id + '/file' + (token ? '?token=' + encodeURIComponent(token) : ''); }
+// A ROM track (`rom`) is decoded out of the ROM on its first play.
+function audioUrl(id, remote, rom) { return '/api/v1/audio/' + (remote ? 'remote/' : '') + (rom ? 'rom/' : '') + id + '/file' + (token ? '?token=' + encodeURIComponent(token) : ''); }
 
 // The media strip of a title / release page: one horizontal, scrollable row of everything the
 // media_show setting allows. Images are thumbnails that open full size; videos and audio carry
@@ -2262,7 +2263,7 @@ async function showAudio() {
   const facets = await api('/api/v1/audio/facets').catch(() => ({ tags: [], artists: [], albums: [], years: [] }));
   const opts = (list, any) => `<option value="">${esc(any)}</option>` + list.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
   view.innerHTML = `<div class="card"><p class="muted">${tr('The audio files under the folders set as audio under Config › Storage, with what their tags say. A scan walks every subfolder. Give files a keyword tag and they play on the pages of every title carrying the same tag.')}</p>
-      <div class="toolbar"><button class="btn primary" data-scan="full">${tr('Scan audio (full)')}</button><button class="btn" data-scan="new_only">${tr('Quick scan (new only)')}</button><button class="btn" id="audio-autotag" title="${tr('tag albums with the title they are named after (translations included); your own tags are left alone, and the automatic ones can be filtered and removed under Edit › Keyword tags')}">${tr('auto-tag by title')}</button><button class="btn" id="audio-fetch" title="${tr('Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep.')}">${tr('Fetch from the main server')}</button><span id="audio-scan" class="muted"></span></div></div>
+      <div class="toolbar"><button class="btn primary" data-scan="full">${tr('Scan audio (full)')}</button><button class="btn" data-scan="new_only">${tr('Quick scan (new only)')}</button><button class="btn" id="audio-autotag" title="${tr('tag albums with the title they are named after (translations included); your own tags are left alone, and the automatic ones can be filtered and removed under Edit › Keyword tags')}">${tr('auto-tag by title')}</button><button class="btn" id="audio-fetch" title="${tr('Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep.')}">${tr('Fetch from the main server')}</button><button class="btn" data-romidx="full" title="${tr("find the music and sounds inside disc images and dumped folders, so title pages can play them from the ROM")}">${tr('Index ROM audio')}</button><button class="btn" data-romidx="new_only" title="${tr("find the music and sounds inside disc images and dumped folders, so title pages can play them from the ROM")}">${tr('Index ROM audio (new only)')}</button><span id="audio-scan" class="muted"></span></div></div>
     <div id="grid"></div>`;
   const reload = () => showAudio();
   const tagAction = (label, path, promptText, scope) => ({ label, run: async (ids, done) => {
@@ -2301,18 +2302,34 @@ async function showAudio() {
   document.getElementById('audio-autotag').onclick = async () => {
     try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'audio_autotag' } }); watchJob(r.id, document.getElementById('audio-scan'), reload); } catch (e) { toast(e.message, true); }
   };
-  queueable(...view.querySelectorAll('[data-scan]'), document.getElementById('audio-fetch'), document.getElementById('audio-autotag'));
+  for (const b of view.querySelectorAll('[data-romidx]')) b.onclick = async () => {
+    try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'rom_audio_index', mode: b.dataset.romidx } }); watchJob(r.id, document.getElementById('audio-scan'), reload); } catch (e) { toast(e.message, true); }
+  };
+  queueable(...view.querySelectorAll('[data-scan]'), document.getElementById('audio-fetch'), document.getElementById('audio-autotag'), ...view.querySelectorAll('[data-romidx]'));
 }
 
-// The player for a page: every playable file sharing a keyword tag with the page's title.
-// Shown (and started) only when there is something to play.
+// The player for a page: every playable file sharing a keyword tag with the page's title,
+// and the music in its ROMs. Shown (and started) only when there is something to play; a
+// title page with nothing stops music kept playing from an earlier one.
 async function pagePlayer(query) {
   if (!window.rxPlayer) return;
-  let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { return; }
-  if (!list.tracks.length) return;
-  const host = el('<div></div>'); view.insertBefore(host, view.firstChild);
-  window.rxPlayer.start(host, list.tracks.map(t => Object.assign({}, t, { url: audioUrl(t.id, t.remote) })),
-    { previous: tr('previous'), next: tr('next'), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down)': tr('normalise: play every track at about the same loudness (loud tracks are turned down)') });
+  let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { window.rxPlayer.stop(); return; }
+  for (const old of view.querySelectorAll('.rx-videos')) old.remove();
+  // A title page whose ROMs have video sound (a title movie): this title's own on / off,
+  // over the audio_rom_videos setting.
+  const tv = list.title_videos;
+  if (tv && (tv.has_video || tv.choice !== 'default')) {
+    const row = el(`<div class="toolbar rx-videos"><label>${tr('Video sound for this title')} <select>${[['default', tr('as in Settings')], ['on', tr('on')], ['off', tr('off')]].map(([v, l]) => `<option value="${v}"${v === tv.choice ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label></div>`);
+    row.querySelector('select').onchange = async e => {
+      try { await api(`/api/v1/audio/rom/title/${tv.title_id}`, { method: 'PUT', body: { videos: e.target.value } }); toast(tr('saved')); for (const h of view.querySelectorAll('.rx-player-host')) h.remove(); pagePlayer(query); } catch (err) { toast(err.message, true); }
+    };
+    view.insertBefore(row, view.firstChild);
+  }
+  if (!list.tracks.length) { window.rxPlayer.stop(); return; }
+  const host = el('<div class="rx-player-host"></div>'); view.insertBefore(host, view.firstChild);
+  window.rxPlayer.start(host, list.tracks.map(t => Object.assign({}, t, { url: audioUrl(t.id, t.remote, t.rom), album: t.rom ? [t.album, t.rom_kind && tr(t.rom_kind)].filter(Boolean).join(' · ') : t.album })),
+    { previous: tr('previous'), next: tr('next'), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down)': tr('normalise: play every track at about the same loudness (loud tracks are turned down)') },
+    { keep: !!list.keep_playing });
 }
 
 // ---------------------------------------------------------------------------
@@ -2368,8 +2385,9 @@ function restoreScroll() { if (pendingScroll) { const y = pendingScroll; pending
 function route() {
   if (consoleRefused) return;
   navSeq++;
-  // The music belongs to the page it started on.
-  if (window.rxPlayer) window.rxPlayer.stop();
+  // The music belongs to the page it started on -- or, with audio_keep_playing, goes on in a
+  // strip at the bottom until another title page starts its own.
+  if (window.rxPlayer) window.rxPlayer.leave();
   clearInterval(jobsTimer);
   stopWatching();
   // "#collection/titles?basegame=12": path, then list filters after "?".
@@ -4566,7 +4584,7 @@ function settingEditor(key, value) {
     case 'cache_ttl_days': { current = value ?? 90; const i = el(`<input type="number" min="1" value="${Number(current)}"> <span class="muted">${tr('days')}</span>`); const inp = el(`<label>`); inp.appendChild(i); box.appendChild(inp); i.oninput = () => { current = Number(i.value) || 1; }; return { el: box, get }; }
     case 'language_display': current = value || 'code'; box.appendChild(radios(key, [['code', tr('code (en, ja)')], ['english', tr('English name (English, Japanese)')], ['native', tr('native name (English, 日本語)')]], current, v => { current = v; })); return { el: box, get };
     case 'grid_media_type': current = value || 'box'; box.appendChild(pulldown(vocab.media_types.map(m => [m, m]), current, v => { current = v; })); return { el: box, get };
-    case 'audio_client_bitrate_kbps': case 'audio_cache_max_mb': case 'media_list_cap': case 'hasheous_parallel_downloads': case 'playmatch_batch_size': case 'media_cache_tier1_max_mb': case 'media_cache_tier2_max_mb': case 'media_thumb_px': case 'media_thumb_quality': case 'media_export_cache_max_mb': case 'definitive_pc_max_age': {
+    case 'audio_client_bitrate_kbps': case 'audio_cache_max_mb': case 'media_list_cap': case 'hasheous_parallel_downloads': case 'playmatch_batch_size': case 'media_cache_tier1_max_mb': case 'media_cache_tier2_max_mb': case 'media_thumb_px': case 'media_thumb_quality': case 'media_export_cache_max_mb': case 'definitive_pc_max_age': case 'audio_rom_loop_min_s': case 'audio_rom_bgm_min_s': case 'audio_rom_jingle_min_s': {
       const spec = {
         audio_client_bitrate_kbps: [128, 48, 320, 'kbps', tr('Client mode: the bitrate a kept copy is converted to. A track already at or below it is copied as it is; DSD, ALAC and AIFF are always converted.')],
         audio_cache_max_mb: [4096, 0, null, 'MiB', tr('Size cap of the converted-audio cache; 0 = no cap. The least recently played conversions are removed first and made again when next needed.')],
@@ -4579,6 +4597,9 @@ function settingEditor(key, value) {
         media_thumb_quality: [60, 1, 100, '', tr('Lossy thumbnail quality (1-100).')],
         definitive_pc_max_age: [10, 0, 100, tr('years'), tr('Collection › Definitive: a PC version less than this many years older than the newest version takes the "PC (Definitive tab)" place in the platform priority; an older one ranks by its own year. 0 = PC versions never move up.')],
         media_export_cache_max_mb: [1024, 0, null, 'MiB', tr('Size cap of the cache of pictures converted for emulators; 0 = no cap. The least recently used go first.')],
+        audio_rom_loop_min_s: [3, 0, null, 's', tr('ROM audio: a sound that loops is music from this length.')],
+        audio_rom_bgm_min_s: [20, 0, null, 's', tr('ROM audio: a sound that does not loop is music from this length.')],
+        audio_rom_jingle_min_s: [8, 0, null, 's', tr('ROM audio: a sound that does not loop is a jingle from this length; shorter is a sound effect.')],
       }[key];
       current = value ?? spec[0];
       box.appendChild(el(`<div class="muted">${esc(spec[4])}</div>`));
@@ -4608,6 +4629,9 @@ function settingEditor(key, value) {
     case 'copy_definitive': current = value === 'definitive_only' ? value : 'best_held'; box.appendChild(el(`<div class="muted">${tr("A set's definitive-version entry (added from Collection › Definitive): which release it puts in the set.")}</div>`)); box.appendChild(radios(key, [['best_held', tr("the best version you hold, in the family's order (default)")], ['definitive_only', tr("the definitive version only: nothing of that game when a better version isn't held")]], current, v => { current = v; })); return { el: box, get };
     case 'definitive_fetch_versions': current = ['per_title', 'whole_platform'].includes(value) ? value : 'off'; box.appendChild(el(`<div class="muted">${tr("Collection › Definitive: where a game's other versions (older and newer, the base game too) come from.")}</div>`)); box.appendChild(radios(key, [['off', tr('off: only what is here — the catalogue, and IGDB platforms you synced (default)')], ['per_title', tr('per title: for games held on disk, fetch their versions from IGDB, on any platform')], ['whole_platform', tr('whole platform (deprecated): per title, and sync each platform such a version is on')]], current, v => { current = v; })); return { el: box, get };
     case 'audio_fallback': current = ['random', 'generic_bgm'].includes(value) ? value : 'none'; box.appendChild(el(`<div class="muted">${tr('What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.')}</div>`)); box.appendChild(radios(key, [['none', tr('nothing: silent (default)')], ['random', tr('random tracks from the audio linked to other titles')], ['generic_bgm', tr('the audio files tagged generic_bgm')]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_title_sources': current = ['tagged', 'rom'].includes(value) ? value : 'both'; box.appendChild(el(`<div class="muted">${tr("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}</div>`)); box.appendChild(radios(key, [['both', tr("tagged audio files and the music in the title's ROMs (default)")], ['tagged', tr('tagged audio files only')], ['rom', tr("the music in the title's ROMs only")]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_rom_kinds': current = ['bgm_jingle', 'all'].includes(value) ? value : 'bgm'; box.appendChild(el(`<div class="muted">${tr('Which sounds from a ROM a title page plays. Sounds are sorted by whether they loop and how long they are.')}</div>`)); box.appendChild(radios(key, [['bgm', tr('music only (default)')], ['bgm_jingle', tr('music and jingles')], ['all', tr('everything, sound effects too')]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_rom_not_owned': current = ['random', 'none'].includes(value) ? value : 'related'; box.appendChild(el(`<div class="muted">${tr('ROM music for a title with no ROM here. When this finds nothing, audio_fallback decides.')}</div>`)); box.appendChild(radios(key, [['related', tr('another version you have, such as the original of a remake (default)')], ['random', tr("another title's, picked at random")], ['none', tr('none')]], current, v => { current = v; })); return { el: box, get };
     case 'release_edition_order': {
       // Every edition, in order; the two older values are what they meant.
       const kinds = ['budget', 'original', 'rerelease', 'special', 'aftermarket'];
@@ -4694,7 +4718,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -4707,6 +4731,8 @@ function settingEditor(key, value) {
         media_export_prefer_region: [true, tr("exported art: the release's own region first, whatever the provider order (default)"), tr('exported art follows the provider order')],
         scan_pkg_titles: [false, tr('read the title inside PS3 and PSP .pkg files'), tr('name them from the content id only (default)')],
         media_reuse_existing: [true, tr('take art already in the media folder instead of downloading it again (default)'), tr('always download')],
+        audio_keep_playing: [true, tr("keep a title's music playing on other screens until another title page opens (default)"), tr('stop the music when the page is left')],
+        audio_rom_videos: [false, tr('play the sound of video files in ROMs, such as title movies'), tr('leave video sound out (default)')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));

@@ -1898,8 +1898,8 @@ async fn audio_copies_for_a_client(app: &App, client: &App, source_id: u16, titl
     assert!(api::audio::file(app, ids[3], &Default::default()).await.is_err(), "nothing decodes a WMA: it is not served at all");
 
     // A title with no audio of its own is silent until `audio_fallback` says what stands in.
-    let bare = api::audio::PlaylistQuery { title_id: Some(title_id + 1_000_000), release_id: None, ra_game_id: None, fallback: None };
-    let own = api::audio::PlaylistQuery { title_id: Some(title_id), release_id: None, ra_game_id: None, fallback: None };
+    let bare = api::audio::PlaylistQuery { title_id: Some(title_id + 1_000_000), release_id: None, ra_game_id: None, fallback: None, ..Default::default() };
+    let own = api::audio::PlaylistQuery { title_id: Some(title_id), release_id: None, ra_game_id: None, fallback: None, ..Default::default() };
     assert!(api::audio::playlist(app, &bare).await.unwrap().tracks.is_empty(), "unset is none");
     db_settings::set(&app.pool, db_settings::KEY_AUDIO_FALLBACK, &"random").await.unwrap();
     let random = api::audio::playlist(app, &bare).await.unwrap();
@@ -1924,7 +1924,7 @@ async fn audio_copies_for_a_client(app: &App, client: &App, source_id: u16, titl
     // A client streams until told to keep: the job is refused with the reason.
     db_settings::set(&client.pool, db_settings::KEY_INSTANCE_MODE, &"client").await.unwrap();
     assert!(api::audio_sync::validate(client).await.is_err());
-    let query = api::audio::PlaylistQuery { title_id: Some(title_id), release_id: None, ra_game_id: None, fallback: None };
+    let query = api::audio::PlaylistQuery { title_id: Some(title_id), release_id: None, ra_game_id: None, fallback: None, ..Default::default() };
     let streamed = api::audio::playlist(client, &query).await.unwrap();
     assert_eq!(streamed.tracks.iter().filter(|t| t.remote).count(), 2, "both playable tagged tracks, streamed: {:?}", streamed.tracks.iter().map(|t| &t.file_name).collect::<Vec<_>>());
 

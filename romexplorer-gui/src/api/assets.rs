@@ -193,6 +193,7 @@ fn main_server_path(path: &str) -> Option<String> {
     match segments.as_slice() {
         ["api", "v1", "media", "remote", id] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/media/{id}")),
         ["api", "v1", "audio", "remote", id, "file"] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/audio/{id}/file")),
+        ["api", "v1", "audio", "remote", "rom", id, "file"] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/audio/rom/{id}/file")),
         _ => None,
     }
 }
@@ -256,6 +257,12 @@ async fn serve(path: &str, query: &str) -> Result<(PathBuf, &'static str), (u16,
             let id: u64 = id.parse().map_err(|_| (400u16, "audio id must be a number".to_string()))?;
             // The original, or for DSD / ALAC / AIFF the cached conversion (made on first use).
             let served = api::audio::file(app, id, &Default::default()).await.map_err(from_api)?;
+            read(served.path, served.mime).await
+        }
+        ["api", "v1", "audio", "rom", id, "file"] => {
+            let id: u64 = id.parse().map_err(|_| (400u16, "audio id must be a number".to_string()))?;
+            // Decoded out of the ROM on its first play, then read from the audio cache.
+            let served = api::rom_audio::serve(app, id).await.map_err(from_api)?;
             read(served.path, served.mime).await
         }
         ["api", "v1", "ra", "avatar"] => {

@@ -837,6 +837,17 @@ async fn audio_tag_remove(State(s): State<Shared>, Json(b): Json<api::audio::Aud
     Ok(Json(json!({ "changed": api::audio::remove_tag(&s.app, &b).await? })))
 }
 
+#[derive(Deserialize)]
+struct RomTitleChoice {
+    videos: String,
+}
+
+/// A title's own choice on video sound (`default` | `on` | `off`), for the switch on its page.
+async fn audio_rom_title(State(s): State<Shared>, Path(id): Path<u64>, Json(body): Json<RomTitleChoice>) -> ApiResult<api::audio::TitleVideos> {
+    api::rom_audio::set_title_choice(&s.app, id, &body.videos).await?;
+    Ok(Json(api::rom_audio::title_videos(&s.app, id).await?))
+}
+
 async fn audio_playlist(State(s): State<Shared>, Query(q): Query<api::audio::PlaylistQuery>) -> ApiResult<api::audio::Playlist> {
     Ok(Json(api::audio::playlist(&s.app, &q).await?))
 }
@@ -871,6 +882,18 @@ async fn media_strip(State(s): State<Shared>, Query(q): Query<api::media::StripQ
 /// Media this client does not keep, streamed from its main server.
 async fn media_remote(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
     relay_from_main(&s.app, &format!("/api/v1/media/{id}"), &headers).await
+}
+
+/// A track inside a ROM, decoded on its first play and then served from the audio cache
+/// (`api::rom_audio::serve`), with `Range` support like any other track.
+async fn audio_rom_file(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    let served = api::rom_audio::serve(&s.app, id).await?;
+    stream_file(&served.path, served.mime, Some(&headers)).await
+}
+
+/// A ROM track of the main server's, streamed.
+async fn audio_remote_rom(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    relay_from_main(&s.app, &format!("/api/v1/audio/rom/{id}/file"), &headers).await
 }
 
 /// A track of the main server's audio library, streamed.
@@ -2550,6 +2573,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/facets", get(audio_facets))
         .route("/api/v1/audio/{id}/file", get(audio_file))
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
+        .route("/api/v1/audio/rom/{id}/file", get(audio_rom_file))
+        .route("/api/v1/audio/remote/rom/{id}/file", get(audio_remote_rom))
+        .route("/api/v1/audio/rom/title/{id}", axum::routing::put(audio_rom_title))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/ai", get(ai_overview))
