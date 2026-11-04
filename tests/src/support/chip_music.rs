@@ -100,3 +100,31 @@ pub fn nsf(songs: u8, title: &str) -> Vec<u8> {
     h.extend_from_slice(&code);
     h
 }
+
+/// A Game Gear SGC with `songs` songs. Init writes one PSG tone at full volume through port
+/// 0x7F; play does nothing.
+pub fn sgc(songs: u8, title: &str) -> Vec<u8> {
+    let mut h = vec![0u8; 0xA0];
+    h[0..4].copy_from_slice(b"SGC\x1A");
+    h[4] = 1;
+    h[8..10].copy_from_slice(&0x0400u16.to_le_bytes()); // load
+    h[10..12].copy_from_slice(&0x0400u16.to_le_bytes()); // init
+    h[12..14].copy_from_slice(&0x0410u16.to_le_bytes()); // play
+    h[14..16].copy_from_slice(&0xDFF0u16.to_le_bytes()); // stack
+    h[0x20..0x24].copy_from_slice(&[0, 1, 2, 3]); // mapper banks
+    h[0x25] = songs;
+    h[0x28] = 1; // Game Gear
+    let t = title.as_bytes();
+    h[0x40..0x40 + t.len().min(32)].copy_from_slice(&t[..t.len().min(32)]);
+    #[rustfmt::skip]
+    let mut code = vec![
+        0x3E, 0x8E, 0xD3, 0x7F, // LD A,$8E / OUT ($7F),A   tone 0, period low
+        0x3E, 0x0F, 0xD3, 0x7F, // LD A,$0F / OUT ($7F),A   period high
+        0x3E, 0x90, 0xD3, 0x7F, // LD A,$90 / OUT ($7F),A   volume 0 = loudest
+        0xC9,                   // RET
+    ];
+    code.resize(0x10, 0);
+    code.push(0xC9); // play: RET
+    h.extend_from_slice(&code);
+    h
+}

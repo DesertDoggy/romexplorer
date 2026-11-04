@@ -5,6 +5,10 @@ set -euo pipefail
 # of older consoles (NSF/NSFE, SPC, GBS, VGM/VGZ, GYM, HES, KSS, AY, SAP). gme.h is already a
 # flat C API, so there is no shim and upstream's own CMake build is used unchanged.
 #
+# Then gmesgc.dll / libgmesgc.so / libgmesgc.dylib: SGC (Game Gear, Master System) rips, which
+# upstream does not play, from kode54's fork (external/gme-kode54, LGPL) behind the rsgc_
+# functions in deps/gme/sgc/rsgc.cpp. deps/gme/patches/ is applied to the fork first.
+#
 # Usage:
 #   deps/gme/scripts/build.sh                    # auto-detect platform/arch
 #   deps/gme/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64
@@ -32,6 +36,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 user_dir="$(cd "$script_dir/.." && pwd)"
 main_root="$(cd "$user_dir/../.." && pwd)"
 repo_root="$(cd "${GME_SOURCE_DIR:-$main_root/external/game-music-emu}" && pwd)"
+fork_root="$(cd "${GME_FORK_DIR:-$main_root/external/gme-kode54}" && pwd)"
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-gme-$(date +%Y%m%d-%H%M%S).log"
@@ -58,9 +63,9 @@ case "$arch" in
   *) echo "[ERROR] Unsupported arch: $arch (x64 | arm64)" >&2; exit 2 ;;
 esac
 case "$platform" in
-  windows) lib_name="gme.dll"; system_name="Windows"; built_glob="*gme*.dll" ;;
-  mac) lib_name="libgme.dylib"; system_name="Darwin"; built_glob="libgme*.dylib" ;;
-  linux) lib_name="libgme.so"; system_name="Linux"; built_glob="libgme.so*" ;;
+  windows) lib_name="gme.dll"; system_name="Windows"; built_glob="*gme.dll"; sgc_name="gmesgc.dll"; sgc_glob="*gmesgc.dll" ;;
+  mac) lib_name="libgme.dylib"; system_name="Darwin"; built_glob="libgme*.dylib"; sgc_name="libgmesgc.dylib"; sgc_glob="libgmesgc*.dylib" ;;
+  linux) lib_name="libgme.so"; system_name="Linux"; built_glob="libgme.so*"; sgc_name="libgmesgc.so"; sgc_glob="libgmesgc.so*" ;;
   *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows)" >&2; exit 2 ;;
 esac
 
@@ -70,7 +75,23 @@ command -v cmake >/dev/null 2>&1 || { echo "[ERROR] cmake was not found." >&2; e
 output_version="$(git -C "$repo_root" describe --tags --exact-match 2>/dev/null || git -C "$repo_root" log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)"
 out_dir="$user_dir/release/$platform/$arch/$output_version"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gme_build.XXXXXX")"
-trap 'rm -rf "$build_dir"' EXIT
+sgc_build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gmesgc_build.XXXXXX")"
+trap 'rm -rf "$build_dir" "$sgc_build_dir"' EXIT
+
+# Our fixes to the fork, applied to the checkout idempotently (the 7-Zip scheme). They show as
+# modified in `git status` inside external/gme-kode54 afterwards; that is expected.
+for p in "$user_dir"/patches/*.patch; do
+  [[ -e "$p" ]] || continue
+  if (cd "$fork_root" && patch -p1 -R -f --dry-run <"$p") >/dev/null 2>&1; then
+    echo "[INFO] patch already applied: $(basename "$p")" | tee -a "$log_file"
+  elif (cd "$fork_root" && patch -p1 -N -f --dry-run <"$p") >/dev/null 2>&1; then
+    (cd "$fork_root" && patch -p1 -N -f <"$p") | tee -a "$log_file"
+    echo "[INFO] applied patch: $(basename "$p")" | tee -a "$log_file"
+  else
+    echo "[ERROR] patch $(basename "$p") does not apply to $fork_root (forward or reverse) -- upstream moved; refresh the patch" | tee -a "$log_file" >&2
+    exit 1
+  fi
+done
 
 cmake_args=(-S "$repo_root" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
   -DGME_BUILD_SHARED=ON -DGME_BUILD_STATIC=OFF -DGME_BUILD_FRAMEWORK=OFF
@@ -88,14 +109,23 @@ if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
   cmake_args+=("-DCMAKE_SYSTEM_NAME=$system_name")
   [[ "$platform" == "mac" ]] && cmake_args+=("-DCMAKE_OSX_ARCHITECTURES=$([[ "$arch" == "arm64" ]] && echo arm64 || echo x86_64)")
 fi
+# What both builds share: compilers, cross target, generator.
+common_args=(-DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor")
+[[ -n "${CC:-}" ]] && common_args+=("-DCMAKE_C_COMPILER=$CC")
+[[ -n "${CXX:-}" ]] && common_args+=("-DCMAKE_CXX_COMPILER=$CXX")
+if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
+  common_args+=("-DCMAKE_SYSTEM_NAME=$system_name")
+  [[ "$platform" == "mac" ]] && common_args+=("-DCMAKE_OSX_ARCHITECTURES=$([[ "$arch" == "arm64" ]] && echo arm64 || echo x86_64)")
+fi
 if [[ "$host_platform" == "windows" ]]; then
   # MSYS2's cmake defaults to Visual Studio when one is installed; this is a MinGW build.
   if command -v ninja >/dev/null 2>&1; then
-    cmake_args+=(-G Ninja)
+    cmake_args+=(-G Ninja); common_args+=(-G Ninja)
   else
-    cmake_args+=(-G "MinGW Makefiles")
+    cmake_args+=(-G "MinGW Makefiles"); common_args+=(-G "MinGW Makefiles")
   fi
 fi
+sgc_args=(-S "$user_dir/sgc" -B "$sgc_build_dir" "-DGME_FORK_ROOT=$fork_root" "-DDATA_READER_DIR=$repo_root/gme" "${common_args[@]}")
 
 jobs="${JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
@@ -104,7 +134,11 @@ jobs="${JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncp
   echo "[INFO] cmake ${cmake_args[*]}"
   cmake "${cmake_args[@]}"
   cmake --build "$build_dir" --target gme_shared -j "$jobs"
-} 2>&1 | tee "$log_file"
+  echo "[INFO] gmesgc $platform/$arch"
+  echo "[INFO] cmake ${sgc_args[*]}"
+  cmake "${sgc_args[@]}"
+  cmake --build "$sgc_build_dir" --target gmesgc -j "$jobs"
+} 2>&1 | tee -a "$log_file"
 
 # The real file, not a SONAME symlink (libgme.so.0 -> libgme.so.0.6.5). MinGW names it
 # libgme.dll; the app looks for gme.dll, like every other library it loads.
@@ -114,15 +148,24 @@ if [[ -z "$built" ]]; then
   exit 1
 fi
 
+sgc_built="$(find "$sgc_build_dir" -name "$sgc_glob" -type f ! -name '*.a' | head -1)"
+if [[ -z "$sgc_built" ]]; then
+  echo "[ERROR] the gmesgc library was not produced; see $log_file" >&2
+  exit 1
+fi
+
 mkdir -p "$out_dir/dynamic" "$out_dir/include"
 cp "$built" "$out_dir/dynamic/$lib_name"
+cp "$sgc_built" "$out_dir/dynamic/$sgc_name"
 cp "$repo_root/gme/gme.h" "$out_dir/include/gme.h"
 {
   echo "platform=$platform"
   echo "arch=$arch"
   echo "version=$output_version"
   echo "commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "fork_commit=$(git -C "$fork_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "compiler=${CXX:-default}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out_dir/build-info.txt"
 echo "[INFO] built $out_dir/dynamic/$lib_name ($(wc -c < "$out_dir/dynamic/$lib_name") bytes)"
+echo "[INFO] built $out_dir/dynamic/$sgc_name ($(wc -c < "$out_dir/dynamic/$sgc_name") bytes)"

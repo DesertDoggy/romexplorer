@@ -3,7 +3,8 @@
 //! for this machine [`available`] is false and these files are simply not offered.
 //!
 //! Formats: NSF/NSFE (NES), SPC (SNES), GBS (Game Boy), VGM/VGZ and GYM (Mega Drive, Master
-//! System and other chips), HES (PC Engine), KSS (MSX), AY (ZX Spectrum), SAP (Atari).
+//! System and other chips), HES (PC Engine), KSS (MSX), AY (ZX Spectrum), SAP (Atari), and SGC
+//! (Game Gear, Master System) through a second library built from kode54's fork.
 //!
 //! gme.h is a flat C API already, so there is no shim (`deps/gme/scripts/build.sh` builds
 //! upstream as it is). It is built without zlib: a gzipped `.vgz` is unpacked here through
@@ -18,7 +19,7 @@ use libloading::Library;
 use super::{native_lib, zlib_ng};
 
 /// What a rip-set file's extension says it is, for files gme plays. Lowercase, without the dot.
-pub const EXTENSIONS: &[&str] = &["nsf", "nsfe", "spc", "gbs", "vgm", "vgz", "gym", "hes", "kss", "ay", "sap"];
+pub const EXTENSIONS: &[&str] = &["nsf", "nsfe", "spc", "gbs", "vgm", "vgz", "gym", "hes", "kss", "ay", "sap", "sgc"];
 
 /// Whether `name`'s extension is one gme plays. Reads nothing.
 pub fn known_extension(name: &str) -> bool {
@@ -77,40 +78,60 @@ struct Api {
     load_m3u_data: LoadM3uDataFn,
 }
 
-fn find_library() -> Option<PathBuf> {
-    if let Some(path) = native_lib::find_app_root_library("gme") {
+fn find_library(base: &str) -> Option<PathBuf> {
+    if let Some(path) = native_lib::find_app_root_library(base) {
         return Some(path);
     }
     let release_root = native_lib::source_root().join("deps/gme/release");
-    native_lib::find_native_library(&release_root, "gme")
+    native_lib::find_native_library(&release_root, base)
 }
 
+/// Loads `base`, whose functions are upstream gme.h's under the prefix `prefix`.
+fn load_api(base: &str, prefix: &str) -> Option<Api> {
+    let path = find_library(base)?;
+    unsafe {
+        let lib = Library::new(&path).map_err(|e| log::warn!("{base}: {} would not load: {e}", path.display())).ok()?;
+        let sym = |name: &str| format!("{prefix}{name}\0").into_bytes();
+        Some(Api {
+            open_data: *lib.get(&sym("open_data")).ok()?,
+            track_count: *lib.get(&sym("track_count")).ok()?,
+            start_track: *lib.get(&sym("start_track")).ok()?,
+            play: *lib.get(&sym("play")).ok()?,
+            delete: *lib.get(&sym("delete")).ok()?,
+            set_fade_msecs: *lib.get(&sym("set_fade_msecs")).ok()?,
+            set_autoload_limit: *lib.get(&sym("set_autoload_playback_limit")).ok()?,
+            track_ended: *lib.get(&sym("track_ended")).ok()?,
+            tell: *lib.get(&sym("tell")).ok()?,
+            seek: *lib.get(&sym("seek")).ok()?,
+            track_info: *lib.get(&sym("track_info")).ok()?,
+            free_info: *lib.get(&sym("free_info")).ok()?,
+            identify_header: *lib.get(&sym("identify_header")).ok()?,
+            load_m3u_data: *lib.get(&sym("load_m3u_data")).ok()?,
+            _lib: lib,
+        })
+    }
+}
+
+/// Upstream libgme.
 fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
-    API.get_or_init(|| {
-        let path = find_library()?;
-        unsafe {
-            let lib = Library::new(&path).map_err(|e| log::warn!("gme: {} would not load: {e}", path.display())).ok()?;
-            Some(Api {
-                open_data: *lib.get(b"gme_open_data").ok()?,
-                track_count: *lib.get(b"gme_track_count").ok()?,
-                start_track: *lib.get(b"gme_start_track").ok()?,
-                play: *lib.get(b"gme_play").ok()?,
-                delete: *lib.get(b"gme_delete").ok()?,
-                set_fade_msecs: *lib.get(b"gme_set_fade_msecs").ok()?,
-                set_autoload_limit: *lib.get(b"gme_set_autoload_playback_limit").ok()?,
-                track_ended: *lib.get(b"gme_track_ended").ok()?,
-                tell: *lib.get(b"gme_tell").ok()?,
-                seek: *lib.get(b"gme_seek").ok()?,
-                track_info: *lib.get(b"gme_track_info").ok()?,
-                free_info: *lib.get(b"gme_free_info").ok()?,
-                identify_header: *lib.get(b"gme_identify_header").ok()?,
-                load_m3u_data: *lib.get(b"gme_load_m3u_data").ok()?,
-                _lib: lib,
-            })
-        }
-    })
-    .as_ref()
+    API.get_or_init(|| load_api("gme", "gme_")).as_ref()
+}
+
+/// gmesgc: SGC files (Game Gear, Master System), which upstream does not play, from kode54's
+/// fork behind `rsgc_` functions (`deps/gme/sgc/rsgc.cpp`).
+fn sgc_api() -> Option<&'static Api> {
+    static API: OnceLock<Option<Api>> = OnceLock::new();
+    API.get_or_init(|| load_api("gmesgc", "rsgc_")).as_ref()
+}
+
+/// Whether the SGC player is present on this machine.
+pub fn sgc_available() -> bool {
+    sgc_api().is_some()
+}
+
+fn is_sgc(data: &[u8]) -> bool {
+    data.starts_with(b"SGC\x1A")
 }
 
 /// Whether the player library is present on this machine.
@@ -132,6 +153,9 @@ fn text(p: *const c_char) -> String {
 /// The format gme sees in a file's first four bytes ("NSF", "SPC", "VGM" ...), or `None`.
 /// A gzipped `.vgz` reads as `None` here; [`Emu::open`] unpacks it first.
 pub fn identify(header: &[u8]) -> Option<String> {
+    if is_sgc(header) {
+        return sgc_available().then(|| "SGC".to_string());
+    }
     let api = api()?;
     let mut four = [0u8; 4];
     let n = header.len().min(4);
@@ -226,8 +250,8 @@ impl Emu {
 
     /// Loads a whole file. A gzipped `.vgz` is unpacked first.
     pub fn open(data: Vec<u8>, sample_rate: u32) -> Result<Self, String> {
-        let api = api().ok_or("the gme library is not available")?;
         let data = if data.starts_with(&[0x1F, 0x8B]) { gunzip(&data).ok_or("the gzipped file would not unpack")? } else { data };
+        let api = if is_sgc(&data) { sgc_api().ok_or("the SGC player (gmesgc) is not available")? } else { api().ok_or("the gme library is not available")? };
         if data.is_empty() || data.len() > c_long::MAX as usize {
             return Err("empty or oversized file".into());
         }
