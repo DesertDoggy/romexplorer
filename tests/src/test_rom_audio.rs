@@ -189,6 +189,9 @@ fn classify_by_loop_length_and_folder() {
     assert_eq!(classify(&shape(true, 3_500, 2), "x/y.adx", &t), SoundKind::Bgm, "a short loop is still music");
     assert_eq!(classify(&shape(false, 65_000, 2), "x/y.adx", &t), SoundKind::Bgm);
     assert_eq!(classify(&shape(false, 45_000, 2), "x/y.adx", &t), SoundKind::Jingle, "under a minute without a loop is not BGM");
+    assert_eq!(classify(&shape(false, 2_000, 2), "sound/me_levelup.aac", &t), SoundKind::Jingle, "a music effect by name");
+    assert_eq!(classify(&shape(true, 6_000, 2), "sound/me_shop.aac", &t), SoundKind::Jingle, "even when it loops");
+    assert_eq!(classify(&shape(false, 300, 2), "sound/me_blank.aac", &t), SoundKind::Se, "too short to be one");
     assert_eq!(classify(&Shape { cd_audio: true, ..shape(false, 45_000, 2) }, "/Track 05", &t), SoundKind::Bgm, "but a CD audio track is from 20 s");
     assert_eq!(classify(&shape(false, 10_000, 2), "x/y.adx", &t), SoundKind::Jingle);
     assert_eq!(classify(&shape(false, 2_000, 2), "x/y.adx", &t), SoundKind::Se);
