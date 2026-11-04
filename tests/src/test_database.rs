@@ -1813,6 +1813,176 @@ async fn phase_locale_edit(env: &Env, report: &mut Report) {
     .await;
 }
 
+/// Merge review: releases arranged by hand go where they were put -- one into another title,
+/// two into a new one named after the first -- and the card leaves the to-do list for "done".
+async fn phase_review_layout(env: &Env, report: &mut Report) {
+    let pool = &env.pool;
+    step(report, "merge review: a grouping arranged by hand, and done cards", async {
+        use romexplorer::api::review::{self, ApplyRequest, LayoutGroup, ReviewParams};
+        let e = |e: sqlx::Error| e.to_string();
+        let de = |e: database::DatabaseError| e.to_string();
+        let ae = |e: romexplorer::api::Error| e.message;
+        let app = romexplorer::api::App::with_pool(pool.clone(), env.paths.clone(), DatabaseConfig::default()).map_err(ae)?;
+        let src = import::ensure_source(pool, "no-intro").await.map_err(de)?;
+        let nes = Platform::Nes.igdb_id();
+        let title = |name: &'static str| async move {
+            sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, ?)").bind(name).bind(name.to_lowercase()).bind(import::sha1_hex(&format!("layout/{name}"))).execute(pool).await.map(|r| r.last_insert_id())
+        };
+        let release = |t: u64, name: &'static str| async move {
+            let norm = name.to_lowercase();
+            let r = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region, source_id) VALUES (?, ?, ?, ?, ?, 'CN', ?)")
+                .bind(nes).bind(name).bind(import::sha1_hex(name)).bind(&norm).bind(import::sha1_hex(&norm)).bind(src)
+                .execute(pool).await?.last_insert_id();
+            sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(t).bind(r).execute(pool).await?;
+            Ok::<u64, sqlx::Error>(r)
+        };
+        let a = title("Layout Hoge").await.map_err(e)?;
+        let b = title("Layout Fuga").await.map_err(e)?;
+        let own = release(a, "Layout Hoge (China)").await.map_err(e)?;
+        let fuga = release(a, "Layout Fuga (China) (Pirate)").await.map_err(e)?;
+        let piyo = release(a, "Layout Piyo (China) (Pirate)").await.map_err(e)?;
+        let piyo2 = release(a, "Layout Piyo (China) (Pirate) [b]").await.map_err(e)?;
+        let key = format!("split:{a}:test");
+        sqlx::query("INSERT INTO title_merge_suggestions (igdb_id, title_ids, reason, kind, priority, detail) VALUES (?, ?, 'split_names', 'split_names', 25, ?)")
+            .bind(&key).bind(a.to_string()).bind(serde_json::json!({ "options": [{ "label": "split", "recommended": true, "groups": [[own], [fuga, piyo, piyo2]] }] }).to_string())
+            .execute(pool).await.map_err(e)?;
+        let p = |state: &str| ReviewParams { kind: Some("split_names".into()), state: Some(state.into()), ..Default::default() };
+        let q = romexplorer::api::catalog::ListQuery::default();
+        let todo_before = review::merge_queue(&app, &q, &p("todo")).await.map_err(ae)?.items.iter().any(|i| i.key == key);
+        let layout = vec![LayoutGroup { title_id: Some(a), releases: vec![own] }, LayoutGroup { title_id: Some(b), releases: vec![fuga] }, LayoutGroup { title_id: None, releases: vec![piyo, piyo2] }];
+        let out = review::apply(&app, &key, &ApplyRequest { layout: Some(layout), ..Default::default() }).await.map_err(ae)?;
+        let home = |r: u64| async move { sqlx::query_scalar::<_, u64>("SELECT title_id FROM title_releases WHERE release_id = ?").bind(r).fetch_one(pool).await };
+        let (h_own, h_fuga, h_piyo, h_piyo2) = (home(own).await.map_err(e)?, home(fuga).await.map_err(e)?, home(piyo).await.map_err(e)?, home(piyo2).await.map_err(e)?);
+        let new_name: String = sqlx::query_scalar("SELECT name FROM title WHERE id = ?").bind(h_piyo).fetch_one(pool).await.map_err(e)?;
+        let logged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_merge_log WHERE reason = 'split' AND survivor_id = ? AND merged_title_id = ?").bind(a).bind(h_piyo).fetch_one(pool).await.map_err(e)?;
+        // A split made before splits were logged: the accepted card rebuilds its row.
+        sqlx::query("DELETE a, l FROM title_merge_log l LEFT JOIN title_merge_archive a ON a.log_id = l.id WHERE l.reason = 'split' AND l.survivor_id = ?").bind(a).execute(pool).await.map_err(e)?;
+        sqlx::query("DELETE FROM data_migrations WHERE name = 'split_log_backfill'").execute(pool).await.map_err(e)?;
+        romexplorer::database::title_merge::log_past_splits_once(pool).await.map_err(de)?;
+        let rebuilt: Vec<(u64, i64)> = sqlx::query_as("SELECT l.merged_title_id, CAST(JSON_LENGTH(a.rows_json, '$.title_releases') AS SIGNED) FROM title_merge_log l JOIN title_merge_archive a ON a.log_id = l.id WHERE l.reason = 'split' AND l.survivor_id = ? ORDER BY l.merged_title_id").bind(a).fetch_all(pool).await.map_err(e)?;
+        let todo_after = review::merge_queue(&app, &q, &p("todo")).await.map_err(ae)?.items.iter().any(|i| i.key == key);
+        let done = review::merge_queue(&app, &q, &p("done")).await.map_err(ae)?.items.iter().find(|i| i.key == key).map(|i| i.status.clone());
+        let checks = [
+            (todo_before, "the card is to do at first".to_string()),
+            (h_own == a && h_fuga == b && h_piyo == h_piyo2 && h_piyo != a && h_piyo != b && out.title_ids.len() == 3, format!("each where it was put: {h_own} {h_fuga} {h_piyo} {h_piyo2}, titles {:?}", out.title_ids)),
+            (new_name.contains("Piyo") && logged == 1, format!("the new title is named after the first and logged: {new_name:?}, {logged}")),
+            (rebuilt.iter().any(|(t, n)| *t == h_piyo && *n == 2) && rebuilt.iter().any(|(t, n)| *t == b && *n == 1), format!("the log is rebuilt from the card: {rebuilt:?}")),
+            (!todo_after && done.as_deref() == Some("accepted"), format!("then it is done: to do {todo_after}, done {done:?}")),
+        ];
+        if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
+            return Err(why.clone());
+        }
+        Ok(((), format!("{} checks", checks.len())))
+    })
+    .await;
+}
+
+/// A title of nothing but pirate releases shares an IGDB game with a retail title on the same
+/// platform: the automatic pass leaves them apart and suggests nothing; two retail titles of
+/// that game still merge.
+async fn phase_unlicensed_apart(env: &Env, report: &mut Report) {
+    let pool = &env.pool;
+    step(report, "titles: pirate games never merge into a retail title", async {
+        use romexplorer::database::title_merge;
+        let e = |e: sqlx::Error| e.to_string();
+        let de = |e: database::DatabaseError| e.to_string();
+        let src = import::ensure_source(pool, "no-intro").await.map_err(de)?;
+        let nes = Platform::Nes.igdb_id();
+        let igdb = "990077";
+        let title = |name: &'static str, release: &'static str| async move {
+            let t = sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, ?)").bind(name).bind(name.to_lowercase()).bind(import::sha1_hex(&format!("unlapart/{name}"))).execute(pool).await?.last_insert_id();
+            let norm = release.to_lowercase();
+            let r = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region, source_id) VALUES (?, ?, ?, ?, ?, 'JP', ?)")
+                .bind(nes).bind(release).bind(import::sha1_hex(release)).bind(&norm).bind(import::sha1_hex(&norm)).bind(src)
+                .execute(pool).await?.last_insert_id();
+            sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(t).bind(r).execute(pool).await?;
+            sqlx::query("INSERT INTO title_provider_links (title_id, provider, provider_id, confidence, linked_at, deleted) VALUES (?, 'igdb', ?, 'hash', NOW(), FALSE)").bind(t).bind(igdb).execute(pool).await?;
+            Ok::<u64, sqlx::Error>(t)
+        };
+        let retail = title("Unlapart Hoge II", "Unlapart Hoge II (Japan)").await.map_err(e)?;
+        let other = title("Unlapart Hoge Ni", "Unlapart Hoge Ni (Japan)").await.map_err(e)?;
+        let pirate = title("Unlapart Fuga Zhan", "Unlapart Fuga Zhan (China) (Pirate)").await.map_err(e)?;
+        title_merge::dedupe_by_igdb(pool, Some(igdb), &database::jobs::Progress::none()).await.map_err(de)?;
+        let live = |t: u64| async move { sqlx::query_scalar::<_, bool>("SELECT NOT deleted FROM title WHERE id = ?").bind(t).fetch_one(pool).await };
+        let (retail_live, other_live, pirate_live) = (live(retail).await.map_err(e)?, live(other).await.map_err(e)?, live(pirate).await.map_err(e)?);
+        let pirate_home: Option<u64> = sqlx::query_scalar("SELECT tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id WHERE r.name = 'Unlapart Fuga Zhan (China) (Pirate)'").fetch_optional(pool).await.map_err(e)?;
+        let suggested: Option<String> = sqlx::query_scalar("SELECT title_ids FROM title_merge_suggestions WHERE igdb_id = ? AND status = 'pending'").bind(igdb).fetch_optional(pool).await.map_err(e)?;
+        // One merged before this rule (the audit's job to find): flagged, the retail one not.
+        let retail_log: Option<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE merged_title_id = ? AND undone_at IS NULL").bind(other).fetch_optional(pool).await.map_err(e)?;
+        let retail_flag = match retail_log { Some(id) => title_merge::merge_joined_unlicensed(pool, id).await.map_err(de)?, None => true };
+        title_merge::merge_titles(pool, &[retail, pirate], &format!("igdb:{igdb}"), "hash").await.map_err(de)?;
+        let old_log: Option<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE merged_title_id = ? AND undone_at IS NULL").bind(pirate).fetch_optional(pool).await.map_err(e)?;
+        let flagged = match old_log { Some(id) => title_merge::merge_joined_unlicensed(pool, id).await.map_err(de)?, None => false };
+        let checks = [
+            (flagged && !retail_flag, format!("an earlier pirate merge is found: {flagged}, the retail merge is not: {retail_flag}")),
+            (retail_live && !other_live, format!("the two retail titles merge: {retail} live {retail_live}, {other} live {other_live}")),
+            (pirate_live && pirate_home == Some(pirate), format!("the pirate title stays its own: live {pirate_live}, its release under {pirate_home:?}")),
+            (suggested.as_deref().is_none_or(|s| !s.split(',').any(|x| x == pirate.to_string())), format!("and is not suggested: {suggested:?}")),
+        ];
+        if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
+            return Err(why.clone());
+        }
+        Ok(((), format!("{} checks", checks.len())))
+    })
+    .await;
+}
+
+/// A split is logged under Edit › Combined titles, the title page of either side lists it,
+/// "decouple all" leaves it, and undoing it puts the releases back and drops the empty title.
+async fn phase_split_log(env: &Env, report: &mut Report) {
+    let pool = &env.pool;
+    step(report, "titles: a split is logged and can be undone", async {
+        use romexplorer::api::titles::ReleasesSplit;
+        use romexplorer::database::title_merge;
+        let e = |e: sqlx::Error| e.to_string();
+        let de = |e: database::DatabaseError| e.to_string();
+        let ae = |e: romexplorer::api::Error| e.message;
+        let app = romexplorer::api::App::with_pool(pool.clone(), env.paths.clone(), DatabaseConfig::default()).map_err(ae)?;
+        let src = import::ensure_source(pool, "no-intro").await.map_err(de)?;
+        let nes = Platform::Nes.igdb_id();
+        let t: u64 = sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES ('Splitlog Hoge', 'splitlog hoge', ?)").bind(import::sha1_hex("splitlog/hoge")).execute(pool).await.map_err(e)?.last_insert_id();
+        let release = |name: &'static str| async move {
+            let norm = name.to_lowercase();
+            let r = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region, source_id) VALUES (?, ?, ?, ?, ?, 'CN', ?)")
+                .bind(nes).bind(name).bind(import::sha1_hex(name)).bind(&norm).bind(import::sha1_hex(&norm)).bind(src)
+                .execute(pool).await?.last_insert_id();
+            sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(t).bind(r).execute(pool).await?;
+            Ok::<u64, sqlx::Error>(r)
+        };
+        let own = release("Splitlog Hoge (China)").await.map_err(e)?;
+        let odd = release("Splitlog Fuga Zhan (China) (Pirate)").await.map_err(e)?;
+        let new = romexplorer::api::titles::split_releases(&app, &ReleasesSplit { release_ids: vec![odd] }).await.map_err(ae)?;
+        let (rows, _) = title_merge::merge_log(pool, None, Some(t), None, false, 50, 0).await.map_err(de)?;
+        let (theirs, _) = title_merge::merge_log(pool, None, Some(new), None, false, 50, 0).await.map_err(de)?;
+        let row = rows.iter().find(|r| r.reason == title_merge::SPLIT).cloned();
+        let logged = row.as_ref().is_some_and(|r| r.survivor_id == t && r.merged_title_id == new && r.release_count == Some(1) && r.merged_name.contains("Fuga"));
+        let listed_on_new = theirs.iter().any(|r| r.reason == title_merge::SPLIT && r.merged_title_id == new);
+        let all = title_merge::decouple_grade(pool, "manual", 500).await.map_err(de)?;
+        let still: Vec<u64> = sqlx::query_scalar("SELECT release_id FROM title_releases WHERE title_id = ?").bind(new).fetch_all(pool).await.map_err(e)?;
+        let back = match &row { Some(r) => title_merge::decouple(pool, r.id).await.map_err(de)?, None => 0 };
+        let mut holds: Vec<u64> = sqlx::query_scalar("SELECT release_id FROM title_releases WHERE title_id = ?").bind(t).fetch_all(pool).await.map_err(e)?;
+        holds.sort_unstable();
+        let gone: bool = sqlx::query_scalar("SELECT deleted FROM title WHERE id = ?").bind(new).fetch_one(pool).await.map_err(e)?;
+        let blocked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_merge_blocks WHERE title_a = ? AND title_b = ?").bind(t.min(new)).bind(t.max(new)).fetch_one(pool).await.map_err(e)?;
+        let again = match &row { Some(r) => title_merge::decouple(pool, r.id).await.is_err(), None => false };
+        let mut want = vec![own, odd];
+        want.sort_unstable();
+        let checks = [
+            (logged, format!("the split is in the log: {row:?}")),
+            (listed_on_new, "the new title's page lists it too".to_string()),
+            (still == vec![odd], format!("decouple all of a grade leaves splits: {all:?}, new title holds {still:?}")),
+            (back == t && holds == want, format!("undo puts the release back: into {back}, title holds {holds:?}")),
+            (gone && blocked == 0, format!("the emptied title is gone and the pair may merge again: deleted {gone}, blocks {blocked}")),
+            (again, "a split undone already is refused".to_string()),
+        ];
+        if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
+            return Err(why.clone());
+        }
+        Ok(((), format!("{} checks", checks.len())))
+    })
+    .await;
+}
+
 /// Several releases at once: split together into one new title, or moved to another title;
 /// a title left with no releases is gone and its place in sets goes along.
 async fn phase_bulk_release_moves(env: &Env, report: &mut Report) {
@@ -4029,6 +4199,9 @@ fn database_end_to_end() {
         Box::pin(phase_copy_priority_file(&env, &mut report)).await;
         Box::pin(phase_copy_one_format(&env, &mut report)).await;
         Box::pin(phase_bulk_release_moves(&env, &mut report)).await;
+        Box::pin(phase_split_log(&env, &mut report)).await;
+        Box::pin(phase_unlicensed_apart(&env, &mut report)).await;
+        Box::pin(phase_review_layout(&env, &mut report)).await;
         Box::pin(phase_locale_edit(&env, &mut report)).await;
         Box::pin(phase_document_backfill(&env, &mut report)).await;
         Box::pin(phase_standalone(&env, &mut report)).await;
