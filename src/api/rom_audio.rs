@@ -463,15 +463,14 @@ fn row_to_track(row: &sqlx::mysql::MySqlRow, s: &Settings) -> Result<Option<Audi
     let looping: bool = row.try_get("looping")?;
     let manual: Option<String> = row.try_get("kind_manual")?;
     let channels: u8 = row.try_get("channels")?;
-    let location: String = row.try_get("location")?;
-    let shape = rom_audio::Shape { looping, duration_ms: u64::from(duration), channels: u16::from(channels), cd_audio: location == "cdda" };
+    let cd_track: Option<u16> = row.try_get("cd_track")?;
+    let shape = rom_audio::Shape { looping, duration_ms: u64::from(duration), channels: u16::from(channels), cd_track: cd_track.unwrap_or(0) };
     let kind = kind_of(manual.as_deref(), &shape, inner.as_deref().unwrap_or(""), &name, &s.thresholds);
     if !s.kinds.plays(kind) {
         return Ok(None);
     }
     let main_path: String = row.try_get("main_path")?;
     let rom_name = Path::new(&main_path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
-    let cd_track: Option<u16> = row.try_get("cd_track")?;
     Ok(Some(AudioRow {
         remote: false,
         rom: true,
@@ -748,9 +747,9 @@ mod tests {
     #[test]
     fn a_kind_set_by_hand_wins_over_the_lengths() {
         let t = Thresholds::default();
-        assert_eq!(kind_of(None, &rom_audio::Shape { looping: true, duration_ms: 60_000, channels: 2, cd_audio: false }, "", "x", &t), SoundKind::Bgm);
-        assert_eq!(kind_of(Some("se"), &rom_audio::Shape { looping: true, duration_ms: 60_000, channels: 2, cd_audio: false }, "", "x", &t), SoundKind::Se);
-        assert_eq!(kind_of(None, &rom_audio::Shape { looping: false, duration_ms: 1_000, channels: 2, cd_audio: false }, "", "x", &t), SoundKind::Se);
+        assert_eq!(kind_of(None, &rom_audio::Shape { looping: true, duration_ms: 60_000, channels: 2, cd_track: 0 }, "", "x", &t), SoundKind::Bgm);
+        assert_eq!(kind_of(Some("se"), &rom_audio::Shape { looping: true, duration_ms: 60_000, channels: 2, cd_track: 0 }, "", "x", &t), SoundKind::Se);
+        assert_eq!(kind_of(None, &rom_audio::Shape { looping: false, duration_ms: 1_000, channels: 2, cd_track: 0 }, "", "x", &t), SoundKind::Se);
     }
 
     #[test]

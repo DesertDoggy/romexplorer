@@ -112,19 +112,26 @@ pub struct Shape {
     pub duration_ms: u64,
     /// 0 when not known.
     pub channels: u16,
-    /// A CD audio track, not a file.
-    pub cd_audio: bool,
+    /// The CD audio track's number; 0 for a file.
+    pub cd_track: u16,
 }
 
 /// The longest BGM length a CD audio track is held to.
 const CD_AUDIO_BGM_MIN_MS: u64 = 20_000;
+/// A disc's first audio track (1, or 2 after the data track) shorter than this is the
+/// spoken "this is a game disc" warning a CD player plays, not music.
+const CD_WARNING_MAX_MS: u64 = 45_000;
 
 /// BGM, jingle or sound effect, by loop, length and channels; names in the path move a
 /// sound that is close to a line (looping but short, or long but not looping) to the side
 /// they point to. Speech is a sound effect. A long mono sound that does not loop is more
 /// likely speech than music, so only a BGM name makes it BGM. `channels` 0 is unknown.
 pub fn classify(sound: &Shape, path: &str, t: &Thresholds) -> SoundKind {
-    let Shape { looping, duration_ms, channels, cd_audio } = *sound;
+    let Shape { looping, duration_ms, channels, cd_track } = *sound;
+    let cd_audio = cd_track > 0;
+    if cd_track <= 2 && cd_audio && duration_ms < CD_WARNING_MAX_MS {
+        return SoundKind::Se;
+    }
     // CD audio tracks are the disc's soundtrack far more often than not, and many run under
     // a minute: they keep the old 20 s line even when the BGM length is set higher.
     let t = &Thresholds { bgm_min_ms: if cd_audio { t.bgm_min_ms.min(CD_AUDIO_BGM_MIN_MS) } else { t.bgm_min_ms }, ..*t };
@@ -590,7 +597,10 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
     let duration_ms = info.duration_ms();
     let inner = location_path(&location);
     let video = is_video(inner_archives::split(inner).map_or(inner, |(base, _)| base));
-    let shape = Shape { looping: info.looping, duration_ms, channels: info.channels, cd_audio: matches!(location, TrackLocation::Cdda { .. }) };
+    let shape = Shape { looping: info.looping, duration_ms, channels: info.channels, cd_track: match location {
+        TrackLocation::Cdda { track } => u16::try_from(track).unwrap_or(u16::MAX),
+        TrackLocation::File { .. } => 0,
+    } };
     FoundTrack {
         location,
         name,
@@ -703,7 +713,7 @@ fn index_members(open: &dyn Fn() -> Box<dyn VgmSource>, path: &str, kind: inner_
                 if let Some(rest) = track.name.strip_prefix(&numbered) {
                     track.name = format!("{own}{rest}");
                     // Its own name says more than the number did; the player classifies by both.
-                    let shape = Shape { looping: track.looping, duration_ms: track.duration_ms, channels: track.channels, cd_audio: false };
+                    let shape = Shape { looping: track.looping, duration_ms: track.duration_ms, channels: track.channels, cd_track: 0 };
                     track.kind = classify(&shape, &format!("{member}/{}", track.name), t);
                 }
             }
