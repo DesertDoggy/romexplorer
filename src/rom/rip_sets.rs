@@ -317,7 +317,7 @@ pub fn index(folder: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) -> V
                 continue;
             }
             let name = track_name(&file, &info, track, count);
-            let shape = Shape { looping, duration_ms: u64::from(duration_ms), channels: Emu::CHANNELS, cd_track: 0 };
+            let shape = Shape { looping, duration_ms: u64::from(duration_ms), channels: Emu::CHANNELS, cd_track: 0, rip: true };
             let rate = u64::from(Emu::SAMPLE_RATE);
             let (loop_start, loop_end) = match (info.intro_ms, info.loop_ms) {
                 (Some(i), Some(l)) if l > 0 => (u64::from(i) * rate / 1000, u64::from(i + l) * rate / 1000),
