@@ -169,3 +169,23 @@ fn a_track_with_no_length_is_measured() {
     assert!(tracks[0].looping, "{:?}", tracks[0]);
     assert!(tracks[0].duration_ms >= u64::from(rip_sets::RUN_ON_MS) - 1000, "{:?}", tracks[0]);
 }
+
+#[test]
+fn sgc_plays_through_the_second_library() {
+    if !need_lib() || !gme::sgc_available() {
+        eprintln!("skipped: gmesgc is not built for this machine (deps/gme/scripts/build.sh)");
+        return;
+    }
+    assert!(gme::known_extension("a.sgc"));
+    let data = chip_music::sgc(3, "Test Game");
+    assert_eq!(gme::identify(&data).as_deref(), Some("SGC"));
+    let mut emu = Emu::open(data, Emu::SAMPLE_RATE).expect("gmesgc opens an SGC");
+    assert_eq!(emu.track_count(), 3);
+    let info = emu.track_info(1).unwrap();
+    assert_eq!(info.game, "Test Game");
+    assert_eq!(info.fade_ms, None);
+    emu.start(1, Some((1000, 500))).unwrap();
+    let mut buf = vec![0i16; 44_100 * 2];
+    emu.play(&mut buf).unwrap();
+    assert!(peak(&buf) > 1000, "the PSG tone is audible");
+}
