@@ -212,6 +212,10 @@ typedef struct {
 DOLPHINRVZ_API DolphinRvzReader* dolphinrvz_reader_open(const char* path, const char* user_dir);
 DOLPHINRVZ_API void dolphinrvz_reader_close(DolphinRvzReader* reader);
 DOLPHINRVZ_API int dolphinrvz_reader_get_info(DolphinRvzReader* reader, DolphinRvzReaderInfo* out);
+/* A reader of a Wii disc's game partition, decrypted: what its filesystem is read from.
+ * Offsets are within the partition's data; data_size is its decrypted size. NULL when the
+ * image is not a Wii disc. */
+DOLPHINRVZ_API DolphinRvzReader* dolphinrvz_reader_open_wii_game(const char* path, const char* user_dir);
 /* Reads `size` plain bytes at `offset`. 0 on success. */
 DOLPHINRVZ_API int dolphinrvz_reader_read(DolphinRvzReader* reader, uint64_t offset, void* buffer,
                                           uint64_t size);

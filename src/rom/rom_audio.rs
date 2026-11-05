@@ -11,7 +11,7 @@
 //! | CHD (DVD) | the image, as a filesystem |
 //! | cue/bin, gdi | the same, from the track files the sheet names |
 //! | ISO, BIN, IMG, GCM, XISO | the image, as a filesystem |
-//! | RVZ, WIA, GCZ | the image through Dolphin's reader (GameCube; Wii is encrypted, see [`disc_files`]) |
+//! | RVZ, WIA, GCZ, WBFS | the image through Dolphin's reader; a Wii disc's game partition decrypted by it |
 //! | CSO, ZSO | the ISO inside |
 //! | a folder (PS3, Vita, Wii U dumps) | its files |
 //!
@@ -242,7 +242,7 @@ fn extension(path: &Path) -> String {
 /// ROM files [`open_rom`] can find audio in: disc images and their sheets, and the DS / 3DS
 /// cartridges, which carry a filesystem. Other cartridges hold sequenced music only, and
 /// archives are not read yet.
-pub const DISC_EXTENSIONS: [&str; 17] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "cso", "zso", "nds", "dsi", "3ds", "cci"];
+pub const DISC_EXTENSIONS: [&str; 18] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "cso", "zso", "nds", "dsi", "3ds", "cci"];
 
 /// Whether [`index_rom`] is worth running on `path`: a folder dump or a disc image.
 pub fn may_hold_audio(path: &Path) -> bool {
@@ -257,11 +257,16 @@ pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
     match extension(path).as_str() {
         "chd" => open_chd(path),
         "cue" | "gdi" => open_sheet(path),
-        "rvz" | "wia" | "gcz" => {
-            let reader = super::dolphin_wrapper::DiscReader::open(path, None).map_err(|e| e.to_string())?;
+        "rvz" | "wia" | "gcz" | "wbfs" => {
+            let mut reader = super::dolphin_wrapper::DiscReader::open(path, None).map_err(|e| e.to_string())?;
+            let mut magic = [0u8; 4];
+            if reader.read(0x18, &mut magic).is_ok() && magic == WII_MAGIC {
+                return open_wii(path);
+            }
             let size = reader.info().map_err(|e| e.to_string())?.data_size;
             Ok(OpenedRom { data: vec![DiscView::new(Box::new(DolphinBytes(reader)), size)], cdda: Vec::new(), folder: None })
         }
+        "iso" | "gcm" if is_wii_iso(path) => open_wii(path),
         "cso" | "zso" => {
             let reader = super::cso::CsoReader::open(path).map_err(|e| e.to_string())?;
             let size = reader.size();
@@ -270,6 +275,23 @@ pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
         "zip" | "7z" | "rar" => Err("audio in zip/7z archives is not read yet".into()),
         _ => Ok(OpenedRom { data: vec![whole_file(path)?], cdda: Vec::new(), folder: None }),
     }
+}
+
+/// Where every Wii disc header has this, at 0x18.
+const WII_MAGIC: [u8; 4] = [0x5D, 0x1C, 0x9E, 0xA3];
+
+fn is_wii_iso(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path).and_then(|mut f| f.seek(SeekFrom::Start(0x18)).and_then(|_| f.read_exact(&mut magic))).is_ok() && magic == WII_MAGIC
+}
+
+/// A Wii disc: its game partition, decrypted by Dolphin's reader. The update and channel
+/// partitions hold no game audio.
+fn open_wii(path: &Path) -> Result<OpenedRom, String> {
+    let reader = super::dolphin_wrapper::DiscReader::open_wii_game(path, None).map_err(|e| format!("the Wii disc's game partition: {e}"))?;
+    let size = reader.info().map_err(|e| e.to_string())?.data_size;
+    Ok(OpenedRom { data: vec![DiscView::wii_partition(Box::new(DolphinBytes(reader)), size)], cdda: Vec::new(), folder: None })
 }
 
 fn open_chd(path: &Path) -> Result<OpenedRom, String> {

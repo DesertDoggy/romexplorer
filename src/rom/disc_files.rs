@@ -21,11 +21,19 @@ pub struct DiscView {
     inner: Arc<Mutex<Box<dyn ReadAt>>>,
     start: u64,
     len: u64,
+    /// A Wii disc's game partition, decrypted ([`DiscView::wii_partition`]).
+    wii: bool,
 }
 
 impl DiscView {
     pub fn new(reader: Box<dyn ReadAt>, len: u64) -> Self {
-        Self { inner: Arc::new(Mutex::new(reader)), start: 0, len }
+        Self { inner: Arc::new(Mutex::new(reader)), start: 0, len, wii: false }
+    }
+
+    /// A view of a Wii disc's game partition as Dolphin decrypts it: [`list`] reads its
+    /// filesystem, whose offsets are stored shifted right by 2.
+    pub fn wii_partition(reader: Box<dyn ReadAt>, len: u64) -> Self {
+        Self { wii: true, ..Self::new(reader, len) }
     }
 
     pub fn size(&self) -> u64 {
@@ -35,7 +43,7 @@ impl DiscView {
     /// The part `[start, start + len)` of this view, clamped to it.
     pub fn slice(&self, start: u64, len: u64) -> Self {
         let start = start.min(self.len);
-        Self { inner: self.inner.clone(), start: self.start + start, len: len.min(self.len - start) }
+        Self { inner: self.inner.clone(), start: self.start + start, len: len.min(self.len - start), wii: self.wii }
     }
 
     /// Exactly `buf.len()` bytes at `offset`.
@@ -156,10 +164,13 @@ pub fn list(view: &DiscView) -> Result<Listing, String> {
             return romfs_3ds(view, &head).map(|files| Listing { fs: FsKind::RomFs3ds, files });
         }
         if head[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] {
-            return Err("a Wii disc: its data partition is encrypted and is not read yet".into());
+            if view.wii {
+                return gamecube(view, &head, 2).map(|files| Listing { fs: FsKind::GameCube, files });
+            }
+            return Err("a Wii disc: its data partition is encrypted and is read through the game partition only".into());
         }
         if head[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D] {
-            return gamecube(view, &head).map(|files| Listing { fs: FsKind::GameCube, files });
+            return gamecube(view, &head, 0).map(|files| Listing { fs: FsKind::GameCube, files });
         }
     }
     if let Some(files) = xdvdfs(view)? {
@@ -319,9 +330,11 @@ fn le16(b: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn gamecube(view: &DiscView, head: &[u8]) -> Result<Vec<DiscFile>, String> {
-    let fst_offset = u64::from(be32(head, 0x424).ok_or("no FST offset")?);
-    let fst_size = u64::from(be32(head, 0x428).ok_or("no FST size")?);
+/// The GameCube filesystem table, and a Wii game partition's, whose offsets (and the table's
+/// size) are stored shifted right by `shift` (2 on Wii, 0 on GameCube).
+fn gamecube(view: &DiscView, head: &[u8], shift: u32) -> Result<Vec<DiscFile>, String> {
+    let fst_offset = u64::from(be32(head, 0x424).ok_or("no FST offset")?) << shift;
+    let fst_size = u64::from(be32(head, 0x428).ok_or("no FST size")?) << shift;
     if fst_size < 12 || fst_offset + fst_size > view.size() || fst_size > 64 << 20 {
         return Err("the GameCube FST is out of range".into());
     }
@@ -353,7 +366,7 @@ fn gamecube(view: &DiscView, head: &[u8]) -> Result<Vec<DiscFile>, String> {
                 dirs.push((end, path));
             }
         } else {
-            let (offset, size) = (u64::from(be32(entry, 4).unwrap_or(0)), u64::from(be32(entry, 8).unwrap_or(0)));
+            let (offset, size) = (u64::from(be32(entry, 4).unwrap_or(0)) << shift, u64::from(be32(entry, 8).unwrap_or(0)));
             if offset + size <= view.size() {
                 files.push(DiscFile { path, size, extent: Extent::Linear { offset } });
             }
