@@ -8,7 +8,9 @@ set -euo pipefail
 #     prefixed by sgc/rename.h so they do not collide with upstream's; deps/rommusic/patches/
 #     is applied to the fork first;
 #   - the SNES sound chip driven through its ports (rspc_);
-#   - agbplay's playback core for GBA music from the ROM (LGPL-3.0, C++23).
+#   - agbplay's playback core for GBA music from the ROM (LGPL-3.0, C++23);
+#   - kode54's SSEQ Player for DS sequenced music (external/SSEQPlayer, WTFPL), with
+#     deps/rommusic/patches/sseq/ applied first.
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
@@ -40,6 +42,7 @@ repo_root="$(cd "${GME_SOURCE_DIR:-$main_root/external/game-music-emu}" && pwd)"
 fork_root="$(cd "${GME_FORK_DIR:-$main_root/external/gme-kode54}" && pwd)"
 agb_root="$(cd "${AGBPLAY_SOURCE_DIR:-$main_root/external/agbplay}" && pwd)"
 fmt_root="$(cd "${FMT_SOURCE_DIR:-$main_root/external/fmt}" && pwd)"
+sseq_root="$(cd "${SSEQ_SOURCE_DIR:-$main_root/external/SSEQPlayer}" && pwd)"
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-rommusic-$(date +%Y%m%d-%H%M%S).log"
@@ -80,23 +83,29 @@ out_dir="$user_dir/release/$platform/$arch/$output_version"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/rommusic_build.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
-# Our fixes to the fork, applied to the checkout idempotently (the 7-Zip scheme). They show as
-# modified in `git status` inside external/gme-kode54 afterwards; that is expected.
-for p in "$user_dir"/patches/*.patch; do
-  [[ -e "$p" ]] || continue
-  if (cd "$fork_root" && patch -p1 -R -f --dry-run <"$p") >/dev/null 2>&1; then
-    echo "[INFO] patch already applied: $(basename "$p")" | tee -a "$log_file"
-  elif (cd "$fork_root" && patch -p1 -N -f --dry-run <"$p") >/dev/null 2>&1; then
-    (cd "$fork_root" && patch -p1 -N -f <"$p") | tee -a "$log_file"
-    echo "[INFO] applied patch: $(basename "$p")" | tee -a "$log_file"
-  else
-    echo "[ERROR] patch $(basename "$p") does not apply to $fork_root (forward or reverse) -- upstream moved; refresh the patch" | tee -a "$log_file" >&2
-    exit 1
-  fi
-done
+# Our fixes, applied to the checkouts idempotently (the 7-Zip scheme): patches/*.patch to the
+# fork, patches/sseq/*.patch to the SSEQ Player. They show as modified in `git status` inside
+# those submodules afterwards; that is expected.
+apply_patches() {
+  local dir="$1" root="$2" p
+  for p in "$dir"/*.patch; do
+    [[ -e "$p" ]] || continue
+    if (cd "$root" && patch -p1 -R -f --dry-run <"$p") >/dev/null 2>&1; then
+      echo "[INFO] patch already applied: $(basename "$p")" | tee -a "$log_file"
+    elif (cd "$root" && patch -p1 -N -f --dry-run <"$p") >/dev/null 2>&1; then
+      (cd "$root" && patch -p1 -N -f <"$p") | tee -a "$log_file"
+      echo "[INFO] applied patch: $(basename "$p")" | tee -a "$log_file"
+    else
+      echo "[ERROR] patch $(basename "$p") does not apply to $root (forward or reverse) -- upstream moved; refresh the patch" | tee -a "$log_file" >&2
+      exit 1
+    fi
+  done
+}
+apply_patches "$user_dir/patches" "$fork_root"
+apply_patches "$user_dir/patches/sseq" "$sseq_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
-  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root")
+  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
@@ -136,6 +145,7 @@ cp "$repo_root/gme/gme.h" "$out_dir/include/gme.h"
   echo "commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "fork_commit=$(git -C "$fork_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "agbplay_commit=$(git -C "$agb_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "sseq_commit=$(git -C "$sseq_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "compiler=${CXX:-default}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out_dir/build-info.txt"

@@ -9,14 +9,16 @@
 #   rspc_*  upstream's SNES sound chip (Snes_Spc) driven through its ports, in time.
 #   ragb_*  GBA music from the ROM through agbplay (external/agbplay, LGPL-3.0): the playback
 #           core only, fmt header-only from external/fmt.
+#   rsseq_* DS sequenced music (SSEQ in a sound archive) through kode54's SSEQ Player
+#           (external/SSEQPlayer, WTFPL), with deps/rommusic/patches/sseq/ applied.
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.24)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT and FMT_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT and SSEQ_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -81,8 +83,16 @@ target_include_directories(rommusic_agb PRIVATE ${AGB} ${CMAKE_CURRENT_SOURCE_DI
 target_compile_definitions(rommusic_agb PRIVATE FMT_HEADER_ONLY)
 set_target_properties(rommusic_agb PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# --- the DS sequence player ---------------------------------------------------------
+file(GLOB SSEQ_SOURCES ${SSEQ_ROOT}/*.cpp)
+add_library(rommusic_sseq OBJECT sseq/rsseq.cpp ${SSEQ_SOURCES})
+target_include_directories(rommusic_sseq PRIVATE ${SSEQ_ROOT})
+# Its string helpers use std::wstring_convert, deprecated since C++17 but still there.
+target_compile_options(rommusic_sseq PRIVATE -Wno-deprecated-declarations)
+set_target_properties(rommusic_sseq PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 # --- the library ----------------------------------------------------------------------
-add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb>)
+add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>)
 target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>")
 set_target_properties(rommusic PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON LINKER_LANGUAGE CXX)
 if(WIN32)

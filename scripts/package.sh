@@ -408,7 +408,7 @@ elif [[ "$KIND" == "rommusic" ]]; then
     done
     [[ "$have_players" -ge 2 ]] || die "rommusic and rvgmstream are not both in $SRC_LIB -- build them with scripts/build_native_deps.sh --only ffmpeg,vgmstream,rommusic $OS $ARCH, then scripts/move_libs_to_app_root.sh"
     mkdir -p "$APP/lib/LICENSES"
-    for l in gme gme-kode54 agbplay fmt vgmstream ffmpeg chdman-simd mame libchdr dolphin cemu ZArchive zstd extract-xiso 7-Zip-zstd zlib-ng; do
+    for l in gme gme-kode54 agbplay SSEQPlayer fmt vgmstream ffmpeg chdman-simd mame libchdr dolphin cemu ZArchive zstd extract-xiso 7-Zip-zstd zlib-ng; do
         [[ -f "$LIB_ROOT/LICENSES/$l.LICENSE" ]] && cp -a "$LIB_ROOT/LICENSES/$l.LICENSE" "$APP/lib/LICENSES/"
     done
     note "lib/LICENSES/"

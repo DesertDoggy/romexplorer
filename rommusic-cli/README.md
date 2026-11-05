@@ -93,7 +93,7 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 
 | System | How | Rate (native) |
 |---|---|---|
-| Nintendo DS | Music streams in the sound archive (SDAT). Sequenced music is not played yet. | as stored |
+| Nintendo DS | Music in the sound archive (SDAT): streams as stored, and sequenced songs played with their instruments as the DS does. | as stored; sequenced 48 kHz |
 | Nintendo 3DS | Music files in images stored decrypted. Encrypted images are not read. | as stored |
 | Game Boy Advance | Straight from the ROM, for games using Nintendo's standard sound engine (about half of all games). | 48 kHz |
 | SNES / Super Famicom | The game runs for a few seconds without a screen, and its sound chip is then played on. This gives one track, usually the title music. SA-1, Super FX and S-DD1 games are not supported. With `--rips`, a matching SPC set gives every song instead. | 32 kHz |
@@ -115,7 +115,7 @@ sets. A zipped disc image is not read; extract it first.
 - Mega Drive / Genesis and 32X straight from the ROM. A VGM set is played when dropped on its
   own, but it can't be matched to a ROM.
 - Game Boy Advance games that use other sound engines.
-- Sequenced music on DS and 3DS.
+- Sequenced music on 3DS.
 - PS3, Vita and downloaded packages.
 - Wii U disc images without their key.
 - Encrypted 3DS images.

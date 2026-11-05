@@ -1,7 +1,8 @@
 //! Music sequenced inside a cartridge ROM, found by reading the game's own sound engine and
 //! played from the ROM by song number: no rip, no copy.
 //!
-//! Engines so far: GBA games made with Nintendo's standard engine, through [`super::agbplay`].
+//! Engines so far: GBA games made with Nintendo's standard engine, through [`super::agbplay`],
+//! and the sequences in a DS game's sound archive (SDAT), through [`super::sseq`].
 //!
 //! A track is stored like a rip-set track (`location = 'file'`), with [`ROM_SONG_VIEW`] as its
 //! data view, the engine (and where it found the songs) as its path, and the song number as its
@@ -29,6 +30,18 @@ const PLAY_LOOPS: u8 = 2;
 
 /// The engine a stored path names.
 const GBA_M4A: &str = "gba-m4a";
+/// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
+const NDS_SSEQ: &str = "nds-sseq";
+/// DS songs are listened to at this rate to time them: enough to hear the drums' level.
+const SSEQ_MEASURE_RATE: u32 = 16_000;
+/// How long a DS song is listened to for its loop.
+const SSEQ_LISTEN_MS: u64 = 120_000;
+/// A DS song that neither ends nor is heard to repeat is faded here.
+const SSEQ_RUN_ON_MS: u64 = 150_000;
+/// How a looping DS song fades out.
+const SSEQ_FADE_MS: u64 = 8_000;
+/// The largest sound archive read: they are tens of megabytes at most.
+pub const MAX_SDAT_BYTES: u64 = 128 << 20;
 
 /// Which engines can read ROMs of `platform` (`platforms.id`) on this machine.
 pub fn covers(platform: u16) -> bool {
@@ -193,10 +206,127 @@ impl PcmStream for AgbPcm {
     }
 }
 
+/// The songs in a DS sound archive (`sdat`, stored at `path` on data view `view`), timed by
+/// listening to each once ([`super::track_timing`]): a song that ends is played to its end, one
+/// that repeats plays its loop twice and fades.
+pub fn index_sdat(sdat: &[u8], view: u32, path: &str, t: &Thresholds) -> Vec<FoundTrack> {
+    let Ok(songs) = super::sseq::songs(sdat) else { return Vec::new() };
+    let mut found = Vec::with_capacity(songs.len());
+    for song in songs {
+        let Ok(mut player) = super::sseq::Player::open(sdat, song.id, SSEQ_MEASURE_RATE) else { continue };
+        let mut ear = super::track_timing::Listener::new(SSEQ_MEASURE_RATE);
+        let mut buf = vec![0i16; 4096];
+        while !player.ended() && ear.played_ms() < SSEQ_LISTEN_MS && !ear.fell_silent() {
+            if player.render(&mut buf).is_err() {
+                break;
+            }
+            ear.feed(&buf);
+        }
+        let (body, fade, looping, intro, lp) = match ear.finish(player.ended()) {
+            super::track_timing::Timing::Silent => continue,
+            super::track_timing::Timing::Ends { ms } => (ms, 0, false, 0, 0),
+            super::track_timing::Timing::Loops { start_ms, loop_ms, .. } => (start_ms + 2 * loop_ms, SSEQ_FADE_MS, true, start_ms, loop_ms),
+            super::track_timing::Timing::RunsOn => (SSEQ_RUN_ON_MS, SSEQ_FADE_MS, true, 0, 0),
+        };
+        let duration_ms = if looping && lp > 0 { intro + lp } else { body };
+        let name = if song.name.is_empty() { format!("Song {}", song.id) } else { song.name.clone() };
+        let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
+        let kind = classify(&shape, &format!("{path}/{name}"), t);
+        let rate = u64::from(PLAY_RATE);
+        found.push(FoundTrack {
+            location: TrackLocation::RomSong { engine: format!("{NDS_SSEQ}@{view}@{body}@{fade}@{path}"), song: song.id },
+            name,
+            kind,
+            sample_rate: PLAY_RATE,
+            channels: 2,
+            duration_ms,
+            looping,
+            loop_start: intro * rate / 1000,
+            loop_end: (intro + lp) * rate / 1000,
+            codec: "DS sequence".into(),
+            format: "SSEQ".into(),
+            bytes: 0,
+            video: false,
+        });
+    }
+    found
+}
+
+/// A DS song, played for `left` more frames, the last `fade` of them fading out.
+struct SseqPcm {
+    player: super::sseq::Player,
+    left: u64,
+    fade: u64,
+    /// Stops at the song's own end too.
+    stop_at_end: bool,
+}
+
+impl PcmStream for SseqPcm {
+    fn sample_rate(&self) -> u32 {
+        self.player.sample_rate()
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+    fn total_samples(&self) -> Option<u64> {
+        Some(self.left)
+    }
+    fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        if self.left == 0 || (self.stop_at_end && self.player.ended()) {
+            return Ok(None);
+        }
+        let frames = self.left.min(4096) as usize;
+        let mut buf = vec![0i16; frames * 2];
+        self.player.render(&mut buf)?;
+        for (i, pair) in buf.chunks_exact_mut(2).enumerate() {
+            let remaining = self.left - i as u64;
+            if remaining <= self.fade && self.fade > 0 {
+                let g = remaining as f32 / self.fade as f32;
+                for s in pair {
+                    *s = (f32::from(*s) * g) as i16;
+                }
+            }
+        }
+        self.left -= frames as u64;
+        Ok(Some(buf))
+    }
+}
+
+fn open_sseq(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let mut parts = engine.splitn(5, '@');
+    let (_, view, body, fade, inner) = (parts.next(), parts.next(), parts.next(), parts.next(), parts.next());
+    let bad = || format!("a damaged DS song record: {engine}");
+    let view: u32 = view.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let body: u64 = body.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let fade: u64 = fade.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let inner = inner.ok_or_else(bad)?;
+    let sdat = sdat_bytes(path, view, inner)?;
+    let player = super::sseq::Player::open(&sdat, song, PLAY_RATE)?;
+    let rate = u64::from(PLAY_RATE);
+    Ok(Box::new(SseqPcm { player, left: (body + fade) * rate / 1000, fade: fade * rate / 1000, stop_at_end: fade == 0 }))
+}
+
+/// A sound archive's bytes, kept for the next song of the same game, like [`read_rom`].
+fn sdat_bytes(path: &Path, view: u32, inner: &str) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    type Kept = Option<((PathBuf, u32, String), std::sync::Arc<Vec<u8>>)>;
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
+    let key = (path.to_path_buf(), view, inner.to_string());
+    if let Some((k, bytes)) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *k == key {
+            return Ok(bytes.clone());
+        }
+    }
+    let (_, bytes) = super::rom_audio::stored_file(path, &TrackLocation::File { view, path: inner.to_string(), subsong: 0 })?;
+    let bytes = std::sync::Arc::new(bytes);
+    *KEPT.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, bytes.clone()));
+    Ok(bytes)
+}
+
 /// Opens song `song` of the ROM at `path`, as the engine named by `engine` (a stored path)
 /// plays it.
 pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
     match engine.split('@').next() {
+        Some(NDS_SSEQ) => open_sseq(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;
