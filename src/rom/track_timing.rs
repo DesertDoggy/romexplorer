@@ -28,6 +28,9 @@ const SAME: f32 = 0.10;
 const SURE: f32 = 0.05;
 /// The same, for the short window that finds where the loop begins.
 const SAME_LOCAL: f32 = 0.25;
+/// How alike the notes of two stretches must be: one minus the mean cosine of their blocks'
+/// pitch content.
+const TONAL_SAME: f32 = 0.25;
 /// That window, in ms.
 const LOCAL_WINDOW_MS: u64 = 3_000;
 /// The least that is compared to accept a loop: the last this many ms (or a whole period,
@@ -80,6 +83,103 @@ pub struct Listener {
     a_mid: f32,
     done_frames: u64,
     last_sound_frame: u64,
+    // The block's samples (mid), for its pitch content.
+    samples: Vec<f32>,
+    chroma: Vec<Chroma>,
+    spectrum: Spectrum,
+}
+
+/// A block's pitch content: energy per pitch class (C, C#, ... B), centred and of unit length,
+/// so two blocks compare by their cosine. All zero for a block with no tone in it.
+type Chroma = [f32; 12];
+
+/// What a block's pitch content is computed with: a Hann-windowed FFT of its last `n`
+/// samples (a power of two), and the pitch class of each bin that is a note's range.
+struct Spectrum {
+    n: usize,
+    window: Vec<f32>,
+    class: Vec<Option<usize>>,
+    /// cos and sin of -2πk/n, k < n/2.
+    twiddle: Vec<(f32, f32)>,
+}
+
+impl Spectrum {
+    fn new(rate: u32, block: usize) -> Self {
+        let mut n = 256;
+        while n * 2 <= block.min(2048) {
+            n *= 2;
+        }
+        let window = (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos()).collect();
+        let class = (0..n / 2)
+            .map(|k| {
+                let hz = k as f32 * rate as f32 / n as f32;
+                // About E2 to the top of a melody: below, a bin spans several notes.
+                (80.0..5_000.0).contains(&hz).then(|| ((12.0 * (hz / 440.0).log2()).round() as i32 + 9).rem_euclid(12) as usize)
+            })
+            .collect();
+        let twiddle = (0..n / 2).map(|k| { let a = -2.0 * std::f32::consts::PI * k as f32 / n as f32; (a.cos(), a.sin()) }).collect();
+        Self { n, window, class, twiddle }
+    }
+
+    fn chroma(&self, samples: &[f32]) -> Chroma {
+        let mut out = [0f32; 12];
+        if samples.len() < self.n {
+            return out;
+        }
+        let tail = &samples[samples.len() - self.n..];
+        let mut re: Vec<f32> = tail.iter().zip(&self.window).map(|(s, w)| s * w).collect();
+        let mut im = vec![0f32; self.n];
+        fft(&mut re, &mut im, &self.twiddle);
+        for (k, class) in self.class.iter().enumerate() {
+            if let Some(c) = class {
+                out[*c] += re[k] * re[k] + im[k] * im[k];
+            }
+        }
+        let mean = out.iter().sum::<f32>() / 12.0;
+        for v in &mut out {
+            *v -= mean;
+        }
+        let norm = out.iter().map(|v| v * v).sum::<f32>().sqrt();
+        // Next to nothing in it: a block of silence or noise, which says nothing about notes.
+        if norm <= mean.abs() * 1e-3 || norm == 0.0 {
+            return [0.0; 12];
+        }
+        out.map(|v| v / norm)
+    }
+}
+
+/// In-place radix-2 FFT; `re.len()` is a power of two, `twiddle` as [`Spectrum::twiddle`].
+fn fft(re: &mut [f32], im: &mut [f32], twiddle: &[(f32, f32)]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let stride = n / len;
+        for start in (0..n).step_by(len) {
+            for k in 0..len / 2 {
+                let (wr, wi) = twiddle[k * stride];
+                let (a, b) = (start + k, start + k + len / 2);
+                let (xr, xi) = (re[b] * wr - im[b] * wi, re[b] * wi + im[b] * wr);
+                re[b] = re[a] - xr;
+                im[b] = im[a] - xi;
+                re[a] += xr;
+                im[a] += xi;
+            }
+        }
+        len <<= 1;
+    }
 }
 
 /// What [`Listener::finish`] found.
@@ -99,9 +199,13 @@ impl Listener {
     pub fn new(rate: u32) -> Self {
         let rate = rate.max(1);
         let pole = |hz: f32| 1.0 - (-2.0 * std::f32::consts::PI * hz / rate as f32).exp();
+        let block = (rate / BLOCKS_PER_SECOND).max(1) as usize;
         Self {
             rate,
-            block: (rate / BLOCKS_PER_SECOND).max(1) as usize,
+            block,
+            samples: Vec::with_capacity(block),
+            chroma: Vec::new(),
+            spectrum: Spectrum::new(rate, block),
             blocks: Vec::new(),
             sum: [0.0; 3],
             frames: 0,
@@ -122,6 +226,7 @@ impl Listener {
                 self.last_sound_frame = self.done_frames + 1;
             }
             let m = (l + r) as f32 / 2.0;
+            self.samples.push(m);
             self.low += self.a_low * (m - self.low);
             self.mid += self.a_mid * (m - self.mid);
             let bands = [self.low, self.mid - self.low, m - self.mid];
@@ -133,6 +238,8 @@ impl Listener {
             if self.frames == self.block {
                 let n = self.block as f64;
                 self.blocks.push(self.sum.map(|s| (s / n).sqrt() as f32));
+                self.chroma.push(self.spectrum.chroma(&self.samples));
+                self.samples.clear();
                 (self.sum, self.frames) = ([0.0; 3], 0);
             }
         }
@@ -158,7 +265,7 @@ impl Listener {
         }
         let block_ms = 1000 / u64::from(BLOCKS_PER_SECOND);
         let blocks = |ms: u64| ms.div_ceil(block_ms) as usize;
-        match find_loop(&self.blocks, blocks(MIN_LOOP_MS), blocks(COMPARED_MS)) {
+        match find_loop(&self.blocks, &self.chroma, blocks(MIN_LOOP_MS), blocks(COMPARED_MS)) {
             Some((start, period, score)) => Timing::Loops { start_ms: start as u64 * block_ms, loop_ms: period as u64 * block_ms, sure: score < SURE },
             None => Timing::RunsOn,
         }
@@ -172,7 +279,10 @@ impl Listener {
 /// bands one by one: a noise or sample channel jitters from copy to copy in its own band,
 /// enough to hide a loop that repeats exactly in what is heard; and not a difference, which
 /// counts that same jitter against every block.
-fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(usize, usize, f32)> {
+///
+/// The level only proposes a period: in chip music a bar's beat often repeats exactly in level
+/// while its notes change. A period is taken only when the notes repeat too ([`Chroma`]).
+fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: usize) -> Option<(usize, usize, f32)> {
     let n = blocks.len();
     let per_second = BLOCKS_PER_SECOND as usize;
     // Shorter than this, a loop is always checked over two periods.
@@ -203,6 +313,24 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
         }
         1.0 - cov / (vx * vy).sqrt()
     };
+    // One minus the mean cosine of the blocks' pitch content against `back` blocks earlier,
+    // over the blocks that have notes in both.
+    let tonal_unlike = |from: usize, to: usize, back: usize| {
+        let (mut sum, mut count) = (0f32, 0usize);
+        for i in from..to {
+            let (a, b) = (&chroma[i], &chroma[i - back]);
+            if a.iter().all(|v| *v == 0.0) || b.iter().all(|v| *v == 0.0) {
+                continue;
+            }
+            sum += a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+            count += 1;
+        }
+        // Too little tone to tell: the level decides alone.
+        if count * 2 < to - from {
+            return 0.0;
+        }
+        1.0 - sum / count as f32
+    };
     let moves = |from: usize, to: usize| {
         let m = level[from..to].iter().sum::<f32>() / (to - from) as f32;
         let var = level[from..to].iter().map(|v| (v - m).powi(2)).sum::<f32>() / (to - from) as f32;
@@ -215,12 +343,22 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
         }
         if w + 2 * p <= n {
             let d = unlike(n - w, n, p).max(unlike(n - w, n, 2 * p));
-            return (d < SAME).then_some((p, d));
+            if d >= SAME {
+                return None;
+            }
+            let t = tonal_unlike(n - w, n, p).max(tonal_unlike(n - w, n, 2 * p));
+            log::debug!("loop candidate {p} blocks: level {d:.3}, notes {t:.3}");
+            return (t < TONAL_SAME).then_some((p, d));
         }
         // A loop too long to be heard three times in what was rendered: one whole period
         // matching the one before it, closely, will do.
         let d = unlike(n - w, n, p);
-        (p >= long && d < SURE).then_some((p, d))
+        if p < long || d >= SURE {
+            return None;
+        }
+        let t = tonal_unlike(n - w, n, p);
+        log::debug!("loop candidate {p} blocks (one period): level {d:.3}, notes {t:.3}");
+        (t < TONAL_SAME).then_some((p, d))
     })?;
     // Walking back from the end, the loop starts where a stretch of a few seconds stops
     // matching its copy one period later.
@@ -330,6 +468,16 @@ mod tests {
                 assert!((39_900..=40_100).contains(&loop_ms), "{loop_ms}");
                 assert!(start_ms < 1_000, "{start_ms}");
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_beat_that_repeats_in_level_under_changing_notes_is_not_the_loop() {
+        // The level goes loud-soft every second, but the notes repeat only every 4 s.
+        let notes = [(262.0, 1.0), (330.0, 0.5), (392.0, 1.0), (494.0, 0.5), (587.0, 1.0), (440.0, 0.5), (349.0, 1.0), (294.0, 0.5)];
+        match listen(melody(&notes, RATE as usize / 2), 40).finish(false) {
+            Timing::Loops { loop_ms, .. } => assert!((3_900..=4_100).contains(&loop_ms), "{loop_ms}"),
             other => panic!("{other:?}"),
         }
     }
