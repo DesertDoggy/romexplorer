@@ -269,43 +269,47 @@ pub fn PagePlayer(query: String) -> Element {
     use_effect(use_reactive!(|loaded| {
         let Some(playlist) = loaded else { return };
         let list = api::arr(&playlist, "tracks").to_vec();
-        if list.is_empty() {
+        if list.is_empty() && api::arr(&playlist, "hidden").is_empty() {
             // A title page with nothing to play ends music kept from an earlier one.
             let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
             return;
         }
         let keep = api::b(&playlist, "keep_playing");
         // The page's own URL for each track, then the shared script takes over.
-        let playable: Vec<Value> = list
-            .iter()
-            .map(|t| {
-                let mut t = t.clone();
-                // A track on the main server is streamed from it; one held here is read here.
-                // A ROM track is decoded out of the ROM on its first play.
-                let remote = if api::b(&t, "remote") { "remote/" } else { "" };
-                let rom = api::b(&t, "rom");
-                let route = format!("/api/v1/audio/{remote}{}{}/file", if rom { "rom/" } else { "" }, u(&t, "id"));
-                t["url"] = json!(api::media_url(&route));
-                if rom {
-                    let album = [s(&t, "album"), s(&t, "rom_kind")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
-                    t["album"] = json!(album);
-                }
-                t
-            })
-            .collect();
+        let playable_list: Vec<Value> = list.iter().cloned().map(playable).collect();
+        let hidden: Vec<Value> = api::arr(&playlist, "hidden").iter().map(|t| playable(t.clone())).collect();
+        let hide_title = playlist.get("hide_title").and_then(Value::as_u64);
         let labels = json!({
+            "hidden tracks": state::tr("hidden tracks"), "click to listen": state::tr("click to listen"), "restore": state::tr("restore"), "undo": state::tr("undo"),
+            "don't play this track on this page again": state::tr("don't play this track on this page again"),
             "previous": state::tr("previous"), "next": state::tr("next"), "stop": state::tr("stop"), "shuffle": state::tr("shuffle"),
             "mute": state::tr("mute"), "playlist": state::tr("playlist"), "position": state::tr("position"), "play / pause": state::tr("play / pause"),
             "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down)"),
         });
+        // "Don't play this track" and "restore" come back here as messages, and are recorded
+        // for this page's title.
+        let on_hide = if hide_title.is_some() { "(t, hidden) => dioxus.send({ id: t.id, rom: !!t.rom, hidden })" } else { "null" };
         let js = format!(
-            "{}\nwindow.rxPlayer.start(document.getElementById({}), {}, {}, {{ keep: {keep} }});",
+            "{}\nwindow.rxPlayer.start(document.getElementById({}), {}, {}, {{ keep: {keep}, hidden: {}, onHide: {on_hide} }});",
             romexplorer_types::PLAYER_JS,
             serde_json::to_string(&start_host).unwrap_or_default(),
-            serde_json::to_string(&playable).unwrap_or_default(),
-            labels
+            serde_json::to_string(&playable_list).unwrap_or_default(),
+            labels,
+            serde_json::to_string(&hidden).unwrap_or_default(),
         );
-        let _ = document::eval(&js);
+        let mut eval = document::eval(&js);
+        if let Some(title) = hide_title {
+            spawn(async move {
+                while let Ok(msg) = eval.recv::<Value>().await {
+                    let hidden = api::b(&msg, "hidden");
+                    let body = json!({ "title_id": title, "id": u(&msg, "id"), "rom": api::b(&msg, "rom"), "hidden": hidden });
+                    match api::put("/api/v1/audio/hidden", body).await {
+                        Ok(_) => ui::toast(state::tr(if hidden { "hidden from this page" } else { "restored" }), false),
+                        Err(e) => ui::toast(e.to_string(), true),
+                    }
+                }
+            });
+        }
     }));
     use_drop(|| {
         let _ = document::eval("if (window.rxPlayer) window.rxPlayer.leave();");
@@ -343,4 +347,19 @@ pub fn PagePlayer(query: String) -> Element {
     // An empty element the script draws the bar into. It holds nothing Dioxus renders, so a
     // re-render leaves what the script put there alone.
     rsx! { div { id: "{host}" } Html { html: String::new() } {switch} }
+}
+
+/// A playlist track with the URL this app reads it from.
+fn playable(mut t: Value) -> Value {
+    // A track on the main server is streamed from it; one held here is read here.
+    // A ROM track is decoded out of the ROM on its first play.
+    let remote = if api::b(&t, "remote") { "remote/" } else { "" };
+    let rom = api::b(&t, "rom");
+    let route = format!("/api/v1/audio/{remote}{}{}/file", if rom { "rom/" } else { "" }, u(&t, "id"));
+    t["url"] = json!(api::media_url(&route));
+    if rom {
+        let album = [s(&t, "album"), s(&t, "rom_kind")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+        t["album"] = json!(album);
+    }
+    t
 }

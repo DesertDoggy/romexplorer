@@ -848,6 +848,12 @@ async fn audio_rom_title(State(s): State<Shared>, Path(id): Path<u64>, Json(body
     Ok(Json(api::rom_audio::title_videos(&s.app, id).await?))
 }
 
+/// The title page player's "don't play this track" button, and bringing a track back.
+async fn audio_hidden(State(s): State<Shared>, Json(body): Json<api::audio::HideRequest>) -> ApiResult<serde_json::Value> {
+    api::audio::set_hidden(&s.app, &body).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn audio_playlist(State(s): State<Shared>, Query(q): Query<api::audio::PlaylistQuery>) -> ApiResult<api::audio::Playlist> {
     Ok(Json(api::audio::playlist(&s.app, &q).await?))
 }
@@ -2611,6 +2617,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/rom/{id}/file", get(audio_rom_file))
         .route("/api/v1/audio/remote/rom/{id}/file", get(audio_remote_rom))
         .route("/api/v1/audio/rom/title/{id}", axum::routing::put(audio_rom_title))
+        .route("/api/v1/audio/hidden", axum::routing::put(audio_hidden))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/ai", get(ai_overview))

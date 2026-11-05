@@ -709,6 +709,51 @@ pub struct Playlist {
     /// A title page's video sound choice, for the switch next to the player.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_videos: Option<TitleVideos>,
+    /// Tracks hidden from this page with the player's "don't play this track" button, for
+    /// its "hidden tracks" list, where they can be played once or brought back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<AudioRow>,
+    /// The title a hide on this page is recorded for (`PUT /audio/hidden`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_title: Option<u64>,
+}
+
+/// What `PUT /audio/hidden` is sent: a track of a page's player to hide or bring back.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HideRequest {
+    /// The page's title (the playlist's `hide_title`). A tagged file is hidden for this title
+    /// only, since the same file can be another title's music too.
+    pub title_id: u64,
+    /// The track: an audio file, or with `rom` a ROM track.
+    pub id: u64,
+    #[serde(default)]
+    pub rom: bool,
+    pub hidden: bool,
+}
+
+/// Which tagged audio files are hidden on which title's page: `{"<title id>": [file ids]}`,
+/// kept by the player's button (`set_hidden`), not a setting anyone edits.
+pub const KEY_HIDDEN_FILES: &str = "audio_hidden_files";
+
+async fn hidden_files(app: &App) -> Result<std::collections::BTreeMap<String, Vec<u64>>> {
+    Ok(crate::database::settings::get::<std::collections::BTreeMap<String, Vec<u64>>>(&app.pool, KEY_HIDDEN_FILES).await?.unwrap_or_default())
+}
+
+/// Hides a track from a title page's player, or brings it back. A ROM track is hidden
+/// wherever it plays (`rom_audio::set_hidden`); a tagged file only on this title's page.
+pub async fn set_hidden(app: &App, request: &HideRequest) -> Result<()> {
+    if request.rom {
+        return super::rom_audio::set_hidden(app, request.id, request.hidden).await;
+    }
+    let mut map = hidden_files(app).await?;
+    let ids = map.entry(request.title_id.to_string()).or_default();
+    ids.retain(|&i| i != request.id);
+    if request.hidden {
+        ids.push(request.id);
+    }
+    map.retain(|_, ids| !ids.is_empty());
+    crate::database::settings::set(&app.pool, KEY_HIDDEN_FILES, &serde_json::to_value(&map).map_err(|e| Error::internal(e.to_string()))?).await?;
+    Ok(())
 }
 
 /// A title's own choice on whether its ROMs' video sound plays.
@@ -792,6 +837,19 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
     }
     let mut list = playlist_inner(app, q, &rom).await?;
     list.keep_playing = rom.keep_playing;
+    // What was hidden on this page, so it can be played once or brought back.
+    let titles = titles_of(app, q).await?;
+    if let Some(&title) = titles.first() {
+        list.hide_title = Some(title);
+        let hidden = hidden_files(app).await?;
+        let mine: std::collections::HashSet<u64> = titles.iter().filter_map(|t| hidden.get(&t.to_string())).flatten().copied().collect();
+        let (shown, hid): (Vec<AudioRow>, Vec<AudioRow>) = std::mem::take(&mut list.tracks).into_iter().partition(|t| t.rom || t.remote || !mine.contains(&t.id));
+        list.tracks = shown;
+        list.hidden = hid;
+        if rom.sources.rom() {
+            list.hidden.extend(super::rom_audio::hidden_tracks(app, &titles).await?);
+        }
+    }
     if let Some(title) = q.title_id {
         let remote = list.title_videos.take().is_some_and(|t| t.has_video);
         let mut mine = super::rom_audio::title_videos(app, title).await?;
@@ -927,7 +985,7 @@ async fn local_playlist(app: &App, titles: &[u64]) -> Result<Playlist> {
         "SELECT DISTINCT m.name FROM audio_file_tags m JOIN audio_files a ON a.id = m.audio_file_id AND a.deleted = FALSE AND a.playable = TRUE WHERE m.name IN ({keyword_names}) ORDER BY m.name"
     );
     let tags: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(tags_sql)).fetch_all(&app.pool).await?;
-    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false, title_videos: None })
+    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false, title_videos: None, hidden: Vec::new(), hide_title: None })
 }
 
 #[cfg(test)]

@@ -2798,5 +2798,11 @@
   "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "音はループするかどうかと長さ（下の 3 つの設定）で分けます。",
   "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.": "再生用にデコードした ROM の音楽をメモリに置く量です。0 = 使わない。いっぱいになると、しばらく再生していない曲からディスクの変換済み音声キャッシュへ移します。",
   "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).": "再生用にデコードした ROM の音楽をメモリに置く量（MiB。既定 256、0 = 使わない）。",
-  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "いっぱいになると、しばらく再生していない曲からディスクの変換済み音声キャッシュへ移します。次はデコードし直さずにそこから読みます。"
+  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "いっぱいになると、しばらく再生していない曲からディスクの変換済み音声キャッシュへ移します。次はデコードし直さずにそこから読みます。",
+  "hidden tracks": "非表示の曲",
+  "click to listen": "クリックで試聴",
+  "undo": "元に戻す",
+  "don't play this track on this page again": "このページではこの曲を流さない",
+  "hidden from this page": "このページで非表示にしました",
+  "restored": "戻しました"
 }

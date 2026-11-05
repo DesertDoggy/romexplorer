@@ -2584,5 +2584,11 @@
   "don't use it": "nicht verwenden",
   "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.": "Arbeitsspeicher für ROM-Musik, die zum Abspielen dekodiert wurde; 0 = aus. Ist er voll, wandern die am längsten nicht gespielten Titel in den Cache für konvertiertes Audio auf der Festplatte.",
   "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).": "Arbeitsspeicher für ROM-Musik, die zum Abspielen dekodiert wurde, in MiB (Standard 256; 0 = aus).",
-  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "Ist er voll, wandern die am längsten nicht gespielten Titel in den Cache für konvertiertes Audio auf der Festplatte, statt erneut dekodiert zu werden."
+  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "Ist er voll, wandern die am längsten nicht gespielten Titel in den Cache für konvertiertes Audio auf der Festplatte, statt erneut dekodiert zu werden.",
+  "hidden tracks": "ausgeblendete Titel",
+  "click to listen": "zum Anhören klicken",
+  "undo": "rückgängig",
+  "don't play this track on this page again": "diesen Titel auf dieser Seite nicht mehr spielen",
+  "hidden from this page": "auf dieser Seite ausgeblendet",
+  "restored": "wiederhergestellt"
 }
