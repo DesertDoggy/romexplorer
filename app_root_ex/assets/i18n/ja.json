@@ -69,6 +69,8 @@
   "volume": "音量",
   "normalise": "ノーマライズ",
   "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": "ノーマライズ：すべてのトラックをほぼ同じ音量で再生します（大きい音は下げ、ROM の小さい音は上げます）",
+  "crossfade": "クロスフェード",
+  "crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)": "クロスフェード：次の曲をフェードインしながら今の曲をフェードアウトし、この ms だけ重ねます（0 でオフ）",
   "What audio the browser cannot play (DSD, ALAC, AIFF) is converted to when it is played from this machine. Converted once, on first play, and cached. Without the AAC encoder library the lossless form is used either way.": "ブラウザーで再生できない音声（DSD、ALAC、AIFF）を、このマシンから再生するときに変換する形式です。最初の再生時に一度だけ変換してキャッシュします。AAC エンコーダーライブラリがない場合は、設定にかかわらずロスレス形式を使います。",
   "AAC, 256 kbps: small, plays everywhere (default)": "AAC 256 kbps：小さく、どこでも再生可能（既定）",
   "FLAC: lossless, several times larger": "FLAC：ロスレス、数倍のサイズ",

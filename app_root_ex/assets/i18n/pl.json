@@ -69,6 +69,8 @@
   "volume": "głośność",
   "normalise": "normalizuj",
   "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": "normalizuj: odtwarzaj każdy utwór z mniej więcej tą samą głośnością (głośne są ściszane, ciche utwory z ROM-ów podgłaśniane)",
+  "crossfade": "przenikanie",
+  "crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)": "przenikanie: następny utwór się pojawia, gdy ten wycisza się, nakładając się o tyle ms (0 = wyłączone)",
   "What audio the browser cannot play (DSD, ALAC, AIFF) is converted to when it is played from this machine. Converted once, on first play, and cached. Without the AAC encoder library the lossless form is used either way.": "Format, do którego konwertowane jest audio nieobsługiwane przez przeglądarkę (DSD, ALAC, AIFF) przy odtwarzaniu z tego komputera. Konwersja odbywa się raz, przy pierwszym odtworzeniu, a wynik trafia do pamięci podręcznej. Bez biblioteki kodera AAC i tak używana jest forma bezstratna.",
   "AAC, 256 kbps: small, plays everywhere (default)": "AAC, 256 kb/s: mały, odtwarzany wszędzie (domyślnie)",
   "FLAC: lossless, several times larger": "FLAC: bezstratny, kilka razy większy",
