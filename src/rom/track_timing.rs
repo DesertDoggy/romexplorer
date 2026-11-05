@@ -96,8 +96,8 @@ pub struct Listener {
 /// so two blocks compare by their cosine. All zero for a block with no tone in it.
 type Chroma = [f32; 12];
 
-/// What a block's pitch content is computed with: a Hann-windowed FFT of its last `n`
-/// samples (a power of two), and the pitch class of each bin that is a note's range.
+/// What a block's pitch content is computed with: Hann-windowed FFTs of `n` samples (a power
+/// of two) across the block, and the pitch class of each bin that is a note's range.
 struct Spectrum {
     n: usize,
     window: Vec<f32>,
@@ -129,14 +129,19 @@ impl Spectrum {
         if samples.len() < self.n {
             return out;
         }
-        let tail = &samples[samples.len() - self.n..];
-        let mut re: Vec<f32> = tail.iter().zip(&self.window).map(|(s, w)| s * w).collect();
-        let mut im = vec![0f32; self.n];
-        fft(&mut re, &mut im, &self.twiddle);
-        for (k, class) in self.class.iter().enumerate() {
-            if let Some(c) = class {
-                out[*c] += re[k] * re[k] + im[k] * im[k];
+        // Frames overlapping by half across the whole block: one frame alone catches only a
+        // moment of an arpeggio or a vibrato, and which moment shifts from copy to copy.
+        let mut at = 0;
+        while at + self.n <= samples.len() {
+            let mut re: Vec<f32> = samples[at..at + self.n].iter().zip(&self.window).map(|(s, w)| s * w).collect();
+            let mut im = vec![0f32; self.n];
+            fft(&mut re, &mut im, &self.twiddle);
+            for (k, class) in self.class.iter().enumerate() {
+                if let Some(c) = class {
+                    out[*c] += re[k] * re[k] + im[k] * im[k];
+                }
             }
+            at += self.n / 2;
         }
         let mean = out.iter().sum::<f32>() / 12.0;
         for v in &mut out {
@@ -295,8 +300,10 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
         return None;
     }
     let level: Vec<f32> = blocks.iter().map(|b| (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt()).collect();
-    // One minus the correlation of `from..to` with the same stretch `back` blocks earlier.
-    let unlike = |from: usize, to: usize, back: usize| {
+    let mean_level = level.iter().sum::<f32>() / n as f32;
+    // One minus the correlation of `from..to` with the same stretch `back` blocks earlier. Two
+    // stretches too even to correlate are alike when their levels are.
+    let unlike_at = |from: usize, to: usize, back: usize| {
         let len = (to - from) as f32;
         let (mut sx, mut sy) = (0f32, 0f32);
         for i in from..to {
@@ -311,14 +318,15 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
             vx += x * x;
             vy += y * y;
         }
-        if vx <= 0.0 || vy <= 0.0 {
-            return 1.0;
+        let flat = |v: f32, m: f32| (v / len).sqrt() <= 0.02 * m.max(0.05 * mean_level);
+        if flat(vx, mx) || flat(vy, my) {
+            return if flat(vx, mx) && flat(vy, my) && (mx - my).abs() <= 0.1 * mx.max(my) { 0.0 } else { 1.0 };
         }
         1.0 - cov / (vx * vy).sqrt()
     };
     // One minus the mean cosine of the blocks' pitch content against `back` blocks earlier,
     // over the blocks that have notes in both.
-    let tonal_unlike = |from: usize, to: usize, back: usize| {
+    let tonal_at = |from: usize, to: usize, back: usize| {
         let (mut sum, mut count) = (0f32, 0usize);
         for i in from..to {
             let (a, b) = (&chroma[i], &chroma[i - back]);
@@ -334,57 +342,90 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
         }
         1.0 - sum / count as f32
     };
+    // A true period is rarely a whole number of blocks: a copy `back` blocks earlier sits up
+    // to half a block off, and twice that two periods back. So the best of the nearby offsets.
+    let tolerant = |f: &dyn Fn(usize, usize, usize) -> f32, from: usize, to: usize, back: usize, tol: usize| {
+        (back.saturating_sub(tol).max(1)..=back + tol).filter(|&b| b <= from).map(|b| f(from, to, b)).fold(f32::INFINITY, f32::min)
+    };
+    let unlike = |from: usize, to: usize, back: usize, tol: usize| tolerant(&unlike_at, from, to, back, tol);
+    let tonal = |from: usize, to: usize, back: usize, tol: usize| tolerant(&tonal_at, from, to, back, tol);
     let moves = |from: usize, to: usize| {
         let m = level[from..to].iter().sum::<f32>() / (to - from) as f32;
         let var = level[from..to].iter().map(|v| (v - m).powi(2)).sum::<f32>() / (to - from) as f32;
         var.sqrt() / m.max(1e-6) >= MIN_MOVEMENT
     };
-    let (period, score) = (min_period..=(n - compared) / 2).find_map(|p| {
+    // Walking back from the end, the loop starts where a stretch of a few seconds stops
+    // matching its copy one period later.
+    let start_of = |period: usize| {
+        let window = (LOCAL_WINDOW_MS as usize * per_second / 1000).clamp(2, period);
+        let mut i = n - period;
+        while i >= window {
+            if unlike(i - window + period, i + period, period, 1) >= SAME_LOCAL {
+                // Within that stretch, the loop begins after the last block clearly unlike its copy.
+                let differs = |k: usize| (level[k] - level[k + period]).abs() > 0.5 * level[k].max(level[k + period]).max(0.1 * mean_level);
+                return (i - window..i).rev().find(|&k| differs(k)).map_or(i - window, |k| k + 1);
+            }
+            i -= 1;
+        }
+        0
+    };
+    // How a period scores: `None` when the level does not propose it, else the notes' score.
+    // `tol` blocks of slack (see `tolerant`); 0 compares exactly.
+    let score_of = |p: usize, tol: usize| -> Option<f32> {
         let w = p.max(compared);
         if w + p > n || !moves(n - w, n) {
             return None;
         }
         if w + 2 * p <= n {
-            let d = unlike(n - w, n, p).max(unlike(n - w, n, 2 * p));
+            let d = unlike(n - w, n, p, tol).max(unlike(n - w, n, 2 * p, 2 * tol));
             if d >= LEVEL_PROPOSE {
                 return None;
             }
-            let t = tonal_unlike(n - w, n, p).max(tonal_unlike(n - w, n, 2 * p));
+            let t = tonal(n - w, n, p, tol).max(tonal(n - w, n, 2 * p, 2 * tol));
             log::debug!("loop candidate {p} blocks: level {d:.3}, notes {t:.3}");
-            return (t < TONAL_SAME).then_some((p, t));
+            Some(t)
+        } else {
+            // A loop too long to be heard three times in what was rendered: one whole period
+            // matching the one before it, closely, will do.
+            let d = unlike(n - w, n, p, tol);
+            if p < long || d >= SAME {
+                return None;
+            }
+            let t = tonal(n - w, n, p, tol);
+            log::debug!("loop candidate {p} blocks (one period): level {d:.3}, notes {t:.3}");
+            Some(t)
         }
-        // A loop too long to be heard three times in what was rendered: one whole period
-        // matching the one before it, closely, will do.
-        let d = unlike(n - w, n, p);
-        if p < long || d >= SAME {
+    };
+    // The shortest period that matches: proposed by the level, confirmed by the notes, and
+    // starting early enough to have been heard twice.
+    let mut p = min_period;
+    while p <= (n - compared) / 2 {
+        let Some(score) = score_of(p, 1).filter(|&t| t < TONAL_SAME) else {
+            p += 1;
+            continue;
+        };
+        // With slack, the blocks either side of the true period pass too: the one that
+        // matches best as it is.
+        let p_best = (p..=p + 2).min_by(|&a, &b| {
+            let s = |q: usize| score_of(q, 0).unwrap_or(f32::INFINITY);
+            s(a).total_cmp(&s(b))
+        }).unwrap_or(p);
+        let start = start_of(p_best);
+        // A short beat that only settles in after minutes of music is a passage keeping time,
+        // not the track's loop -- and nothing longer found after it would be either.
+        if start > 20 * p_best && start > 60 * per_second {
+            log::debug!("loop candidate {p_best} blocks: a late beat ({start})");
             return None;
         }
-        let t = tonal_unlike(n - w, n, p);
-        log::debug!("loop candidate {p} blocks (one period): level {d:.3}, notes {t:.3}");
-        (t < TONAL_SAME).then_some((p, t))
-    })?;
-    // Walking back from the end, the loop starts where a stretch of a few seconds stops
-    // matching its copy one period later.
-    let window = (LOCAL_WINDOW_MS as usize * per_second / 1000).clamp(2, period);
-    let mut start = 0;
-    let mut i = n - period;
-    while i >= window {
-        if unlike(i - window + period, i + period, period) >= SAME_LOCAL {
-            // Within that stretch, the loop begins after the last block clearly unlike its copy.
-            let mean = level.iter().sum::<f32>() / n as f32;
-            let differs = |k: usize| (level[k] - level[k + period]).abs() > 0.5 * level[k].max(level[k + period]).max(0.1 * mean);
-            start = (i - window..i).rev().find(|&k| differs(k)).map_or(i - window, |k| k + 1);
-            break;
+        // Starts too late to have been heard twice: not heard to loop at this period.
+        if start + 2 * p_best > n {
+            log::debug!("loop candidate {p_best} blocks: starts too late ({start})");
+            p += 3;
+            continue;
         }
-        i -= 1;
+        return Some((start, p_best, score));
     }
-    // A loop that starts too late to be heard twice was not heard to loop; and a short beat
-    // that only settles in after minutes of music is a passage keeping time, not the track's
-    // loop.
-    if start + 2 * period > n || (start > 20 * period && start > 60 * per_second) {
-        return None;
-    }
-    Some((start, period, score))
+    None
 }
 
 #[cfg(test)]
