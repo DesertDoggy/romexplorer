@@ -36,6 +36,8 @@ pub struct AuditSummary {
     pub remerged: u64,
     /// Automatic merges of titles on different platforms, split again.
     pub platform_splits: u64,
+    /// Automatic merges of a pirate / unlicensed-only title into a retail one, split again.
+    pub unlicensed_splits: u64,
     /// Titles whose own files name another IGDB game than their link: the merges the wrong
     /// link brought undone, and the title linked to its own game.
     pub relinked: Vec<u64>,
@@ -123,7 +125,7 @@ async fn title_names(pool: &MySqlPool, title_id: u64) -> Result<Vec<String>, Dat
 async fn own_hasheous_igdb(pool: &MySqlPool, title_id: u64) -> Result<HashSet<String>, DatabaseError> {
     let brought: HashSet<u64> = sqlx::query_scalar::<_, u64>(
         "SELECT j.release_id FROM title_merge_log l JOIN title_merge_archive a ON a.log_id = l.id, \
-           JSON_TABLE(a.rows_json, '$.title_releases[*]' COLUMNS (release_id BIGINT UNSIGNED PATH '$.release_id')) j WHERE l.survivor_id = ? AND l.undone_at IS NULL",
+           JSON_TABLE(a.rows_json, '$.title_releases[*]' COLUMNS (release_id BIGINT UNSIGNED PATH '$.release_id')) j WHERE l.survivor_id = ? AND l.undone_at IS NULL AND l.reason <> 'split'",
     )
     .bind(title_id)
     .fetch_all(pool)
@@ -266,6 +268,23 @@ async fn separate_demo_links(pool: &MySqlPool, clients: &ProviderClients, book: 
 /// Once after updating to 0059: a merge audit, which splits automatic merges of titles on
 /// different platforms (step 0b) and undoes those a wrong link brought in (step 0c) -- and
 /// keeps them apart from then on.
+/// Once: the audit that splits pirate / unlicensed-only titles back out of retail ones
+/// (step 0b'), on a machine that has automatic merges to look at and builds its own catalogue.
+pub async fn queue_unlicensed_repair_once(pool: &MySqlPool) -> Result<(), DatabaseError> {
+    const NAME: &str = "unlicensed_merges_0075";
+    if sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(NAME).fetch_optional(pool).await?.is_some() {
+        return Ok(());
+    }
+    let client = super::settings::instance_mode(pool).await? == super::settings::InstanceMode::Client;
+    let any: Option<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE undone_at IS NULL AND ((grade <> 'manual' AND (reason LIKE 'igdb:%' OR reason LIKE 'ra:%')) OR reason LIKE 'suggestion:%') LIMIT 1").fetch_optional(pool).await?;
+    if any.is_some() && !client {
+        let id = super::jobs::enqueue(pool, super::jobs::JobType::TitleMergeAudit, serde_json::json!({})).await?;
+        log::info!("queued merge audit job {id}: pirate and unlicensed games merged into retail titles are split again");
+    }
+    sqlx::query("INSERT IGNORE INTO data_migrations (name) VALUES (?)").bind(NAME).execute(pool).await?;
+    Ok(())
+}
+
 pub async fn queue_platform_repair_once(pool: &MySqlPool) -> Result<(), DatabaseError> {
     const NAME: &str = "platform_merges_0059";
     let done: Option<String> = sqlx::query_scalar("SELECT name FROM data_migrations WHERE name = ?").bind(NAME).fetch_optional(pool).await?;
@@ -387,6 +406,30 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
             }
             Err(e) => {
                 log::warn!("merge audit: splitting merge {log_id} across platforms: {e}");
+                s.decouple_failed += 1;
+            }
+        }
+    }
+
+    // 0b'. Automatic merges that joined a title of nothing but pirate or unlicensed releases
+    //      to one with a retail release (`title_merge::unlicensed_only`): a shared IGDB or
+    //      RetroAchievements game between the two was a wrong link. Split again for good.
+    // Accepted suggestions too ("accept all" took many at once); a merge the user made by
+    // picking the titles stays.
+    let automatic: Vec<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE undone_at IS NULL AND ((grade <> 'manual' AND (reason LIKE 'igdb:%' OR reason LIKE 'ra:%')) OR reason LIKE 'suggestion:%') ORDER BY id DESC")
+        .fetch_all(pool)
+        .await?;
+    for log_id in automatic {
+        if !super::title_merge::merge_joined_unlicensed(pool, log_id).await? {
+            continue;
+        }
+        match super::title_merge::decouple(pool, log_id).await {
+            Ok(_) => {
+                sqlx::query("UPDATE title_merge_log SET reason = CONCAT(reason, ' (unlicensed)') WHERE id = ?").bind(log_id).execute(pool).await?;
+                s.unlicensed_splits += 1;
+            }
+            Err(e) => {
+                log::warn!("merge audit: splitting unlicensed merge {log_id}: {e}");
                 s.decouple_failed += 1;
             }
         }

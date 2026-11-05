@@ -23,7 +23,7 @@ use super::jobs::Progress;
 use super::matching::util::norm_key;
 use super::matching::names_close;
 use super::providers::cache::APART_SQL;
-use super::title_merge::{base_title, game_platforms, merge_platform, PassScope};
+use super::title_merge::{base_title, game_platforms, merge_platform, unlicensed_only, PassScope, UNLICENSED_SQL};
 
 pub const KIND_INTERNATIONAL: &str = "international";
 pub const KIND_DIRECTORS_CUT: &str = "directors_cut";
@@ -248,10 +248,23 @@ pub fn plan_variant(kind: Variant, variant: &[Rel], others: &[Rel]) -> Option<Re
     })
 }
 
+/// Whether a release name says no publisher sold it: No-Intro's "(Unl)", "(Pirate)",
+/// "(Aftermarket)", TOSEC's "(PD)" and "[p]".
+pub fn unlicensed(release_name: &str) -> bool {
+    lazy_static::lazy_static! {
+        static ref TAG: regex::Regex = regex::Regex::new(r"(?i)\((?:unl|pirate|aftermarket|pd)\)|\[p\d*\]").unwrap();
+    }
+    TAG.is_match(release_name)
+}
+
 /// The releases of one title, one platform and one region that name a different game than
 /// the title does: "Piyo Monsters Ao" inside the title of "Piyo Monsters Midori" (IGDB has no
 /// page for it). `names` are the title's own names (its name, alternative and localized ones).
 /// None when every name is one of the title's, or none is (nothing to tell apart by).
+///
+/// A pirate, unlicensed or public-domain release ([`unlicensed`]) of a name the title doesn't
+/// know goes too, even in a region with no release of the title's name: no publisher renamed
+/// it, so it is not the game's name there.
 ///
 /// `table` (`RegionalNames`) says what names cannot: a Japanese colour version that is a
 /// foreign one of another colour belongs with it, and a Japanese release never sold abroad is
@@ -288,9 +301,10 @@ pub fn plan_split(names: &[String], releases: &[Rel], table: &RegionalNames) -> 
             odd.entry(norm_key(&r.name)).or_default().push(r.id);
         }
     }
+    // Each bucket's games, joined when close ("Hoge" and "Hoge - Special Edition"); a name
+    // the table lists joins only its own game ("Aka" and "Ao" are close, not one).
+    let mut games: Vec<(u16, Vec<(String, bool, Vec<u64>)>)> = Vec::new();
     for ((platform, _), rels) in &buckets {
-        // The bucket's games, joined when close ("Hoge" and "Hoge - Special Edition"); a
-        // name the table lists joins only its own game ("Aka" and "Ao" are close, not one).
         let mut clusters: Vec<(String, bool, Vec<u64>)> = Vec::new();
         for r in rels {
             let (id, listed) = game(r);
@@ -299,12 +313,21 @@ pub fn plan_split(names: &[String], releases: &[Rel], table: &RegionalNames) -> 
                 None => clusters.push((id, listed, vec![r.id])),
             }
         }
-        if clusters.len() < 2 {
-            continue;
-        }
-        let (mine, theirs): (Vec<_>, Vec<_>) = clusters.into_iter().partition(|(k, l, _)| known(*platform, k, *l));
-        if !mine.is_empty() {
-            for (k, _, ids) in theirs {
+        games.push((*platform, clusters));
+    }
+    // The platforms where some release goes by one of the title's names.
+    let named: HashSet<u16> = games.iter().filter(|(p, c)| c.iter().any(|(k, l, _)| known(*p, k, *l))).map(|(p, _)| *p).collect();
+    let unlicensed: HashSet<u64> = releases.iter().filter(|r| unlicensed(&r.name)).map(|r| r.id).collect();
+    for (platform, clusters) in games {
+        let (mine, theirs): (Vec<_>, Vec<_>) = clusters.into_iter().partition(|(k, l, _)| known(platform, k, *l));
+        for (k, _, ids) in theirs {
+            // Beside a release of the title's own name in the same region, any other name is
+            // another game. In a region with none, a name the title doesn't know may be its
+            // name there -- but not for a pirate, unlicensed or public-domain release, which
+            // no publisher renamed: one of those is another game wherever the title's own
+            // name turns up on the platform.
+            let apart = if mine.is_empty() { named.contains(&platform) && ids.iter().all(|id| unlicensed.contains(id)) } else { true };
+            if apart {
                 odd.entry(k).or_default().extend(ids);
             }
         }
@@ -481,9 +504,11 @@ async fn write_pairs(pool: &MySqlPool, kind: &str, prefix: &str, pairs: BTreeMap
     let blocked = blocked_pairs(pool).await?;
     let ids: Vec<u64> = pairs.keys().flat_map(|(a, b)| [*a, *b]).collect::<BTreeSet<_>>().into_iter().collect();
     let platforms = game_platforms(pool, &ids).await?;
+    let unlicensed = unlicensed_only(pool, &ids).await?;
     let mut written = Vec::new();
     for ((a, b), matched) in pairs {
-        if blocked.contains(&(a, b)) || !scope.touches(&[a, b]) {
+        // A pirate or unlicensed game is not a retail game's other name.
+        if blocked.contains(&(a, b)) || !scope.touches(&[a, b]) || unlicensed.contains(&a) != unlicensed.contains(&b) {
             continue;
         }
         let shared = matches!((platforms.get(&a), platforms.get(&b)), (Some(x), Some(y)) if !x.is_disjoint(y));
@@ -650,7 +675,8 @@ async fn bundles(pool: &MySqlPool, scope: &PassScope) -> Result<Vec<String>, Dat
 }
 
 /// Titles holding, for one platform and region, releases of differently named games, one of
-/// them not a name of the title's. Returns the keys written.
+/// them not a name of the title's -- or a pirate or unlicensed release of another name
+/// anywhere on a platform. Returns the keys written.
 async fn split_names(pool: &MySqlPool, scope: &PassScope) -> Result<Vec<String>, DatabaseError> {
     let titles: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT DISTINCT x.title_id FROM (SELECT tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE \
@@ -659,10 +685,21 @@ async fn split_names(pool: &MySqlPool, scope: &PassScope) -> Result<Vec<String>,
     )))
     .fetch_all(pool)
     .await?;
+    let mut titles: BTreeSet<u64> = titles.into_iter().collect();
+    // And every title holding a pirate or unlicensed release of another name on a platform,
+    // in a region of its own or not (`plan_split`).
+    titles.extend(
+        sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(format!(
+            "SELECT tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE \
+               JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE WHERE NOT {APART_SQL} \
+             GROUP BY tr.title_id, r.app_platform_id HAVING COUNT(DISTINCT r.norm_name) > 1 AND SUM(r.name REGEXP {UNLICENSED_SQL}) > 0"
+        )))
+        .fetch_all(pool)
+        .await?,
+    );
     // And every title holding a Japanese release the table says was never sold abroad, beside
     // anything else.
     let alone: Vec<String> = RegionalNames::builtin().world_of.iter().filter(|(_, w)| w.is_empty()).map(|((_, k), _)| super::import::sha1_hex(k)).collect();
-    let mut titles: BTreeSet<u64> = titles.into_iter().collect();
     if !alone.is_empty() {
         let sql = format!(
             "SELECT DISTINCT tr.title_id FROM `release` r JOIN title_releases tr ON tr.release_id = r.id JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE \
@@ -784,10 +821,30 @@ mod tests {
         assert!(plan_split(&["Fuga Saga".to_string()], &dc, &RegionalNames::default()).is_none());
     }
 
+    /// Pirate and unlicensed games of other names under a title, each in a region where the
+    /// title's own name has no release: split off all the same. A licensed release of another
+    /// name alone in its region may be the game's name there, and stays.
+    #[test]
+    fn pirate_games_of_other_names_are_split_off_in_any_region() {
+        let rels = [
+            rel(1, 9, "Hoge Fantasy II (Japan)", "JP"),
+            rel(2, 9, "Hoge Fantasy II (1988)(Fuga)(JP)", "JP"),
+            rel(3, 9, "Piyo Zhan Ji (China) (Aftermarket) (Unl)", "CN"),
+            rel(4, 9, "Moge Shi (China) (Pirate)", "CN"),
+            rel(5, 9, "Puyo Ma Li (199x)(-)(TW)[p]", "TW"),
+            rel(6, 9, "Puyo Ma Li (199x)(-)(TW)[p][b2]", "TW"),
+            rel(7, 9, "Hoge Densetsu (Korea)", "KR"),
+        ];
+        let plan = plan_split(&["Hoge Fantasy II".to_string()], &rels, &RegionalNames::default()).expect("split");
+        assert_eq!(plan.options[0].groups, vec![vec![1, 2, 7], vec![4], vec![3], vec![5, 6]]);
+        // With nothing of the title's own name on the platform, there is nothing to tell apart by.
+        assert!(plan_split(&["Hoge Fantasy II".to_string()], &rels[2..], &RegionalNames::default()).is_none());
+        assert!(unlicensed("Hoge (199x)(-)(AS)[p][a]") && unlicensed("Demo 4 (1998)(Someone)(PD)") && !unlicensed("Hoge (Japan) (Proto)") && !unlicensed("Hoge [b]"));
+    }
+
     #[test]
     /// The colour versions: the Japanese green is the foreign blue, the Japanese blue was
     /// never sold abroad, and "Aka" and "Ao" are close names but two games.
-    #[test]
     fn the_regional_table_keeps_colour_versions_apart() {
         let table = RegionalNames::parse(
             r#"{ "entries": [

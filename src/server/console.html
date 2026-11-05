@@ -3145,12 +3145,15 @@ async function showMergeReview() {
     explain: tr("Suggestions IGDB's grouping cannot give, one at a time: an International or Director's Cut release next to its Japanese original and the foreign versions, a Japanese release filed under another game, names that translate each other, a bundle holding single games, and titles sharing an IGDB game. Take a choice, say no (not offered again), or skip. The filters narrow the queue like the Titles list, a set included. Settings › merge_review_order puts the regional ones or the IGDB ones first."),
     path: '/api/v1/review/merges',
     columns: [
-      { key: 'kind', label: tr('kind'), render: r => badge(kinds[r.kind] || r.kind, 'dim') },
+      { key: 'kind', label: tr('kind'), render: r => badge(kinds[r.kind] || r.kind, 'dim') + (r.status !== 'pending' ? ' ' + reviewStatusBadge(r.status) : '') },
       { key: 'titles', label: tr('titles'), render: r => `<span class="link" data-rv-pos="${r.position}" title="${tr('review this one')}">${esc(r.titles.map(t => t.name).join(' · '))}</span>` },
       { key: 'platforms', label: tr('platforms'), render: r => platformBadges([...new Set(r.titles.flatMap(t => (t.platforms || '').split(', ').filter(Boolean)))].join(', ')) },
     ],
-    extraFilters: [{ key: 'kind', label: tr('kind'), type: 'select', options: () => `<option value="">${tr('every kind')}</option>` + Object.entries(kinds).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('') }],
-    extraParams: st => ({ kind: st.filters.kind }),
+    extraFilters: [
+      { key: 'kind', label: tr('kind'), type: 'select', options: () => `<option value="">${tr('every kind')}</option>` + Object.entries(kinds).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('') },
+      { key: 'state', label: tr('state'), type: 'select', options: () => `<option value="">${tr('to do')}</option><option value="done">${tr('done')}</option><option value="all">${tr('all')}</option>` },
+    ],
+    extraParams: st => ({ kind: st.filters.kind, state: st.filters.state }),
     drawCard: async (host, it, q) => {
       const rel = id => { const r = it.releases[id]; return r ? `${r.name} [${r.region || '—'}]` : '#' + id; };
       const titleCard = t => `<div class="card" style="flex:1 1 280px;margin:0">${t.cover_media_id ? `<img src="${esc(thumbUrl(t.cover_media_id))}" style="max-width:96px;max-height:96px;float:right" alt="">` : ''}
@@ -3159,18 +3162,95 @@ async function showMergeReview() {
         <ul style="margin:4px 0;padding-left:18px;font-size:12px">${t.releases.map(r => `<li>${esc(r.name)} ${regionBadges(r.region)}</li>`).join('')}${t.release_total > t.releases.length ? `<li class="muted">${trf('and {n} more', { n: t.release_total - t.releases.length })}</li>` : ''}</ul></div>`;
       const options = it.options.map((o, i) => `<div><button class="btn${o.recommended ? ' primary' : ''}" data-opt="${i}">${esc(reviewOptionLabel(o, it.variant ? tr(it.variant) : ''))}${o.recommended ? ' ' + tr('(recommended)') : ''}${o.current ? ' ' + tr('(as now)') : ''}</button>
         ${(o.groups || []).map((g, n) => `<div class="muted" style="font-size:12px;margin-left:12px">${trf('title {n}:', { n: n + 1 })} ${esc(g.map(rel).join(', '))}</div>`).join('')}</div>`).join('');
-      host.innerHTML = `<h2>${badge(REVIEW_KINDS()[it.kind] || it.kind, 'warn')} <span class="muted" style="font-weight:normal">${q.position} / ${q.total}</span></h2>
+      const taken = it.status === 'accepted';
+      host.innerHTML = `<h2>${badge(REVIEW_KINDS()[it.kind] || it.kind, 'warn')}${it.status !== 'pending' ? ' ' + reviewStatusBadge(it.status) : ''} <span class="muted" style="font-weight:normal">${q.position} / ${q.total}</span></h2>
         ${it.matched.length ? `<div class="muted">${tr('matched by:')} ${esc(it.matched.join(' ↔ '))}</div>` : ''}
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin:8px 0">${it.titles.map(titleCard).join('')}</div>
         ${it.can_look_up ? `<div class="card" style="margin:8px 0" id="rv-look"><h3>${tr('What differs')}</h3><span class="muted">${tr('asking…')}</span></div>` : ''}
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">${options}</div>`;
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">${options}</div>
+        <div class="card" style="margin:8px 0" id="rv-arrange"></div>`;
+      if (taken) for (const b of host.querySelectorAll('[data-opt]')) b.disabled = true;
+      if (!taken) arrangePanel(host.querySelector('#rv-arrange'), it, q); else host.querySelector('#rv-arrange').remove();
       for (const b of host.querySelectorAll('[data-opt]')) b.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { option: Number(b.dataset.opt) } }); q.done(); } catch (e) { toast(e.message, true); } };
       const no = el(`<button class="btn danger" title="${tr('not offered again')}">${tr('No')}</button>`);
       no.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/dismiss', { method: 'POST', body: {} }); q.done(); } catch (e) { toast(e.message, true); } };
-      q.nav.append(no);
+      if (it.status !== 'dismissed') q.nav.append(no);
       if (it.can_look_up) lookupPanel(host.querySelector('#rv-look'), it.key, {});
     },
   });
+}
+
+function reviewStatusBadge(status) {
+  return status === 'accepted' ? badge(tr('taken'), 'ok') : status === 'dismissed' ? badge(tr('said no'), 'dim') : '';
+}
+
+// The releases on a merge review card as boxes, one per title, to drag between (the app's
+// ArrangePanel): into another title, or onto "+" for a new title named after the first one
+// dropped there. A tap picks a release and a tap on a box puts it there, for touch screens.
+// Starts from the recommended choice's grouping, or from the titles as they are.
+function arrangeStart(it, fromSuggestion) {
+  const names = {};
+  for (const t of it.titles) for (const r of t.releases) names[r.id] = r;
+  for (const [id, r] of Object.entries(it.releases || {})) names[id] = r;
+  const holder = id => (it.releases[id] || {}).title_id ?? it.titles.find(t => t.releases.some(r => r.id === Number(id)))?.id;
+  const live = it.titles.filter(t => !t.deleted);
+  const rec = it.options.find(o => o.recommended && (o.groups || []).length);
+  let boxes;
+  if (fromSuggestion && rec) {
+    const used = new Set();
+    boxes = rec.groups.map(g => {
+      const count = {};
+      for (const id of g) { const t = holder(id); if (t != null) count[t] = (count[t] || 0) + 1; }
+      const pick = Object.entries(count).sort((a, b) => b[1] - a[1]).map(([t]) => Number(t)).find(t => !used.has(t) && live.some(x => x.id === t));
+      if (pick != null) used.add(pick);
+      return { title_id: pick ?? null, releases: g.slice() };
+    });
+    for (const t of live) if (!used.has(t.id)) boxes.push({ title_id: t.id, releases: [] });
+  } else {
+    boxes = live.map(t => ({ title_id: t.id, releases: [] }));
+    const placed = new Set();
+    for (const id of Object.keys(names).map(Number)) {
+      const b = boxes.find(x => x.title_id === holder(id));
+      if (b && !placed.has(id)) { b.releases.push(id); placed.add(id); }
+    }
+  }
+  return { boxes, names };
+}
+function arrangePanel(host, it, q) {
+  let { boxes, names } = arrangeStart(it, true);
+  let picked = null;
+  const titleName = id => (it.titles.find(t => t.id === id) || {}).name || '#' + id;
+  const label = id => { const r = names[id]; return r ? `${esc(r.name)} ${regionBadges(r.region)}` : '#' + id; };
+  const move = (rid, to) => {
+    for (const b of boxes) b.releases = b.releases.filter(x => x !== rid);
+    if (to === 'new') boxes.push({ title_id: null, releases: [rid] }); else boxes[to].releases.push(rid);
+    boxes = boxes.filter(b => b.title_id != null || b.releases.length);
+    picked = null; draw();
+  };
+  const draw = () => {
+    const box = (b, i) => `<div class="card" data-box="${i}" style="flex:1 1 240px;margin:0;min-height:60px">
+      <div><b>${b.title_id != null ? `<a class="link" href="#collection/titles/${b.title_id}">${esc(titleName(b.title_id))}</a>` : `${tr('new title')}: ${b.releases.length ? esc(names[b.releases[0]]?.name || '') : ''}`}</b>${b.title_id != null && !b.releases.length ? ` <span class="muted">${tr('(left empty: removed)')}</span>` : ''}</div>
+      <div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;font-size:12px">${b.releases.map(r => `<span draggable="true" data-rel="${r}" style="cursor:grab;padding:2px 4px;border-radius:4px;${picked === r ? 'outline:2px solid var(--accent, #4a8);' : ''}">⋮⋮ ${label(r)}</span>`).join('')}</div></div>`;
+    host.innerHTML = `<h3>${tr('Arrange yourself')}</h3><p class="muted" style="font-size:12px">${tr('Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.')}</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${boxes.map(box).join('')}<div class="card" data-box="new" style="flex:0 0 120px;margin:0;min-height:60px;display:flex;align-items:center;justify-content:center;font-size:28px;border-style:dashed" title="${tr('a new title')}">+</div></div>
+      <div class="toolbar" style="margin-top:8px"><button class="btn primary" id="arr-go">${tr('apply this grouping')}</button> <button class="btn" id="arr-now">${tr('start from the titles as they are')}</button> <button class="btn" id="arr-rec">${tr('start from the suggestion')}</button></div>`;
+    for (const s of host.querySelectorAll('[data-rel]')) {
+      s.ondragstart = e => { e.dataTransfer.setData('text/plain', s.dataset.rel); };
+      s.onclick = e => { e.stopPropagation(); picked = picked === Number(s.dataset.rel) ? null : Number(s.dataset.rel); draw(); };
+    }
+    for (const b of host.querySelectorAll('[data-box]')) {
+      const to = b.dataset.box === 'new' ? 'new' : Number(b.dataset.box);
+      b.ondragover = e => e.preventDefault();
+      b.ondrop = e => { e.preventDefault(); const rid = Number(e.dataTransfer.getData('text/plain')); if (rid) move(rid, to); };
+      b.onclick = () => { if (picked != null) move(picked, to); };
+    }
+    host.querySelector('#arr-now').onclick = () => { ({ boxes, names } = arrangeStart(it, false)); draw(); };
+    host.querySelector('#arr-rec').onclick = () => { ({ boxes, names } = arrangeStart(it, true)); draw(); };
+    host.querySelector('#arr-go').onclick = async () => {
+      try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { layout: boxes.map(b => ({ title_id: b.title_id, releases: b.releases })) } }); q.done(); } catch (e) { toast(e.message, true); }
+    };
+  };
+  draw();
 }
 
 // Merge review's "What differs" (the app's LookupPanel): the in-app AI's answer, saved per
@@ -3236,16 +3316,16 @@ async function showCombinedTitles() {
     b.onclick = async () => { try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'title_merge_audit' } }); toast(trf('merge audit queued #{id}', { id: r.id })); } catch (e) { toast(e.message, true); } };
     card.querySelector('h2').appendChild(document.createTextNode(' ')); card.querySelector('h2').appendChild(b);
   }, 0);
-  view.innerHTML = `<div class="card"><h2>${tr('Combined titles')}${only ? ` <span class="muted">${trf('into title #{id}', { id: esc(only) })}</span> <a class="link" href="#edit/merges">${tr('show all')}</a>` : ''}</h2><p class="muted">${tr("Every merge of one title into another — automatic (shared IGDB game or RetroAchievements hash: <span class=\"mono\">igdb:…</span>, <span class=\"mono\">ra:…</span>), from the suggestions backlog, or yours (<span class=\"mono\">manual</span>). <b>Decouple</b> splits a title back out under its old id and name, with its own releases and metadata; the automatic pass won't join the two again (merging them yourself lifts that). Merges from before titles were archived come back as a new title with the releases whose name matches, without their metadata.")}</p></div><div class="card"><div id="grid"></div></div>`;
+  view.innerHTML = `<div class="card"><h2>${tr('Combined titles')}${only ? ` <span class="muted">${trf('into title #{id}', { id: esc(only) })}</span> <a class="link" href="#edit/merges">${tr('show all')}</a>` : ''}</h2><p class="muted">${tr("Every merge of one title into another — automatic (shared IGDB game or RetroAchievements hash: <span class=\"mono\">igdb:…</span>, <span class=\"mono\">ra:…</span>), from the suggestions backlog, or yours (<span class=\"mono\">manual</span>). <b>Decouple</b> splits a title back out under its old id and name, with its own releases and metadata; the automatic pass won't join the two again (merging them yourself lifts that). Merges from before titles were archived come back as a new title with the releases whose name matches, without their metadata.")} ${tr('Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.')}</p></div><div class="card"><div id="grid"></div></div>`;
   const grid = makeGrid(document.getElementById('grid'), {
     columns: [
       { key: 'merged', label: tr('merged title'), render: r => `${esc(r.merged_name)} <span class="muted">#${r.merged_title_id}</span>` },
-      { key: 'into', label: tr('into'), render: r => r.current_title_id ? `<a class="link" href="#collection/titles/${r.current_title_id}">${esc(r.current_title_name || '#' + r.current_title_id)}</a>${r.current_title_id !== r.survivor_id ? ` <span class="muted">${trf('(via #{id})', { id: r.survivor_id })}</span>` : ''}` : `<span class="muted">${tr('gone')}</span>` },
+      { key: 'into', label: tr('into'), render: r => (r.reason === 'split' ? `<span class="muted">${tr('split out of')}</span> ` : '') + (r.current_title_id ? `<a class="link" href="#collection/titles/${r.current_title_id}">${esc(r.current_title_name || '#' + r.current_title_id)}</a>${r.current_title_id !== r.survivor_id ? ` <span class="muted">${trf('(via #{id})', { id: r.survivor_id })}</span>` : ''}` : `<span class="muted">${tr('gone')}</span>`) },
       { key: 'reason', label: tr('why'), render: r => `<span class="mono">${esc(r.reason)}</span>` },
       { key: 'grade', label: tr('grade'), render: r => badge(tr(r.grade), r.grade === 'name' ? 'warn' : 'dim') },
       { key: 'releases', label: tr('releases'), cls: 'num', render: r => r.release_count ?? `<span class="muted" title="${tr('merged before titles were archived')}">?</span>` },
       { key: 'when', label: tr('merged'), render: r => fmtDate(r.merged_at) },
-      { key: 'act', label: '', render: r => r.undone_at ? `<span class="muted">${trf('decoupled {date} →', { date: fmtDate(r.undone_at) })}</span> <a class="link" href="#collection/titles/${r.restored_title_id}">#${r.restored_title_id}</a>` : `<button class="btn small" data-decouple="${r.id}">${tr('decouple')}</button>` },
+      { key: 'act', label: '', render: r => r.undone_at ? `<span class="muted">${trf(r.reason === 'split' ? 'rejoined {date} →' : 'decoupled {date} →', { date: fmtDate(r.undone_at) })}</span> <a class="link" href="#collection/titles/${r.restored_title_id}">#${r.restored_title_id}</a>` : `<button class="btn small" data-decouple="${r.id}">${tr(r.reason === 'split' ? 'undo split' : 'decouple')}</button>` },
     ],
     filters: [
       { key: 'grade', label: tr('grade'), type: 'select', options: () => `<option value="">${tr('any grade')}</option>` + ['name', 'hash', 'manual'].map(g => `<option value="${g}">${tr(g)}</option>`).join('') },
@@ -3271,8 +3351,9 @@ async function showCombinedTitles() {
   document.getElementById('grid').addEventListener('click', async e => {
     const b = e.target.closest('[data-decouple]'); if (!b) return;
     e.stopPropagation(); const r = (grid.state.items || []).find(x => String(x.id) === b.dataset.decouple);
-    if (!confirm(trf('Split "{merged}" back out of "{into}"?', { merged: r ? r.merged_name : tr('this title'), into: r ? r.current_title_name : '' }))) return;
-    try { const res = await api('/api/v1/catalog/titles/merges/' + b.dataset.decouple + '/decouple', { method: 'POST' }); toast(trf('decoupled: title #{id}', { id: res.title_id })); grid.reload(); } catch (err) { toast(err.message, true); }
+    const split = r && r.reason === 'split';
+    if (!confirm(split ? trf('Put "{merged}" back into "{current}"?', { merged: r.merged_name, current: r.current_title_name || '' }) : trf('Split "{merged}" back out of "{into}"?', { merged: r ? r.merged_name : tr('this title'), into: r ? r.current_title_name : '' }))) return;
+    try { const res = await api('/api/v1/catalog/titles/merges/' + b.dataset.decouple + '/decouple', { method: 'POST' }); toast(trf(split ? 'back in title #{id}' : 'decoupled: title #{id}', { id: res.title_id })); grid.reload(); } catch (err) { toast(err.message, true); }
   });
 }
 

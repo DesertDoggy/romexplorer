@@ -2599,5 +2599,22 @@
   "Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.": "Titelseiten können beim Stöbern Musik abspielen. Bei unterstützten Spielen ist es der eigene Soundtrack des Spiels, direkt aus dem ROM gespielt (zuerst „Index ROM audio“ im Audio-Tab ausführen). Titel ohne getaggtes Audio und ohne unterstütztes ROM spielen stattdessen zufällige Stücke.",
   "Change it any time under Config › Settings (media_show, audio_fallback).": "Jederzeit änderbar unter Config › Settings (media_show, audio_fallback).",
   "Off": "Aus",
-  "On (recommended)": "An (empfohlen)"
+  "On (recommended)": "An (empfohlen)",
+  "split out of": "abgespalten von",
+  "undo split": "Abspaltung rückgängig",
+  "rejoined {date} →": "{date} zurückgeführt →",
+  "Put \"{merged}\" back into \"{current}\"?": "„{merged}“ wieder in „{current}“ einfügen?",
+  "back in title #{id}": "wieder in Titel #{id}",
+  "Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.": "Abspaltungen stehen auch hier (Grund: split): „Abspaltung rückgängig“ legt die Releases zurück in den Titel, aus dem sie kamen.",
+  "to do": "offen",
+  "taken": "übernommen",
+  "said no": "abgelehnt",
+  "Arrange yourself": "Selbst zuordnen",
+  "Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.": "Ziehe Releases zu dem Titel, zu dem sie gehören, oder auf + für einen neuen Titel, benannt nach dem ersten. Oder tippe ein Release an und dann ein Feld.",
+  "new title": "neuer Titel",
+  "(left empty: removed)": "(bleibt leer: wird entfernt)",
+  "a new title": "ein neuer Titel",
+  "apply this grouping": "diese Zuordnung übernehmen",
+  "start from the titles as they are": "mit den Titeln wie jetzt beginnen",
+  "start from the suggestion": "mit dem Vorschlag beginnen"
 }

@@ -2599,5 +2599,22 @@
   "Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.": "타이틀 페이지를 보는 동안 음악을 재생할 수 있습니다. 지원되는 게임은 ROM에서 바로 게임 본래의 음악을 재생합니다(먼저 오디오 탭에서 'Index ROM audio'을 실행하세요). 태그된 오디오도 지원되는 ROM도 없는 타이틀은 무작위 트랙을 재생합니다.",
   "Change it any time under Config › Settings (media_show, audio_fallback).": "Config › Settings(media_show, audio_fallback)에서 언제든 바꿀 수 있습니다.",
   "Off": "끄기",
-  "On (recommended)": "켜기(권장)"
+  "On (recommended)": "켜기(권장)",
+  "split out of": "분리 원본",
+  "undo split": "분리 되돌리기",
+  "rejoined {date} →": "{date}에 되돌림 →",
+  "Put \"{merged}\" back into \"{current}\"?": "\"{merged}\"을(를) \"{current}\"에 되돌릴까요?",
+  "back in title #{id}": "타이틀 #{id}에 되돌림",
+  "Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.": "분리도 여기에 표시됩니다(이유: split). 분리 되돌리기를 누르면 릴리스가 원래 타이틀로 돌아갑니다.",
+  "to do": "할 일",
+  "taken": "적용됨",
+  "said no": "거절됨",
+  "Arrange yourself": "직접 나누기",
+  "Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.": "릴리스를 알맞은 타이틀로 끌어 놓으세요. +에 놓으면 첫 릴리스 이름으로 새 타이틀이 됩니다. 릴리스를 누른 뒤 상자를 눌러도 됩니다.",
+  "new title": "새 타이틀",
+  "(left empty: removed)": "(비게 되어 삭제)",
+  "a new title": "새 타이틀",
+  "apply this grouping": "이 나누기 적용",
+  "start from the titles as they are": "지금 타이틀에서 시작",
+  "start from the suggestion": "제안에서 시작"
 }
