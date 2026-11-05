@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use super::agbplay;
-use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, Thresholds, TrackLocation};
+use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 
 /// The data view a ROM song is stored under: no disc has this many data tracks, and it is one
 /// below the rip-set view.
@@ -110,9 +110,14 @@ pub fn index(path: &Path, platform: u16, t: &Thresholds) -> Result<Vec<FoundTrac
         let duration_ms = measure(&mut player, s.number).unwrap_or(0);
         // Kinds are worked out again at play time from the name and length, so a song on an
         // effects player says so in its name.
-        let name = if bgm_player.is_none_or(|p| p == s.player) { format!("Track {}", s.number) } else { format!("SE {}", s.number) };
+        // A long song on another player is music all the same, and is named so.
         let shape = Shape { looping: false, duration_ms, channels: 2, cd_track: 0, rip: true };
-        let kind = classify(&shape, &name, t);
+        let mut name = format!("Track {}", s.number);
+        let mut kind = classify(&shape, &name, t);
+        if bgm_player.is_some_and(|p| p != s.player) && kind != SoundKind::Bgm {
+            name = format!("SE {}", s.number);
+            kind = classify(&shape, &name, t);
+        }
         found.push(FoundTrack {
             location: TrackLocation::RomSong { engine: recipe.clone(), song: s.number },
             name,

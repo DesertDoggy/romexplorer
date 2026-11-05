@@ -23,6 +23,7 @@ type SamplesFn = unsafe extern "C" fn(*mut c_void) -> *const i16;
 type PlayFn = unsafe extern "C" fn(*mut c_void, c_int, *mut i16) -> c_int;
 type RamFn = unsafe extern "C" fn(*mut c_void) -> *mut u8;
 type PcFn = unsafe extern "C" fn(*mut c_void) -> c_int;
+type SaveFn = unsafe extern "C" fn(*mut c_void, *mut u8, c_long) -> c_long;
 
 struct Api {
     _lib: Library,
@@ -36,6 +37,7 @@ struct Api {
     play: PlayFn,
     ram: RamFn,
     pc: PcFn,
+    save_spc: SaveFn,
 }
 
 fn find_library() -> Option<PathBuf> {
@@ -62,6 +64,7 @@ fn api() -> Option<&'static Api> {
                 play: *lib.get(b"rspc_play\0").ok()?,
                 ram: *lib.get(b"rspc_ram\0").ok()?,
                 pc: *lib.get(b"rspc_pc\0").ok()?,
+                save_spc: *lib.get(b"rspc_save_spc\0").ok()?,
                 _lib: lib,
             })
         }
@@ -80,6 +83,8 @@ pub const CLOCK_RATE: u32 = 1_024_000;
 pub const SAMPLE_RATE: u32 = 32_000;
 /// A frame of the SNES's 60 Hz video: how often the time base restarts.
 pub const FRAME_CLOCKS: i32 = (CLOCK_RATE / 60) as i32;
+/// Bytes in an `.spc` file without its extended tag.
+pub const SPC_FILE_SIZE: usize = 0x10200;
 /// Clocks between two port accesses of a polling loop: about what a CPU wait loop takes.
 const POLL_CLOCKS: i32 = 8;
 /// A wait for the chip's answer longer than this means it is not answering.
@@ -134,12 +139,22 @@ impl Apu {
 
     pub fn read_port(&mut self, port: usize) -> u8 {
         self.advance(POLL_CLOCKS);
-        unsafe { (self.api.read_port)(self.handle, self.time, port as c_int) as u8 }
+        self.read_port_now(port)
     }
 
     pub fn write_port(&mut self, port: usize, value: u8) {
         self.advance(1);
-        unsafe { (self.api.write_port)(self.handle, self.time, port as c_int, c_int::from(value)) }
+        self.write_port_now(port, value)
+    }
+
+    /// Reads a port at the current time, for a caller that keeps time itself.
+    pub fn read_port_now(&mut self, port: usize) -> u8 {
+        unsafe { (self.api.read_port)(self.handle, self.time, (port & 3) as c_int) as u8 }
+    }
+
+    /// Writes a port at the current time, for a caller that keeps time itself.
+    pub fn write_port_now(&mut self, port: usize, value: u8) {
+        unsafe { (self.api.write_port)(self.handle, self.time, (port & 3) as c_int, c_int::from(value)) }
     }
 
     /// Waits until `port` reads `value`, as a CPU loop would.
@@ -193,6 +208,17 @@ impl Apu {
         unsafe { (self.api.pc)(self.handle) as u16 }
     }
 
+    /// The chip's state as an `.spc` file, taken at the next frame boundary.
+    pub fn save_spc(&mut self) -> Vec<u8> {
+        if self.time > 0 {
+            self.advance(FRAME_CLOCKS - self.time);
+        }
+        let mut out = vec![0u8; SPC_FILE_SIZE];
+        let n = unsafe { (self.api.save_spc)(self.handle, out.as_mut_ptr(), out.len() as c_long) };
+        out.truncate(n.max(0) as usize);
+        out
+    }
+
     /// Plays `out.len()` samples (stereo, 32 kHz) with the ports left as they are.
     pub fn play(&mut self, out: &mut [i16]) -> Result<(), String> {
         if unsafe { (self.api.play)(self.handle, (out.len() & !1) as c_int, out.as_mut_ptr()) } != 0 {
@@ -228,5 +254,14 @@ mod tests {
         assert_eq!(&apu.ram()[0x2000..0x2000 + 300], &data[..]);
         apu.advance(1000);
         assert_eq!(apu.read_port(0), 0x5A);
+        // The snapshot plays on as the chip did.
+        let spc = apu.save_spc();
+        assert_eq!(spc.len(), SPC_FILE_SIZE);
+        assert_eq!(&spc[0x100 + 0x0400..0x100 + 0x0406], &code);
+        // $F4 holds what the main CPU last wrote (the end-of-upload command), as .spc files do.
+        assert_eq!(spc[0x100 + 0xF4], 0x2D);
+        let mut again = Apu::from_spc(&spc).unwrap();
+        again.advance(1000);
+        assert!((0x0402..0x0406).contains(&again.pc()), "{:#x}", again.pc());
     }
 }
