@@ -76,12 +76,12 @@ them.
 ## Supported formats
 
 **Disc images and folders.** `.chd`, `.cue`/`.bin`, `.gdi`, `.iso`, `.img`, `.gcm`,
-`.rvz`, `.wia`, `.gcz`, `.cso`, `.zso`, XISO, and dumped game folders.
+`.rvz`, `.wia`, `.gcz`, `.wbfs`, `.cso`, `.zso`, XISO, and dumped game folders.
 
 | Source | Systems | Rate (native) |
 |---|---|---|
 | CD audio tracks | PlayStation, Saturn, Sega CD, PC Engine CD, Neo Geo CD, Dreamcast, and others | 44.1 kHz |
-| Music files on the disc, decoded by vgmstream, including ATRAC3, WMA and XMA | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Xbox, Xbox 360, and others | as stored |
+| Music files on the disc, decoded by vgmstream, including ATRAC3, WMA and XMA | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360, and others | as stored |
 | Music inside common game archives on the disc (CRI CPK, AFS, GameCube .arc/.szs) | as above | as stored |
 
 **Cartridges.**
@@ -111,7 +111,7 @@ sets. A zipped disc image is not read; extract it first.
   own, but it can't be matched to a ROM.
 - Game Boy Advance games that use other sound engines.
 - Sequenced music on DS and 3DS.
-- Wii and Wii U discs, PS3, Vita and downloaded packages.
+- Wii U, PS3, Vita and downloaded packages.
 - Encrypted 3DS images.
 
 ## Files beside it

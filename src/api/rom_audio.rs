@@ -24,7 +24,7 @@ use romexplorer_types::jobs::{FileScanMode, RomAudioIndexRequest};
 use crate::database::jobs::Progress;
 use crate::database::settings as db_settings;
 use crate::rom::rom_audio::{self, FoundTrack, SoundKind, Thresholds, TrackLocation};
-use crate::rom::{gme, rip_match, rip_sets, rom_songs};
+use crate::rom::{audio_decode, gme, rip_match, rip_sets, rom_songs};
 use crate::rom::{vgmstream, xaac};
 
 use super::audio::AudioRow;
@@ -916,8 +916,8 @@ pub async fn stand_in(app: &App, titles: &[u64], s: &Settings) -> Result<(Vec<Au
 
 /// Where a cached decode of track `id` goes: `rom<id>-<what>-<index time>.<ext>`. A ROM
 /// indexed again gets new names; the old ones are left for the size cap.
-fn cache_name(id: u64, target: Target, stamp: i64) -> String {
-    format!("rom{id}-{}-{stamp}.{}", target.tag(), target.ext())
+fn cache_name(id: u64, target: Target, stamp: i64, level: bool) -> String {
+    format!("rom{id}-{}-{stamp}{}.{}", target.tag(), if level { "-lv" } else { "" }, target.ext())
 }
 
 /// What a track is decoded to: AAC when the encoder is built and takes the track's shape,
@@ -931,7 +931,9 @@ fn target_for(lossless: bool, sample_rate: u32, channels: u16) -> Target {
 }
 
 /// The file to play for ROM track `id`: decoded from the ROM on first play, then cached.
-pub async fn serve(app: &App, id: u64) -> Result<Served> {
+/// `level` is the player's "normalise": the track is measured as it is decoded and brought
+/// to the player's loudness target, up as well as down ([`level_gain`]), and cached apart.
+pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     let row = sqlx::query(
         "SELECT t.location, t.cd_track, t.data_track, t.inner_path, t.subsong, t.sample_rate, t.channels, t.looping, t.loop_start, t.loop_end, r.main_path, i.indexed_at \
          FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE LEFT JOIN rom_audio_index i ON i.rom_id = t.rom_id WHERE t.id = ?",
@@ -972,7 +974,7 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
     let stamp = row.try_get::<Option<chrono::NaiveDateTime>, _>("indexed_at")?.map(|t| t.and_utc().timestamp()).unwrap_or(0);
 
     let dir = super::audio_convert::cache_dir(app).await;
-    let name = cache_name(id, target, stamp);
+    let name = cache_name(id, target, stamp, level);
     let cached = dir.join(&name);
     let served = |body: Option<super::audio_ram::Bytes>| Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached.clone(), converted: true, note: None, body };
     if let Some(bytes) = super::audio_ram::get(&name) {
@@ -991,7 +993,7 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
     let ram_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_RAM_CACHE_MB).await?.unwrap_or(super::audio_ram::DEFAULT_MB).saturating_mul(1 << 20);
     let (out, keep_dir) = (cached.clone(), dir.clone());
     let made = tokio::task::spawn_blocking(move || -> std::result::Result<Option<super::audio_ram::Bytes>, String> {
-        decode_to(&path, &location, &out, target, config)?;
+        decode_to(&path, &location, &out, target, config, level)?;
         if ram_cap == 0 {
             super::audio_convert::evict(&keep_dir, disk_cap, &out);
             return Ok(None);
@@ -1036,7 +1038,7 @@ fn near_aac_rate(rate: u32) -> Option<u32> {
     xaac::SAMPLE_RATES.iter().copied().find(|&r| (i64::from(rate) - i64::from(r)).unsigned_abs() * 200 <= u64::from(r))
 }
 
-pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig) -> std::result::Result<(), String> {
+pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool) -> std::result::Result<(), String> {
     let dir = out.parent().ok_or("no cache directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let partial = out.with_extension(format!("{}.part", target.ext()));
@@ -1045,6 +1047,31 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
         let mut stream = rom_audio::open_track(rom, location, config)?;
         let (rate, channels) = (stream.sample_rate(), stream.channels());
         let rate = if matches!(target, Target::Aac { .. }) { near_aac_rate(rate).unwrap_or(rate) } else { rate };
+        if !level {
+            while let Some(pcm) = stream.next_chunk()? {
+                sink(&pcm, rate, channels)?;
+            }
+            return Ok((rate, channels));
+        }
+        // Levelling needs the whole track's loudness before its first sample is written, so
+        // it is held decoded until then -- up to LEVEL_MAX_SECONDS; past that, the rest is
+        // written as it comes and the track keeps its own level.
+        let limit = LEVEL_MAX_SECONDS * u64::from(stream.sample_rate()) * u64::from(channels);
+        let mut held: Vec<Vec<i16>> = Vec::new();
+        let mut count = 0u64;
+        let mut whole = true;
+        while let Some(pcm) = stream.next_chunk()? {
+            count += pcm.len() as u64;
+            held.push(pcm);
+            if count > limit {
+                whole = false;
+                break;
+            }
+        }
+        let gain = if whole { level_gain(&held, stream.sample_rate(), channels) } else { 1.0 };
+        for pcm in held {
+            sink(&scaled(pcm, gain), rate, channels)?;
+        }
         while let Some(pcm) = stream.next_chunk()? {
             sink(&pcm, rate, channels)?;
         }
@@ -1059,9 +1086,64 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
     }
 }
 
+/// The longest track that is levelled (a movie's sound can run far longer than any song).
+const LEVEL_MAX_SECONDS: u64 = 20 * 60;
+
+/// How much track `pcm` is scaled by to sit at the player's loudness target
+/// ([`audio_decode::LOUDNESS_TARGET_LUFS`]): down for a loud one, up for a quiet one, but
+/// never so far up that its loudest sample passes -1 dBFS -- so nothing clips. A track too
+/// short or too quiet to measure is left as it is.
+pub fn level_gain(pcm: &[Vec<i16>], rate: u32, channels: u16) -> f32 {
+    let Ok(mut meter) = ebur128::EbuR128::new(u32::from(channels), rate, ebur128::Mode::I | ebur128::Mode::SAMPLE_PEAK) else { return 1.0 };
+    for chunk in pcm {
+        if meter.add_frames_i16(chunk).is_err() {
+            return 1.0;
+        }
+    }
+    let Ok(lufs) = meter.loudness_global() else { return 1.0 };
+    if !lufs.is_finite() {
+        return 1.0;
+    }
+    let peak = (0..u32::from(channels)).filter_map(|c| meter.sample_peak(c).ok()).fold(0.0f64, f64::max);
+    let wanted = 10f64.powf((f64::from(audio_decode::LOUDNESS_TARGET_LUFS) - lufs) / 20.0);
+    let ceiling = if peak > 0.0 { 10f64.powf(-1.0 / 20.0) / peak } else { wanted };
+    wanted.min(ceiling) as f32
+}
+
+fn scaled(mut pcm: Vec<i16>, gain: f32) -> Vec<i16> {
+    if (gain - 1.0).abs() > 1e-3 {
+        for s in &mut pcm {
+            *s = (f32::from(*s) * gain).round().clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+    pcm
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tone(level: f32, peak_click: bool) -> Vec<Vec<i16>> {
+        let mut pcm: Vec<i16> = (0..48_000 * 5).flat_map(|i| {
+            let v = ((i as f32 * 2.0 * std::f32::consts::PI * 440.0 / 48_000.0).sin() * level * 32767.0) as i16;
+            [v, v]
+        }).collect();
+        if peak_click {
+            pcm[1000] = 32000;
+        }
+        vec![pcm]
+    }
+
+    #[test]
+    fn levelling_turns_loud_down_and_quiet_up_until_the_peak() {
+        assert!(level_gain(&tone(0.9, false), 48_000, 2) < 1.0);
+        // A quiet tone goes up, but stops short of clipping.
+        let up = level_gain(&tone(0.05, false), 48_000, 2);
+        assert!(up > 2.0 && up * 0.05 < 0.9, "{up}");
+        // One loud sample holds the whole track down.
+        assert!(level_gain(&tone(0.05, true), 48_000, 2) < 1.0);
+        assert_eq!(level_gain(&[vec![0i16; 9600]], 48_000, 2), 1.0);
+    }
 
     #[test]
     fn the_length_floor_is_the_lowest_of_the_three_thresholds() {

@@ -31,7 +31,7 @@ pub fn register() {
         // `RequestAsyncResponder` is `Send` precisely so the work can happen off the event
         // loop, and dioxus runs a multi-thread runtime, so this never blocks the UI.
         tokio::spawn(async move {
-            let located = match main_server_path(&path) {
+            let located = match main_server_path(&path, &query) {
                 Some(theirs) => relay(&theirs, range.as_deref()).await,
                 None => match serve(&path, &query).await {
                     Ok(Located::File(file, mime)) => send(&file, mime, range.as_deref()).await,
@@ -207,12 +207,12 @@ async fn send(path: &std::path::Path, mime: &'static str, range: Option<&str>) -
 
 /// The main server's route behind one of this app's "not kept here" paths: media and audio a
 /// client streams instead of storing (`media_client_keep`).
-fn main_server_path(path: &str) -> Option<String> {
+fn main_server_path(path: &str, query: &str) -> Option<String> {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     match segments.as_slice() {
         ["api", "v1", "media", "remote", id] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/media/{id}")),
         ["api", "v1", "audio", "remote", id, "file"] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/audio/{id}/file")),
-        ["api", "v1", "audio", "remote", "rom", id, "file"] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/audio/rom/{id}/file")),
+        ["api", "v1", "audio", "remote", "rom", id, "file"] if id.parse::<u64>().is_ok() => Some(format!("/api/v1/audio/rom/{id}/file{}", if param(query, "level") == Some("1") { "?level=1" } else { "" })),
         _ => None,
     }
 }
@@ -281,7 +281,7 @@ async fn serve(path: &str, query: &str) -> Result<Located, (u16, String)> {
         ["api", "v1", "audio", "rom", id, "file"] => {
             let id: u64 = id.parse().map_err(|_| (400u16, "audio id must be a number".to_string()))?;
             // Decoded out of the ROM on its first play, then read from the audio cache.
-            let served = api::rom_audio::serve(app, id).await.map_err(from_api)?;
+            let served = api::rom_audio::serve(app, id, param(query, "level") == Some("1")).await.map_err(from_api)?;
             match served.body {
                 Some(bytes) => Ok(Located::Memory(bytes, served.mime)),
                 None => read(served.path, served.mime).await,
@@ -324,10 +324,11 @@ mod tests {
 
     #[test]
     fn streamed_paths_map_to_the_main_servers_routes() {
-        assert_eq!(main_server_path("/api/v1/media/remote/7").as_deref(), Some("/api/v1/media/7"));
-        assert_eq!(main_server_path("/api/v1/audio/remote/3/file").as_deref(), Some("/api/v1/audio/3/file"));
-        assert_eq!(main_server_path("/api/v1/media/7"), None);
-        assert_eq!(main_server_path("/api/v1/media/remote/x"), None);
+        assert_eq!(main_server_path("/api/v1/media/remote/7", "").as_deref(), Some("/api/v1/media/7"));
+        assert_eq!(main_server_path("/api/v1/audio/remote/3/file", "").as_deref(), Some("/api/v1/audio/3/file"));
+        assert_eq!(main_server_path("/api/v1/media/7", ""), None);
+        assert_eq!(main_server_path("/api/v1/media/remote/x", ""), None);
+        assert_eq!(main_server_path("/api/v1/audio/remote/rom/4/file", "level=1").as_deref(), Some("/api/v1/audio/rom/4/file?level=1"));
     }
 
     #[test]
