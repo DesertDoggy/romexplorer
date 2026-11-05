@@ -221,7 +221,7 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
         sqlx::query(
             "INSERT INTO audio_files (path, path_hash, file_name, size, last_modified, format, playable, support, duration_ms, title, album, artist, album_artist, disc_number, track_number, year, scanned_at, deleted) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), FALSE) \
-             ON DUPLICATE KEY UPDATE loudness_lufs = IF(size <=> VALUES(size) AND last_modified <=> VALUES(last_modified), loudness_lufs, NULL), path = VALUES(path), file_name = VALUES(file_name), size = VALUES(size), last_modified = VALUES(last_modified), format = VALUES(format), playable = VALUES(playable), support = VALUES(support), \
+             ON DUPLICATE KEY UPDATE loudness_lufs = IF(size <=> VALUES(size) AND last_modified <=> VALUES(last_modified), loudness_lufs, NULL), sound_end_ms = IF(size <=> VALUES(size) AND last_modified <=> VALUES(last_modified), sound_end_ms, NULL), path = VALUES(path), file_name = VALUES(file_name), size = VALUES(size), last_modified = VALUES(last_modified), format = VALUES(format), playable = VALUES(playable), support = VALUES(support), \
                duration_ms = VALUES(duration_ms), title = VALUES(title), album = VALUES(album), artist = VALUES(artist), album_artist = VALUES(album_artist), disc_number = VALUES(disc_number), \
                track_number = VALUES(track_number), year = VALUES(year), scanned_at = NOW(), deleted = FALSE",
         )
@@ -262,7 +262,7 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
 /// copies carry the server's measurement and are not re-measured.
 async fn measure_loudness(app: &App, progress: &Progress) -> Result<u64> {
     let pending: Vec<(u64, String)> =
-        sqlx::query_as("SELECT id, path FROM audio_files WHERE deleted = FALSE AND loudness_lufs IS NULL AND remote_id IS NULL AND support <> 'unsupported' AND format NOT IN ('dsf', 'dff') ORDER BY id").fetch_all(&app.pool).await?;
+        sqlx::query_as("SELECT id, path FROM audio_files WHERE deleted = FALSE AND (loudness_lufs IS NULL OR sound_end_ms IS NULL) AND remote_id IS NULL AND support <> 'unsupported' AND format NOT IN ('dsf', 'dff') ORDER BY id").fetch_all(&app.pool).await?;
     if pending.is_empty() {
         return Ok(0);
     }
@@ -275,15 +275,17 @@ async fn measure_loudness(app: &App, progress: &Progress) -> Result<u64> {
         let permit = gate.clone().acquire_owned().await.map_err(|e| Error::internal(format!("loudness gate: {e}")))?;
         tasks.spawn_blocking(move || {
             let _permit = permit;
-            (id, crate::rom::audio_decode::loudness_lufs(Path::new(&path)))
+            (id, crate::rom::audio_decode::measure(Path::new(&path)))
         });
     }
     let (mut done, mut measured) = (0u64, 0u64);
     while let Some(result) = tasks.join_next().await {
         done += 1;
-        if let Ok((id, Some(lufs))) = result {
-            sqlx::query("UPDATE audio_files SET loudness_lufs = ? WHERE id = ?").bind(lufs).bind(id).execute(&app.pool).await?;
-            measured += 1;
+        if let Ok((id, Some(m))) = result {
+            sqlx::query("UPDATE audio_files SET loudness_lufs = ?, sound_end_ms = ? WHERE id = ?").bind(m.lufs).bind(m.sound_end_ms).bind(id).execute(&app.pool).await?;
+            if m.lufs.is_some() {
+                measured += 1;
+            }
         }
         progress.report(done, Some(total), &format!("measuring loudness: file {done} of {total}")).await;
     }
@@ -361,6 +363,10 @@ pub struct AudioRow {
     /// Integrated loudness in LUFS, when it has been measured.
     #[serde(default)]
     pub loudness_lufs: Option<f32>,
+    /// Where the sound ends (ms), when measured: the player moves on there instead of playing
+    /// the file's silent end.
+    #[serde(default)]
+    pub sound_end_ms: Option<u32>,
     pub title: Option<String>,
     pub album: Option<String>,
     pub artist: Option<String>,
@@ -388,7 +394,7 @@ fn default_support() -> String {
     "direct".to_string()
 }
 
-const AUDIO_SELECT: &str = "a.id, a.path, a.file_name, a.size, a.format, a.playable, a.support, a.duration_ms, a.loudness_lufs, a.title, a.album, a.artist, a.album_artist, a.disc_number, a.track_number, a.year, a.deleted, \
+const AUDIO_SELECT: &str = "a.id, a.path, a.file_name, a.size, a.format, a.playable, a.support, a.duration_ms, a.loudness_lufs, a.sound_end_ms, a.title, a.album, a.artist, a.album_artist, a.disc_number, a.track_number, a.year, a.deleted, \
     (SELECT GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') FROM audio_file_tags t WHERE t.audio_file_id = a.id) AS tags, \
     (SELECT GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') FROM audio_file_tags t WHERE t.audio_file_id = a.id AND t.source = 'auto') AS auto_tags";
 
@@ -406,6 +412,7 @@ fn row_to_audio(row: &sqlx::mysql::MySqlRow) -> Result<AudioRow> {
         support: row.try_get("support")?,
         duration_ms: row.try_get("duration_ms")?,
         loudness_lufs: row.try_get("loudness_lufs")?,
+        sound_end_ms: row.try_get("sound_end_ms")?,
         title: row.try_get("title")?,
         album: row.try_get("album")?,
         artist: row.try_get("artist")?,
@@ -766,7 +773,7 @@ pub struct TitleVideos {
     pub has_video: bool,
 }
 
-/// `audio_fallback`: what a title with no audio of its own plays.
+/// `audio_fallback`: what a title with no audio of its own plays (unset: random).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fallback {
     /// Nothing: the page is silent.
@@ -895,12 +902,17 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
     }
     let fallback = match q.fallback.as_deref() {
         Some(name) => Fallback::parse(name).ok_or_else(|| Error::invalid("fallback must be none, random or generic_bgm"))?,
-        None => crate::database::settings::get::<String>(&app.pool, crate::database::settings::KEY_AUDIO_FALLBACK).await?.as_deref().and_then(Fallback::parse).unwrap_or(Fallback::None),
+        None => crate::database::settings::get::<String>(&app.pool, crate::database::settings::KEY_AUDIO_FALLBACK).await?.as_deref().and_then(Fallback::parse).unwrap_or(Fallback::Random),
     };
     if fallback == Fallback::None {
         return Ok(list);
     }
     list.tracks = fallback_tracks(app, fallback).await?;
+    // Random with no tagged audio to pick from: ROM music, a random title's.
+    if fallback == Fallback::Random && list.tracks.is_empty() && rom.sources.rom() && rom.not_owned != super::rom_audio::NotOwned::Random {
+        let any = super::rom_audio::Settings { not_owned: super::rom_audio::NotOwned::Random, ..*rom };
+        list.tracks = super::rom_audio::stand_in(app, &titles, &any).await?.0;
+    }
     if client {
         add_from_main(app, q, fallback, &rom.query(super::rom_audio::NotOwned::None), &mut list).await?;
     }

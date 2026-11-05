@@ -2592,5 +2592,12 @@
   "undo": "실행 취소",
   "don't play this track on this page again": "이 페이지에서 이 곡을 재생하지 않기",
   "hidden from this page": "이 페이지에서 숨겼습니다",
-  "restored": "되돌렸습니다"
+  "restored": "되돌렸습니다",
+  "nothing: silent": "재생 안 함: 무음",
+  "random tracks from the audio linked to other titles, or a random title's ROM music (default)": "다른 타이틀에 연결된 오디오 중 무작위 트랙, 또는 무작위 타이틀의 ROM 음악(기본값)",
+  "Play music on title pages?": "타이틀 페이지에서 음악을 재생할까요?",
+  "Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.": "타이틀 페이지를 보는 동안 음악을 재생할 수 있습니다. 지원되는 게임은 ROM에서 바로 게임 본래의 음악을 재생합니다(먼저 오디오 탭에서 'Index ROM audio'을 실행하세요). 태그된 오디오도 지원되는 ROM도 없는 타이틀은 무작위 트랙을 재생합니다.",
+  "Change it any time under Config › Settings (media_show, audio_fallback).": "Config › Settings(media_show, audio_fallback)에서 언제든 바꿀 수 있습니다.",
+  "Off": "끄기",
+  "On (recommended)": "켜기(권장)"
 }

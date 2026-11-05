@@ -62,6 +62,10 @@ replacing a build.
   clipping.
 - The player can crossfade: the next track fades in while the current one fades out. The
   overlap is set in ms next to Normalise (2000 to begin with, 0 for off).
+- Silence at the end of a track is skipped: ROM tracks are trimmed, and for audio files the
+  audio scan measures where the sound ends (run it again to measure files scanned before).
+- Music on title pages is on by default, and the first start asks whether you want it, right
+  after the language. A title with no audio of its own now plays random tracks by default.
 
 # romexplorer 0.1.8 (alpha)
 

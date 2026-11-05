@@ -2592,5 +2592,12 @@
   "undo": "rückgängig",
   "don't play this track on this page again": "diesen Titel auf dieser Seite nicht mehr spielen",
   "hidden from this page": "auf dieser Seite ausgeblendet",
-  "restored": "wiederhergestellt"
+  "restored": "wiederhergestellt",
+  "nothing: silent": "nichts: still",
+  "random tracks from the audio linked to other titles, or a random title's ROM music (default)": "zufällige Titel aus der Audiobibliothek anderer Titel oder die ROM-Musik eines zufälligen Titels (Standard)",
+  "Play music on title pages?": "Musik auf Titelseiten abspielen?",
+  "Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.": "Titelseiten können beim Stöbern Musik abspielen. Bei unterstützten Spielen ist es der eigene Soundtrack des Spiels, direkt aus dem ROM gespielt (zuerst „Index ROM audio“ im Audio-Tab ausführen). Titel ohne getaggtes Audio und ohne unterstütztes ROM spielen stattdessen zufällige Stücke.",
+  "Change it any time under Config › Settings (media_show, audio_fallback).": "Jederzeit änderbar unter Config › Settings (media_show, audio_fallback).",
+  "Off": "Aus",
+  "On (recommended)": "An (empfohlen)"
 }

@@ -112,16 +112,43 @@ pub const LOUDNESS_TARGET_LUFS: f32 = -16.0;
 /// start to end. `None` for a file this build cannot decode, and for one too short or too
 /// quiet to have a loudness (the measurement is gated: digital silence has none).
 pub fn loudness_lufs(path: &Path) -> Option<f32> {
+    measure(path)?.lufs
+}
+
+/// A sample this small or smaller (-60 dBFS) counts as silence for [`Measured::sound_end_ms`].
+const SILENT_SAMPLE: u16 = 32;
+
+/// What one decode of a file tells.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Measured {
+    /// Integrated loudness, as [`loudness_lufs`].
+    pub lufs: Option<f32>,
+    /// Where the last sound ends, in ms: what follows is the file's silent end.
+    pub sound_end_ms: u32,
+}
+
+/// Decodes a file once for its loudness and where its sound ends. `None` when this build
+/// cannot decode it.
+pub fn measure(path: &Path) -> Option<Measured> {
     let mut meter: Option<ebur128::EbuR128> = None;
+    let (mut frames, mut last_sound, mut rate_seen) = (0u64, 0u64, 0u32);
     decode_file_with(path, |pcm, rate, channels| {
         if meter.is_none() {
             meter = Some(ebur128::EbuR128::new(u32::from(channels), rate, ebur128::Mode::I).map_err(|e| format!("loudness meter: {e}"))?);
         }
+        rate_seen = rate;
+        for frame in pcm.chunks(usize::from(channels.max(1))) {
+            frames += 1;
+            if frame.iter().any(|v| v.unsigned_abs() > SILENT_SAMPLE) {
+                last_sound = frames;
+            }
+        }
         meter.as_mut().expect("just set").add_frames_i16(pcm).map_err(|e| format!("loudness meter: {e}"))
     })
     .ok()?;
-    let lufs = meter?.loudness_global().ok()?;
-    lufs.is_finite().then_some(lufs as f32)
+    let lufs = meter.and_then(|m| m.loudness_global().ok()).filter(|l| l.is_finite()).map(|l| l as f32);
+    let sound_end_ms = if rate_seen > 0 { (last_sound * 1000 / u64::from(rate_seen)).min(u64::from(u32::MAX)) as u32 } else { 0 };
+    Some(Measured { lufs, sound_end_ms })
 }
 
 /// What a player multiplies its volume by to bring a track of `lufs` to the target. Never

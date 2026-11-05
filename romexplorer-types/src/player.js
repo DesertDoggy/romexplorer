@@ -26,6 +26,8 @@
 // Crossfade (ms, 2000 to begin with, 0 = off, remembered here too): the next track starts that long before the
 // current one ends, fading in while the current one fades out -- also on next / previous. It
 // takes a second `<audio>` element for the overlap, faded by its volume like normalise.
+// A file's silent end, where the audio scan measured one (`sound_end_ms`), is skipped: the
+// next track starts where the sound stops (ROM tracks come with theirs trimmed already).
 //
 // Shuffle is on to begin with. Playback starts by itself; where the browser refuses to
 // start audio without a click, the bar simply shows "play" and waits.
@@ -105,12 +107,22 @@
     state.outgoing.clear();
   }
 
+  // Where the playing track's sound ends, in seconds: its length, or earlier where the audio
+  // scan found the rest silent (`sound_end_ms`). The player moves on from there.
+  function soundEnd(a, t) {
+    const d = a && isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
+    if (!d) return 0;
+    const end = t && typeof t.sound_end_ms === 'number' && t.sound_end_ms > 0 ? t.sound_end_ms / 1000 + 0.15 : d;
+    return Math.min(d, end);
+  }
+
   // The overlap for this change of track: the setting, but at most half the shorter track.
   function overlapMs() {
     const a = state.audio, t = current();
     if (!state.crossfade || !a || a.paused || !(a.currentTime > 0)) return 0;
     let ms = state.crossfade;
-    if (isFinite(a.duration) && a.duration > 0) ms = Math.min(ms, a.duration * 500);
+    const end = soundEnd(a, t);
+    if (end > 0) ms = Math.min(ms, end * 500);
     if (t && t.duration_ms) ms = Math.min(ms, t.duration_ms / 2);
     return Math.max(0, Math.floor(ms));
   }
@@ -313,9 +325,11 @@
         const d = audio.duration || ((current() || {}).duration_ms || 0) / 1000;
         time.textContent = clock(audio.currentTime) + ' / ' + clock(d);
         if (!dragging && d > 0) seek.value = String(Math.round(audio.currentTime / d * 1000));
-        // Near the end: the next track starts now and the two overlap.
-        if (!state.crossing && state.crossfade > 0 && isFinite(audio.duration) && audio.duration > 0 && !audio.paused
-            && (audio.duration - audio.currentTime) * 1000 <= overlapMs()) {
+        // Near the end of the sound: the next track starts now, overlapping by the crossfade
+        // (or, with none, right where the silent end begins).
+        const end = soundEnd(audio, current());
+        if (!state.crossing && end > 0 && !audio.paused && !state.preview
+            && (end - audio.currentTime) * 1000 <= Math.max(overlapMs(), 0) && (state.crossfade > 0 || end < audio.duration - 0.25)) {
           state.crossing = true;
           step(1, true);
         }
