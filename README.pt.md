@@ -98,11 +98,12 @@ sua própria base de dados.
 
 ### Ferramentas de linha de comandos (chdlite)
 
-Largue uma imagem de disco e obtenha um CHD ou um RVZ. `chdlite` (rápido), `chdcomp` (mais
-pequeno), `chdread` (extrair) e `chdhash` (hash) são uma ferramenta por modo, pelo que um ficheiro
-largado sobre o executável faz o que deve; `chdlite-gui` faz o mesmo numa janela. Todas as opções
-existem também como parâmetro (`--help`). O chdlite é publicado em separado: consulte
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+Largue uma imagem de disco e obtenha um CHD ou um RVZ. `chdlite` (rápido) e `chdcomp` (mais
+pequeno) funcionam nos dois sentidos: uma imagem não comprimida é comprimida e um `.chd` ou `.rvz` é
+extraído. `chdread` mostra os metadados de um ficheiro e `chdhash` calcula o seu hash. Cada
+ferramenta faz uma só coisa, pelo que um ficheiro largado sobre o executável faz o que deve;
+`chdlite-gui` faz o mesmo numa janela. Todas as opções existem também como parâmetro (`--help`). O
+chdlite é publicado em separado: consulte [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
 
 ### Chaves dos fornecedores
 

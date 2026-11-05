@@ -100,11 +100,13 @@ et démarre sa propre base de données.
 
 ### Outils en ligne de commande (chdlite)
 
-Déposez une image disque, obtenez un CHD ou un RVZ. `chdlite` (rapide), `chdcomp` (le plus
-compact), `chdread` (extraction) et `chdhash` (hash) sont un outil par mode : un fichier déposé sur
-l'exécutable déclenche la bonne action. `chdlite-gui` fait la même chose dans une fenêtre. Chaque
-réglage existe aussi sous forme d'option de ligne de commande (`--help`). chdlite est publié
-séparément : voir [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+Déposez une image disque, obtenez un CHD ou un RVZ. `chdlite` (rapide) et `chdcomp` (le plus
+compact) fonctionnent dans les deux sens : une image non compressée est compressée, un `.chd` ou un
+`.rvz` est extrait. `chdread` affiche les métadonnées d'un fichier et `chdhash` calcule son hash.
+Chaque outil fait une seule chose : un fichier déposé sur l'exécutable déclenche la bonne action.
+`chdlite-gui` fait la même chose dans une fenêtre. Chaque réglage existe aussi sous forme d'option
+de ligne de commande (`--help`). chdlite est publié séparément : voir
+[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
 
 ### Clés des fournisseurs
 

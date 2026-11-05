@@ -353,7 +353,7 @@ fn a_track_is_decoded_into_a_flac_for_the_player() {
     let tracks = rom_audio::index_rom(&iso, &Thresholds::default(), |_| {}).unwrap();
     let title = by_name(&tracks, "TITLE.WAV");
     let out = dir.path("cache/rom1-flac-0.flac");
-    romexplorer::api::rom_audio::decode_to(&iso, &title.location, &out, Target::Flac, vgmstream::PlayConfig::LISTEN).unwrap();
+    romexplorer::api::rom_audio::decode_to(&iso, &title.location, &out, Target::Flac, vgmstream::PlayConfig::LISTEN, false).unwrap();
     assert!(!dir.path("cache/rom1-flac-0.flac.part").exists(), "only the whole file is left");
     let mut samples = 0usize;
     let (rate, channels) = romexplorer::rom::audio_decode::decode_file_with(&out, |pcm, _, _| {

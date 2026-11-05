@@ -6,12 +6,14 @@
 //! A track's place is the file's path relative to the game folder, `<archive>|<member>` for
 //! one inside a zip or 7z, and its track number in that file. A NEZplug-style `.m3u` beside a
 //! multi-track file (in the same folder or archive) gives the tracks their titles and lengths.
-//! A track with no length of its own is played until it falls silent: one that is still
-//! playing after [`RUN_ON_MS`] loops, and is faded there.
+//! A track with no length of its own, or a playlist length of a minute or more, is listened
+//! to once ([`super::track_timing`]): it ends where it falls silent, a track that repeats
+//! plays its loop twice and fades, and one that does neither is faded at [`RUN_ON_MS`].
 
 use std::path::{Path, PathBuf};
 
 use super::gme::{self, Emu};
+use super::track_timing::{self, Listener, Timing};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
 
@@ -27,8 +29,6 @@ const MAX_TRACKS: u32 = 256;
 pub const RUN_ON_MS: u32 = 150_000;
 /// How a looping track with no fade of its own is faded out.
 const LOOP_FADE_MS: u32 = 8_000;
-/// Below this a sample counts as silence when a track's own end is measured.
-const SILENCE: i32 = 64;
 
 fn ext_of(name: &str) -> String {
     name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default()
@@ -68,8 +68,12 @@ fn m3u_text(bytes: &[u8]) -> String {
     encoding_rs::WINDOWS_1252.decode(bytes).0.into_owned()
 }
 
-/// The lines of `m3u` files that name `file` (by its base name, any case), in file order.
+/// The lines of `m3u` files that name `file` (by its base name, any case), in file order,
+/// numbered from 1 ([`counts_from_zero`]). Whether the numbers count from 0 is decided over all of
+/// `m3us`: a set's playlists are written one way, and one for a file whose first track has
+/// no line of its own shows no track 0 by itself.
 fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let from_zero = m3us.iter().any(|(_, text)| counts_from_zero(m3u_text(text).as_bytes()));
     let want = base_name(file).to_ascii_lowercase();
     let mut out = Vec::new();
     for (_, text) in m3us {
@@ -83,7 +87,7 @@ fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
             out.push(b'\n');
         }
     }
-    out
+    if from_zero { moved_up(&out) } else { out }
 }
 
 /// Groups music files with the playlists found next to them (same folder, or same archive).
@@ -308,22 +312,182 @@ fn load(file: &RipFile) -> Result<Emu, String> {
     Ok(emu)
 }
 
-/// How long a track with no length of its own runs: played until gme hears it end (it falls
-/// silent) or [`RUN_ON_MS`] passes. `(milliseconds to its last sound, still playing)`.
-fn measure(emu: &mut Emu, track: u32) -> Result<(u32, bool), String> {
-    emu.start(track, None)?;
-    let rate = u64::from(emu.sample_rate());
-    let cap = u64::from(RUN_ON_MS) * rate / 1000 * 2;
-    let mut buf = vec![0i16; 8192];
-    let (mut done, mut last_sound) = (0u64, 0u64);
-    while !emu.ended() && done < cap {
-        emu.play(&mut buf)?;
-        if let Some(i) = buf.iter().rposition(|&s| i32::from(s).abs() > SILENCE) {
-            last_sound = done + i as u64 + 1;
-        }
-        done += buf.len() as u64;
+/// The track number field of a playlist line (`file::TYPE,<number>,title,...`): where it is.
+fn number_field(line: &[u8]) -> Option<std::ops::Range<usize>> {
+    let after = line.windows(2).position(|w| w == b"::")? + 2;
+    let start = after + line[after..].iter().position(|&b| b == b',')? + 1;
+    let end = start + line[start..].iter().position(|&b| b == b',').unwrap_or(line.len() - start);
+    Some(start..end)
+}
+
+/// A playlist line's decimal track number.
+fn decimal_number(line: &[u8]) -> Option<u32> {
+    if line.starts_with(b"#") {
+        return None;
     }
-    Ok(((last_sound / 2 * 1000 / rate) as u32, done >= cap && !emu.ended()))
+    number_field(line).and_then(|r| std::str::from_utf8(&line[r]).ok()?.trim().parse::<u32>().ok())
+}
+
+/// gme reads a playlist's decimal track numbers as counting from 1 (as NEZplug defines
+/// them), but many sets' playlists count from 0: every title then lands on the track before
+/// it, and the first plays nothing. A playlist with a track 0 is one of those.
+/// (`$`-prefixed hex numbers count from 0 either way.)
+fn counts_from_zero(playlist: &[u8]) -> bool {
+    playlist.split(|&b| b == b'\n').any(|line| decimal_number(line) == Some(0))
+}
+
+/// `playlist` with its decimal track numbers moved up by one.
+fn moved_up(playlist: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(playlist.len() + 16);
+    for (i, line) in playlist.split(|&b| b == b'\n').enumerate() {
+        if i > 0 {
+            out.push(b'\n');
+        }
+        match (decimal_number(line), number_field(line)) {
+            (Some(n), Some(r)) => {
+                out.extend_from_slice(&line[..r.start]);
+                out.extend_from_slice((n + 1).to_string().as_bytes());
+                out.extend_from_slice(&line[r.end..]);
+            }
+            _ => out.extend_from_slice(line),
+        }
+    }
+    out
+}
+
+/// How a track is played: `body` ms, then a `fade`; `intro`/`lp` where it loops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Plan {
+    body: u32,
+    fade: u32,
+    looping: bool,
+    intro: Option<u32>,
+    lp: Option<u32>,
+}
+
+impl Plan {
+    /// The length the index records: one pass through the loop, or the whole track.
+    fn duration_ms(&self) -> u32 {
+        match (self.intro, self.lp) {
+            (Some(i), Some(l)) => i + l,
+            _ => self.body,
+        }
+    }
+}
+
+/// A playlist length shorter than this is taken as it is: a jingle has no room to repeat.
+const CHECK_LISTED_MIN_MS: u32 = 60_000;
+/// How long a track with no length is listened to for a loop: two passes of a long one.
+const LISTEN_MS: u32 = 200_000;
+/// How long one still not heard to loop then is, for a loop of over a minute to be heard
+/// three times.
+const LONG_LISTEN_MS: u32 = 300_000;
+/// The fade of a listed length that gives none: a track cut there would stop dead.
+const LISTED_FADE_MS: u32 = 2_000;
+
+/// A listed fade, or `fallback` where the listing has none.
+fn or_fade(fade: u32, fallback: u32) -> u32 {
+    if fade > 0 { fade } else { fallback }
+}
+
+/// How track `track` plays. A length of the track's own with an intro and a loop is used as
+/// it is. Otherwise the track is played through once, quietly, and its sound decides
+/// ([`track_timing`]): it stops where it falls silent, and one that repeats plays its loop
+/// twice and fades -- also when a playlist gives a length, which for many sets is a guess
+/// that leaves seconds of silence or a short phrase going round. `None` for a silent track.
+fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, String> {
+    let info = emu.track_info(track)?;
+    let own = own_length(&info);
+    if let Some((body, fade, true)) = own {
+        return Ok(Some(Plan { body, fade, looping: true, intro: info.intro_ms, lp: info.loop_ms }));
+    }
+    if let Some((body, fade, false)) = own.filter(|o| o.0 < CHECK_LISTED_MIN_MS) {
+        return Ok(Some(Plan { body, fade: or_fade(fade, LISTED_FADE_MS), looping: false, intro: None, lp: None }));
+    }
+    let key = (fingerprint(file), track);
+    if let Some(known) = PLANS.lock().ok().and_then(|m| m.get(&key).copied()) {
+        return Ok(known);
+    }
+    let limit = own.map_or(LISTEN_MS, |o| o.0);
+    // A track with no length of its own is listened to longer when it is not heard to loop
+    // in the first stretch.
+    let limits: &[u32] = if own.is_some() { &[limit] } else { &[LISTEN_MS, LONG_LISTEN_MS] };
+    let limit = *limits.last().unwrap_or(&limit);
+    let found = match listen(emu, track, limits)? {
+        Timing::Silent => None,
+        Timing::Ends { ms } => {
+            let ms = u32::try_from(ms).unwrap_or(u32::MAX);
+            Some(match own {
+                // Ends within a second of its listed length: the listing is right.
+                Some((body, fade, _)) if ms + 1_000 >= body => Plan { body, fade: or_fade(fade, LISTED_FADE_MS), looping: false, intro: None, lp: None },
+                _ => Plan { body: ms, fade: 0, looping: false, intro: None, lp: None },
+            })
+        }
+        // A loop that only roughly matches does not overrule a listed length.
+        Timing::Loops { sure: false, .. } if own.is_some() => {
+            let (body, fade, _) = own.unwrap_or_default();
+            Some(Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None })
+        }
+        Timing::Loops { start_ms, loop_ms, .. } => {
+            let (intro, lp) = (u32::try_from(start_ms).unwrap_or(u32::MAX), u32::try_from(loop_ms).unwrap_or(u32::MAX));
+            let body = intro.saturating_add(lp.saturating_mul(2)).min(limit);
+            Some(match own {
+                // Two loops would take about as long as listed anyway; or the listing goes
+                // round a long loop only a few times, which is a choice, not a padded guess.
+                Some((len, fade, _)) if body + 5_000 >= len || intro.saturating_add(lp.saturating_mul(4)) >= len => Plan { body: len, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
+                Some((_, fade, _)) => Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: true, intro: Some(intro), lp: Some(lp) },
+                None => Plan { body, fade: LOOP_FADE_MS, looping: true, intro: Some(intro), lp: Some(lp) },
+            })
+        }
+        Timing::RunsOn => Some(match own {
+            // Still playing at its listed length: faded there, not cut.
+            Some((body, fade, _)) => Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
+            // Not heard to loop, so not called one: it is faded where it is cut.
+            None => Plan { body: RUN_ON_MS, fade: LOOP_FADE_MS, looping: false, intro: None, lp: None },
+        }),
+    };
+    if let Ok(mut m) = PLANS.lock() {
+        if m.len() > 8_192 {
+            m.clear();
+        }
+        m.insert(key, found);
+    }
+    Ok(found)
+}
+
+/// Plans already worked out, by file content and track: the index finds them, and playing
+/// the track then needs no second listen.
+static PLANS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u64, u32), Option<Plan>>>> = std::sync::LazyLock::new(Default::default);
+
+/// The file and the playlist read with it, which numbers its tracks.
+fn fingerprint(file: &RipFile) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file.data.hash(&mut h);
+    file.playlist.hash(&mut h);
+    h.finish()
+}
+
+/// Plays `track` through, unheard, and says what its sound did: up to the first of `limits_ms`,
+/// and on to the next while it runs on.
+fn listen(emu: &mut Emu, track: u32, limits_ms: &[u32]) -> Result<Timing, String> {
+    // Silence is judged here, over a longer stretch than the player's own detection.
+    emu.ignore_silence(true);
+    emu.start(track, None)?;
+    let mut ear = Listener::new(emu.sample_rate());
+    let mut buf = vec![0i16; 8192];
+    let mut heard = Timing::RunsOn;
+    for &limit in limits_ms {
+        while !emu.ended() && ear.played_ms() < u64::from(limit) && !ear.fell_silent() {
+            emu.play(&mut buf)?;
+            ear.feed(&buf);
+        }
+        heard = ear.finish(emu.ended());
+        if heard != Timing::RunsOn {
+            break;
+        }
+    }
+    Ok(heard)
 }
 
 /// What a track's own data says about how to play it: `(length before any fade, fade,
@@ -403,23 +567,22 @@ fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&st
         let codec = gme::identify(&gme::gunzip(&file.data).unwrap_or_else(|| file.data.clone())).unwrap_or_else(|| ext_of(&file.rel).to_ascii_uppercase());
         for track in 0..count {
             let Ok(info) = emu.track_info(track) else { continue };
-            let (duration_ms, looping) = match own_length(&info) {
-                Some((len, _, looping)) => (if looping { info.intro_ms.unwrap_or(0) + info.loop_ms.unwrap_or(0) } else { len }, looping),
-                None => match measure(&mut emu, track) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        log::debug!("{} #{track}: {e}", file.rel);
-                        continue;
-                    }
-                },
+            let plan = match plan(&mut emu, &file, track) {
+                Ok(Some(plan)) => plan,
+                Ok(None) => continue,
+                Err(e) => {
+                    log::debug!("{} #{track}: {e}", file.rel);
+                    continue;
+                }
             };
+            let (duration_ms, looping) = (plan.duration_ms(), plan.looping);
             if duration_ms == 0 {
                 continue;
             }
             let name = track_name(&file, &info, track, count);
             let shape = Shape { looping, duration_ms: u64::from(duration_ms), channels: Emu::CHANNELS, cd_track: 0, rip: true };
             let rate = u64::from(Emu::SAMPLE_RATE);
-            let (loop_start, loop_end) = match (info.intro_ms, info.loop_ms) {
+            let (loop_start, loop_end) = match (plan.intro, plan.lp) {
                 (Some(i), Some(l)) if l > 0 => (u64::from(i) * rate / 1000, u64::from(i + l) * rate / 1000),
                 _ => (0, 0),
             };
@@ -452,6 +615,10 @@ struct GmePcm {
     emu: Emu,
     /// Samples (both channels) left to give, when the length is known.
     left: Option<u64>,
+    /// Before the last `tail` of them, this many fade out ([`track_timing::fade_gain`]).
+    /// Done here and not by gme, whose fade some sets' tracks ended before reaching.
+    fade: u64,
+    tail: u64,
 }
 
 impl PcmStream for GmePcm {
@@ -472,6 +639,15 @@ impl PcmStream for GmePcm {
         let mut buf = vec![0i16; take.max(2)];
         self.emu.play(&mut buf)?;
         if let Some(l) = &mut self.left {
+            if self.fade > 0 {
+                for (i, pair) in buf.chunks_exact_mut(2).enumerate() {
+                    let g = track_timing::fade_gain(l.saturating_sub(2 * i as u64), self.fade, self.tail);
+                    if g < 1.0 {
+                        pair[0] = (f32::from(pair[0]) * g) as i16;
+                        pair[1] = (f32::from(pair[1]) * g) as i16;
+                    }
+                }
+            }
             *l = l.saturating_sub(buf.len() as u64);
         }
         Ok(Some(buf))
@@ -488,14 +664,13 @@ pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, 
     }
     let file = read_one(folder, rel)?;
     let mut emu = load(&file)?;
-    let info = emu.track_info(track)?;
-    let (body, fade) = match own_length(&info) {
-        Some((len, fade, _)) => (len, fade),
-        None => (RUN_ON_MS, LOOP_FADE_MS),
-    };
-    emu.start(track, Some((body, fade)))?;
-    let left = u64::from(body + fade) * u64::from(emu.sample_rate()) / 1000 * 2;
-    Ok(Box::new(GmePcm { emu, left: Some(left) }))
+    let Plan { body, fade, .. } = plan(&mut emu, &file, track)?.ok_or("the track is silent")?;
+    // The plan says where it ends; a quiet passage before that is not the end.
+    emu.ignore_silence(true);
+    emu.start(track, None)?;
+    let samples = |ms: u32| u64::from(ms) * u64::from(emu.sample_rate()) / 1000 * 2;
+    let tail = if fade > 0 { track_timing::FADE_TAIL_MS as u32 } else { 0 };
+    Ok(Box::new(GmePcm { left: Some(samples(body + fade + tail)), fade: samples(fade), tail: samples(tail), emu }))
 }
 
 #[cfg(test)]
@@ -510,6 +685,25 @@ mod tests {
         ];
         let got = String::from_utf8(playlist_for("music/Game.nsf", &m3us)).unwrap();
         assert_eq!(got, "Game.nsf::NSF,1,Title,2:00,,10\nsub/GAME.NSF::NSF,3,Ending,1:30\n");
+    }
+
+    #[test]
+    fn a_playlist_counting_from_zero_is_moved_up_by_one() {
+        let zero = b"# x\nGame.gbs::GBS,0,Prologue,1:00\nGame.gbs::GBS,12,Town\nGame.gbs::GBS,$0C,Hex\n".to_vec();
+        let m3us = vec![("a.m3u".to_string(), zero)];
+        assert_eq!(playlist_for("Game.gbs", &m3us), b"Game.gbs::GBS,1,Prologue,1:00\nGame.gbs::GBS,13,Town\nGame.gbs::GBS,$0C,Hex\n");
+        let one = vec![("b.m3u".to_string(), b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field\n".to_vec())];
+        assert_eq!(playlist_for("Game.nsf", &one), b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field\n");
+    }
+
+    #[test]
+    fn a_set_counting_from_zero_moves_up_every_file_of_it() {
+        // The second file's playlist has no track 0 of its own; the set's first one does.
+        let m3us = vec![
+            ("main.m3u".to_string(), b"Main.gbs::GBS,0,Title\nMain.gbs::GBS,1,Field\n".to_vec()),
+            ("other.m3u".to_string(), b"Other.gbs::GBS,59,Song\n".to_vec()),
+        ];
+        assert_eq!(playlist_for("Other.gbs", &m3us), b"Other.gbs::GBS,60,Song\n");
     }
 
     #[test]

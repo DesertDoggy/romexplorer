@@ -4,14 +4,12 @@
 //!
 //! Formats: NSF/NSFE (NES), SPC (SNES), GBS (Game Boy), VGM/VGZ and GYM (Mega Drive, Master
 //! System and other chips), HES (PC Engine), KSS (MSX), AY (ZX Spectrum), SAP (Atari), and SGC
-//! (Game Gear, Master System) through a second library built from kode54's fork.
+//! (Game Gear, Master System) from kode54's fork, built into the same library.
 //!
-//! gme.h is a flat C API already, so there is no shim (`deps/gme/scripts/build.sh` builds
-//! upstream as it is). It is built without zlib: a gzipped `.vgz` is unpacked here through
+//! The library is `rommusic` (`deps/rommusic`), which exports gme.h's flat C API as it is. It is built without zlib: a gzipped `.vgz` is unpacked here through
 //! [`super::zlib_ng`] before it is handed over.
 
 use std::ffi::{c_char, c_int, c_long, c_void, CStr};
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use libloading::Library;
@@ -52,6 +50,7 @@ type PlayFn = unsafe extern "C" fn(*mut c_void, c_int, *mut i16) -> Err;
 type DeleteFn = unsafe extern "C" fn(*mut c_void);
 type SetFadeMsecsFn = unsafe extern "C" fn(*mut c_void, c_int, c_int);
 type SetAutoloadLimitFn = unsafe extern "C" fn(*mut c_void, c_int);
+type IgnoreSilenceFn = unsafe extern "C" fn(*mut c_void, c_int);
 type TrackEndedFn = unsafe extern "C" fn(*const c_void) -> c_int;
 type TellFn = unsafe extern "C" fn(*const c_void) -> c_int;
 type SeekFn = unsafe extern "C" fn(*mut c_void, c_int) -> Err;
@@ -69,6 +68,8 @@ struct Api {
     delete: DeleteFn,
     set_fade_msecs: SetFadeMsecsFn,
     set_autoload_limit: SetAutoloadLimitFn,
+    /// Missing from a library built before it was exported.
+    ignore_silence: Option<IgnoreSilenceFn>,
     track_ended: TrackEndedFn,
     tell: TellFn,
     seek: SeekFn,
@@ -78,17 +79,9 @@ struct Api {
     load_m3u_data: LoadM3uDataFn,
 }
 
-fn find_library(base: &str) -> Option<PathBuf> {
-    if let Some(path) = native_lib::find_app_root_library(base) {
-        return Some(path);
-    }
-    let release_root = native_lib::source_root().join("deps/gme/release");
-    native_lib::find_native_library(&release_root, base)
-}
-
-/// Loads `base`, whose functions are upstream gme.h's under the prefix `prefix`.
+/// Loads the functions of upstream gme.h's API under the prefix `prefix` from rommusic.
 fn load_api(base: &str, prefix: &str) -> Option<Api> {
-    let path = find_library(base)?;
+    let path = native_lib::rommusic_library()?;
     unsafe {
         let lib = Library::new(&path).map_err(|e| log::warn!("{base}: {} would not load: {e}", path.display())).ok()?;
         let sym = |name: &str| format!("{prefix}{name}\0").into_bytes();
@@ -100,6 +93,7 @@ fn load_api(base: &str, prefix: &str) -> Option<Api> {
             delete: *lib.get(&sym("delete")).ok()?,
             set_fade_msecs: *lib.get(&sym("set_fade_msecs")).ok()?,
             set_autoload_limit: *lib.get(&sym("set_autoload_playback_limit")).ok()?,
+            ignore_silence: lib.get(&sym("ignore_silence")).ok().map(|f| *f),
             track_ended: *lib.get(&sym("track_ended")).ok()?,
             tell: *lib.get(&sym("tell")).ok()?,
             seek: *lib.get(&sym("seek")).ok()?,
@@ -115,14 +109,14 @@ fn load_api(base: &str, prefix: &str) -> Option<Api> {
 /// Upstream libgme.
 fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
-    API.get_or_init(|| load_api("gme", "gme_")).as_ref()
+    API.get_or_init(|| load_api("rommusic", "gme_")).as_ref()
 }
 
-/// gmesgc: SGC files (Game Gear, Master System), which upstream does not play, from kode54's
-/// fork behind `rsgc_` functions (`deps/gme/sgc/rsgc.cpp`).
+/// SGC files (Game Gear, Master System), which upstream does not play, from kode54's fork
+/// behind `rsgc_` functions (`deps/rommusic/sgc/rsgc.cpp`).
 fn sgc_api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
-    API.get_or_init(|| load_api("gmesgc", "rsgc_")).as_ref()
+    API.get_or_init(|| load_api("rommusic (SGC)", "rsgc_")).as_ref()
 }
 
 /// Whether the SGC player is present on this machine.
@@ -251,7 +245,7 @@ impl Emu {
     /// Loads a whole file. A gzipped `.vgz` is unpacked first.
     pub fn open(data: Vec<u8>, sample_rate: u32) -> Result<Self, String> {
         let data = if data.starts_with(&[0x1F, 0x8B]) { gunzip(&data).ok_or("the gzipped file would not unpack")? } else { data };
-        let api = if is_sgc(&data) { sgc_api().ok_or("the SGC player (gmesgc) is not available")? } else { api().ok_or("the gme library is not available")? };
+        let api = if is_sgc(&data) { sgc_api().ok_or("the SGC player (rommusic) is not available")? } else { api().ok_or("the chip music library (rommusic) is not available")? };
         if data.is_empty() || data.len() > c_long::MAX as usize {
             return Err("empty or oversized file".into());
         }
@@ -326,6 +320,15 @@ impl Emu {
             unsafe { (self.api.set_fade_msecs)(self.handle, at.min(i32::MAX as u32) as c_int, len.min(i32::MAX as u32) as c_int) };
         }
         Ok(())
+    }
+
+    /// Plays on through silence instead of ending the track there. For a track whose length
+    /// is known (a playlist or the file says it): some start with a pause or have a quiet
+    /// passage, which silence detection would take for the end.
+    pub fn ignore_silence(&mut self, ignore: bool) {
+        if let Some(f) = self.api.ignore_silence {
+            unsafe { f(self.handle, c_int::from(ignore)) };
+        }
     }
 
     /// Fills `out` with interleaved stereo samples. `out.len()` must be even.

@@ -99,11 +99,12 @@ uruchamia własną bazę danych.
 
 ### Narzędzia wiersza poleceń (chdlite)
 
-Upuść obraz płyty, a otrzymasz CHD lub RVZ. `chdlite` (szybki), `chdcomp` (najmniejszy plik),
-`chdread` (rozpakowywanie) i `chdhash` (hash) to osobne narzędzia dla każdego trybu, więc plik
-upuszczony na plik wykonywalny zostanie obsłużony właściwie; `chdlite-gui` robi to samo w oknie.
-Każda opcja jest też dostępna jako flaga (`--help`). chdlite jest wydawany osobno: zobacz
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+Upuść obraz płyty, a otrzymasz CHD lub RVZ. `chdlite` (szybki) i `chdcomp` (najmniejszy plik)
+działają w obie strony: nieskompresowany obraz jest kompresowany, a plik `.chd` lub `.rvz`
+rozpakowywany. `chdread` pokazuje metadane pliku, a `chdhash` liczy jego hash. Każde narzędzie
+robi jedną rzecz, więc plik upuszczony na plik wykonywalny zostanie obsłużony właściwie;
+`chdlite-gui` robi to samo w oknie. Każda opcja jest też dostępna jako flaga (`--help`). chdlite
+jest wydawany osobno: zobacz [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
 
 ### Klucze dostawców
 

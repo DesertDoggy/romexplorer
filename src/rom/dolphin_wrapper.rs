@@ -675,6 +675,24 @@ impl DiscReader {
         Ok(Self { lib, handle })
     }
 
+    /// A Wii disc's game partition, decrypted by Dolphin: its filesystem, at offsets within
+    /// the partition (file offsets in it are stored shifted right by 2). An error when the
+    /// image is not a Wii disc, or the library predates this reader.
+    pub fn open_wii_game(path: &Path, user_dir: Option<&Path>) -> Result<Self, DolphinRvzError> {
+        let lib = load_variant(native_lib::LibVariant::Streaming)?;
+        let path_c = path_to_cstring(path)?;
+        let user_dir_c = user_dir.map(path_to_cstring).transpose()?;
+        let handle = unsafe {
+            let open: Symbol<ReaderOpenFn> = lib.get(b"dolphinrvz_reader_open_wii_game").map_err(not_streaming)?;
+            open(path_c.as_ptr(), user_dir_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()))
+        };
+        if handle.is_null() {
+            let message = unsafe { last_error(&lib) };
+            return Err(DolphinRvzError::ConvertFailed { code: -2, message });
+        }
+        Ok(Self { lib, handle })
+    }
+
     pub fn info(&self) -> Result<DiscInfo, DolphinRvzError> {
         let mut raw = RawReaderInfo::default();
         let rc = unsafe {

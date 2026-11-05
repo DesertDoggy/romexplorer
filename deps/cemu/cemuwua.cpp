@@ -128,6 +128,9 @@ public:
 	virtual bool Read(const Entry& entry, const std::function<bool(const uint8*, size_t)>& sink) = 0;
 	// The whole of a small file, or nothing.
 	virtual std::optional<std::vector<uint8>> ReadWhole(std::string_view path) = 0;
+	// Up to `len` bytes of file `path` from `offset`, for cemuwua_reader_read. -1 when the file
+	// is not there, -2 on a read error, else the bytes read.
+	virtual sint64 ReadAt(const std::string& path, uint64 offset, uint8* out, size_t len, uint64* size) { return -2; }
 };
 
 constexpr size_t TRANSFER = 1024 * 1024;
@@ -158,6 +161,23 @@ public:
 			offset += got;
 		}
 		return true;
+	}
+
+	sint64 ReadAt(const std::string& path, uint64 offset, uint8* out, size_t len, uint64* size) override
+	{
+		FSTFileHandle h;
+		if (!m_volume->OpenFile(path, h, true))
+			return -1;
+		uint64 whole = m_volume->GetFileSize(h);
+		if (size)
+			*size = whole;
+		if (offset >= whole || len == 0)
+			return 0;
+		uint32 want = (uint32)std::min<uint64>(std::min<uint64>(len, whole - offset), 0x7FFFFFFF);
+		uint32 got = m_volume->ReadFile(h, (uint32)offset, want, out);
+		if (got != want || m_volume->HasCorruption())
+			return -2;
+		return got;
 	}
 
 	std::optional<std::vector<uint8>> ReadWhole(std::string_view path) override
@@ -1297,3 +1317,161 @@ CEMUWUA_API int cemuwua_zar_stream(const char* zar_path, cemuwua_file_fn begin,
 }
 
 } // extern "C"
+
+// --- reading one title's files in place ---------------------------------------------------
+
+struct cemuwua_reader
+{
+	std::mutex lock;
+	std::unique_ptr<ZArchiveReader> zar;
+	std::unique_ptr<TitleSource> title;
+};
+
+namespace {
+
+void list_zar(ZArchiveReader& reader, ZArchiveNodeHandle dir, const std::string& prefix, std::vector<std::pair<std::string, uint64>>& out)
+{
+	uint32 count = reader.GetDirEntryCount(dir);
+	for (uint32 i = 0; i < count; i++)
+	{
+		ZArchiveReader::DirEntry entry;
+		if (!reader.GetDirEntry(dir, i, entry))
+			continue;
+		std::string path = prefix.empty() ? std::string(entry.name) : prefix + "/" + std::string(entry.name);
+		ZArchiveNodeHandle node = reader.LookUp(path, true, true);
+		if (node == ZARCHIVE_INVALID_NODE)
+			continue;
+		if (entry.isDirectory)
+			list_zar(reader, node, path, out);
+		else
+			out.push_back({path, reader.GetFileSize(node)});
+	}
+}
+
+} // namespace
+
+CEMUWUA_API cemuwua_reader* cemuwua_reader_open(const char* path, const uint8_t* key, const char* keys_txt,
+                                                char* error, size_t error_len)
+{
+	try
+	{
+		if (!path || !*path)
+		{
+			write_error(error, error_len, "no input path");
+			return nullptr;
+		}
+		auto r = std::make_unique<cemuwua_reader>();
+		fs::path p = utf8_path(path);
+		std::error_code ec;
+		if (fs::is_regular_file(p, ec) && !is_disc_image(p))
+		{
+			r->zar.reset(ZArchiveReader::OpenFromFile(p));
+			if (!r->zar)
+			{
+				write_error(error, error_len, "not a readable .wua");
+				return nullptr;
+			}
+			return r.release();
+		}
+		// Cemu's AES is set up here, as for every other entry point that decrypts.
+		init_once();
+		Failure fail{CEMUWUA_OK, ""};
+		r->title = open_source(path, key, load_keys_txt(keys_txt), fail);
+		if (!r->title)
+		{
+			write_error(error, error_len, fail.message);
+			return nullptr;
+		}
+		return r.release();
+	}
+	catch (const std::exception& e)
+	{
+		write_error(error, error_len, e.what());
+		return nullptr;
+	}
+	catch (...)
+	{
+		write_error(error, error_len, "an unexpected internal error");
+		return nullptr;
+	}
+}
+
+CEMUWUA_API int cemuwua_reader_list(cemuwua_reader* r, cemuwua_file_fn each, void* user)
+{
+	try
+	{
+		if (!r || !each)
+			return CEMUWUA_ERR_ARGS;
+		std::lock_guard guard(r->lock);
+		std::vector<std::pair<std::string, uint64>> files;
+		if (r->zar)
+		{
+			ZArchiveNodeHandle root = r->zar->LookUp("", false, true);
+			if (root == ZARCHIVE_INVALID_NODE)
+				return CEMUWUA_ERR_READ;
+			list_zar(*r->zar, root, "", files);
+		}
+		else
+		{
+			std::vector<TitleSource::Entry> entries;
+			if (!r->title->List(entries))
+				return CEMUWUA_ERR_READ;
+			for (auto& e : entries)
+				if (!e.isDir)
+					files.push_back({e.path, e.size});
+		}
+		for (auto& [path, size] : files)
+			if (each(path.c_str(), size, user) != 0)
+				return CEMUWUA_CANCELLED;
+		return CEMUWUA_OK;
+	}
+	catch (...)
+	{
+		return CEMUWUA_ERR_READ;
+	}
+}
+
+CEMUWUA_API int cemuwua_reader_read(cemuwua_reader* r, const char* inner_path, uint64_t offset,
+                                    uint8_t* out, size_t out_len, size_t* got, uint64_t* file_size)
+{
+	try
+	{
+		if (got)
+			*got = 0;
+		if (!r || !inner_path || !*inner_path || !got || (!out && out_len))
+			return CEMUWUA_ERR_ARGS;
+		std::lock_guard guard(r->lock);
+		if (r->zar)
+		{
+			ZArchiveNodeHandle node = r->zar->LookUp(inner_path, true, false);
+			if (node == ZARCHIVE_INVALID_NODE)
+				return CEMUWUA_NOT_FOUND;
+			uint64 size = r->zar->GetFileSize(node);
+			if (file_size)
+				*file_size = size;
+			if (offset >= size || out_len == 0)
+				return CEMUWUA_OK;
+			uint64 want = std::min<uint64>(out_len, size - offset);
+			if (r->zar->ReadFromFile(node, offset, want, out) != want)
+				return CEMUWUA_ERR_READ;
+			*got = (size_t)want;
+			return CEMUWUA_OK;
+		}
+		sint64 n = r->title->ReadAt(inner_path, offset, out, out_len, file_size);
+		if (n == -1)
+			return CEMUWUA_NOT_FOUND;
+		if (n < 0)
+			return CEMUWUA_ERR_READ;
+		*got = (size_t)n;
+		return CEMUWUA_OK;
+	}
+	catch (...)
+	{
+		return CEMUWUA_ERR_READ;
+	}
+}
+
+CEMUWUA_API void cemuwua_reader_close(cemuwua_reader* r)
+{
+	delete r;
+}

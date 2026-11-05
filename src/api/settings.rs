@@ -54,6 +54,10 @@ pub async fn list(app: &App) -> Result<Vec<SettingEntry>> {
         })
         .collect();
     for (key, value, updated_at) in stored {
+        // Kept by the title page player's "don't play this track" button, not edited here.
+        if key == super::audio::KEY_HIDDEN_FILES {
+            continue;
+        }
         if !db_settings::KNOWN_KEYS.iter().any(|(k, _)| *k == key) {
             let (group, group_label) = group_fields(&key);
             out.push(SettingEntry { key, value: Some(value), description: None, explain: Vec::new(), default: None, updated_at: Some(updated_at), group, group_label });
@@ -94,6 +98,9 @@ pub async fn set(app: &App, key: &str, value: Value) -> Result<()> {
     if key == db_settings::KEY_SCAN_PKG_TITLES {
         db_settings::apply_scan_pkg_titles(&app.pool).await?;
     }
+    if key == db_settings::KEY_AUDIO_RAM_CACHE_MB {
+        shrink_audio_ram(value.as_u64().unwrap_or(0)).await;
+    }
     // Which release of a title comes first: a title combined from several IGDB games
     // follows its first release's game.
     if [db_settings::KEY_REGION_PRIORITY, db_settings::KEY_LANGUAGE_PRIORITY, db_settings::KEY_RELEASE_EDITION_ORDER].contains(&key) {
@@ -121,7 +128,18 @@ pub async fn delete(app: &App, key: &str) -> Result<bool> {
     if [db_settings::KEY_PLATFORM_PRIORITY, crate::database::title_family::KEY_PC_MAX_AGE, crate::database::release_buckets::KEY_UNLICENSED].contains(&key) {
         super::definitive::refresh_all_later(app);
     }
+    if key == db_settings::KEY_AUDIO_RAM_CACHE_MB {
+        shrink_audio_ram(super::audio_ram::DEFAULT_MB).await;
+    }
     Ok(gone)
+}
+
+/// A smaller audio RAM cache takes effect now: what no longer fits moves to the disk cache.
+async fn shrink_audio_ram(mb: u64) {
+    let pushed_out = super::audio_ram::resize(mb.saturating_mul(1 << 20));
+    if !pushed_out.is_empty() {
+        let _ = tokio::task::spawn_blocking(move || super::audio_ram::spill(&pushed_out)).await;
+    }
 }
 
 /// The three keys that are not settings in the ordinary sense, refused on both `set` and
@@ -616,6 +634,11 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
         db_settings::KEY_AUDIO_CACHE_MAX_MB => {
             if value.as_u64().is_none() {
                 return Err(Error::invalid("audio_cache_max_mb must be a whole number of MiB (0 = no cap)"));
+            }
+        }
+        db_settings::KEY_AUDIO_RAM_CACHE_MB => {
+            if value.as_u64().is_none() {
+                return Err(Error::invalid("audio_ram_cache_mb must be a whole number of MiB (0 = off)"));
             }
         }
         super::artwork::KEY_EXPORT_CACHE_MB => {

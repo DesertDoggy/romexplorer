@@ -1,7 +1,8 @@
 // rsgc: SGC (Game Gear, Master System and ColecoVision music rips) through kode54's
 // Game_Music_Emu fork, under the names and the struct layout of upstream libgme's C API with
-// an `rsgc_` prefix, so src/rom/gme.rs drives both libraries the same way. Only the rsgc_
-// functions are exported; the fork's own gme_* stay inside this library.
+// an `rsgc_` prefix, so src/rom/gme.rs drives both players the same way. It is built into
+// rommusic next to upstream libgme; sgc/rename.h gives the fork's own names (its gme_*, its
+// Blip_Buffer...) an rsgc_ prefix, and only the rsgc_ functions are exported from it.
 #include "gme.h"
 #include "Music_Emu.h"
 #include <stdlib.h>
@@ -49,6 +50,7 @@ RSGC_EXPORT void rsgc_set_fade_msecs(gme_t* e, int start, int len) { gme_set_fad
 // The fork never limits a track by itself.
 RSGC_EXPORT void rsgc_set_autoload_playback_limit(gme_t*, int) {}
 RSGC_EXPORT int rsgc_track_ended(const gme_t* e) { return gme_track_ended(e); }
+RSGC_EXPORT void rsgc_ignore_silence(gme_t* e, int ignore) { gme_ignore_silence(e, ignore != 0); }
 RSGC_EXPORT int rsgc_tell(const gme_t* e) { return gme_tell(e); }
 RSGC_EXPORT gme_err_t rsgc_seek(gme_t* e, int msec) { return gme_seek(e, msec); }
 RSGC_EXPORT const char* rsgc_identify_header(void const* h) { return gme_identify_header(h); }
