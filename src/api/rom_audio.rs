@@ -516,25 +516,31 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
             }
         }
     }
+    // A multi-cart holds other games whole; it is never the reason a game loses its own set.
+    strong.retain(|(_, rom_id)| !paths.get(rom_id).is_some_and(|p| rip_match::multi_cart(Path::new(p))));
     let ids: Vec<u64> = found.iter().map(|(id, _)| *id).chain(strong.iter().map(|(_, id)| *id)).collect::<HashSet<_>>().into_iter().collect();
-    let titles = title_keys(app, &ids, &paths).await?;
-    let mut owners: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    let titles = title_ids(app, &ids).await?;
+    let mut owners: HashMap<PathBuf, HashSet<u64>> = HashMap::new();
     for (set, rom_id) in strong {
-        owners.entry(set).or_default().insert(titles.get(&rom_id).cloned().unwrap_or_default());
+        if let Some(title) = titles.get(&rom_id) {
+            owners.entry(set).or_default().insert(*title);
+        }
     }
+    // Only titles decide who a set belongs to: names differ across regions ("... no Densetsu",
+    // a Japanese and a Western title), so a ROM not in a title yet keeps its weak matches.
     Ok(found
         .into_iter()
         .map(|(rom_id, m)| {
-            let mine = titles.get(&rom_id).cloned().unwrap_or_default();
-            (rom_id, m.map(|sets| rip_match::choose(&sets, |set| owners.get(set).is_some_and(|o| o.iter().any(|t| *t != mine)))))
+            let mine = titles.get(&rom_id).copied();
+            (rom_id, m.map(|sets| rip_match::choose(&sets, |set| mine.is_some_and(|me| owners.get(set).is_some_and(|o| o.iter().any(|t| *t != me))))))
         })
         .collect())
 }
 
-/// A key per ROM that is the same for the regions, revisions and betas of one game: its title,
-/// or, for a ROM not in a title yet, its file name without the bracketed tags.
-async fn title_keys(app: &App, ids: &[u64], paths: &HashMap<u64, String>) -> Result<HashMap<u64, String>> {
-    let mut keys: HashMap<u64, String> = HashMap::new();
+/// The title each ROM belongs to, for those in one. Regions, revisions and betas of one game
+/// share it whatever their names.
+async fn title_ids(app: &App, ids: &[u64]) -> Result<HashMap<u64, u64>> {
+    let mut titles = HashMap::new();
     for chunk in ids.chunks(1000) {
         let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         let rows: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -543,14 +549,9 @@ async fn title_keys(app: &App, ids: &[u64], paths: &HashMap<u64, String>) -> Res
         )))
         .fetch_all(&app.pool)
         .await?;
-        keys.extend(rows.into_iter().map(|(rom, title)| (rom, format!("t{title}"))));
+        titles.extend(rows);
     }
-    for id in ids {
-        if let (false, Some(path)) = (keys.contains_key(id), paths.get(id)) {
-            keys.insert(*id, format!("n{}", rip_match::bare_name(Path::new(path))));
-        }
-    }
-    Ok(keys)
+    Ok(titles)
 }
 
 /// Notes why a ROM could not be read, and keeps the tracks of its last good index: the
