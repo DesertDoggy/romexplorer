@@ -27,7 +27,9 @@ const SAME: f32 = 0.10;
 /// A loop this alike is [`Timing::Loops::sure`]: enough to overrule a playlist's length.
 const SURE: f32 = 0.05;
 /// The same, for the short window that finds where the loop begins.
-const SAME_LOCAL: f32 = 0.18;
+const SAME_LOCAL: f32 = 0.25;
+/// That window, in ms.
+const LOCAL_WINDOW_MS: u64 = 3_000;
 /// The least that is compared to accept a loop: the last this many ms (or a whole period,
 /// when that is longer) against the same a period back and two periods back.
 const COMPARED_MS: u64 = 8_000;
@@ -165,57 +167,45 @@ impl Listener {
 
 /// `(first block of the loop, its length in blocks, how alike its copies are)`: the shortest
 /// period over which the envelope's end repeats twice over, and how far back that goes.
+///
+/// The envelope compared is the overall level, one value per block, by correlation. Not the
+/// bands one by one: a noise or sample channel jitters from copy to copy in its own band,
+/// enough to hide a loop that repeats exactly in what is heard; and not a difference, which
+/// counts that same jitter against every block.
 fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(usize, usize, f32)> {
     let n = blocks.len();
+    let per_second = BLOCKS_PER_SECOND as usize;
     // Shorter than this, a loop is always checked over two periods.
-    let long = (LONG_LOOP_MS / (1000 / u64::from(BLOCKS_PER_SECOND))) as usize;
+    let long = (LONG_LOOP_MS as usize * per_second) / 1000;
     let min_period = min_period.max(1);
     if n < compared + 2 * min_period {
         return None;
     }
-    let mut mean = [0f32; 3];
-    for b in blocks {
-        for k in 0..3 {
-            mean[k] += b[k];
-        }
-    }
-    let total: f32 = mean.iter().sum::<f32>() / n as f32;
-    // A band with next to nothing in it would make its noise look like a difference.
-    let floor = (total * 0.05).max(1e-3);
-    let scale = mean.map(|m| (m / n as f32).max(floor));
-    let differ = |i: usize, j: usize| (0..3).map(|k| (blocks[i][k] - blocks[j][k]).abs() / scale[k]).sum::<f32>() / 3.0;
-    // How unlike the window `from..to` is the same window `back` blocks earlier: one minus the
-    // correlation of their band envelopes. A correlation and not a difference: a noise channel
-    // or a busy band adds the same jitter to both copies, which a difference counts against
-    // them and a correlation does not.
+    let level: Vec<f32> = blocks.iter().map(|b| (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt()).collect();
+    // One minus the correlation of `from..to` with the same stretch `back` blocks earlier.
     let unlike = |from: usize, to: usize, back: usize| {
-        let len = ((to - from) * 3) as f32;
+        let len = (to - from) as f32;
         let (mut sx, mut sy) = (0f32, 0f32);
         for i in from..to {
-            for k in 0..3 {
-                sx += blocks[i][k] / scale[k];
-                sy += blocks[i - back][k] / scale[k];
-            }
+            sx += level[i];
+            sy += level[i - back];
         }
         let (mx, my) = (sx / len, sy / len);
         let (mut cov, mut vx, mut vy) = (0f32, 0f32, 0f32);
         for i in from..to {
-            for k in 0..3 {
-                let (x, y) = (blocks[i][k] / scale[k] - mx, blocks[i - back][k] / scale[k] - my);
-                cov += x * y;
-                vx += x * x;
-                vy += y * y;
-            }
+            let (x, y) = (level[i] - mx, level[i - back] - my);
+            cov += x * y;
+            vx += x * x;
+            vy += y * y;
         }
         if vx <= 0.0 || vy <= 0.0 {
             return 1.0;
         }
         1.0 - cov / (vx * vy).sqrt()
     };
-    let level = |i: usize| blocks[i].iter().sum::<f32>();
     let moves = |from: usize, to: usize| {
-        let m = (from..to).map(level).sum::<f32>() / (to - from) as f32;
-        let var = (from..to).map(|i| (level(i) - m).powi(2)).sum::<f32>() / (to - from) as f32;
+        let m = level[from..to].iter().sum::<f32>() / (to - from) as f32;
+        let var = level[from..to].iter().map(|v| (v - m).powi(2)).sum::<f32>() / (to - from) as f32;
         var.sqrt() / m.max(1e-6) >= MIN_MOVEMENT
     };
     let (period, score) = (min_period..=(n - compared) / 2).find_map(|p| {
@@ -232,17 +222,17 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
         let d = unlike(n - w, n, p);
         (p >= long && d < SURE).then_some((p, d))
     })?;
-    // Walking back from the end, the loop starts after the last window that does not match
-    // its copy one period later.
-    let window = min_period;
+    // Walking back from the end, the loop starts where a stretch of a few seconds stops
+    // matching its copy one period later.
+    let window = (LOCAL_WINDOW_MS as usize * per_second / 1000).clamp(2, period);
     let mut start = 0;
     let mut i = n - period;
     while i >= window {
-        let from = i - window;
-        let d = (from..i).map(|k| differ(k, k + period)).sum::<f32>() / window as f32;
-        if d >= SAME_LOCAL {
-            // The loop begins after the last block in that window that differs from its copy.
-            start = (from..i).rev().find(|&k| differ(k, k + period) >= SAME_LOCAL).map_or(i, |k| k + 1);
+        if unlike(i - window + period, i + period, period) >= SAME_LOCAL {
+            // Within that stretch, the loop begins after the last block clearly unlike its copy.
+            let mean = level.iter().sum::<f32>() / n as f32;
+            let differs = |k: usize| (level[k] - level[k + period]).abs() > 0.5 * level[k].max(level[k + period]).max(0.1 * mean);
+            start = (i - window..i).rev().find(|&k| differs(k)).map_or(i - window, |k| k + 1);
             break;
         }
         i -= 1;
@@ -250,7 +240,7 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
     // A loop that starts too late to be heard twice was not heard to loop; and a short beat
     // that only settles in after minutes of music is a passage keeping time, not the track's
     // loop.
-    if start + 2 * period > n || (start > 20 * period && start > 600) {
+    if start + 2 * period > n || (start > 20 * period && start > 60 * per_second) {
         return None;
     }
     Some((start, period, score))
