@@ -99,11 +99,13 @@ eigene Datenbank angelegt und gestartet.
 
 ### Kommandozeilenwerkzeuge (chdlite)
 
-Disc-Image darauf ziehen, CHD oder RVZ erhalten. `chdlite` (schnell), `chdcomp` (kleinste Datei),
-`chdread` (entpacken) und `chdhash` (Hash) sind je ein Werkzeug pro Modus, sodass eine auf die
-ausführbare Datei gezogene Datei das Richtige bewirkt; `chdlite-gui` bietet dasselbe in einem
-Fenster. Jede Option gibt es auch als Kommandozeilenparameter (`--help`). chdlite erscheint
-als eigenes Release: siehe [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+Disc-Image darauf ziehen, CHD oder RVZ erhalten. `chdlite` (schnell) und `chdcomp` (kleinste
+Datei) arbeiten in beide Richtungen: Ein unkomprimiertes Image wird komprimiert, eine `.chd` oder
+`.rvz` entpackt. `chdread` zeigt die Metadaten einer Datei, `chdhash` berechnet ihren Hash. Jedes
+Werkzeug hat eine Aufgabe, sodass eine auf die ausführbare Datei gezogene Datei das Richtige
+bewirkt; `chdlite-gui` bietet dasselbe in einem Fenster. Jede Option gibt es auch als
+Kommandozeilenparameter (`--help`). chdlite erscheint als eigenes Release: siehe
+[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
 
 ### Anbieter-Schlüssel
 
