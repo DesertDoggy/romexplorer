@@ -17,8 +17,10 @@ const LINES: u32 = 262;
 /// The first line of vertical blank.
 const VBLANK_LINE: u32 = 225;
 const MASTER_RATE: u64 = 21_477_272;
-/// Master clocks per CPU cycle, on average over fast ROM, slow ROM and I/O.
-const CYCLE_CLOCKS: u32 = 7;
+/// Master clocks per CPU cycle: 8 for most memory, 6 for internal cycles, I/O and fast ROM.
+/// Slow code averages about 7.5 (two cycles of 15 clocks).
+const SLOW_PAIR_CLOCKS: u32 = 15;
+const FAST_CLOCKS: u32 = 6;
 
 /// How the cartridge maps its ROM onto the bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,21 @@ fn coprocessor_cpu(rom: &[u8], mapping: Mapping) -> bool {
     mode & 0x0F == 0x3 || (0x13..=0x1A).contains(&chips) || (0x33..=0x36).contains(&chips)
 }
 
+/// The cartridge's save RAM, by its header: none, or 2^n KB. A game checks that save RAM it
+/// does not have is not there, since copiers had it: giving every game some would stop those
+/// games at a copy-protection screen.
+fn save_ram_size(rom: &[u8], mapping: Mapping) -> usize {
+    let header = match mapping {
+        Mapping::LoRom => 0x7FC0,
+        Mapping::HiRom => 0xFFC0,
+        Mapping::ExHiRom => 0x40FFC0,
+    };
+    match rom.get(header + 0x18) {
+        Some(&n) if (1..=8).contains(&n) => 1024 << n,
+        _ => 0,
+    }
+}
+
 /// The S-DD1 decompression chip (chipset $43 or $45).
 fn s_dd1(rom: &[u8], mapping: Mapping) -> bool {
     let header = if mapping == Mapping::LoRom { 0x7FC0 } else { 0xFFC0 };
@@ -108,6 +125,8 @@ struct Snes<'a> {
     nmi_enable: bool,
     /// An NMI that came due, waiting for the CPU (also when it came due inside a DMA).
     nmi_due: bool,
+    /// $420D: banks $80 and up run at the fast ROM speed.
+    fast_rom: bool,
     /// The last value written to $4200 (interrupt enables), for diagnosis.
     nmitimen: u8,
     nmi_flag: bool,
@@ -128,6 +147,9 @@ struct Snes<'a> {
     dma: [Dma; 8],
     open_bus: u8,
     writes: Vec<PortWrite>,
+    /// What the main CPU read from the ports, each time a port's value changed.
+    replies: Vec<PortWrite>,
+    last_reply: [Option<u8>; 4],
     /// Buttons held on pad 1, as $4219:$4218 read them (B Y Select Start Up Down Left Right,
     /// then A X L R).
     buttons: u16,
@@ -208,7 +230,13 @@ impl Snes<'_> {
             0x213F => 0x01,
             0x2140..=0x217F => {
                 self.catch_up_apu();
-                self.apu.read_port_now(a as usize & 3)
+                let port = a as usize & 3;
+                let v = self.apu.read_port_now(port);
+                if self.last_reply[port] != Some(v) && self.replies.len() < MAX_PORT_WRITES {
+                    self.last_reply[port] = Some(v);
+                    self.replies.push(PortWrite { at: self.master, port: port as u8, value: v });
+                }
+                v
             }
             0x2180 => {
                 let v = self.wram[self.wram_addr as usize & 0x1FFFF];
@@ -336,6 +364,7 @@ impl Snes<'_> {
             0x4209 => self.vtime = (self.vtime & 0x100) | v as u16,
             0x420A => self.vtime = (self.vtime & 0xFF) | ((v as u16 & 1) << 8),
             0x420B => self.run_dma(v),
+            0x420D => self.fast_rom = v & 1 != 0,
             0x4300..=0x437F => {
                 let d = &mut self.dma[(a as usize >> 4) & 7];
                 match a & 0xF {
@@ -452,7 +481,8 @@ impl Bus for Snes<'_> {
         } else {
             match self.cart(bank, a) {
                 Some(CartAt::Rom(o)) => self.rom_byte(o),
-                Some(CartAt::Sram(o)) => self.sram[o % self.sram.len()],
+                Some(CartAt::Sram(o)) if !self.sram.is_empty() => self.sram[o % self.sram.len()],
+                Some(CartAt::Sram(_)) => self.open_bus,
                 None => self.open_bus,
             }
         };
@@ -471,7 +501,9 @@ impl Bus for Snes<'_> {
             self.write_io(a, value);
         } else if let Some(CartAt::Sram(o)) = self.cart(bank, a) {
             let n = self.sram.len();
-            self.sram[o % n] = value;
+            if n > 0 {
+                self.sram[o % n] = value;
+            }
         }
     }
 }
@@ -491,6 +523,8 @@ pub struct Capture {
     pub spc: Vec<u8>,
     pub driver_starts: Vec<DriverStart>,
     pub port_writes: Vec<PortWrite>,
+    /// The sound chip's answers as the game read them: a port's value each time it changed.
+    pub port_replies: Vec<PortWrite>,
     /// The game's output during the run (stereo, 32 kHz), when asked for.
     pub audio: Vec<i16>,
     /// Instructions the main CPU ran.
@@ -549,7 +583,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         rom,
         mapping,
         wram: vec![0; 0x20000],
-        sram: vec![0; 0x20000],
+        sram: vec![0; save_ram_size(rom, mapping)],
         vram: vec![0; 0x10000],
         apu,
         apu_debt: 0,
@@ -558,6 +592,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         line_clock: 0,
         nmi_enable: false,
         nmi_due: false,
+        fast_rom: false,
         nmitimen: 0,
         nmi_flag: false,
         irq_mode: 0,
@@ -577,6 +612,8 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         dma: [Dma::default(); 8],
         open_bus: 0,
         writes: Vec::new(),
+        replies: Vec::new(),
+        last_reply: [None; 4],
         buttons: 0,
         serial: 0,
         strobe: false,
@@ -602,7 +639,9 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         }
         let cycles = cpu.step(&mut snes);
         instructions += 1;
-        if snes.tick(cycles * CYCLE_CLOCKS) {
+        let fast = snes.fast_rom && cpu.pbr >= 0x80;
+        let clocks = if fast { cycles * FAST_CLOCKS } else { (cycles * SLOW_PAIR_CLOCKS).div_ceil(2) };
+        if snes.tick(clocks) {
             snes.nmi_due = true;
         }
         if std::mem::take(&mut snes.nmi_due) {
@@ -651,7 +690,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
     snes.catch_up_apu();
     let spc = snes.apu.save_spc();
     let audio = std::mem::take(&mut snes.apu.output);
-    Ok(Capture { spc, driver_starts, port_writes: snes.writes, audio, instructions, stopped, busy_at, busy_reads, nmis, irqs, nmitimen: snes.nmitimen, irq_masked: cpu.p & 0x04 != 0, crash_trace: crash })
+    Ok(Capture { spc, driver_starts, port_writes: snes.writes, port_replies: snes.replies, audio, instructions, stopped, busy_at, busy_reads, nmis, irqs, nmitimen: snes.nmitimen, irq_masked: cpu.p & 0x04 != 0, crash_trace: crash })
 }
 
 #[cfg(test)]

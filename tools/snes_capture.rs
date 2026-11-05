@@ -5,6 +5,7 @@
 //!   snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]
 //!
 //! `--start` presses Start now and then, for games whose music waits past an intro.
+//! `--ports N` prints the first N port writes and answers after the last driver start.
 
 use std::io::Write;
 
@@ -35,6 +36,11 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     let press_start = args.iter().any(|a| a == "--start");
     args.retain(|a| a != "--start");
+    let mut show_ports = 0usize;
+    if let Some(i) = args.iter().position(|a| a == "--ports") {
+        show_ports = args.get(i + 1).and_then(|n| n.parse().ok()).unwrap_or(40);
+        args.drain(i..(i + 2).min(args.len()));
+    }
     if args.len() < 4 {
         eprintln!("usage: snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]");
         std::process::exit(2);
@@ -70,6 +76,16 @@ fn main() {
             c.busy_at.iter().map(|(a, n)| format!("{:02x}:{:04x} x{n}", a >> 16, a & 0xFFFF)).collect::<Vec<_>>(),
             c.busy_reads.iter().map(|(a, n)| format!("${a:04x} x{n}")).collect::<Vec<_>>()
         );
+    }
+    if show_ports > 0 {
+        let from = c.driver_starts.last().map_or(0, |d| d.at);
+        let mut log: Vec<(u64, char, u8, u8)> = c.port_writes.iter().filter(|w| w.at >= from).map(|w| (w.at, 'w', w.port, w.value)).take(show_ports).collect();
+        log.extend(c.port_replies.iter().filter(|w| w.at >= from).map(|w| (w.at, 'r', w.port, w.value)).take(show_ports));
+        log.sort();
+        for (at, dir, port, value) in log.iter().take(show_ports * 2) {
+            let arrow = if *dir == 'w' { "game ->" } else { "chip ->" };
+            println!("  {:.4}s {arrow} ${:02x} = {value:02x}", *at as f64 / 21_477_272.0, 0x40 + port);
+        }
     }
     std::fs::write(format!("{}.spc", args[3]), &c.spc).expect("write the .spc");
     wav(&format!("{}.wav", args[3]), &c.audio, 32_000).expect("write the .wav");
