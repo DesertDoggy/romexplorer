@@ -896,6 +896,33 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
     }
 }
 
+/// The file a [`TrackLocation::File`] track is stored in, as the disc or folder holds it
+/// (the whole file, for a member of an archive inside it): its path there and its bytes.
+/// For copying a track out in its own format.
+pub fn stored_file(path: &Path, location: &TrackLocation) -> Result<(String, Vec<u8>), String> {
+    let TrackLocation::File { view, path: inner, .. } = location else { return Err("only a file on the disc is stored as one".into()) };
+    let file_path = inner_archives::split(inner).map_or(inner.as_str(), |(base, _)| base).to_string();
+    let rom = open_rom(path)?;
+    let mut source: Box<dyn VgmSource> = if let Some(root) = &rom.folder {
+        Box::new(FolderSource::open_rel(root, &file_path).ok_or_else(|| format!("{file_path} is not in the folder"))?)
+    } else {
+        let disc = rom.data.get(*view as usize).ok_or_else(|| format!("the ROM has no data track {}", view + 1))?;
+        let listing = Arc::new(disc_files::list(disc)?.files);
+        let file = listing.iter().find(|f| f.path == file_path).cloned().ok_or_else(|| format!("{file_path} is not on the disc"))?;
+        Box::new(DiscFileSource { view: disc.clone(), listing, file })
+    };
+    let mut bytes = vec![0u8; usize::try_from(source.size()).map_err(|_| "too large")?];
+    let mut at = 0;
+    while at < bytes.len() {
+        let n = source.read_at(at as u64, &mut bytes[at..]);
+        if n == 0 {
+            return Err(format!("{file_path}: the disc ended early"));
+        }
+        at += n;
+    }
+    Ok((file_path, bytes))
+}
+
 /// A WAV header for `samples` frames of 16-bit PCM: what the player is sent ahead of the
 /// samples, which follow as they decode.
 pub fn wav_header(sample_rate: u32, channels: u16, samples: u64) -> Vec<u8> {

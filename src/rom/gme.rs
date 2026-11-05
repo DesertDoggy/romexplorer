@@ -10,7 +10,6 @@
 //! [`super::zlib_ng`] before it is handed over.
 
 use std::ffi::{c_char, c_int, c_long, c_void, CStr};
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use libloading::Library;

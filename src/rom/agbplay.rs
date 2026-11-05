@@ -7,7 +7,6 @@
 //! song is played by its number with no rip.
 
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use libloading::Library;
