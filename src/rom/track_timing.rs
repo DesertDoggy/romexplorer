@@ -22,7 +22,7 @@ const TAIL_MS: u64 = 500;
 /// The shortest loop looked for.
 const MIN_LOOP_MS: u64 = 1_000;
 /// How alike two stretches must be to count as the same: one minus the correlation of their
-/// band envelopes.
+/// levels.
 const SAME: f32 = 0.10;
 /// The same, for the short window that finds where the loop begins.
 const SAME_LOCAL: f32 = 0.25;
@@ -42,6 +42,9 @@ const COMPARED_MS: u64 = 8_000;
 /// A loop at least this long may be accepted from one period's match, when two do not fit in
 /// what was rendered.
 const LONG_LOOP_MS: u64 = 30_000;
+/// A period shorter than this must also match its copies every period back to this far: a
+/// bar that repeats within a longer loop drifts apart from them where the melody moves on.
+const SHORT_CHECK_MS: u64 = 30_000;
 /// How much the level must move within what is compared for periods to be told apart
 /// (standard deviation over the mean).
 const MIN_MOVEMENT: f32 = 0.12;
@@ -396,8 +399,29 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
             Some(t)
         }
     };
+    // A short period must keep matching every period back to SHORT_CHECK_MS, comparing only
+    // copies that lie after the loop's start.
+    let span = (SHORT_CHECK_MS as usize * per_second) / 1000;
+    let holds = |p: usize, start: usize| {
+        let w = p.max(compared);
+        let mut k = 3;
+        while k * p <= span {
+            let from = (n - w).max(start + k * p);
+            if from + compared > n {
+                break;
+            }
+            let t = tonal(from, n, k * p, (k + 2) / 2);
+            if t >= TONAL_SAME {
+                log::debug!("loop candidate {p} blocks: unlike {k} periods back ({t:.3})");
+                return false;
+            }
+            k += 1;
+        }
+        true
+    };
     // The shortest period that matches: proposed by the level, confirmed by the notes, and
     // starting early enough to have been heard twice.
+    let mut late_from = usize::MAX;
     let mut p = min_period;
     while p <= (n - compared) / 2 {
         let Some(score) = score_of(p, 1).filter(|&t| t < TONAL_SAME) else {
@@ -412,15 +436,26 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
         }).unwrap_or(p);
         let start = start_of(p_best);
         // A short beat that only settles in after minutes of music is a passage keeping time,
-        // not the track's loop -- and nothing longer found after it would be either.
+        // not the track's loop -- nor is anything longer that starts with it.
         if start > 20 * p_best && start > 60 * per_second {
             log::debug!("loop candidate {p_best} blocks: a late beat ({start})");
-            return None;
+            late_from = late_from.min(start);
+            p = p_best + 1;
+            continue;
+        }
+        if start + p_best >= late_from {
+            log::debug!("loop candidate {p_best} blocks: starts with the late beat ({start})");
+            p = p_best + 1;
+            continue;
         }
         // Starts too late to have been heard twice: not heard to loop at this period.
         if start + 2 * p_best > n {
             log::debug!("loop candidate {p_best} blocks: starts too late ({start})");
             p += 3;
+            continue;
+        }
+        if !holds(p_best, start) {
+            p = p_best + 1;
             continue;
         }
         return Some((start, p_best, score));
@@ -522,6 +557,17 @@ mod tests {
         let notes = [(262.0, 1.0), (330.0, 0.5), (392.0, 1.0), (494.0, 0.5), (587.0, 1.0), (440.0, 0.5), (349.0, 1.0), (294.0, 0.5)];
         match listen(melody(&notes, RATE as usize / 2), 40).finish(false) {
             Timing::Loops { loop_ms, .. } => assert!((3_900..=4_100).contains(&loop_ms), "{loop_ms}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bar_repeated_within_a_longer_loop_is_not_the_loop() {
+        // Three 16 s sections, each one 2 s bar played 8 times; the bars differ in one note.
+        let bar = |n: f32| vec![(440.0, 1.0), (660.0, 0.5), (330.0, 0.8), (n, 0.3)];
+        let notes: Vec<(f32, f32)> = [550.0, 495.0, 587.0].iter().flat_map(|&n| bar(n).repeat(8)).collect();
+        match listen(melody(&notes, RATE as usize / 2), 140).finish(false) {
+            Timing::Loops { loop_ms, .. } => assert!((47_900..=48_100).contains(&loop_ms), "{loop_ms}"),
             other => panic!("{other:?}"),
         }
     }
