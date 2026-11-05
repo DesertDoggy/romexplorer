@@ -847,7 +847,7 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
         },
         "audio_fallback" => rsx! {
             {muted("What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.")}
-            {radios(&[("none", "nothing: silent (default)"), ("random", "random tracks from the audio linked to other titles"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("none"))}
+            {radios(&[("none", "nothing: silent"), ("random", "random tracks from the audio linked to other titles, or a random title's ROM music (default)"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("random"))}
         },
         "audio_title_sources" => rsx! {
             {muted("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}

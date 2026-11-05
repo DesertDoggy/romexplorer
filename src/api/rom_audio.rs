@@ -728,6 +728,7 @@ fn build_row(row: &sqlx::mysql::MySqlRow, kind: SoundKind) -> Result<Option<Audi
         support: "converted".to_string(),
         duration_ms: Some(duration),
         loudness_lufs: None,
+        sound_end_ms: None,
         title: Some(name),
         album: Some(rom_name),
         artist: None,
@@ -918,7 +919,9 @@ pub async fn stand_in(app: &App, titles: &[u64], s: &Settings) -> Result<(Vec<Au
 /// Where a cached decode of track `id` goes: `rom<id>-<what>-<index time>.<ext>`. A ROM
 /// indexed again gets new names; the old ones are left for the size cap.
 fn cache_name(id: u64, target: Target, stamp: i64, level: bool) -> String {
-    format!("rom{id}-{}-{stamp}{}.{}", target.tag(), if level { "-lv" } else { "" }, target.ext())
+    // `-ts`: the silent end is trimmed ([`TailTrim`]); earlier cache files without it are
+    // left for the size cap.
+    format!("rom{id}-{}-{stamp}{}-ts.{}", target.tag(), if level { "-lv" } else { "" }, target.ext())
 }
 
 /// What a track is decoded to: AAC when the encoder is built and takes the track's shape,
@@ -1044,7 +1047,10 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let partial = out.with_extension(format!("{}.part", target.ext()));
     let _ = std::fs::remove_file(&partial);
-    let made = super::audio_convert::encode_with(&partial, target, |sink| {
+    let made = super::audio_convert::encode_with(&partial, target, |write| {
+        let mut trim = TailTrim::default();
+        let mut sink = |pcm: &[i16], rate: u32, channels: u16| trim.push(pcm, rate, channels, &mut *write);
+        let made = (|| {
         let mut stream = rom_audio::open_track(rom, location, config)?;
         let (rate, channels) = (stream.sample_rate(), stream.channels());
         let rate = if matches!(target, Target::Aac { .. }) { near_aac_rate(rate).unwrap_or(rate) } else { rate };
@@ -1077,6 +1083,9 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
             sink(&pcm, rate, channels)?;
         }
         Ok((rate, channels))
+        })();
+        trim.finish(&mut *write)?;
+        made
     });
     match made {
         Ok(()) => std::fs::rename(&partial, out).map_err(|e| format!("move into the cache: {e}")),
@@ -1084,6 +1093,55 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
             let _ = std::fs::remove_file(&partial);
             Err(e)
         }
+    }
+}
+
+/// Near-silence at the end of a track is left out: it is no music, and in the player it
+/// is a gap before the next track (and before any crossfade can start). A sample this
+/// small or smaller (-60 dBFS) counts as silent.
+const TAIL_SILENCE: i16 = 32;
+/// How much of a silent end is kept, so the last note's tail is not cut at the sample.
+const TAIL_KEEP_MS: u64 = 150;
+
+/// Holds back samples while they are silent, and writes them only when sound follows: what
+/// is still held at the end is the silent end, and all but [`TAIL_KEEP_MS`] of it is dropped.
+#[derive(Default)]
+struct TailTrim {
+    held: Vec<i16>,
+    shape: Option<(u32, u16)>,
+}
+
+type Write<'a> = dyn FnMut(&[i16], u32, u16) -> std::result::Result<(), String> + 'a;
+
+impl TailTrim {
+    fn push(&mut self, pcm: &[i16], rate: u32, channels: u16, write: &mut Write<'_>) -> std::result::Result<(), String> {
+        self.shape = Some((rate, channels));
+        let frame = usize::from(channels.max(1));
+        // Up to the last frame with sound: written (after anything held); the rest is held.
+        let loud = pcm.chunks(frame).rposition(|f| f.iter().any(|&v| v.unsigned_abs() > TAIL_SILENCE as u16));
+        match loud {
+            Some(last) => {
+                let cut = (last + 1) * frame;
+                if !self.held.is_empty() {
+                    write(&std::mem::take(&mut self.held), rate, channels)?;
+                }
+                write(&pcm[..cut], rate, channels)?;
+                self.held.extend_from_slice(&pcm[cut..]);
+            }
+            None => self.held.extend_from_slice(pcm),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, write: &mut Write<'_>) -> std::result::Result<(), String> {
+        let Some((rate, channels)) = self.shape else { return Ok(()) };
+        let keep = (TAIL_KEEP_MS * u64::from(rate) / 1000) as usize * usize::from(channels.max(1));
+        let keep = keep.min(self.held.len());
+        if keep > 0 {
+            write(&self.held[..keep], rate, channels)?;
+        }
+        self.held.clear();
+        Ok(())
     }
 }
 
@@ -1133,6 +1191,21 @@ mod tests {
             pcm[1000] = 32000;
         }
         vec![pcm]
+    }
+
+    #[test]
+    fn a_silent_end_is_left_out_but_a_quiet_middle_is_kept() {
+        let mut out: Vec<i16> = Vec::new();
+        let mut write = |pcm: &[i16], _: u32, _: u16| -> std::result::Result<(), String> { out.extend_from_slice(pcm); Ok(()) };
+        let mut trim = TailTrim::default();
+        // 1 kHz mono: sound, 0.5 s of silence, sound, then 2 s of silence.
+        let sound = vec![5_000i16; 100];
+        trim.push(&sound, 1_000, 1, &mut write).unwrap();
+        trim.push(&[0; 500], 1_000, 1, &mut write).unwrap();
+        trim.push(&sound, 1_000, 1, &mut write).unwrap();
+        trim.push(&[10; 2_000], 1_000, 1, &mut write).unwrap();
+        trim.finish(&mut write).unwrap();
+        assert_eq!(out.len(), 100 + 500 + 100 + 150);
     }
 
     #[test]

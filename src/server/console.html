@@ -2467,7 +2467,25 @@ function askLanguage() {
     <div class="langpick">${uiLanguages.map(c => `<button class="btn" data-lang="${esc(c)}"><span class="flag">${langFlag(c)}</span> ${esc(langNative(c))} <span class="muted">${esc(c.toUpperCase())}</span></button>`).join('')}</div>
     <p class="muted">${tr('Change it any time from the language menu at the top right, or under Config › Settings.')}</p>`);
   modalPinned = true;
-  for (const b of box.querySelectorAll('[data-lang]')) b.onclick = async () => { closeModal(); await setUiLanguage(b.dataset.lang); askMediaReuse(); };
+  for (const b of box.querySelectorAll('[data-lang]')) b.onclick = async () => { closeModal(); await setUiLanguage(b.dataset.lang); askAudio(); };
+}
+// First run, after the language: music on title pages, on or off. Asked once, while
+// media_show has no answer for bgm; the answer goes there (Config › Settings › Media, "show
+// in UI"). The app asks the same (screens/mode.rs ask_audio). Then the media question.
+async function askAudio() {
+  if (consoleRefused) { askMediaReuse(); return; }
+  let show; try { const s = await api('/api/v1/settings/media_show'); show = s && typeof s.value === 'object' && s.value ? s.value : {}; } catch (e) { show = {}; }
+  if (typeof show.bgm === 'boolean') { askMediaReuse(); return; }
+  const box = openModal(`<h2>${tr('Play music on title pages?')}</h2>
+    <p>${tr("Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.")}</p>
+    <p class="muted">${tr('Change it any time under Config › Settings (media_show, audio_fallback).')}</p>
+    <div class="toolbar"><span class="grow"></span><button class="btn" data-bgm="false">${tr('Off')}</button><button class="btn primary" data-bgm="true">${tr('On (recommended)')}</button></div>`);
+  modalPinned = true;
+  for (const b of box.querySelectorAll('[data-bgm]')) b.onclick = async () => {
+    closeModal();
+    try { await api('/api/v1/settings/media_show', { method: 'PUT', body: JSON.stringify({ ...show, bgm: b.dataset.bgm === 'true' }), headers: { 'Content-Type': 'application/json' } }); await loadUiSettings(); } catch (e) { toast(e.message, true); }
+    askMediaReuse();
+  };
 }
 // First run, after the language: the media folder already holds art (an earlier install's,
 // under a new database). Asked once; the answer is media_reuse_existing. The app asks the
@@ -4634,7 +4652,7 @@ function settingEditor(key, value) {
     }
     case 'copy_definitive': current = value === 'definitive_only' ? value : 'best_held'; box.appendChild(el(`<div class="muted">${tr("A set's definitive-version entry (added from Collection › Definitive): which release it puts in the set.")}</div>`)); box.appendChild(radios(key, [['best_held', tr("the best version you hold, in the family's order (default)")], ['definitive_only', tr("the definitive version only: nothing of that game when a better version isn't held")]], current, v => { current = v; })); return { el: box, get };
     case 'definitive_fetch_versions': current = ['per_title', 'whole_platform'].includes(value) ? value : 'off'; box.appendChild(el(`<div class="muted">${tr("Collection › Definitive: where a game's other versions (older and newer, the base game too) come from.")}</div>`)); box.appendChild(radios(key, [['off', tr('off: only what is here — the catalogue, and IGDB platforms you synced (default)')], ['per_title', tr('per title: for games held on disk, fetch their versions from IGDB, on any platform')], ['whole_platform', tr('whole platform (deprecated): per title, and sync each platform such a version is on')]], current, v => { current = v; })); return { el: box, get };
-    case 'audio_fallback': current = ['random', 'generic_bgm'].includes(value) ? value : 'none'; box.appendChild(el(`<div class="muted">${tr('What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.')}</div>`)); box.appendChild(radios(key, [['none', tr('nothing: silent (default)')], ['random', tr('random tracks from the audio linked to other titles')], ['generic_bgm', tr('the audio files tagged generic_bgm')]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_fallback': current = ['none', 'generic_bgm'].includes(value) ? value : 'random'; box.appendChild(el(`<div class="muted">${tr('What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.')}</div>`)); box.appendChild(radios(key, [['none', tr('nothing: silent')], ['random', tr("random tracks from the audio linked to other titles, or a random title's ROM music (default)")], ['generic_bgm', tr('the audio files tagged generic_bgm')]], current, v => { current = v; })); return { el: box, get };
     case 'audio_title_sources': current = ['tagged', 'rom'].includes(value) ? value : 'both'; box.appendChild(el(`<div class="muted">${tr("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}</div>`)); box.appendChild(radios(key, [['both', tr("tagged audio files and the music in the title's ROMs (default)")], ['tagged', tr('tagged audio files only')], ['rom', tr("the music in the title's ROMs only")]], current, v => { current = v; })); return { el: box, get };
     case 'audio_rom_kinds': current = ['bgm_jingle', 'all'].includes(value) ? value : 'bgm'; box.appendChild(el(`<div class="muted">${tr('Which sounds from a ROM a title page plays. Sounds are sorted by whether they loop and how long they are.')}</div>`)); box.appendChild(radios(key, [['bgm', tr('music only (default)')], ['bgm_jingle', tr('music and jingles')], ['all', tr('everything, sound effects too')]], current, v => { current = v; })); return { el: box, get };
     case 'audio_rom_not_owned': current = ['random', 'none'].includes(value) ? value : 'related'; box.appendChild(el(`<div class="muted">${tr('ROM music for a title with no ROM here. When this finds nothing, audio_fallback decides.')}</div>`)); box.appendChild(radios(key, [['related', tr('another version you have, such as the original of a remake (default)')], ['random', tr("another title's, picked at random")], ['none', tr('none')]], current, v => { current = v; })); return { el: box, get };
@@ -5967,7 +5985,7 @@ async function showDbTable(table) {
   await loadUiSettings();
   refreshHeader(); setInterval(refreshHeader, 15000);
   route();
-  if (!uiLanguageChosen && !consoleRefused) askLanguage(); else askMediaReuse();
+  if (!uiLanguageChosen && !consoleRefused) askLanguage(); else askAudio();
 })();
 
 // ---------------------------------------------------------------------------

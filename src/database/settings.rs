@@ -148,7 +148,7 @@ pub const KEY_AUDIO_RAM_CACHE_MB: &str = "audio_ram_cache_mb";
 pub const KEY_AUDIO_CLIENT_FORMAT: &str = "audio_client_format";
 /// Client mode: tracks above this bitrate (kbps) are converted, the rest copied as they are.
 pub const KEY_AUDIO_CLIENT_BITRATE: &str = "audio_client_bitrate_kbps";
-/// What a title with no audio of its own plays: `none` (default: silence) | `random` |
+/// What a title with no audio of its own plays: `none` (silence) | `random` (default) |
 /// `generic_bgm` (the files carrying that tag).
 pub const KEY_AUDIO_FALLBACK: &str = "audio_fallback";
 /// Where a title page's music comes from: `tagged` (audio files tagged with the title) |
@@ -442,7 +442,7 @@ pub const KNOWN_KEYS: [(&str, &str); 103] = [
     (KEY_AUDIO_RAM_CACHE_MB, "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off). When it is full, the least recently played tracks move to the converted-audio cache on disk."),
     (KEY_AUDIO_CLIENT_FORMAT, "Client mode: the format this machine's kept copies of the main server's audio are fetched in: none (as they are) | aac (the default on Linux) | xhe_aac (the default elsewhere). AAC is recommended when a Linux client is involved; xHE-AAC saves the most storage and plays on Windows 11, macOS, iOS and Android."),
     (KEY_AUDIO_CLIENT_BITRATE, "Client mode: the bitrate (kbps, 48-320, default 128) a kept copy is converted to. A track already at or below it is copied as it is."),
-    (KEY_AUDIO_FALLBACK, "What a title with no audio linked to it plays: none (default; silent) | random (tracks picked at random from the audio linked to other titles) | generic_bgm (the audio files tagged generic_bgm)."),
+    (KEY_AUDIO_FALLBACK, "What a title with no audio linked to it plays: none (silent) | random (default; tracks picked at random from the audio linked to other titles, or ROM music of a random title when there is none) | generic_bgm (the audio files tagged generic_bgm)."),
     (KEY_AUDIO_TITLE_SOURCES, "Where a title page's music comes from: tagged (audio files tagged with the title) | rom (the music inside the title's ROMs, played from the ROM) | both (default)."),
     (KEY_AUDIO_ROM_KINDS, "Which sounds from a ROM a title page plays: bgm (default; music only) | bgm_jingle (music and short jingles) | all (sound effects too)."),
     (KEY_AUDIO_ROM_NOT_OWNED, "ROM music for a title with no ROM here: related (default; another version of the game, such as the original of a remake) | random (another title's) | none."),
@@ -852,7 +852,7 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
         "Seconds. A ROM sound that does not loop is music from this length (default 60), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.",
     ]),
     (KEY_AUDIO_FALLBACK, &[
-        "What a title with no audio linked to it plays: nothing (default), tracks picked at random from the audio linked to other titles, or the audio files tagged generic_bgm.",
+        "What a title with no audio linked to it plays: nothing, tracks picked at random from the audio linked to other titles (default; ROM music of a random title when there is no such audio), or the audio files tagged generic_bgm.",
         "generic_bgm is a tag of its own: it is put on audio files and taken off them like any keyword tag, but a title cannot carry it and it cannot be renamed or deleted.",
     ]),
     (KEY_ALLOW_REMOTE_LAUNCH, &[
