@@ -2,7 +2,9 @@
 //! the sound chip as an `.spc`, plus what the sound chip played as a `.wav`. With a reference
 //! `.spc` it also prints how much of the sound memory matches it.
 //!
-//!   snes_capture <rom.sfc> <seconds> <out-stem> [reference.spc]
+//!   snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]
+//!
+//! `--start` presses Start now and then, for games whose music waits past an intro.
 
 use std::io::Write;
 
@@ -30,15 +32,17 @@ fn wav(path: &str, pcm: &[i16], rate: u32) -> std::io::Result<()> {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    let press_start = args.iter().any(|a| a == "--start");
+    args.retain(|a| a != "--start");
     if args.len() < 4 {
-        eprintln!("usage: snes_capture <rom.sfc> <seconds> <out-stem> [reference.spc]");
+        eprintln!("usage: snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]");
         std::process::exit(2);
     }
     let rom = std::fs::read(&args[1]).expect("read the ROM");
     let seconds: f32 = args[2].parse().expect("seconds");
     let started = std::time::Instant::now();
-    let c = match snes_capture::capture(&rom, seconds, true) {
+    let c = match snes_capture::capture(&rom, &snes_capture::Options { seconds, keep_audio: true, press_start }) {
         Ok(c) => c,
         Err(e) => {
             println!("error: {e}");
@@ -56,6 +60,13 @@ fn main() {
         peak,
         c.stopped
     );
+    if c.driver_starts.is_empty() {
+        println!(
+            "no driver started; in the last second the CPU was mostly at {:?}, reading {:?}",
+            c.busy_at.iter().map(|(a, n)| format!("{:02x}:{:04x} x{n}", a >> 16, a & 0xFFFF)).collect::<Vec<_>>(),
+            c.busy_reads.iter().map(|(a, n)| format!("${a:04x} x{n}")).collect::<Vec<_>>()
+        );
+    }
     std::fs::write(format!("{}.spc", args[3]), &c.spc).expect("write the .spc");
     wav(&format!("{}.wav", args[3]), &c.audio, 32_000).expect("write the .wav");
     if let Some(reference) = args.get(4) {

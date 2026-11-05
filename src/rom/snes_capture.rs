@@ -69,6 +69,12 @@ fn coprocessor_cpu(rom: &[u8], mapping: Mapping) -> bool {
     mode & 0x0F == 0x3 || (0x13..=0x1A).contains(&chips) || (0x33..=0x36).contains(&chips)
 }
 
+/// The S-DD1 decompression chip (chipset $43 or $45).
+fn s_dd1(rom: &[u8], mapping: Mapping) -> bool {
+    let header = if mapping == Mapping::LoRom { 0x7FC0 } else { 0xFFC0 };
+    matches!(rom.get(header + 0x16), Some(0x43 | 0x45))
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Dma {
     params: u8,
@@ -118,6 +124,14 @@ struct Snes<'a> {
     dma: [Dma; 8],
     open_bus: u8,
     writes: Vec<PortWrite>,
+    /// Buttons held on pad 1, as $4219:$4218 read them (B Y Select Start Up Down Left Right,
+    /// then A X L R).
+    buttons: u16,
+    /// The pad's serial shift register, for games that read $4016 bit by bit.
+    serial: u16,
+    strobe: bool,
+    /// I/O registers read since `watch` was last cleared, for telling what a stuck game polls.
+    watch: Option<std::collections::HashMap<u16, u32>>,
 }
 
 /// Port writes kept at most; a game that streams samples writes far more, and only the first
@@ -170,6 +184,9 @@ impl Snes<'_> {
     }
 
     fn read_io(&mut self, a: u16) -> u8 {
+        if let Some(watch) = &mut self.watch {
+            *watch.entry(a).or_default() += 1;
+        }
         match a {
             0x2134..=0x2136 => {
                 let p = (self.m7a as i16 as i32 * self.m7b as i8 as i32) as u32;
@@ -194,7 +211,14 @@ impl Snes<'_> {
                 self.wram_addr = (self.wram_addr + 1) & 0x1FFFF;
                 v
             }
-            0x4016 | 0x4017 => 0,
+            0x4016 => {
+                let bit = if self.strobe { self.buttons >> 15 } else { self.serial >> 15 };
+                if !self.strobe {
+                    self.serial = self.serial << 1 | 1;
+                }
+                bit as u8 & 1
+            }
+            0x4017 => 0,
             0x4210 => {
                 let v = if self.nmi_flag { 0x82 } else { 0x02 };
                 self.nmi_flag = false;
@@ -215,7 +239,9 @@ impl Snes<'_> {
             0x4215 => (self.quotient >> 8) as u8,
             0x4216 => self.product_or_rest as u8,
             0x4217 => (self.product_or_rest >> 8) as u8,
-            0x4218..=0x421F => 0,
+            0x4218 => self.buttons as u8,
+            0x4219 => (self.buttons >> 8) as u8,
+            0x421A..=0x421F => 0,
             0x4300..=0x437F => {
                 let d = &self.dma[(a as usize >> 4) & 7];
                 match a & 0xF {
@@ -243,6 +269,12 @@ impl Snes<'_> {
 
     fn write_io(&mut self, a: u16, v: u8) {
         match a {
+            0x4016 => {
+                self.strobe = v & 1 != 0;
+                if self.strobe {
+                    self.serial = self.buttons;
+                }
+            }
             0x2115 => self.vram_inc = v,
             0x2116 => self.vram_addr = (self.vram_addr & 0xFF00) | v as u16,
             0x2117 => self.vram_addr = (self.vram_addr & 0x00FF) | (v as u16) << 8,
@@ -444,15 +476,42 @@ pub struct Capture {
     pub instructions: u64,
     /// Why the run ended early, if it did (the CPU stopped, or crashed into empty memory).
     pub stopped: Option<String>,
+    /// Over the last second: where the main CPU spent its time (bank:address, samples), most
+    /// first, and the I/O registers it read most. A game that never starts its music is
+    /// usually polling something here.
+    pub busy_at: Vec<(u32, u32)>,
+    pub busy_reads: Vec<(u16, u32)>,
 }
 
-/// Runs the game from power on for `seconds` of console time and returns what it left in the
-/// sound chip. `keep_audio` also keeps what the sound chip played.
-pub fn capture(file: &[u8], seconds: f32, keep_audio: bool) -> Result<Capture, String> {
+/// How a capture runs.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Console time to run.
+    pub seconds: f32,
+    /// Keep what the sound chip played.
+    pub keep_audio: bool,
+    /// Press Start now and then, for games whose music waits for it past an intro.
+    pub press_start: bool,
+}
+
+/// When Start is pressed: from 2 s on, for 0.1 s every 1.5 s.
+fn start_held(master: u64) -> bool {
+    let t = master as f64 / MASTER_RATE as f64;
+    t >= 2.0 && (t - 2.0) % 1.5 < 0.1
+}
+
+const START: u16 = 0x1000;
+
+/// Runs the game from power on and returns what it left in the sound chip.
+pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
+    let Options { seconds, keep_audio, press_start } = *options;
     let rom = rom_image(file);
     let mapping = mapping(rom).ok_or("no SNES header found")?;
     if coprocessor_cpu(rom, mapping) {
         return Err("the game runs on a coprocessor CPU (SA-1 or Super FX), which is not emulated".into());
+    }
+    if s_dd1(rom, mapping) {
+        return Err("the game unpacks its data with the S-DD1 chip, which is not emulated".into());
     }
     let mut apu = Apu::new()?;
     apu.keep_output = keep_audio;
@@ -486,6 +545,10 @@ pub fn capture(file: &[u8], seconds: f32, keep_audio: bool) -> Result<Capture, S
         dma: [Dma::default(); 8],
         open_bus: 0,
         writes: Vec::new(),
+        buttons: 0,
+        serial: 0,
+        strobe: false,
+        watch: None,
     };
     let mut cpu = Cpu::reset(&mut snes);
     let end = (seconds.max(0.0) as f64 * MASTER_RATE as f64) as u64;
@@ -493,7 +556,15 @@ pub fn capture(file: &[u8], seconds: f32, keep_audio: bool) -> Result<Capture, S
     let mut in_boot_rom = true;
     let mut instructions = 0u64;
     let mut stopped = None;
+    let watch_from = end.saturating_sub(MASTER_RATE);
+    let mut busy: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
     while snes.master < end {
+        if press_start {
+            snes.buttons = if start_held(snes.master) { START } else { 0 };
+        }
+        if snes.master >= watch_from && snes.watch.is_none() {
+            snes.watch = Some(Default::default());
+        }
         let cycles = cpu.step(&mut snes);
         instructions += 1;
         if snes.tick(cycles * CYCLE_CLOCKS) {
@@ -515,12 +586,23 @@ pub fn capture(file: &[u8], seconds: f32, keep_audio: bool) -> Result<Capture, S
                 driver_starts.push(DriverStart { at: snes.master, entry: pc });
             }
             in_boot_rom = boot;
+            if snes.watch.is_some() {
+                *busy.entry((cpu.pbr as u32) << 16 | cpu.pc as u32).or_default() += 1;
+            }
         }
     }
+    let top = |m: Vec<(u32, u32)>| {
+        let mut m = m;
+        m.sort_by(|a, b| b.1.cmp(&a.1));
+        m.truncate(5);
+        m
+    };
+    let busy_at = top(busy.into_iter().collect());
+    let busy_reads = top(snes.watch.take().unwrap_or_default().into_iter().map(|(a, n)| (a as u32, n)).collect()).into_iter().map(|(a, n)| (a as u16, n)).collect();
     snes.catch_up_apu();
     let spc = snes.apu.save_spc();
     let audio = std::mem::take(&mut snes.apu.output);
-    Ok(Capture { spc, driver_starts, port_writes: snes.writes, audio, instructions, stopped })
+    Ok(Capture { spc, driver_starts, port_writes: snes.writes, audio, instructions, stopped, busy_at, busy_reads })
 }
 
 #[cfg(test)]
@@ -593,7 +675,7 @@ mod tests {
         let mut driver = vec![0xE8, 0x5A, 0xC4, 0xF4, 0x2F, 0xFA];
         driver.extend((0..500u32).map(|i| (i * 13) as u8));
         let rom = lorom_with_upload(&driver, 0x0400);
-        let c = capture(&rom, 0.5, false).unwrap();
+        let c = capture(&rom, &Options { seconds: 0.5, keep_audio: false, press_start: true }).unwrap();
         assert!(c.stopped.is_none(), "{:?}", c.stopped);
         let aram = &c.spc[0x100..0x100 + 0x10000];
         assert_eq!(&aram[0x0400..0x0400 + driver.len()], &driver[..]);
