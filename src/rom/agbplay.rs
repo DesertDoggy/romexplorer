@@ -15,6 +15,7 @@ use libloading::Library;
 use super::native_lib;
 
 type OpenFn = unsafe extern "C" fn(*const u8, usize, u32, *mut c_char, usize) -> *mut c_void;
+type OpenAtFn = unsafe extern "C" fn(*const u8, usize, u32, u64, u32, *mut c_char, usize) -> *mut c_void;
 type CloseFn = unsafe extern "C" fn(*mut c_void);
 type CountFn = unsafe extern "C" fn(*mut c_void) -> u32;
 type TableFn = unsafe extern "C" fn(*mut c_void) -> u64;
@@ -26,6 +27,7 @@ type EndedFn = unsafe extern "C" fn(*mut c_void) -> c_int;
 struct Api {
     _lib: Library,
     open: OpenFn,
+    open_at: OpenAtFn,
     close: CloseFn,
     song_count: CountFn,
     song_table: TableFn,
@@ -51,6 +53,7 @@ fn api() -> Option<&'static Api> {
             let lib = Library::new(&path).map_err(|e| log::warn!("ragb: {} would not load: {e}", path.display())).ok()?;
             Some(Api {
                 open: *lib.get(b"ragb_open\0").ok()?,
+                open_at: *lib.get(b"ragb_open_at\0").ok()?,
                 close: *lib.get(b"ragb_close\0").ok()?,
                 song_count: *lib.get(b"ragb_song_count\0").ok()?,
                 song_table: *lib.get(b"ragb_song_table\0").ok()?,
@@ -102,6 +105,14 @@ impl Player {
         let api = api().ok_or("the GBA music player (ragb) is not installed")?;
         let mut err = [0 as c_char; 256];
         let handle = unsafe { (api.open)(rom.as_ptr(), rom.len(), sample_rate, err.as_mut_ptr(), err.len()) };
+        if !handle.is_null() {
+            return Ok(Self { api, handle, rate: sample_rate });
+        }
+        // agbplay's scanner also needs the engine's player table and mixing settings; a table
+        // found by its shape alone plays with the engine's usual ones.
+        let Some(table) = super::gba_m4a::song_table(rom) else { return Err(error_text(&err)) };
+        let count = table.songs.last().map_or(0, |s| s.number + 1);
+        let handle = unsafe { (api.open_at)(rom.as_ptr(), rom.len(), sample_rate, table.offset as u64, count, err.as_mut_ptr(), err.len()) };
         if handle.is_null() {
             return Err(error_text(&err));
         }
