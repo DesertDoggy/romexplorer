@@ -24,8 +24,6 @@ const MIN_LOOP_MS: u64 = 1_000;
 /// How alike two stretches must be to count as the same: one minus the correlation of their
 /// band envelopes.
 const SAME: f32 = 0.10;
-/// A loop this alike is [`Timing::Loops::sure`]: enough to overrule a playlist's length.
-const SURE: f32 = 0.05;
 /// The same, for the short window that finds where the loop begins.
 const SAME_LOCAL: f32 = 0.25;
 /// How alike the notes of two stretches must be: one minus the mean cosine of their blocks'
