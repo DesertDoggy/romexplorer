@@ -26,6 +26,7 @@ pub mod pipeline;
 pub mod rom_audio;
 pub mod rip_match;
 pub mod rip_sets;
+pub mod snes_sound;
 pub mod platforms;
 pub mod ra_disc;
 pub mod scan;

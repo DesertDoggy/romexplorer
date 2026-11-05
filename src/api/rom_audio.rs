@@ -491,26 +491,66 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
             .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
         found.push((rom_id, matched));
     }
-    let mut strong: HashSet<PathBuf> = found.iter().filter_map(|(_, m)| m.as_ref().ok()).flatten().filter(|(_, share)| *share >= rip_match::SURE_SHARE).map(|(set, _)| set.clone()).collect();
+    // Who holds each set strongly: the same game in another region, revision or beta is not
+    // another owner, so owners are kept by title.
+    let mut paths: HashMap<u64, String> = roms.iter().filter_map(|r| Some((r.try_get::<u64, _>("id").ok()?, r.try_get::<String, _>("main_path").ok()?))).collect();
+    let mut strong: Vec<(PathBuf, u64)> = found
+        .iter()
+        .filter_map(|(rom_id, m)| Some((*rom_id, m.as_ref().ok()?)))
+        .flat_map(|(rom_id, sets)| sets.iter().filter(|(_, share)| *share >= rip_match::SURE_SHARE).map(move |(set, _)| (set.clone(), rom_id)))
+        .collect();
     // Sets already attached to ROMs this run does not re-read.
-    let in_run: HashSet<u64> = roms.iter().filter_map(|r| r.try_get::<u64, _>("id").ok()).collect();
-    let attached: Vec<(u64, String)> = sqlx::query_as("SELECT DISTINCT rom_id, inner_path FROM rom_audio_tracks WHERE location = 'file' AND data_track = ? AND inner_path IS NOT NULL")
-        .bind(rip_sets::RIP_VIEW)
-        .fetch_all(&app.pool)
-        .await?;
-    for (rom_id, inner) in attached {
-        if !in_run.contains(&rom_id) {
+    let attached: Vec<(u64, String, String)> = sqlx::query_as(
+        "SELECT DISTINCT t.rom_id, t.inner_path, r.main_path FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id \
+         WHERE t.location = 'file' AND t.data_track = ? AND t.inner_path IS NOT NULL",
+    )
+    .bind(rip_sets::RIP_VIEW)
+    .fetch_all(&app.pool)
+    .await?;
+    let read_now: HashSet<u64> = found.iter().map(|(id, _)| *id).collect();
+    for (rom_id, inner, main_path) in attached {
+        if !read_now.contains(&rom_id) {
             if let Some(set) = library.set_of(&inner) {
-                strong.insert(set.to_path_buf());
+                strong.push((set.to_path_buf(), rom_id));
+                paths.entry(rom_id).or_insert(main_path);
             }
         }
+    }
+    let ids: Vec<u64> = found.iter().map(|(id, _)| *id).chain(strong.iter().map(|(_, id)| *id)).collect::<HashSet<_>>().into_iter().collect();
+    let titles = title_keys(app, &ids, &paths).await?;
+    let mut owners: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    for (set, rom_id) in strong {
+        owners.entry(set).or_default().insert(titles.get(&rom_id).cloned().unwrap_or_default());
     }
     Ok(found
         .into_iter()
         .map(|(rom_id, m)| {
-            (rom_id, m.map(|sets| rip_match::choose(&sets, |set| strong.contains(set))))
+            let mine = titles.get(&rom_id).cloned().unwrap_or_default();
+            (rom_id, m.map(|sets| rip_match::choose(&sets, |set| owners.get(set).is_some_and(|o| o.iter().any(|t| *t != mine)))))
         })
         .collect())
+}
+
+/// A key per ROM that is the same for the regions, revisions and betas of one game: its title,
+/// or, for a ROM not in a title yet, its file name without the bracketed tags.
+async fn title_keys(app: &App, ids: &[u64], paths: &HashMap<u64, String>) -> Result<HashMap<u64, String>> {
+    let mut keys: HashMap<u64, String> = HashMap::new();
+    for chunk in ids.chunks(1000) {
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        let rows: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT gr.rom_id, MIN(tr.title_id) FROM local_game_roms gr JOIN local_release_games lrg ON lrg.game_id = gr.game_id \
+             JOIN title_releases tr ON tr.release_id = lrg.release_id WHERE gr.rom_id IN ({list}) GROUP BY gr.rom_id"
+        )))
+        .fetch_all(&app.pool)
+        .await?;
+        keys.extend(rows.into_iter().map(|(rom, title)| (rom, format!("t{title}"))));
+    }
+    for id in ids {
+        if let (false, Some(path)) = (keys.contains_key(id), paths.get(id)) {
+            keys.insert(*id, format!("n{}", rip_match::bare_name(Path::new(path))));
+        }
+    }
+    Ok(keys)
 }
 
 /// Notes why a ROM could not be read, and keeps the tracks of its last good index: the
