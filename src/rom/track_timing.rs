@@ -323,7 +323,9 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
         }
         let flat = |v: f32, m: f32| (v / len).sqrt() <= 0.02 * m.max(0.05 * mean_level);
         if flat(vx, mx) || flat(vy, my) {
-            return if flat(vx, mx) && flat(vy, my) && (mx - my).abs() <= 0.1 * mx.max(my) { 0.0 } else { 1.0 };
+            // Too even to correlate: how far apart the two are, against how loud they are.
+            let diff = (from..to).map(|i| (level[i] - level[i - back]).powi(2)).sum::<f32>() / len;
+            return (2.0 * diff.sqrt() / mx.max(my).max(1e-6)).min(1.0);
         }
         1.0 - cov / (vx * vy).sqrt()
     };
@@ -363,7 +365,9 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
         let window = (LOCAL_WINDOW_MS as usize * per_second / 1000).clamp(2, period);
         let mut i = n - period;
         while i >= window {
-            if unlike(i - window + period, i + period, period, 1) >= SAME_LOCAL {
+            // A real change holds: the stretch before it is unlike its copy too.
+            let unlike_here = |i: usize| unlike(i - window + period, i + period, period, 1) >= SAME_LOCAL;
+            if unlike_here(i) && (i < 2 * window || unlike_here(i - window)) {
                 // Within that stretch, the loop begins after the last block clearly unlike its copy.
                 let differs = |k: usize| (level[k] - level[k + period]).abs() > 0.5 * level[k].max(level[k + period]).max(0.1 * mean_level);
                 return (i - window..i).rev().find(|&k| differs(k)).map_or(i - window, |k| k + 1);
