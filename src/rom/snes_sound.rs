@@ -17,7 +17,9 @@ pub const ARAM_SIZE: usize = 0x10000;
 /// I/O registers in ARAM; an upload never writes here.
 const IO: std::ops::Range<usize> = 0xF0..0x100;
 /// A chain with fewer bytes than this is noise that happened to parse.
-const MIN_CHAIN_BYTES: usize = 64;
+const MIN_CHAIN_BYTES: usize = 256;
+/// Real uploads send code, songs and samples, not a few loose bytes per block.
+const MIN_BLOCK_BYTES: usize = 16;
 /// More blocks than this in one chain is not a real upload.
 const MAX_BLOCKS: usize = 256;
 
@@ -69,26 +71,54 @@ fn u16_at(rom: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes([*rom.get(at)?, *rom.get(at + 1)?]))
 }
 
-/// The chain starting at `at`, if the bytes there parse as one: blocks that fit in ARAM and stay
-/// clear of its I/O registers, ending in a terminator.
+/// The chain starting at `at`, if the bytes there parse as one: blocks of real size that fit
+/// in ARAM, stay clear of its I/O registers and don't overlap or hold only filler, ending in a
+/// terminator whose entry point lands on uploaded code.
 pub fn chain_at(rom: &[u8], at: usize) -> Option<Chain> {
-    let mut blocks = Vec::new();
+    let mut blocks: Vec<Block> = Vec::new();
     let mut pos = at;
     loop {
         let len = u16_at(rom, pos)? as usize;
         let aram = u16_at(rom, pos + 2)?;
         if len == 0 {
             let chain = Chain { offset: at, blocks, entry: aram };
-            let ok = chain.bytes() >= MIN_CHAIN_BYTES && (0x0200..0xFFC0).contains(&(aram as usize));
+            let entry_byte = chain.blocks.iter().find(|b| (b.aram as usize..b.aram as usize + b.len).contains(&(aram as usize))).map(|b| rom[b.rom + (aram - b.aram) as usize]);
+            let ok = chain.bytes() >= MIN_CHAIN_BYTES && (0x0200..0xFFC0).contains(&(aram as usize)) && entry_byte.is_some_and(|op| op != 0x00 && op != 0xFF);
             return ok.then_some(chain);
         }
         let start = aram as usize;
-        if start + len > ARAM_SIZE || (start < IO.end && start + len > IO.start) || pos + 4 + len > rom.len() || blocks.len() >= MAX_BLOCKS {
+        if len < MIN_BLOCK_BYTES || start + len > ARAM_SIZE || (start < IO.end && start + len > IO.start) || pos + 4 + len > rom.len() || blocks.len() >= MAX_BLOCKS {
+            return None;
+        }
+        if blocks.iter().any(|b| start < b.aram as usize + b.len && (b.aram as usize) < start + len) || filler(&rom[pos + 4..pos + 4 + len]) {
             return None;
         }
         blocks.push(Block { aram, rom: pos + 4, len });
         pos += 4 + len;
     }
+}
+
+/// Whether bytes are mostly 00 or FF: erased space, not something a game sends.
+fn filler(bytes: &[u8]) -> bool {
+    bytes.iter().filter(|&&b| b == 0x00 || b == 0xFF).count() * 10 >= bytes.len() * 9
+}
+
+/// The addresses the SNES CPU sees a ROM offset at, as the three bytes a pointer to it holds,
+/// for both cartridge layouts: LoROM (32 KB banks at $8000) and HiROM (64 KB banks at $C0).
+fn bus_addresses(offset: usize) -> [[u8; 3]; 3] {
+    let lo_bank = (offset / 0x8000) as u8;
+    let lo_addr = (0x8000 + offset % 0x8000) as u16;
+    let hi_bank = (offset / 0x10000) as u8;
+    let hi_addr = (offset % 0x10000) as u16;
+    let le = |a: u16, bank: u8| [a as u8, (a >> 8) as u8, bank];
+    [le(lo_addr, lo_bank), le(lo_addr, lo_bank | 0x80), le(hi_addr, hi_bank | 0xC0)]
+}
+
+/// Whether the ROM holds a pointer to the chain's start: the game's upload routine is handed
+/// its address, so a chain nothing points at is probably data that happens to parse.
+pub fn referenced(rom: &[u8], chain: &Chain) -> bool {
+    let wanted = bus_addresses(chain.offset);
+    rom.windows(3).any(|w| wanted.iter().any(|p| w == p))
 }
 
 /// Every upload chain in a ROM image, in ROM order. A chain found inside another is not
@@ -108,10 +138,27 @@ pub fn find_chains(rom: &[u8]) -> Vec<Chain> {
     chains
 }
 
-/// The chains that carry a driver: they upload code at their own entry point. Song and
-/// sample uploads sent later to that driver end in the same entry, so they are grouped by it.
-pub fn drivers(chains: &[Chain]) -> Vec<&Chain> {
-    chains.iter().filter(|c| c.holds_entry()).collect()
+/// The chains that carry a driver: they upload code at their own entry point. Those the ROM
+/// points at come first, then the largest. Song and sample uploads sent later to that driver
+/// end in the same entry, so they are grouped by it.
+pub fn drivers<'a>(rom: &[u8], chains: &'a [Chain]) -> Vec<&'a Chain> {
+    let candidates: Vec<&Chain> = chains.iter().filter(|c| c.holds_entry()).collect();
+    // One pass over the ROM for every candidate's pointers.
+    let mut wanted: std::collections::HashMap<[u8; 3], Vec<usize>> = std::collections::HashMap::new();
+    for (i, c) in candidates.iter().enumerate() {
+        for p in bus_addresses(c.offset) {
+            wanted.entry(p).or_default().push(i);
+        }
+    }
+    let mut pointed = vec![false; candidates.len()];
+    for w in rom.windows(3) {
+        if let Some(ids) = wanted.get(w) {
+            ids.iter().for_each(|&i| pointed[i] = true);
+        }
+    }
+    let mut found: Vec<(&Chain, bool)> = candidates.into_iter().zip(pointed).collect();
+    found.sort_by_key(|(c, r)| (!r, std::cmp::Reverse(c.bytes())));
+    found.into_iter().map(|(c, _)| c).collect()
 }
 
 /// An ARAM image built by laying chains in order, with which bytes were written.
@@ -169,17 +216,11 @@ impl Aram {
         // DSP: muted with echo off until the driver sets it up.
         let dsp = &mut spc[0x10100..0x10180];
         dsp[0x6C] = 0xE0;
-        spc[0x101C0..0x10200].copy_from_slice(&BOOT_ROM);
+        // The file's last 64 bytes are the RAM under the boot ROM, not the boot ROM itself.
+        spc[0x101C0..0x10200].copy_from_slice(&self.ram[0xFFC0..]);
         spc
     }
 }
-
-/// The sound chip's 64-byte boot ROM, which lives in every `.spc` file's last 64 bytes.
-const BOOT_ROM: [u8; 64] = [
-    0xCD, 0xEF, 0xBD, 0xE8, 0x00, 0xC6, 0x1D, 0xD0, 0xFC, 0x8F, 0xAA, 0xF4, 0x8F, 0xBB, 0xF5, 0x78, 0xCC, 0xF4, 0xD0, 0xFB, 0x2F, 0x19, 0xEB, 0xF4,
-    0xD0, 0xFC, 0x7E, 0xF4, 0xD0, 0x0B, 0xE4, 0xF5, 0xCB, 0xF4, 0xD7, 0x00, 0xFC, 0xD0, 0xF3, 0xAB, 0x01, 0x10, 0xEF, 0x7E, 0xF4, 0x10, 0xEB, 0xBA,
-    0xF6, 0xDA, 0x00, 0xBA, 0xF4, 0xC4, 0xF4, 0xDD, 0x5D, 0xD0, 0xDB, 0x1F, 0x00, 0x00, 0xC0, 0xFF,
-];
 
 /// A rip's ARAM, from an `.spc` file.
 pub fn spc_aram(spc: &[u8]) -> Option<&[u8]> {
@@ -200,6 +241,8 @@ mod tests {
     fn rom_with_chain() -> (Vec<u8>, usize) {
         let mut rom = vec![0xFFu8; 1000];
         let at = rom.len();
+        // The ROM points at the chain (a LoROM address in bank 0).
+        rom[10..13].copy_from_slice(&[(0x8000 + at) as u8, ((0x8000 + at) >> 8) as u8, 0x80]);
         rom.extend(block(0x0500, &[0x8F; 200])); // driver code
         rom.extend(block(0x2000, &[0x11; 100])); // song data
         rom.extend(block(0x0000, &[]).iter().take(2).copied());
@@ -216,6 +259,8 @@ mod tests {
         let c = &chains[0];
         assert_eq!((c.offset, c.entry, c.bytes()), (at, 0x0500, 300));
         assert!(c.holds_entry());
+        assert!(referenced(&rom, c));
+        assert_eq!(drivers(&rom, &chains).len(), 1);
         let mut aram = Aram::default();
         aram.apply(&rom, c);
         assert_eq!(aram.ram[0x0500], 0x8F);
@@ -233,7 +278,11 @@ mod tests {
         rom.extend([0, 0, 0x00, 0x05]);
         assert!(find_chains(&rom).is_empty());
         // Too small to be real.
-        let mut rom = block(0x0500, &[0; 8]);
+        let mut rom = block(0x0500, &[0x8F; 100]);
+        rom.extend([0, 0, 0x00, 0x05]);
+        assert!(find_chains(&rom).is_empty());
+        // Erased space is not code.
+        let mut rom = block(0x0500, &[0xFF; 400]);
         rom.extend([0, 0, 0x00, 0x05]);
         assert!(find_chains(&rom).is_empty());
         assert!(find_chains(&[0xFF; 4096]).is_empty());
