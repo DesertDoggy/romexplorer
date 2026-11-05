@@ -11,7 +11,7 @@
 //!   `audio_rom_*` settings. Whether a track is BGM, a jingle or a sound effect is worked out
 //!   here, from its loop and length, so a changed threshold needs no re-index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -386,6 +386,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     summary.roms_seen = total;
     let library = Arc::new(rip_library(app, progress).await?);
     summary.library_sets = library.len() as u64;
+    let mut chosen = choose_library_sets(app, progress, &library, &roms).await?;
     // A library set's tracks, read once per run however many ROMs (regions) it matches.
     let mut set_tracks: HashMap<PathBuf, Vec<FoundTrack>> = HashMap::new();
     for (i, row) in roms.iter().enumerate() {
@@ -412,22 +413,21 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let label = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
         progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label}", i + 1)).await;
         let open = disc.clone();
-        let (lib, rom_file) = (library.clone(), PathBuf::from(&main_path));
+        let matched = chosen.remove(&rom_id).unwrap_or(Ok(Vec::new()));
         let found = tokio::task::spawn_blocking(move || {
             let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |_| {})).unwrap_or_default();
             let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |_| {}));
-            let matched = if in_library && rom_file.is_file() { lib.match_rom(&rom_file, platform) } else { Ok(Vec::new()) };
-            (rips, disc, matched)
+            (rips, disc)
         })
         .await
         .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
-        let (mut rips, disc_found, matched) = found;
+        let (mut rips, disc_found) = found;
         match matched {
             Ok(sets) => {
                 if !sets.is_empty() {
                     summary.library_matches += 1;
                 }
-                for (set, _) in sets {
+                for set in sets {
                     if !set_tracks.contains_key(&set) {
                         let (path, t) = (set.clone(), thresholds);
                         let tracks = tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
@@ -462,6 +462,55 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     }
     progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
     Ok(summary)
+}
+
+/// The library sets each ROM of the run takes, by ROM id. Every covered ROM is matched first,
+/// so a weak match can be checked against the set's strong one: a set that matches its own
+/// game strongly (in this run, or already attached to a ROM outside it) is not also given to
+/// ROMs that only share its sound driver.
+async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_match::Library>, roms: &[sqlx::mysql::MySqlRow]) -> Result<HashMap<u64, std::result::Result<Vec<PathBuf>, String>>> {
+    if library.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut found: Vec<(u64, std::result::Result<Vec<(PathBuf, f32)>, String>)> = Vec::new();
+    let covered: Vec<(u64, PathBuf, u16)> = roms
+        .iter()
+        .filter_map(|r| Some((r.try_get::<u64, _>("id").ok()?, PathBuf::from(r.try_get::<String, _>("main_path").ok()?), r.try_get::<u16, _>("app_platform_id").ok()?)))
+        .filter(|(_, path, platform)| library.covers(*platform) && !rip_match::skip_rom(path))
+        .collect();
+    let total = covered.len() as u64;
+    for (i, (rom_id, path, platform)) in covered.into_iter().enumerate() {
+        if progress.cancelled().await {
+            break;
+        }
+        let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        progress.report(i as u64, Some(total), &format!("matching ROM {} of {total} to the rip library: {label}", i + 1)).await;
+        let lib = library.clone();
+        let matched = tokio::task::spawn_blocking(move || if path.is_file() { lib.match_rom(&path, platform) } else { Ok(Vec::new()) })
+            .await
+            .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+        found.push((rom_id, matched));
+    }
+    let mut strong: HashSet<PathBuf> = found.iter().filter_map(|(_, m)| m.as_ref().ok()).flatten().filter(|(_, share)| *share >= rip_match::SURE_SHARE).map(|(set, _)| set.clone()).collect();
+    // Sets already attached to ROMs this run does not re-read.
+    let in_run: HashSet<u64> = roms.iter().filter_map(|r| r.try_get::<u64, _>("id").ok()).collect();
+    let attached: Vec<(u64, String)> = sqlx::query_as("SELECT DISTINCT rom_id, inner_path FROM rom_audio_tracks WHERE location = 'file' AND data_track = ? AND inner_path IS NOT NULL")
+        .bind(rip_sets::RIP_VIEW)
+        .fetch_all(&app.pool)
+        .await?;
+    for (rom_id, inner) in attached {
+        if !in_run.contains(&rom_id) {
+            if let Some(set) = library.set_of(&inner) {
+                strong.insert(set.to_path_buf());
+            }
+        }
+    }
+    Ok(found
+        .into_iter()
+        .map(|(rom_id, m)| {
+            (rom_id, m.map(|sets| rip_match::choose(&sets, |set| strong.contains(set))))
+        })
+        .collect())
 }
 
 /// Notes why a ROM could not be read, and keeps the tracks of its last good index: the

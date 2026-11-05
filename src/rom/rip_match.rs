@@ -237,6 +237,34 @@ impl Scanner<'_> {
     }
 }
 
+// --- choosing among a ROM's matches -----------------------------------------------------
+
+/// A match this strong is the game's own music. Below it, a set found in a ROM can be another
+/// game sharing its sound driver or samples.
+pub const SURE_SHARE: f32 = 0.7;
+/// A ROM keeps its best set, and the others within this much of it: a compilation holds
+/// several games whole, while a shared driver matches well below the game's own set.
+const NEAR_BEST: f32 = 0.05;
+/// At most this many sets per ROM.
+const MAX_SETS_PER_ROM: usize = 8;
+
+/// ROMs that hold other games' sound drivers without being those games: BIOS images, and the
+/// Super Game Boy (it carries the SNES driver every SGB-enhanced game's rip shares).
+pub fn skip_rom(path: &Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    name.contains("[bios]") || name.contains("(bios)") || name.contains("super game boy") || name.contains("system card")
+}
+
+/// Which of a ROM's matches (best first) it keeps. A weak match (under [`SURE_SHARE`]) is
+/// dropped when `claimed(set)` says another ROM holds that set strongly: that is the set's own
+/// game, and this ROM only shares its driver. Then the best set stays, with the others close
+/// to it.
+pub fn choose(matches: &[(PathBuf, f32)], claimed: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let kept: Vec<&(PathBuf, f32)> = matches.iter().filter(|(set, share)| *share >= SURE_SHARE || !claimed(set)).collect();
+    let Some(best) = kept.first().map(|m| m.1) else { return Vec::new() };
+    kept.into_iter().filter(|(_, share)| *share >= best - NEAR_BEST).take(MAX_SETS_PER_ROM).map(|(set, _)| set.clone()).collect()
+}
+
 // --- rip libraries ----------------------------------------------------------------------
 
 /// The largest ROM file scanned whole; bigger is not a cartridge these sets are from.
@@ -316,6 +344,12 @@ impl Library {
 
     fn systems_for(&self, platform: u16) -> Vec<RipSystem> {
         self.by_system.keys().copied().filter(|s| s.platform_ids().contains(&platform)).collect()
+    }
+
+    /// The library set a rip track's stored path (`inner_path`) lies in, if any.
+    pub fn set_of(&self, track: &str) -> Option<&Path> {
+        let file = Path::new(track.split('|').next().unwrap_or(track));
+        file.ancestors().find_map(|a| self.sets.iter().find(|(p, _)| p == a).map(|(p, _)| p.as_path()))
     }
 
     /// Whether any set could belong to a ROM of `platform` (`platforms.id`).
@@ -437,6 +471,24 @@ mod tests {
         let mut s = m.scanner();
         s.feed(&noise(3, 1 << 16));
         assert!(s.finish().is_empty());
+    }
+
+    #[test]
+    fn a_rom_keeps_its_best_set_and_close_ones() {
+        let m = |name: &str, share: f32| (PathBuf::from(name), share);
+        let none = |_: &Path| false;
+        // A shared driver well below the game's own set is left out.
+        assert_eq!(choose(&[m("own", 0.98), m("sibling", 0.6)], none), [PathBuf::from("own")]);
+        // A compilation keeps every game it holds whole.
+        assert_eq!(choose(&[m("a", 0.99), m("b", 0.97), m("c", 0.96)], none).len(), 3);
+        // A weak best match whose set belongs strongly to another ROM is that game's, not this one's.
+        let claimed = |set: &Path| set == Path::new("other game");
+        assert!(choose(&[m("other game", 0.55)], claimed).is_empty());
+        // ...but with no stronger owner it stays (a port on another system, say).
+        assert_eq!(choose(&[m("port", 0.55)], none), [PathBuf::from("port")]);
+        assert!(skip_rom(Path::new("x/Super Game Boy (World) (Rev 2).sfc")));
+        assert!(skip_rom(Path::new("[BIOS] Something (Japan).pce")));
+        assert!(!skip_rom(Path::new("Some Game (USA).sfc")));
     }
 
     #[test]
