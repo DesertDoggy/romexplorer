@@ -1105,10 +1105,13 @@ const TAIL_KEEP_MS: u64 = 150;
 
 /// Holds back samples while they are silent, and writes them only when sound follows: what
 /// is still held at the end is the silent end, and all but [`TAIL_KEEP_MS`] of it is dropped.
+/// A silent start is dropped the same way, all but its last [`TAIL_KEEP_MS`].
 #[derive(Default)]
 struct TailTrim {
     held: Vec<i16>,
     shape: Option<(u32, u16)>,
+    /// Sound has been heard: silence is held from here on, not dropped.
+    started: bool,
 }
 
 type Write<'a> = dyn FnMut(&[i16], u32, u16) -> std::result::Result<(), String> + 'a;
@@ -1119,6 +1122,31 @@ impl TailTrim {
         let frame = usize::from(channels.max(1));
         // Up to the last frame with sound: written (after anything held); the rest is held.
         let loud = pcm.chunks(frame).rposition(|f| f.iter().any(|&v| v.unsigned_abs() > TAIL_SILENCE as u16));
+        if !self.started {
+            let first = pcm.chunks(frame).position(|f| f.iter().any(|&v| v.unsigned_abs() > TAIL_SILENCE as u16));
+            let keep = (TAIL_KEEP_MS * u64::from(rate) / 1000) as usize * frame;
+            match first {
+                None => {
+                    // Still silent: keep only the last stretch, which leads into the sound.
+                    self.held.extend_from_slice(pcm);
+                    if self.held.len() > keep {
+                        self.held.drain(..self.held.len() - keep);
+                    }
+                    return Ok(());
+                }
+                Some(at) => {
+                    self.started = true;
+                    let lead = (at * frame).saturating_sub(keep);
+                    if lead > 0 {
+                        self.held.clear();
+                    } else {
+                        let have = self.held.len();
+                        self.held.drain(..have.saturating_sub(keep - at * frame));
+                    }
+                    return self.push(&pcm[lead..], rate, channels, write);
+                }
+            }
+        }
         match loud {
             Some(last) => {
                 let cut = (last + 1) * frame;
@@ -1198,14 +1226,16 @@ mod tests {
         let mut out: Vec<i16> = Vec::new();
         let mut write = |pcm: &[i16], _: u32, _: u16| -> std::result::Result<(), String> { out.extend_from_slice(pcm); Ok(()) };
         let mut trim = TailTrim::default();
-        // 1 kHz mono: sound, 0.5 s of silence, sound, then 2 s of silence.
+        // 1 kHz mono: 1 s of silence, sound, 0.5 s of silence, sound, then 2 s of silence.
         let sound = vec![5_000i16; 100];
+        trim.push(&[0; 700], 1_000, 1, &mut write).unwrap();
+        trim.push(&[0; 300], 1_000, 1, &mut write).unwrap();
         trim.push(&sound, 1_000, 1, &mut write).unwrap();
         trim.push(&[0; 500], 1_000, 1, &mut write).unwrap();
         trim.push(&sound, 1_000, 1, &mut write).unwrap();
         trim.push(&[10; 2_000], 1_000, 1, &mut write).unwrap();
         trim.finish(&mut write).unwrap();
-        assert_eq!(out.len(), 100 + 500 + 100 + 150);
+        assert_eq!(out.len(), 150 + 100 + 500 + 100 + 150);
     }
 
     #[test]
