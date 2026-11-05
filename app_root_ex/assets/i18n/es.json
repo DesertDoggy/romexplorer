@@ -2599,5 +2599,22 @@
   "Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.": "Las páginas de títulos pueden reproducir música mientras navegas. En los juegos compatibles es la banda sonora del propio juego, reproducida directamente desde la ROM (ejecuta antes «Index ROM audio» en la pestaña Audio). Los títulos sin audio etiquetado ni ROM compatible reproducen pistas al azar.",
   "Change it any time under Config › Settings (media_show, audio_fallback).": "Puedes cambiarlo cuando quieras en Config › Settings (media_show, audio_fallback).",
   "Off": "Desactivado",
-  "On (recommended)": "Activado (recomendado)"
+  "On (recommended)": "Activado (recomendado)",
+  "split out of": "separado de",
+  "undo split": "deshacer separación",
+  "rejoined {date} →": "reunido el {date} →",
+  "Put \"{merged}\" back into \"{current}\"?": "¿Devolver «{merged}» a «{current}»?",
+  "back in title #{id}": "de vuelta en el título #{id}",
+  "Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.": "Las separaciones también aparecen aquí (motivo: split): «deshacer separación» devuelve los lanzamientos al título del que salieron.",
+  "to do": "pendientes",
+  "taken": "aceptada",
+  "said no": "rechazada",
+  "Arrange yourself": "Ordenar a mano",
+  "Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.": "Arrastra los lanzamientos al título al que pertenecen, o a + para un título nuevo con el nombre del primero. O toca un lanzamiento y luego una caja.",
+  "new title": "título nuevo",
+  "(left empty: removed)": "(queda vacío: se elimina)",
+  "a new title": "un título nuevo",
+  "apply this grouping": "aplicar esta agrupación",
+  "start from the titles as they are": "empezar por los títulos actuales",
+  "start from the suggestion": "empezar por la sugerencia"
 }

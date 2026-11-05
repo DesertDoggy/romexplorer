@@ -30,6 +30,8 @@ use super::{App, Error, Result};
 pub struct ReviewParams {
     /// Merge review: one suggestion kind only (`international`, `igdb`, ...).
     pub kind: Option<String>,
+    /// Merge review: `todo` (default: pending), `done` (taken or said no to) or `all`.
+    pub state: Option<String>,
     /// Aspect review: only titles with a screenshot or title screen to judge by.
     #[serde(default)]
     pub with_screenshots: bool,
@@ -132,11 +134,17 @@ fn list(ids: &[u64]) -> String {
 /// The pending suggestions, one page.
 pub async fn merge_queue(app: &App, q: &ListQuery, p: &ReviewParams) -> Result<ReviewPage<MergeItem>> {
     let order = if merge_review_order(app).await? == "english" { "(kind = 'igdb') DESC, priority DESC" } else { "priority DESC" };
-    let mut sql = String::from("SELECT igdb_id, title_ids, kind FROM title_merge_suggestions WHERE status = 'pending'");
+    let status = match p.state.as_deref() {
+        Some("done") => "status <> 'pending'",
+        Some("all") => "1=1",
+        _ => "status = 'pending'",
+    };
+    // Still to do first, then the newest decisions.
+    let mut sql = format!("SELECT igdb_id, title_ids, kind FROM title_merge_suggestions WHERE {status}");
     if p.kind.is_some() {
         sql.push_str(" AND kind = ?");
     }
-    sql.push_str(&format!(" ORDER BY {order}, updated_at DESC, igdb_id"));
+    sql.push_str(&format!(" ORDER BY status <> 'pending', IF(status = 'pending', 0, UNIX_TIMESTAMP(updated_at)) DESC, {order}, updated_at DESC, igdb_id"));
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     if let Some(kind) = &p.kind {
         query = query.bind(kind);
@@ -254,6 +262,10 @@ pub struct ApplyRequest {
     /// Which of the suggestion's options (0 for the IGDB-game kind's merge).
     #[serde(default)]
     pub option: usize,
+    /// The user's own grouping instead of an option (releases dragged between the titles on
+    /// the card): each group into its title, or a new title when it names none.
+    #[serde(default)]
+    pub layout: Option<Vec<LayoutGroup>>,
     /// `lookup`: the UI language the answer should come back in (en, ja, fr, ...).
     #[serde(default)]
     pub lang: Option<String>,
@@ -263,6 +275,15 @@ pub struct ApplyRequest {
     /// `lookup`: ask in `lang` although only another language's answer is saved.
     #[serde(default)]
     pub ask: bool,
+}
+
+/// One title of a grouping the user arranged on a merge review card.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LayoutGroup {
+    /// The title the releases go into; none: a new title, named after the first of them.
+    #[serde(default)]
+    pub title_id: Option<u64>,
+    pub releases: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -281,6 +302,11 @@ pub async fn apply(app: &App, key: &str, req: &ApplyRequest) -> Result<ApplyResu
     }
     let title_ids: Vec<u64> = row.try_get::<String, _>("title_ids")?.split(',').filter_map(|x| x.parse().ok()).collect();
     let detail: Option<ReviewDetail> = row.try_get::<Option<String>, _>("detail")?.map(|d| serde_json::from_str(&d)).transpose().map_err(|e| Error::internal(format!("suggestion {key}: {e}")))?;
+    if let Some(layout) = &req.layout {
+        let result = ApplyResult { title_ids: apply_layout(app, layout).await? };
+        sqlx::query("UPDATE title_merge_suggestions SET status = 'accepted', updated_at = NOW() WHERE igdb_id = ?").bind(key).execute(&app.pool).await?;
+        return Ok(result);
+    }
     let result = match detail {
         // A suggestion of titles sharing an IGDB game: merged platform by platform, each
         // title's own game kept on its releases.
@@ -307,6 +333,48 @@ pub async fn apply(app: &App, key: &str, req: &ApplyRequest) -> Result<ApplyResu
     };
     sqlx::query("UPDATE title_merge_suggestions SET status = 'accepted', updated_at = NOW() WHERE igdb_id = ?").bind(key).execute(&app.pool).await?;
     Ok(result)
+}
+
+/// The user's own grouping ([`LayoutGroup`]): the releases of each group go into its title
+/// (those already there stay), a group naming no title becomes a new one (`split_releases`,
+/// so it is logged and can be undone under Edit › Combined titles). A title left with nothing
+/// is gone. Returns the titles the groups ended up in.
+async fn apply_layout(app: &App, layout: &[LayoutGroup]) -> Result<Vec<u64>> {
+    let every: Vec<u64> = layout.iter().flat_map(|g| g.releases.iter().copied()).collect();
+    if every.is_empty() {
+        return Err(Error::invalid("this grouping names no releases"));
+    }
+    if every.len() != every.iter().collect::<HashSet<_>>().len() {
+        return Err(Error::invalid("a release is in two groups"));
+    }
+    let involved: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT DISTINCT title_id FROM title_releases WHERE release_id IN ({})", list(&every)))).fetch_all(&app.pool).await?;
+    titles::keep_igdb_games(app, &involved).await?;
+    let mut out = Vec::new();
+    // Into existing titles first; a group's own title is never emptied by this.
+    for g in layout.iter().filter(|g| g.title_id.is_some() && !g.releases.is_empty()) {
+        let target = g.title_id.unwrap_or_default();
+        let away: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT r.id FROM `release` r WHERE r.id IN ({}) AND r.deleted = FALSE AND NOT EXISTS (SELECT 1 FROM title_releases tr WHERE tr.release_id = r.id AND tr.title_id = ?)",
+            list(&g.releases)
+        )))
+        .bind(target)
+        .fetch_all(&app.pool)
+        .await?;
+        if !away.is_empty() {
+            titles::move_releases(app, &ReleasesMove { release_ids: away, title_id: target }).await?;
+        }
+        out.push(target);
+    }
+    for g in layout.iter().filter(|g| g.title_id.is_none() && !g.releases.is_empty()) {
+        let live: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM `release` WHERE id IN ({}) AND deleted = FALSE", list(&g.releases)))).fetch_all(&app.pool).await?;
+        if live.is_empty() {
+            continue;
+        }
+        // In the order dragged: the first names the new title.
+        let ordered: Vec<u64> = g.releases.iter().copied().filter(|id| live.contains(id)).collect();
+        out.push(titles::split_releases(app, &ReleasesSplit { release_ids: ordered }).await?);
+    }
+    Ok(out)
 }
 
 /// Puts each group of releases under a title of its own (see [`apply`]). Returns the titles.

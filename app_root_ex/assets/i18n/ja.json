@@ -2813,5 +2813,22 @@
   "Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.": "タイトルページを見ている間、音楽を流せます。対応しているゲームは、ROM からそのままゲーム本来の曲を流します（先に音声タブで「ROM の音声を索引」を実行してください）。タグ付きの音声も対応する ROM もないタイトルでは、ランダムな曲を流します。",
   "Change it any time under Config › Settings (media_show, audio_fallback).": "Config › Settings（media_show、audio_fallback）でいつでも変更できます。",
   "Off": "オフ",
-  "On (recommended)": "オン（おすすめ）"
+  "On (recommended)": "オン（おすすめ）",
+  "split out of": "分割元",
+  "undo split": "分割を元に戻す",
+  "rejoined {date} →": "{date} に戻しました →",
+  "Put \"{merged}\" back into \"{current}\"?": "「{merged}」を「{current}」に戻しますか？",
+  "back in title #{id}": "タイトル #{id} に戻しました",
+  "Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.": "分割もここに表示されます（理由: split）。「分割を元に戻す」で、リリースを元のタイトルに戻します。",
+  "to do": "未処理",
+  "taken": "採用済み",
+  "said no": "却下済み",
+  "Arrange yourself": "自分で振り分ける",
+  "Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.": "リリースを正しいタイトルへドラッグします。+ にドロップすると新しいタイトルになり、最初のリリースの名前が付きます。リリースをタップしてから枠をタップしても移動できます。",
+  "new title": "新しいタイトル",
+  "(left empty: removed)": "（空になるため削除）",
+  "a new title": "新しいタイトル",
+  "apply this grouping": "この振り分けを適用",
+  "start from the titles as they are": "今のタイトルから始める",
+  "start from the suggestion": "提案から始める"
 }
