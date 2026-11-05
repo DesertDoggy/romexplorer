@@ -21,8 +21,8 @@ pub const SILENT_END_MS: u64 = 4_000;
 const TAIL_MS: u64 = 500;
 /// The shortest loop looked for.
 const MIN_LOOP_MS: u64 = 1_000;
-/// How alike two stretches must be (mean difference per band, relative to the band's level)
-/// to count as the same.
+/// How alike two stretches must be to count as the same: one minus the correlation of their
+/// band envelopes.
 const SAME: f32 = 0.10;
 /// A loop this alike is [`Timing::Loops::sure`]: enough to overrule a playlist's length.
 const SURE: f32 = 0.05;
@@ -184,6 +184,34 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
     let floor = (total * 0.05).max(1e-3);
     let scale = mean.map(|m| (m / n as f32).max(floor));
     let differ = |i: usize, j: usize| (0..3).map(|k| (blocks[i][k] - blocks[j][k]).abs() / scale[k]).sum::<f32>() / 3.0;
+    // How unlike the window `from..to` is the same window `back` blocks earlier: one minus the
+    // correlation of their band envelopes. A correlation and not a difference: a noise channel
+    // or a busy band adds the same jitter to both copies, which a difference counts against
+    // them and a correlation does not.
+    let unlike = |from: usize, to: usize, back: usize| {
+        let len = ((to - from) * 3) as f32;
+        let (mut sx, mut sy) = (0f32, 0f32);
+        for i in from..to {
+            for k in 0..3 {
+                sx += blocks[i][k] / scale[k];
+                sy += blocks[i - back][k] / scale[k];
+            }
+        }
+        let (mx, my) = (sx / len, sy / len);
+        let (mut cov, mut vx, mut vy) = (0f32, 0f32, 0f32);
+        for i in from..to {
+            for k in 0..3 {
+                let (x, y) = (blocks[i][k] / scale[k] - mx, blocks[i - back][k] / scale[k] - my);
+                cov += x * y;
+                vx += x * x;
+                vy += y * y;
+            }
+        }
+        if vx <= 0.0 || vy <= 0.0 {
+            return 1.0;
+        }
+        1.0 - cov / (vx * vy).sqrt()
+    };
     let level = |i: usize| blocks[i].iter().sum::<f32>();
     let moves = |from: usize, to: usize| {
         let m = (from..to).map(level).sum::<f32>() / (to - from) as f32;
@@ -196,12 +224,12 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
             return None;
         }
         if w + 2 * p <= n {
-            let d = (n - w..n).map(|i| differ(i, i - p).max(differ(i, i - 2 * p))).sum::<f32>() / w as f32;
+            let d = unlike(n - w, n, p).max(unlike(n - w, n, 2 * p));
             return (d < SAME).then_some((p, d));
         }
         // A loop too long to be heard three times in what was rendered: one whole period
         // matching the one before it, closely, will do.
-        let d = (n - w..n).map(|i| differ(i, i - p)).sum::<f32>() / w as f32;
+        let d = unlike(n - w, n, p);
         (p >= long && d < SURE).then_some((p, d))
     })?;
     // Walking back from the end, the loop starts after the last window that does not match

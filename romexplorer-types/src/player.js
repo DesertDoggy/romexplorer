@@ -68,7 +68,7 @@
   const recall = (key, fallback) => { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } };
   const remember = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* not remembered */ } };
   const state = { audio: null, tracks: [], order: [], at: 0, shuffle: true, bar: null, list: null, labels: {}, volume: 1, normalise: false, keep: false,
-    hidden: [], onHide: null, preview: null, undo: null, crossfade: 0, fadeIn: 1, crossing: false, outgoing: new Set() };
+    hidden: [], onHide: null, preview: null, undo: null, crossfade: 0, fadeIn: 1, crossing: false, outgoing: new Set(), next: null };
   const FADE_TICK_MS = 40;
 
   // The factor for one track: 1 unless normalising and the track is louder than the target.
@@ -232,12 +232,24 @@
     load(autoplay, overlap);
   }
 
+  // The next track in the order starts loading while this one plays, so a change of track
+  // (and a crossfade) starts at once -- a ROM track is decoded by the server on first play.
+  function prefetchNext() {
+    if (state.next) { state.next.removeAttribute('src'); state.next = null; }
+    if (!state.tracks.length || state.order.length < 2 || state.preview) return;
+    const t = state.tracks[state.order[(state.at + 1) % state.order.length]];
+    if (!t) return;
+    const a = new Audio(); a.preload = 'auto'; a.muted = true; a.src = sourceOf(t);
+    state.next = a;
+  }
+
   // Set by start(): a new `<audio>` element wired to the bar.
   let makeAudio = () => new Audio();
 
   function stop() {
     if (state.audio) { state.audio.pause(); state.audio.removeAttribute('src'); state.audio.load(); }
     dropOutgoing();
+    if (state.next) { state.next.removeAttribute('src'); state.next = null; }
     if (state.bar) state.bar.remove();
     if (state.list) state.list.remove();
     document.body.classList.remove('rx-has-playlist');
@@ -319,7 +331,7 @@
       const mine = f => (...args) => { if (state.audio === audio) f(...args); };
       audio.addEventListener('ended', mine(() => { if (!state.crossing) step(1, true); }));
       audio.addEventListener('error', mine(() => { if (++failures < state.tracks.length) step(1, true); else paint(); }));
-      audio.addEventListener('playing', mine(() => { failures = 0; paint(); }));
+      audio.addEventListener('playing', mine(() => { failures = 0; paint(); prefetchNext(); }));
       audio.addEventListener('pause', mine(paint));
       audio.addEventListener('timeupdate', mine(() => {
         const d = audio.duration || ((current() || {}).duration_ms || 0) / 1000;
