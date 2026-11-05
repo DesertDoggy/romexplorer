@@ -827,6 +827,24 @@ fn index_members(open: &dyn Fn() -> Box<dyn VgmSource>, path: &str, kind: inner_
     }
 }
 
+/// The sequenced songs of a DS sound archive ([`super::rom_songs::index_sdat`]), when the DS
+/// sequence player is built.
+fn index_sequences(source: &mut dyn VgmSource, path: &str, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
+    if !super::sseq::available() || source.size() > super::rom_songs::MAX_SDAT_BYTES {
+        return;
+    }
+    let mut bytes = vec![0u8; source.size() as usize];
+    let mut at = 0;
+    while at < bytes.len() {
+        let n = source.read_at(at as u64, &mut bytes[at..]);
+        if n == 0 {
+            return;
+        }
+        at += n;
+    }
+    out.extend(super::rom_songs::index_sdat(&bytes, view, path, t));
+}
+
 /// Finds every sound in the ROM at `path`. `progress` is told what is being looked at.
 /// A ROM with nothing vgmstream reads gives an empty list, not an error.
 pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) -> Result<Vec<FoundTrack>, String> {
@@ -865,6 +883,9 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
             if let Some(kind) = inner_archives::kind_of(&file.path) {
                 progress(&file.path);
                 index_members(&|| Box::new(source.clone()), &file.path, kind, n as u32, t, &mut out);
+                if kind == inner_archives::Kind::Sdat {
+                    index_sequences(&mut source.clone(), &file.path, n as u32, t, &mut out);
+                }
                 continue;
             }
             if !vgmstream::known_extension(file.name()) {
@@ -894,6 +915,9 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
             if let Some(kind) = inner_archives::kind_of(&rel) {
                 progress(&rel);
                 index_members(&file, &rel, kind, 0, t, &mut out);
+                if kind == inner_archives::Kind::Sdat {
+                    index_sequences(file().as_mut(), &rel, 0, t, &mut out);
+                }
                 continue;
             }
             if !vgmstream::known_extension(name) {

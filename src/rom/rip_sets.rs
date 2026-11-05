@@ -68,8 +68,12 @@ fn m3u_text(bytes: &[u8]) -> String {
     encoding_rs::WINDOWS_1252.decode(bytes).0.into_owned()
 }
 
-/// The lines of `m3u` files that name `file` (by its base name, any case), in file order.
+/// The lines of `m3u` files that name `file` (by its base name, any case), in file order,
+/// numbered from 1 ([`counts_from_zero`]). Whether the numbers count from 0 is decided over all of
+/// `m3us`: a set's playlists are written one way, and one for a file whose first track has
+/// no line of its own shows no track 0 by itself.
 fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let from_zero = m3us.iter().any(|(_, text)| counts_from_zero(m3u_text(text).as_bytes()));
     let want = base_name(file).to_ascii_lowercase();
     let mut out = Vec::new();
     for (_, text) in m3us {
@@ -83,7 +87,7 @@ fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
             out.push(b'\n');
         }
     }
-    out
+    if from_zero { moved_up(&out) } else { out }
 }
 
 /// Groups music files with the playlists found next to them (same folder, or same archive).
@@ -301,7 +305,7 @@ fn load(file: &RipFile) -> Result<Emu, String> {
     let mut emu = Emu::open(file.data.clone(), Emu::SAMPLE_RATE)?;
     if !file.playlist.is_empty() {
         // A playlist gme cannot use leaves the file's own tracks, which still play.
-        if let Err(e) = emu.load_m3u(&one_based(&file.playlist)) {
+        if let Err(e) = emu.load_m3u(&file.playlist) {
             log::debug!("{}: playlist not used: {e}", file.rel);
         }
     }
@@ -316,22 +320,31 @@ fn number_field(line: &[u8]) -> Option<std::ops::Range<usize>> {
     Some(start..end)
 }
 
+/// A playlist line's decimal track number.
+fn decimal_number(line: &[u8]) -> Option<u32> {
+    if line.starts_with(b"#") {
+        return None;
+    }
+    number_field(line).and_then(|r| std::str::from_utf8(&line[r]).ok()?.trim().parse::<u32>().ok())
+}
+
 /// gme reads a playlist's decimal track numbers as counting from 1 (as NEZplug defines
 /// them), but many sets' playlists count from 0: every title then lands on the track before
-/// it, and the first plays nothing. A playlist with a track 0 is one of those, and its
-/// decimal numbers are moved up by one. (`$`-prefixed hex numbers count from 0 either way.)
-fn one_based(playlist: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    let decimal = |line: &[u8]| number_field(line).and_then(|r| std::str::from_utf8(&line[r]).ok()?.trim().parse::<u32>().ok());
-    if !playlist.split(|&b| b == b'\n').any(|line| decimal(line) == Some(0)) {
-        return std::borrow::Cow::Borrowed(playlist);
-    }
+/// it, and the first plays nothing. A playlist with a track 0 is one of those.
+/// (`$`-prefixed hex numbers count from 0 either way.)
+fn counts_from_zero(playlist: &[u8]) -> bool {
+    playlist.split(|&b| b == b'\n').any(|line| decimal_number(line) == Some(0))
+}
+
+/// `playlist` with its decimal track numbers moved up by one.
+fn moved_up(playlist: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(playlist.len() + 16);
     for (i, line) in playlist.split(|&b| b == b'\n').enumerate() {
         if i > 0 {
             out.push(b'\n');
         }
-        match (decimal(line), number_field(line)) {
-            (Some(n), Some(r)) if !line.starts_with(b"#") => {
+        match (decimal_number(line), number_field(line)) {
+            (Some(n), Some(r)) => {
                 out.extend_from_slice(&line[..r.start]);
                 out.extend_from_slice((n + 1).to_string().as_bytes());
                 out.extend_from_slice(&line[r.end..]);
@@ -339,7 +352,7 @@ fn one_based(playlist: &[u8]) -> std::borrow::Cow<'_, [u8]> {
             _ => out.extend_from_slice(line),
         }
     }
-    std::borrow::Cow::Owned(out)
+    out
 }
 
 /// How a track is played: `body` ms, then a `fade`; `intro`/`lp` where it loops.
@@ -367,7 +380,7 @@ const CHECK_LISTED_MIN_MS: u32 = 60_000;
 /// How long a track with no length is listened to for a loop: two passes of a long one.
 const LISTEN_MS: u32 = 200_000;
 /// The fade of a listed length that gives none: a track cut there would stop dead.
-const LISTED_FADE_MS: u32 = 1_000;
+const LISTED_FADE_MS: u32 = 2_000;
 
 /// A listed fade, or `fallback` where the listing has none.
 fn or_fade(fade: u32, fallback: u32) -> u32 {
@@ -399,11 +412,16 @@ fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, Strin
             let ms = u32::try_from(ms).unwrap_or(u32::MAX);
             Some(match own {
                 // Ends within a second of its listed length: the listing is right.
-                Some((body, fade, _)) if ms + 1_000 >= body => Plan { body, fade, looping: false, intro: None, lp: None },
+                Some((body, fade, _)) if ms + 1_000 >= body => Plan { body, fade: or_fade(fade, LISTED_FADE_MS), looping: false, intro: None, lp: None },
                 _ => Plan { body: ms, fade: 0, looping: false, intro: None, lp: None },
             })
         }
-        Timing::Loops { start_ms, loop_ms } => {
+        // A loop that only roughly matches does not overrule a listed length.
+        Timing::Loops { sure: false, .. } if own.is_some() => {
+            let (body, fade, _) = own.unwrap_or_default();
+            Some(Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None })
+        }
+        Timing::Loops { start_ms, loop_ms, .. } => {
             let (intro, lp) = (u32::try_from(start_ms).unwrap_or(u32::MAX), u32::try_from(loop_ms).unwrap_or(u32::MAX));
             let body = intro.saturating_add(lp.saturating_mul(2)).min(limit);
             Some(match own {
@@ -580,6 +598,9 @@ struct GmePcm {
     emu: Emu,
     /// Samples (both channels) left to give, when the length is known.
     left: Option<u64>,
+    /// The last this many of them fade out. Done here and not by gme, whose fade some sets'
+    /// tracks ended before reaching.
+    fade: u64,
 }
 
 impl PcmStream for GmePcm {
@@ -600,6 +621,16 @@ impl PcmStream for GmePcm {
         let mut buf = vec![0i16; take.max(2)];
         self.emu.play(&mut buf)?;
         if let Some(l) = &mut self.left {
+            if self.fade > 0 {
+                for (i, pair) in buf.chunks_exact_mut(2).enumerate() {
+                    let remaining = l.saturating_sub(2 * i as u64);
+                    if remaining < self.fade {
+                        let g = remaining as f32 / self.fade as f32;
+                        pair[0] = (f32::from(pair[0]) * g) as i16;
+                        pair[1] = (f32::from(pair[1]) * g) as i16;
+                    }
+                }
+            }
             *l = l.saturating_sub(buf.len() as u64);
         }
         Ok(Some(buf))
@@ -619,9 +650,9 @@ pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, 
     let Plan { body, fade, .. } = plan(&mut emu, &file, track)?.ok_or("the track is silent")?;
     // The plan says where it ends; a quiet passage before that is not the end.
     emu.ignore_silence(true);
-    emu.start(track, Some((body, fade)))?;
-    let left = u64::from(body + fade) * u64::from(emu.sample_rate()) / 1000 * 2;
-    Ok(Box::new(GmePcm { emu, left: Some(left) }))
+    emu.start(track, None)?;
+    let samples = |ms: u32| u64::from(ms) * u64::from(emu.sample_rate()) / 1000 * 2;
+    Ok(Box::new(GmePcm { left: Some(samples(body + fade)), fade: samples(fade), emu }))
 }
 
 #[cfg(test)]
@@ -640,10 +671,21 @@ mod tests {
 
     #[test]
     fn a_playlist_counting_from_zero_is_moved_up_by_one() {
-        let zero = b"# x\nGame.gbs::GBS,0,Prologue,1:00\nGame.gbs::GBS,12,Town\nGame.gbs::GBS,$0C,Hex";
-        assert_eq!(&*one_based(zero), b"# x\nGame.gbs::GBS,1,Prologue,1:00\nGame.gbs::GBS,13,Town\nGame.gbs::GBS,$0C,Hex");
-        let one = b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field";
-        assert_eq!(&*one_based(one), one);
+        let zero = b"# x\nGame.gbs::GBS,0,Prologue,1:00\nGame.gbs::GBS,12,Town\nGame.gbs::GBS,$0C,Hex\n".to_vec();
+        let m3us = vec![("a.m3u".to_string(), zero)];
+        assert_eq!(playlist_for("Game.gbs", &m3us), b"Game.gbs::GBS,1,Prologue,1:00\nGame.gbs::GBS,13,Town\nGame.gbs::GBS,$0C,Hex\n");
+        let one = vec![("b.m3u".to_string(), b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field\n".to_vec())];
+        assert_eq!(playlist_for("Game.nsf", &one), b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field\n");
+    }
+
+    #[test]
+    fn a_set_counting_from_zero_moves_up_every_file_of_it() {
+        // The second file's playlist has no track 0 of its own; the set's first one does.
+        let m3us = vec![
+            ("main.m3u".to_string(), b"Main.gbs::GBS,0,Title\nMain.gbs::GBS,1,Field\n".to_vec()),
+            ("other.m3u".to_string(), b"Other.gbs::GBS,59,Song\n".to_vec()),
+        ];
+        assert_eq!(playlist_for("Other.gbs", &m3us), b"Other.gbs::GBS,60,Song\n");
     }
 
     #[test]

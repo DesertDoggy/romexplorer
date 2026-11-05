@@ -3,14 +3,16 @@
 //! that is only a guess), which otherwise plays a short phrase over and over, or seconds of
 //! silence, until a fixed cut-off.
 //!
-//! The audio is reduced to its loudness (RMS) per block of [`BLOCK`] frames, and a loop is a
-//! period over which that envelope repeats from some point to the end of what was rendered.
-//! Only loudness: a noise channel's drums never repeat sample for sample (its generator runs
-//! on through the loop), but they do repeat in level, and blocks of about 0.1 s average the
-//! rest of the noise out.
+//! The audio is reduced to the loudness of three bands -- low, middle and high -- per block of
+//! about 0.1 s, and a loop is a period over which that envelope repeats, twice over, from some
+//! point to the end of what was rendered. Loudness and not samples: a noise channel's drums
+//! never repeat sample for sample (its generator runs on through the loop), but they do in
+//! level. Three bands and not one: a passage at an even level matches any period by loudness
+//! alone, while its notes still move the balance between the bands; and a stretch too even to
+//! tell periods apart by is not taken for a loop at all.
 
-/// Frames per block of the envelope: about 93 ms at 44.1 kHz.
-pub const BLOCK: usize = 4096;
+/// Blocks per second of the envelope.
+const BLOCKS_PER_SECOND: u32 = 10;
 /// Below this a sample counts as silence.
 const SILENCE: i32 = 64;
 /// Silence this long after the last sound ends a track.
@@ -19,25 +21,39 @@ pub const SILENT_END_MS: u64 = 4_000;
 const TAIL_MS: u64 = 500;
 /// The shortest loop looked for.
 const MIN_LOOP_MS: u64 = 1_000;
-/// How alike two stretches must be (mean difference, relative to the mean level) to count as
-/// the same.
-const SAME: f32 = 0.08;
+/// How alike two stretches must be (mean difference per band, relative to the band's level)
+/// to count as the same.
+const SAME: f32 = 0.10;
+/// A loop this alike is [`Timing::Loops::sure`]: enough to overrule a playlist's length.
+const SURE: f32 = 0.05;
 /// The same, for the short window that finds where the loop begins.
-const SAME_LOCAL: f32 = 0.15;
-/// The least that is compared to accept a loop: the last this many ms against a period back
-/// (or half the period, when that is longer).
-const COMPARED_MS: f64 = 8_000.0;
+const SAME_LOCAL: f32 = 0.18;
+/// The least that is compared to accept a loop: the last this many ms (or a whole period,
+/// when that is longer) against the same a period back and two periods back.
+const COMPARED_MS: u64 = 8_000;
+/// How much the level must move within what is compared for periods to be told apart
+/// (standard deviation over the mean).
+const MIN_MOVEMENT: f32 = 0.12;
+/// Band edges, in Hz.
+const LOW_HZ: f32 = 300.0;
+const HIGH_HZ: f32 = 2_500.0;
 
-/// One block of the envelope.
-type Block = f32;
+/// One block of the envelope: the RMS of the low, middle and high bands.
+type Block = [f32; 3];
 
 /// Collects the envelope of interleaved stereo audio as it is rendered.
 pub struct Listener {
     rate: u32,
+    block: usize,
     blocks: Vec<Block>,
     // The block being filled.
-    sum: f64,
+    sum: [f64; 3],
     frames: usize,
+    // The two one-pole low-passes the bands come from.
+    low: f32,
+    mid: f32,
+    a_low: f32,
+    a_mid: f32,
     done_frames: u64,
     last_sound_frame: u64,
 }
@@ -49,15 +65,29 @@ pub enum Timing {
     Silent,
     /// Ends by itself: play this long and stop.
     Ends { ms: u64 },
-    /// Repeats from `start_ms`, every `loop_ms`.
-    Loops { start_ms: u64, loop_ms: u64 },
+    /// Repeats from `start_ms`, every `loop_ms`. `sure`: the copies match closely.
+    Loops { start_ms: u64, loop_ms: u64, sure: bool },
     /// Still going and not found to repeat.
     RunsOn,
 }
 
 impl Listener {
     pub fn new(rate: u32) -> Self {
-        Self { rate: rate.max(1), blocks: Vec::new(), sum: 0.0, frames: 0, done_frames: 0, last_sound_frame: 0 }
+        let rate = rate.max(1);
+        let pole = |hz: f32| 1.0 - (-2.0 * std::f32::consts::PI * hz / rate as f32).exp();
+        Self {
+            rate,
+            block: (rate / BLOCKS_PER_SECOND).max(1) as usize,
+            blocks: Vec::new(),
+            sum: [0.0; 3],
+            frames: 0,
+            low: 0.0,
+            mid: 0.0,
+            a_low: pole(LOW_HZ),
+            a_mid: pole(HIGH_HZ),
+            done_frames: 0,
+            last_sound_frame: 0,
+        }
     }
 
     /// Feeds interleaved stereo samples.
@@ -67,13 +97,19 @@ impl Listener {
             if l.abs() > SILENCE || r.abs() > SILENCE {
                 self.last_sound_frame = self.done_frames + 1;
             }
-            let m = (l + r) / 2;
-            self.sum += f64::from(m) * f64::from(m);
+            let m = (l + r) as f32 / 2.0;
+            self.low += self.a_low * (m - self.low);
+            self.mid += self.a_mid * (m - self.mid);
+            let bands = [self.low, self.mid - self.low, m - self.mid];
+            for (sum, b) in self.sum.iter_mut().zip(bands) {
+                *sum += f64::from(b) * f64::from(b);
+            }
             self.frames += 1;
             self.done_frames += 1;
-            if self.frames == BLOCK {
-                self.blocks.push((self.sum / BLOCK as f64).sqrt() as f32);
-                (self.sum, self.frames) = (0.0, 0);
+            if self.frames == self.block {
+                let n = self.block as f64;
+                self.blocks.push(self.sum.map(|s| (s / n).sqrt() as f32));
+                (self.sum, self.frames) = ([0.0; 3], 0);
             }
         }
     }
@@ -96,32 +132,51 @@ impl Listener {
         if ended || self.fell_silent() {
             return Timing::Ends { ms: self.last_sound_frame * 1000 / u64::from(self.rate) + TAIL_MS };
         }
-        let block_ms = BLOCK as f64 * 1000.0 / f64::from(self.rate);
-        match find_loop(&self.blocks, (MIN_LOOP_MS as f64 / block_ms).ceil() as usize, (COMPARED_MS / block_ms).ceil() as usize) {
-            Some((start, period)) => Timing::Loops { start_ms: (start as f64 * block_ms) as u64, loop_ms: (period as f64 * block_ms) as u64 },
+        let block_ms = 1000 / u64::from(BLOCKS_PER_SECOND);
+        let blocks = |ms: u64| ms.div_ceil(block_ms) as usize;
+        match find_loop(&self.blocks, blocks(MIN_LOOP_MS), blocks(COMPARED_MS)) {
+            Some((start, period, score)) => Timing::Loops { start_ms: start as u64 * block_ms, loop_ms: period as u64 * block_ms, sure: score < SURE },
             None => Timing::RunsOn,
         }
     }
 }
 
-/// `(first block of the loop, its length in blocks)`: the shortest period over which the
-/// envelope's end repeats, and how far back that repetition goes.
-fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(usize, usize)> {
+/// `(first block of the loop, its length in blocks, how alike its copies are)`: the shortest
+/// period over which the envelope's end repeats twice over, and how far back that goes.
+fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(usize, usize, f32)> {
     let n = blocks.len();
     let min_period = min_period.max(1);
-    if n < min_period + compared {
+    if n < compared + 2 * min_period {
         return None;
     }
-    let mean = (blocks.iter().sum::<f32>() / n as f32).max(1e-6);
-    let differ = |i: usize, j: usize| (blocks[i] - blocks[j]).abs() / mean;
-    let period = (min_period..=n - compared).find(|&p| {
-        // The last stretch (half a period, at least `compared`) against the one a period back.
-        let w = (p / 2).max(compared).min(n - p);
-        (n - w..n).map(|i| differ(i, i - p)).sum::<f32>() / (w as f32) < SAME
+    let mut mean = [0f32; 3];
+    for b in blocks {
+        for k in 0..3 {
+            mean[k] += b[k];
+        }
+    }
+    let total: f32 = mean.iter().sum::<f32>() / n as f32;
+    // A band with next to nothing in it would make its noise look like a difference.
+    let floor = (total * 0.05).max(1e-3);
+    let scale = mean.map(|m| (m / n as f32).max(floor));
+    let differ = |i: usize, j: usize| (0..3).map(|k| (blocks[i][k] - blocks[j][k]).abs() / scale[k]).sum::<f32>() / 3.0;
+    let level = |i: usize| blocks[i].iter().sum::<f32>();
+    let moves = |from: usize, to: usize| {
+        let m = (from..to).map(level).sum::<f32>() / (to - from) as f32;
+        let var = (from..to).map(|i| (level(i) - m).powi(2)).sum::<f32>() / (to - from) as f32;
+        var.sqrt() / m.max(1e-6) >= MIN_MOVEMENT
+    };
+    let (period, score) = (min_period..=(n - compared) / 2).find_map(|p| {
+        let w = p.max(compared);
+        if w + 2 * p > n || !moves(n - w, n) {
+            return None;
+        }
+        let d = (n - w..n).map(|i| differ(i, i - p).max(differ(i, i - 2 * p))).sum::<f32>() / w as f32;
+        (d < SAME).then_some((p, d))
     })?;
     // Walking back from the end, the loop starts after the last window that does not match
     // its copy one period later.
-    let window = min_period.max(1);
+    let window = min_period;
     let mut start = 0;
     let mut i = n - period;
     while i >= window {
@@ -134,7 +189,13 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
         }
         i -= 1;
     }
-    Some((start, period))
+    // A loop that starts too late to be heard twice was not heard to loop; and a short beat
+    // that only settles in after minutes of music is a passage keeping time, not the track's
+    // loop.
+    if start + 2 * period > n || (start > 20 * period && start > 600) {
+        return None;
+    }
+    Some((start, period, score))
 }
 
 #[cfg(test)]
@@ -164,7 +225,7 @@ mod tests {
         // Four notes of half a second: the phrase is 2 s long.
         let l = listen(melody(&[(440.0, 1.0), (660.0, 0.5), (330.0, 0.8), (550.0, 0.3)], RATE as usize / 2), 30);
         match l.finish(false) {
-            Timing::Loops { start_ms, loop_ms } => {
+            Timing::Loops { start_ms, loop_ms, .. } => {
                 assert!((1_950..=2_050).contains(&loop_ms), "{loop_ms}");
                 assert!(start_ms < 500, "{start_ms}");
             }
@@ -177,7 +238,7 @@ mod tests {
         let intro: Vec<i16> = melody(&[(200.0, 0.9), (900.0, 0.2), (250.0, 0.6), (700.0, 0.4)], RATE as usize).take(RATE as usize * 2 * 4).collect();
         let l = listen(intro.into_iter().chain(melody(&[(440.0, 1.0), (660.0, 0.5), (330.0, 0.8)], RATE as usize / 2)), 30);
         match l.finish(false) {
-            Timing::Loops { start_ms, loop_ms } => {
+            Timing::Loops { start_ms, loop_ms, .. } => {
                 assert!((1_450..=1_550).contains(&loop_ms), "{loop_ms}");
                 assert!((3_500..=4_600).contains(&start_ms), "{start_ms}");
             }
@@ -199,6 +260,24 @@ mod tests {
             Timing::Loops { loop_ms, .. } => assert!((5_900..=6_100).contains(&loop_ms), "{loop_ms}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn an_even_tone_is_not_a_loop() {
+        let l = listen(melody(&[(440.0, 0.7)], RATE as usize), 30);
+        assert_eq!(l.finish(false), Timing::RunsOn);
+    }
+
+    #[test]
+    fn a_short_beat_after_minutes_of_music_is_not_a_loop() {
+        let mut x = 3u32;
+        let notes: Vec<(f32, f32)> = (0..400).map(|_| {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (200.0 + (x >> 16) as f32 % 800.0, 0.2 + ((x >> 8) & 0xFF) as f32 / 320.0)
+        }).collect();
+        let intro: Vec<i16> = melody(&notes, RATE as usize / 4).take(RATE as usize * 2 * 90).collect();
+        let l = listen(intro.into_iter().chain(melody(&[(440.0, 1.0), (330.0, 0.3)], RATE as usize / 2)), 110);
+        assert_eq!(l.finish(false), Timing::RunsOn);
     }
 
     #[test]

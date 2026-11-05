@@ -34,8 +34,8 @@ replacing a build.
 - The music can keep playing on other screens until you open another title page.
 - The sound of title movies and other videos in a ROM can play too. It is off by default, and
   each title page can turn it on or off for that title.
-- DS and 3DS cartridges are read too: the music streams in DS sound archives, and the music
-  files of 3DS images that are stored decrypted.
+- DS and 3DS cartridges are read too: DS music, streamed or sequenced, plays straight from the
+  sound archive, and 3DS music files from images stored decrypted.
 - Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
 - The sound of PSP movies (.pmf) can play too, like other title movies.
 - Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s). Files named as fanfares or music effects ("me") count as jingles. A short first audio track (the spoken "this is a game disc" warning) counts as a sound effect.
@@ -57,6 +57,7 @@ replacing a build.
   the one named, and the first one was silent.
 - Music rips whose tracks have no length, or only a guessed one, now end where the music
   does: silence at the end is cut, and a track that repeats plays its loop twice and fades.
+  A track cut at its playlist length fades out instead of stopping dead.
 - Normalise in the player now also turns quiet ROM tracks up, as far as they go without
   clipping.
 
