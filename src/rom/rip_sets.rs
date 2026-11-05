@@ -6,12 +6,14 @@
 //! A track's place is the file's path relative to the game folder, `<archive>|<member>` for
 //! one inside a zip or 7z, and its track number in that file. A NEZplug-style `.m3u` beside a
 //! multi-track file (in the same folder or archive) gives the tracks their titles and lengths.
-//! A track with no length of its own is played until it falls silent: one that is still
-//! playing after [`RUN_ON_MS`] loops, and is faded there.
+//! A track with no length of its own, or a playlist length of a minute or more, is listened
+//! to once ([`super::track_timing`]): it ends where it falls silent, a track that repeats
+//! plays its loop twice and fades, and one that does neither is faded at [`RUN_ON_MS`].
 
 use std::path::{Path, PathBuf};
 
 use super::gme::{self, Emu};
+use super::track_timing::{Listener, Timing};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
 
@@ -27,8 +29,6 @@ const MAX_TRACKS: u32 = 256;
 pub const RUN_ON_MS: u32 = 150_000;
 /// How a looping track with no fade of its own is faded out.
 const LOOP_FADE_MS: u32 = 8_000;
-/// Below this a sample counts as silence when a track's own end is measured.
-const SILENCE: i32 = 64;
 
 fn ext_of(name: &str) -> String {
     name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default()
@@ -308,22 +308,107 @@ fn load(file: &RipFile) -> Result<Emu, String> {
     Ok(emu)
 }
 
-/// How long a track with no length of its own runs: played until gme hears it end (it falls
-/// silent) or [`RUN_ON_MS`] passes. `(milliseconds to its last sound, still playing)`.
-fn measure(emu: &mut Emu, track: u32) -> Result<(u32, bool), String> {
-    emu.start(track, None)?;
-    let rate = u64::from(emu.sample_rate());
-    let cap = u64::from(RUN_ON_MS) * rate / 1000 * 2;
-    let mut buf = vec![0i16; 8192];
-    let (mut done, mut last_sound) = (0u64, 0u64);
-    while !emu.ended() && done < cap {
-        emu.play(&mut buf)?;
-        if let Some(i) = buf.iter().rposition(|&s| i32::from(s).abs() > SILENCE) {
-            last_sound = done + i as u64 + 1;
+/// How a track is played: `body` ms, then a `fade`; `intro`/`lp` where it loops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Plan {
+    body: u32,
+    fade: u32,
+    looping: bool,
+    intro: Option<u32>,
+    lp: Option<u32>,
+}
+
+impl Plan {
+    /// The length the index records: one pass through the loop, or the whole track.
+    fn duration_ms(&self) -> u32 {
+        match (self.intro, self.lp) {
+            (Some(i), Some(l)) => i + l,
+            _ => self.body,
         }
-        done += buf.len() as u64;
     }
-    Ok(((last_sound / 2 * 1000 / rate) as u32, done >= cap && !emu.ended()))
+}
+
+/// A playlist length shorter than this is taken as it is: a jingle has no room to repeat.
+const CHECK_LISTED_MIN_MS: u32 = 60_000;
+
+/// How track `track` plays. A length of the track's own with an intro and a loop is used as
+/// it is. Otherwise the track is played through once, quietly, and its sound decides
+/// ([`track_timing`]): it stops where it falls silent, and one that repeats plays its loop
+/// twice and fades -- also when a playlist gives a length, which for many sets is a guess
+/// that leaves seconds of silence or a short phrase going round. `None` for a silent track.
+fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, String> {
+    let info = emu.track_info(track)?;
+    let own = own_length(&info);
+    if let Some((body, fade, true)) = own {
+        return Ok(Some(Plan { body, fade, looping: true, intro: info.intro_ms, lp: info.loop_ms }));
+    }
+    if let Some((body, fade, false)) = own.filter(|o| o.0 < CHECK_LISTED_MIN_MS) {
+        return Ok(Some(Plan { body, fade, looping: false, intro: None, lp: None }));
+    }
+    let key = (fingerprint(file), track);
+    if let Some(known) = PLANS.lock().ok().and_then(|m| m.get(&key).copied()) {
+        return Ok(known);
+    }
+    let limit = own.map_or(RUN_ON_MS, |o| o.0);
+    let found = match listen(emu, track, limit)? {
+        Timing::Silent => None,
+        Timing::Ends { ms } => {
+            let ms = u32::try_from(ms).unwrap_or(u32::MAX);
+            Some(match own {
+                // Ends within a second of its listed length: the listing is right.
+                Some((body, fade, _)) if ms + 1_000 >= body => Plan { body, fade, looping: false, intro: None, lp: None },
+                _ => Plan { body: ms, fade: 0, looping: false, intro: None, lp: None },
+            })
+        }
+        Timing::Loops { start_ms, loop_ms } => {
+            let (intro, lp) = (u32::try_from(start_ms).unwrap_or(u32::MAX), u32::try_from(loop_ms).unwrap_or(u32::MAX));
+            let body = intro.saturating_add(lp.saturating_mul(2)).min(limit);
+            Some(match own {
+                // Two loops would take about as long as listed anyway.
+                Some((len, fade, _)) if body + 5_000 >= len => Plan { body: len, fade, looping: false, intro: None, lp: None },
+                Some((_, fade, _)) => Plan { body, fade: if fade > 0 { fade } else { LOOP_FADE_MS }, looping: true, intro: Some(intro), lp: Some(lp) },
+                None => Plan { body, fade: LOOP_FADE_MS, looping: true, intro: Some(intro), lp: Some(lp) },
+            })
+        }
+        Timing::RunsOn => Some(match own {
+            Some((body, fade, _)) => Plan { body, fade, looping: false, intro: None, lp: None },
+            None => Plan { body: RUN_ON_MS, fade: LOOP_FADE_MS, looping: true, intro: None, lp: None },
+        }),
+    };
+    if let Ok(mut m) = PLANS.lock() {
+        if m.len() > 8_192 {
+            m.clear();
+        }
+        m.insert(key, found);
+    }
+    Ok(found)
+}
+
+/// Plans already worked out, by file content and track: the index finds them, and playing
+/// the track then needs no second listen.
+static PLANS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u64, u32), Option<Plan>>>> = std::sync::LazyLock::new(Default::default);
+
+/// The file and the playlist read with it, which numbers its tracks.
+fn fingerprint(file: &RipFile) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file.data.hash(&mut h);
+    file.playlist.hash(&mut h);
+    h.finish()
+}
+
+/// Plays `track` through, unheard, for up to `limit_ms`, and says what its sound did.
+fn listen(emu: &mut Emu, track: u32, limit_ms: u32) -> Result<Timing, String> {
+    // Silence is judged here, over a longer stretch than the player's own detection.
+    emu.ignore_silence(true);
+    emu.start(track, None)?;
+    let mut ear = Listener::new(emu.sample_rate());
+    let mut buf = vec![0i16; 8192];
+    while !emu.ended() && ear.played_ms() < u64::from(limit_ms) && !ear.fell_silent() {
+        emu.play(&mut buf)?;
+        ear.feed(&buf);
+    }
+    Ok(ear.finish(emu.ended()))
 }
 
 /// What a track's own data says about how to play it: `(length before any fade, fade,
@@ -403,23 +488,22 @@ fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&st
         let codec = gme::identify(&gme::gunzip(&file.data).unwrap_or_else(|| file.data.clone())).unwrap_or_else(|| ext_of(&file.rel).to_ascii_uppercase());
         for track in 0..count {
             let Ok(info) = emu.track_info(track) else { continue };
-            let (duration_ms, looping) = match own_length(&info) {
-                Some((len, _, looping)) => (if looping { info.intro_ms.unwrap_or(0) + info.loop_ms.unwrap_or(0) } else { len }, looping),
-                None => match measure(&mut emu, track) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        log::debug!("{} #{track}: {e}", file.rel);
-                        continue;
-                    }
-                },
+            let plan = match plan(&mut emu, &file, track) {
+                Ok(Some(plan)) => plan,
+                Ok(None) => continue,
+                Err(e) => {
+                    log::debug!("{} #{track}: {e}", file.rel);
+                    continue;
+                }
             };
+            let (duration_ms, looping) = (plan.duration_ms(), plan.looping);
             if duration_ms == 0 {
                 continue;
             }
             let name = track_name(&file, &info, track, count);
             let shape = Shape { looping, duration_ms: u64::from(duration_ms), channels: Emu::CHANNELS, cd_track: 0, rip: true };
             let rate = u64::from(Emu::SAMPLE_RATE);
-            let (loop_start, loop_end) = match (info.intro_ms, info.loop_ms) {
+            let (loop_start, loop_end) = match (plan.intro, plan.lp) {
                 (Some(i), Some(l)) if l > 0 => (u64::from(i) * rate / 1000, u64::from(i + l) * rate / 1000),
                 _ => (0, 0),
             };
@@ -488,14 +572,9 @@ pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, 
     }
     let file = read_one(folder, rel)?;
     let mut emu = load(&file)?;
-    let info = emu.track_info(track)?;
-    let (body, fade) = match own_length(&info) {
-        Some((len, fade, _)) => {
-            emu.ignore_silence(true);
-            (len, fade)
-        }
-        None => (RUN_ON_MS, LOOP_FADE_MS),
-    };
+    let Plan { body, fade, .. } = plan(&mut emu, &file, track)?.ok_or("the track is silent")?;
+    // The plan says where it ends; a quiet passage before that is not the end.
+    emu.ignore_silence(true);
     emu.start(track, Some((body, fade)))?;
     let left = u64::from(body + fade) * u64::from(emu.sample_rate()) / 1000 * 2;
     Ok(Box::new(GmePcm { emu, left: Some(left) }))

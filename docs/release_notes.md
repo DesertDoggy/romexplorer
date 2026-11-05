@@ -53,6 +53,8 @@ replacing a build.
   folder when one is set.
 - Wii discs are read too (ISO, RVZ, WIA, GCZ and WBFS), and Wii U titles: .wua, and
   .wud/.wux or downloaded title folders when their key is beside them.
+- Music rips whose tracks have no length, or only a guessed one, now end where the music
+  does: silence at the end is cut, and a track that repeats plays its loop twice and fades.
 - Normalise in the player now also turns quiet ROM tracks up, as far as they go without
   clipping.
 
