@@ -24,6 +24,10 @@ build = "build.rs"
 name = "biosdb_gen"
 path = "tools/biosdb_gen.rs"
 
+[[bin]]
+name = "snes_capture"
+path = "tools/snes_capture.rs"
+
 [[test]]
 name = "test_archiver"
 path = "tests/src/test_archiver.rs"

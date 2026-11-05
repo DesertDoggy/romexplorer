@@ -5,11 +5,19 @@
 // number through the ports.
 //
 // Time is in sound-chip clocks (1,024,000 a second) since the last rspc_end_frame.
-#include "Snes_Spc.h"
-
+#include <cassert>
+#include <climits>
+#include <cstdint>
 #include <cstring>
 #include <new>
 #include <vector>
+
+// Snes_Spc's own save_spc is compiled out with the fast DSP libgme builds (Spc_Dsp.h sets
+// SPC_NO_COPY_STATE_FUNCS), so rspc_save_spc reads the state it needs from the members
+// directly. The class layout is unchanged; only access is opened, and only in this file.
+#define private public
+#include "Snes_Spc.h"
+#undef private
 
 #if defined(_WIN32)
 #define RSPC_API extern "C" __declspec(dllexport)
@@ -115,4 +123,44 @@ RSPC_API uint8_t *rspc_ram(void *handle)
 RSPC_API int rspc_pc(void *handle)
 {
     return static_cast<Handle *>(handle)->spc.smp_regs().pc;
+}
+
+/// The chip's state as an .spc file (66,048 bytes): CPU registers, sound memory with its I/O
+/// registers in $F0-$FF, DSP registers and the RAM under the boot ROM. Call it at the start of
+/// a frame (just after rspc_end_frame). Returns the bytes written, 0 if `len` is too small.
+RSPC_API long rspc_save_spc(void *handle, uint8_t *out, long len)
+{
+    auto &spc = static_cast<Handle *>(handle)->spc;
+    auto &m = spc.m;
+    Snes_Spc::spc_file_t file;
+    if (len < long(sizeof file))
+        return 0;
+    std::memset(&file, 0, sizeof file);
+    std::memcpy(file.signature, Snes_Spc::signature, Snes_Spc::signature_size);
+    file.has_id666 = 27;    // no tag
+    file.version = 30;
+    file.pcl = uint8_t(m.cpu_regs.pc);
+    file.pch = uint8_t(m.cpu_regs.pc >> 8);
+    file.a = m.cpu_regs.a;
+    file.x = m.cpu_regs.x;
+    file.y = m.cpu_regs.y;
+    file.psw = m.cpu_regs.psw;
+    file.sp = m.cpu_regs.sp;
+    std::memcpy(file.ram, m.ram.ram, 0x10000);
+    // While the boot ROM is mapped in, the RAM under it is kept aside.
+    if (m.rom_enabled)
+        std::memcpy(file.ram + Snes_Spc::rom_addr, m.hi_ram, Snes_Spc::rom_size);
+    std::memcpy(file.ipl_rom, file.ram + Snes_Spc::rom_addr, Snes_Spc::rom_size);
+    // $F0-$FF: what the sound CPU wrote to its registers, except the ports (what the main CPU
+    // wrote, which the sound CPU reads) and the timer counters.
+    for (int i = 0; i < Snes_Spc::reg_count; i++)
+        file.ram[0xF0 + i] = m.smp_regs[0][i];
+    for (int i = 0; i < Snes_Spc::port_count; i++)
+        file.ram[0xF4 + i] = m.smp_regs[1][4 + i];
+    for (int i = 0; i < Snes_Spc::timer_count; i++)
+        file.ram[0xFD + i] = uint8_t(m.timers[i].counter);
+    for (int i = 0; i < Spc_Dsp::register_count; i++)
+        file.dsp[i] = uint8_t(spc.dsp.read(i));
+    std::memcpy(out, &file, sizeof file);
+    return long(sizeof file);
 }

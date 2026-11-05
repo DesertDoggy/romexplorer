@@ -100,6 +100,9 @@ pub fn song_table(rom: &[u8]) -> Option<SongTable> {
 
 /// A table found by shape has at least this many songs; fewer is likely chance.
 const MIN_SONGS: usize = 4;
+/// The players a table found by shape plays on: the engine's usual set-up, as
+/// `ragb_open_at` assumes it.
+const SHAPE_PLAYERS: u16 = 4;
 
 /// Whether an entry at `at` looks like a song table entry: a pointer to a song header (or an
 /// empty one), then the music player number twice, small.
@@ -122,12 +125,18 @@ pub fn find_by_shape(rom: &[u8]) -> Option<SongTable> {
             at += 4;
             continue;
         }
-        let table = read_table(rom, at);
         let mut len = 0;
         while entry_shape(rom, at + len * 8) && len < MAX_SONGS {
             len += 1;
         }
-        if table.songs.len() >= MIN_SONGS && best.as_ref().is_none_or(|b| table.songs.len() > b.songs.len()) {
+        let mut table = read_table(rom, at);
+        table.songs.retain(|s| (s.number as usize) < len);
+        // Real tables put nearly every song on one of the engine's few players; a run that
+        // only looks like a table has them scattered.
+        let on_players = table.songs.iter().filter(|s| s.player < SHAPE_PLAYERS).count();
+        let plausible = on_players * 10 >= table.songs.len() * 9;
+        table.songs.retain(|s| s.player < SHAPE_PLAYERS);
+        if plausible && table.songs.len() >= MIN_SONGS && best.as_ref().is_none_or(|b| table.songs.len() > b.songs.len()) {
             best = Some(table);
         }
         at += len.max(1) * 8;
