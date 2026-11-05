@@ -34,7 +34,8 @@ pub fn register() {
             let located = match main_server_path(&path) {
                 Some(theirs) => relay(&theirs, range.as_deref()).await,
                 None => match serve(&path, &query).await {
-                    Ok((file, mime)) => send(&file, mime, range.as_deref()).await,
+                    Ok(Located::File(file, mime)) => send(&file, mime, range.as_deref()).await,
+                    Ok(Located::Memory(bytes, mime)) => send_bytes(&bytes, mime, range.as_deref()),
                     Err(e) => Err(e),
                 },
             };
@@ -127,8 +128,26 @@ fn from_api(e: api::Error) -> (u16, String) {
 
 /// A located file, as `serve` hands it on. Kept as its own step (it used to read the bytes)
 /// so the routes below stay one line each.
-async fn read(path: PathBuf, mime: &'static str) -> Result<(PathBuf, &'static str), (u16, String)> {
-    Ok((path, mime))
+async fn read(path: PathBuf, mime: &'static str) -> Result<Located, (u16, String)> {
+    Ok(Located::File(path, mime))
+}
+
+/// Where a reply's body is: a file, or memory (ROM music in the audio RAM cache).
+enum Located {
+    File(PathBuf, &'static str),
+    Memory(api::audio_ram::Bytes, &'static str),
+}
+
+/// [`send`] for a body already in memory.
+fn send_bytes(bytes: &[u8], mime: &'static str, range: Option<&str>) -> Result<Sent, (u16, String)> {
+    let len = bytes.len() as u64;
+    let Some(range) = range else {
+        return Ok(Sent { status: 200, mime: mime.to_string(), bytes: bytes.to_vec(), content_range: None });
+    };
+    let Some((start, end)) = byte_span(range, len) else {
+        return Err((416, format!("range {range} is outside a body of {len} bytes")));
+    };
+    Ok(Sent { status: 206, mime: mime.to_string(), bytes: bytes[start as usize..=end as usize].to_vec(), content_range: Some(format!("bytes {start}-{end}/{len}")) })
 }
 
 /// What goes back to the webview for one request.
@@ -225,7 +244,7 @@ async fn relay(path: &str, range: Option<&str>) -> Result<Sent, (u16, String)> {
 }
 
 /// The routes the screens actually request. Anything not here 404s rather than guessing.
-async fn serve(path: &str, query: &str) -> Result<(PathBuf, &'static str), (u16, String)> {
+async fn serve(path: &str, query: &str) -> Result<Located, (u16, String)> {
     let Some(state) = super::local::state() else {
         return Err((500, "no in-process backend".into()));
     };
@@ -263,7 +282,10 @@ async fn serve(path: &str, query: &str) -> Result<(PathBuf, &'static str), (u16,
             let id: u64 = id.parse().map_err(|_| (400u16, "audio id must be a number".to_string()))?;
             // Decoded out of the ROM on its first play, then read from the audio cache.
             let served = api::rom_audio::serve(app, id).await.map_err(from_api)?;
-            read(served.path, served.mime).await
+            match served.body {
+                Some(bytes) => Ok(Located::Memory(bytes, served.mime)),
+                None => read(served.path, served.mime).await,
+            }
         }
         ["api", "v1", "ra", "avatar"] => {
             let file = api::ra::avatar(app).await.map_err(from_api)?;

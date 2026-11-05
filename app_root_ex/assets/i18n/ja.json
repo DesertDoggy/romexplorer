@@ -2795,5 +2795,8 @@
   "When this finds nothing, audio_fallback decides.": "見つからないときは audio_fallback に従います。",
   "Seconds. A ROM sound that loops and is at least this long is music (default 3).": "秒数です。ループする ROM の音で、この長さ以上のものを BGM とします（既定 3）。",
   "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.": "秒数です。ループしない ROM の音は、この長さ（既定 20）から BGM、audio_rom_jingle_min_s（既定 8）からジングル、それより短いものは効果音とします。",
-  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "音はループするかどうかと長さ（下の 3 つの設定）で分けます。"
+  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "音はループするかどうかと長さ（下の 3 つの設定）で分けます。",
+  "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.": "再生用にデコードした ROM の音楽をメモリに置く量です。0 = 使わない。いっぱいになると、しばらく再生していない曲からディスクの変換済み音声キャッシュへ移します。",
+  "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).": "再生用にデコードした ROM の音楽をメモリに置く量（MiB。既定 256、0 = 使わない）。",
+  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "いっぱいになると、しばらく再生していない曲からディスクの変換済み音声キャッシュへ移します。次はデコードし直さずにそこから読みます。"
 }

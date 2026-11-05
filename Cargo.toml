@@ -188,6 +188,9 @@ tower-http = { version = "0.6", features = ["compression-zstd", "compression-gzi
 # pull it), so naming it directly adds nothing to the graph -- it is here so a catalogue
 # backup, which can be several GB, is served chunk by chunk instead of read into a Vec.
 tokio-util = { version = "0.7", features = ["io"] }
+# The audio RAM cache (`api::audio_ram`) hands a converted track to every request without
+# copying it. Already in the lock file through axum and reqwest.
+bytes = "1"
 # database/matching: ported from playmatch's matching/{name_parse,util,scoring}.rs (MIT),
 # same crates it uses there.
 regex = "1"

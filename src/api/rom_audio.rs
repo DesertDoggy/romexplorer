@@ -4,9 +4,10 @@
 //!   opened and every track found is recorded -- where it is and what it is, never the
 //!   audio itself.
 //! - **Playing** ([`serve`]): a browser cannot play a console's codecs, so a track is
-//!   decoded on its first play (two loops and a fade, as a game plays it) into the same
-//!   converted-audio cache DSD and ALAC use, and served from there. The cache's size cap
-//!   (`audio_cache_max_mb`) applies; a track that was evicted is decoded again next time.
+//!   decoded on its first play (two loops and a fade, as a game plays it) and kept in the
+//!   audio RAM cache (`api::audio_ram`, `audio_ram_cache_mb`). What no longer fits there
+//!   moves to the converted-audio cache on disk DSD and ALAC use, capped by
+//!   `audio_cache_max_mb`; a track evicted from both is decoded again next time.
 //! - **Playlists** ([`title_tracks`], [`stand_in`]): which tracks a title page plays, by the
 //!   `audio_rom_*` settings. Whether a track is BGM, a jingle or a sound effect is worked out
 //!   here, from its loop and length, so a changed threshold needs no re-index.
@@ -900,22 +901,49 @@ pub async fn serve(app: &App, id: u64) -> Result<Served> {
     let config = play_config(row.try_get("looping")?, row.try_get("loop_start")?, row.try_get("loop_end")?, rate, loop_min_ms);
     let stamp = row.try_get::<Option<chrono::NaiveDateTime>, _>("indexed_at")?.map(|t| t.and_utc().timestamp()).unwrap_or(0);
 
-    let dir = super::audio_convert::cache_dir(app);
-    let cached = dir.join(cache_name(id, target, stamp));
-    let _turn = super::audio_convert::CONVERTING.lock().await;
-    if !cached.is_file() {
-        let out = cached.clone();
-        let made = tokio::task::spawn_blocking(move || decode_to(&path, &location, &out, target, config)).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
-        if let Err(reason) = made {
-            return Err(Error::unavailable(format!("ROM audio track {id} could not be decoded: {reason}")));
-        }
-        let cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_CACHE_MAX_MB).await?.unwrap_or(super::audio_convert::DEFAULT_CACHE_MB);
-        let (dir, keep) = (dir.clone(), cached.clone());
-        let _ = tokio::task::spawn_blocking(move || super::audio_convert::evict(&dir, cap.saturating_mul(1 << 20), &keep)).await;
-    } else {
-        let _ = std::fs::File::options().write(true).open(&cached).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+    let dir = super::audio_convert::cache_dir(app).await;
+    let name = cache_name(id, target, stamp);
+    let cached = dir.join(&name);
+    let served = |body: Option<super::audio_ram::Bytes>| Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached.clone(), converted: true, note: None, body };
+    if let Some(bytes) = super::audio_ram::get(&name) {
+        return Ok(served(Some(bytes)));
     }
-    Ok(Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached, converted: true, note: None })
+    let _turn = super::audio_convert::CONVERTING.lock().await;
+    // Made while this request waited its turn.
+    if let Some(bytes) = super::audio_ram::get(&name) {
+        return Ok(served(Some(bytes)));
+    }
+    let disk_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_CACHE_MAX_MB).await?.unwrap_or(super::audio_convert::DEFAULT_CACHE_MB).saturating_mul(1 << 20);
+    if cached.is_file() {
+        let _ = std::fs::File::options().write(true).open(&cached).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Ok(served(None));
+    }
+    let ram_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_RAM_CACHE_MB).await?.unwrap_or(super::audio_ram::DEFAULT_MB).saturating_mul(1 << 20);
+    let (out, keep_dir) = (cached.clone(), dir.clone());
+    let made = tokio::task::spawn_blocking(move || -> std::result::Result<Option<super::audio_ram::Bytes>, String> {
+        decode_to(&path, &location, &out, target, config)?;
+        if ram_cap == 0 {
+            super::audio_convert::evict(&keep_dir, disk_cap, &out);
+            return Ok(None);
+        }
+        // Into RAM; the file it was decoded to is not kept, unless the track is too big for
+        // the RAM cache and comes straight back.
+        let bytes = super::audio_ram::Bytes::from(std::fs::read(&out).map_err(|e| format!("read {}: {e}", out.display()))?);
+        let _ = std::fs::remove_file(&out);
+        let pushed_out = super::audio_ram::put(&name, bytes.clone(), out.clone(), ram_cap);
+        super::audio_ram::spill(&pushed_out);
+        if !pushed_out.is_empty() {
+            super::audio_convert::evict(&keep_dir, disk_cap, &out);
+        }
+        Ok(Some(bytes))
+    })
+    .await
+    .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+    match made {
+        Err(reason) => Err(Error::unavailable(format!("ROM audio track {id} could not be decoded: {reason}"))),
+        Ok(None) => Ok(served(None)),
+        Ok(Some(bytes)) => Ok(served(Some(bytes))),
+    }
 }
 
 /// Decodes one track out of the ROM at `rom` into `out`, written beside it and renamed so

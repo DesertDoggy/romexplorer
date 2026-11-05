@@ -888,7 +888,42 @@ async fn media_remote(State(s): State<Shared>, Path(id): Path<u64>, headers: Hea
 /// (`api::rom_audio::serve`), with `Range` support like any other track.
 async fn audio_rom_file(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
     let served = api::rom_audio::serve(&s.app, id).await?;
-    stream_file(&served.path, served.mime, Some(&headers)).await
+    match served.body {
+        Some(body) => Ok(bytes_response(body, served.mime, &headers)),
+        None => stream_file(&served.path, served.mime, Some(&headers)).await,
+    }
+}
+
+/// A body held in memory (the audio RAM cache), with the same `Range` handling as
+/// [`stream_file`].
+fn bytes_response(body: api::audio_ram::Bytes, mime: &str, headers: &HeaderMap) -> Response {
+    let len = body.len() as u64;
+    let cache = "private, max-age=3600";
+    match headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(|v| byte_range(v, len)) {
+        Some(Err(())) => (StatusCode::RANGE_NOT_SATISFIABLE, [(header::CONTENT_RANGE, format!("bytes */{len}")), (header::ACCEPT_RANGES, "bytes".to_string())]).into_response(),
+        Some(Ok((start, end))) => (
+            StatusCode::PARTIAL_CONTENT,
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (header::CACHE_CONTROL, cache.to_string()),
+                (header::ACCEPT_RANGES, "bytes".to_string()),
+                (header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}")),
+                (header::CONTENT_LENGTH, (end - start + 1).to_string()),
+            ],
+            body.slice(start as usize..=end as usize),
+        )
+            .into_response(),
+        None => (
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (header::CACHE_CONTROL, cache.to_string()),
+                (header::ACCEPT_RANGES, "bytes".to_string()),
+                (header::CONTENT_LENGTH, len.to_string()),
+            ],
+            body,
+        )
+            .into_response(),
+    }
 }
 
 /// A ROM track of the main server's, streamed.

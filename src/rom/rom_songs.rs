@@ -7,7 +7,7 @@
 //! data view, the engine (and where it found the songs) as its path, and the song number as its
 //! subsong. Playback opens the engine again from that, without searching the ROM.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::agbplay;
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
@@ -36,8 +36,38 @@ pub fn covers(platform: u16) -> bool {
     platform == P::GameBoyAdvance as u16 && agbplay::available()
 }
 
+/// How many ROM images [`read_rom`] keeps in memory. A cartridge is at most
+/// [`MAX_ROM_BYTES`]; playing through an album opens the same one for every track, and a zip
+/// or 7z would otherwise be unpacked again each time.
+const KEPT_ROMS: usize = 4;
+
+/// A ROM's bytes, kept for the next track: see [`KEPT_ROMS`]. A file that changed (size or
+/// time) is read again.
+fn read_rom(path: &Path) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    type Kept = std::collections::VecDeque<((PathBuf, u64, Option<std::time::SystemTime>), std::sync::Arc<Vec<u8>>)>;
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(Kept::new());
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let key = (path.to_path_buf(), meta.len(), meta.modified().ok());
+    {
+        let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = kept.iter().position(|(k, _)| *k == key) {
+            let hit = kept.remove(i).expect("found above");
+            let bytes = hit.1.clone();
+            kept.push_back(hit);
+            return Ok(bytes);
+        }
+    }
+    let bytes = std::sync::Arc::new(read_rom_uncached(path)?);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    kept.push_back((key, bytes.clone()));
+    while kept.len() > KEPT_ROMS {
+        kept.pop_front();
+    }
+    Ok(bytes)
+}
+
 /// A ROM's bytes: the file itself, or the one ROM inside a zip / 7z.
-fn read_rom(path: &Path) -> Result<Vec<u8>, String> {
+fn read_rom_uncached(path: &Path) -> Result<Vec<u8>, String> {
     let name = path.to_string_lossy().to_ascii_lowercase();
     let format = if name.ends_with(".zip") {
         Some(super::sevenzip_wrapper::ArchiveFormat::Zip)

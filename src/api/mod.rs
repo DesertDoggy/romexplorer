@@ -8,6 +8,7 @@ pub mod about;
 pub mod audio;
 pub mod audio_autotag;
 pub mod audio_convert;
+pub mod audio_ram;
 pub mod artwork;
 pub mod audio_sync;
 pub mod auth;
