@@ -245,6 +245,7 @@ set_lib_paths_for_os() {
             rvgm_lib_path() { echo "$1/dynamic/librvgmstream.dylib"; }
             gme_lib_path() { echo "$1/dynamic/libgme.dylib"; }
             gmesgc_lib_path() { echo "$1/dynamic/libgmesgc.dylib"; }
+            ragb_lib_path() { echo "$1/dynamic/libragb.dylib"; }
             cemuwua_lib_path() { echo "$1/dynamic/libcemuwua.dylib"; }
             exiso_lib_path() { echo "$1/dynamic/libexiso.dylib"; }
             psxpbp_lib_path() { echo "$1/dynamic/libpsxpbp.dylib"; }
@@ -259,6 +260,7 @@ set_lib_paths_for_os() {
             rvgm_lib_path() { echo "$1/dynamic/rvgmstream.dll"; }
             gme_lib_path() { echo "$1/dynamic/gme.dll"; }
             gmesgc_lib_path() { echo "$1/dynamic/gmesgc.dll"; }
+            ragb_lib_path() { echo "$1/dynamic/ragb.dll"; }
             cemuwua_lib_path() { echo "$1/dynamic/cemuwua.dll"; }
             exiso_lib_path() { echo "$1/dynamic/exiso.dll"; }
             psxpbp_lib_path() { echo "$1/dynamic/psxpbp.dll"; }
@@ -273,6 +275,7 @@ set_lib_paths_for_os() {
             rvgm_lib_path() { echo "$1/dynamic/librvgmstream.so"; }
             gme_lib_path() { echo "$1/dynamic/libgme.so"; }
             gmesgc_lib_path() { echo "$1/dynamic/libgmesgc.so"; }
+            ragb_lib_path() { echo "$1/dynamic/libragb.so"; }
             cemuwua_lib_path() { echo "$1/dynamic/libcemuwua.so"; }
             exiso_lib_path() { echo "$1/dynamic/libexiso.so"; }
             psxpbp_lib_path() { echo "$1/dynamic/libpsxpbp.so"; }
@@ -300,6 +303,7 @@ copy_single_lib "libxaac" "$ROOT_DIR/deps/libxaac/release" rxaac_lib_path 0
 copy_single_lib "vgmstream" "$ROOT_DIR/deps/vgmstream/release" rvgm_lib_path 0
 copy_single_lib "gme" "$ROOT_DIR/deps/gme/release" gme_lib_path 0
 copy_single_lib "gme (SGC)" "$ROOT_DIR/deps/gme/release" gmesgc_lib_path 0
+copy_single_lib "agbplay" "$ROOT_DIR/deps/agbplay/release" ragb_lib_path 0
 copy_single_lib "cemu" "$ROOT_DIR/deps/cemu/release" cemuwua_lib_path 0
 copy_single_lib "extract-xiso" "$ROOT_DIR/deps/extract-xiso/release" exiso_lib_path 0
 copy_single_lib "beetle-psx-libretro" "$ROOT_DIR/deps/beetle-psx-libretro/release" psxpbp_lib_path 0

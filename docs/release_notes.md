@@ -45,6 +45,8 @@ replacing a build.
 - A rip library: list the folders where you keep rip sets in Settings › Audio, and Index ROM
   audio matches each set to your ROMs by their content, so one set plays for every region of
   the game whatever its name.
+- Game Boy Advance music plays straight from the ROM, with no rip, for games made with
+  Nintendo's standard sound engine (about half of them).
 
 # romexplorer 0.1.8 (alpha)
 

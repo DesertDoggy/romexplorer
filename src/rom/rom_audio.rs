@@ -177,6 +177,9 @@ pub enum TrackLocation {
     /// Track `track` (0-based) of a rip-set file in the game's folder, by its path there
     /// (`<archive>|<member>` inside a zip or 7z); see [`super::rip_sets`].
     Rip { path: String, track: u32 },
+    /// Song `song` of the music sequenced in a cartridge ROM, played by the engine `engine`
+    /// names; see [`super::rom_songs`].
+    RomSong { engine: String, song: u32 },
 }
 
 /// One sound found by [`index_rom`].
@@ -605,7 +608,7 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
     let video = is_video(inner_archives::split(inner).map_or(inner, |(base, _)| base));
     let shape = Shape { looping: info.looping, duration_ms, channels: info.channels, cd_track: match location {
         TrackLocation::Cdda { track } => u16::try_from(track).unwrap_or(u16::MAX),
-        TrackLocation::File { .. } | TrackLocation::Rip { .. } => 0,
+        TrackLocation::File { .. } | TrackLocation::Rip { .. } | TrackLocation::RomSong { .. } => 0,
     }, rip: false };
     FoundTrack {
         location,
@@ -627,7 +630,7 @@ fn found(location: TrackLocation, name: String, info: &StreamInfo, bytes: u64, p
 fn location_path(location: &TrackLocation) -> &str {
     match location {
         TrackLocation::File { path, .. } | TrackLocation::Rip { path, .. } => path,
-        TrackLocation::Cdda { .. } => "",
+        TrackLocation::Cdda { .. } | TrackLocation::RomSong { .. } => "",
     }
 }
 
@@ -861,6 +864,9 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
     if let TrackLocation::Rip { path: rel, track } = location {
         return super::rip_sets::open(path, rel, *track);
     }
+    if let TrackLocation::RomSong { engine, song } = location {
+        return super::rom_songs::open(path, engine, *song);
+    }
     let rom = open_rom(path)?;
     match location {
         TrackLocation::Cdda { track } => {
@@ -886,7 +892,7 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
             let stream = Stream::open(source, inner, *subsong, config).ok_or_else(|| format!("{inner} would not open"))?;
             Ok(Box::new(VgmPcm(stream)))
         }
-        TrackLocation::Rip { .. } => unreachable!("handled above"),
+        TrackLocation::Rip { .. } | TrackLocation::RomSong { .. } => unreachable!("handled above"),
     }
 }
 
