@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn a_game_upload_reaches_the_sound_chip() {
         if !snes_apu::available() {
-            eprintln!("gmespc not built; skipped");
+            eprintln!("rommusic not built; skipped");
             return;
         }
         // MOV A,#$5A ; MOV $F4,A ; BRA -4, then data.

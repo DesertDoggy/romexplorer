@@ -2,7 +2,7 @@
 //! games made with Nintendo's standard sound engine (m4a). Loaded at run time like
 //! [`super::gme`]: when the library has not been built for this machine [`available`] is false.
 //!
-//! The library is `ragb` (`deps/agbplay/shim/ragb.cpp`), a flat C API over agbplay's own scanner
+//! The functions are `ragb_` in the `rommusic` library (`deps/rommusic/agbplay/ragb.cpp`), a flat C API over agbplay's own scanner
 //! and player: the scanner finds the song table, music player table and mixing settings, so a
 //! song is played by its number with no rip.
 
@@ -38,19 +38,13 @@ struct Api {
     ended: EndedFn,
 }
 
-fn find_library() -> Option<PathBuf> {
-    if let Some(path) = native_lib::find_app_root_library("ragb") {
-        return Some(path);
-    }
-    native_lib::find_native_library(&native_lib::source_root().join("deps/agbplay/release"), "ragb")
-}
 
 fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
     API.get_or_init(|| {
-        let path = find_library()?;
+        let path = native_lib::rommusic_library()?;
         unsafe {
-            let lib = Library::new(&path).map_err(|e| log::warn!("ragb: {} would not load: {e}", path.display())).ok()?;
+            let lib = Library::new(&path).map_err(|e| log::warn!("rommusic: {} would not load: {e}", path.display())).ok()?;
             Some(Api {
                 open: *lib.get(b"ragb_open\0").ok()?,
                 open_at: *lib.get(b"ragb_open_at\0").ok()?,
@@ -102,7 +96,7 @@ impl Player {
     /// Opens a GBA ROM image. Fails when the library is missing or the ROM has no song table of
     /// the standard engine (its music is made another way).
     pub fn open(rom: &[u8], sample_rate: u32) -> Result<Self, String> {
-        let api = api().ok_or("the GBA music player (ragb) is not installed")?;
+        let api = api().ok_or("the GBA music player (rommusic) is not installed")?;
         let mut err = [0 as c_char; 256];
         let handle = unsafe { (api.open)(rom.as_ptr(), rom.len(), sample_rate, err.as_mut_ptr(), err.len()) };
         if !handle.is_null() {

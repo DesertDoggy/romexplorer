@@ -4,10 +4,9 @@
 //!
 //! Formats: NSF/NSFE (NES), SPC (SNES), GBS (Game Boy), VGM/VGZ and GYM (Mega Drive, Master
 //! System and other chips), HES (PC Engine), KSS (MSX), AY (ZX Spectrum), SAP (Atari), and SGC
-//! (Game Gear, Master System) through a second library built from kode54's fork.
+//! (Game Gear, Master System) from kode54's fork, built into the same library.
 //!
-//! gme.h is a flat C API already, so there is no shim (`deps/gme/scripts/build.sh` builds
-//! upstream as it is). It is built without zlib: a gzipped `.vgz` is unpacked here through
+//! The library is `rommusic` (`deps/rommusic`), which exports gme.h's flat C API as it is. It is built without zlib: a gzipped `.vgz` is unpacked here through
 //! [`super::zlib_ng`] before it is handed over.
 
 use std::ffi::{c_char, c_int, c_long, c_void, CStr};
@@ -78,17 +77,9 @@ struct Api {
     load_m3u_data: LoadM3uDataFn,
 }
 
-fn find_library(base: &str) -> Option<PathBuf> {
-    if let Some(path) = native_lib::find_app_root_library(base) {
-        return Some(path);
-    }
-    let release_root = native_lib::source_root().join("deps/gme/release");
-    native_lib::find_native_library(&release_root, base)
-}
-
-/// Loads `base`, whose functions are upstream gme.h's under the prefix `prefix`.
+/// Loads the functions of upstream gme.h's API under the prefix `prefix` from rommusic.
 fn load_api(base: &str, prefix: &str) -> Option<Api> {
-    let path = find_library(base)?;
+    let path = native_lib::rommusic_library()?;
     unsafe {
         let lib = Library::new(&path).map_err(|e| log::warn!("{base}: {} would not load: {e}", path.display())).ok()?;
         let sym = |name: &str| format!("{prefix}{name}\0").into_bytes();
@@ -115,14 +106,14 @@ fn load_api(base: &str, prefix: &str) -> Option<Api> {
 /// Upstream libgme.
 fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
-    API.get_or_init(|| load_api("gme", "gme_")).as_ref()
+    API.get_or_init(|| load_api("rommusic", "gme_")).as_ref()
 }
 
-/// gmesgc: SGC files (Game Gear, Master System), which upstream does not play, from kode54's
-/// fork behind `rsgc_` functions (`deps/gme/sgc/rsgc.cpp`).
+/// SGC files (Game Gear, Master System), which upstream does not play, from kode54's fork
+/// behind `rsgc_` functions (`deps/rommusic/sgc/rsgc.cpp`).
 fn sgc_api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
-    API.get_or_init(|| load_api("gmesgc", "rsgc_")).as_ref()
+    API.get_or_init(|| load_api("rommusic (SGC)", "rsgc_")).as_ref()
 }
 
 /// Whether the SGC player is present on this machine.
@@ -251,7 +242,7 @@ impl Emu {
     /// Loads a whole file. A gzipped `.vgz` is unpacked first.
     pub fn open(data: Vec<u8>, sample_rate: u32) -> Result<Self, String> {
         let data = if data.starts_with(&[0x1F, 0x8B]) { gunzip(&data).ok_or("the gzipped file would not unpack")? } else { data };
-        let api = if is_sgc(&data) { sgc_api().ok_or("the SGC player (gmesgc) is not available")? } else { api().ok_or("the gme library is not available")? };
+        let api = if is_sgc(&data) { sgc_api().ok_or("the SGC player (rommusic) is not available")? } else { api().ok_or("the chip music library (rommusic) is not available")? };
         if data.is_empty() || data.len() > c_long::MAX as usize {
             return Err("empty or oversized file".into());
         }

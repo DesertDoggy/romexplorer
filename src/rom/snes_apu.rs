@@ -1,4 +1,4 @@
-//! The SNES sound chip, emulated by blargg's Snes_Spc (`deps/gme/spc`, library `gmespc`) and
+//! The SNES sound chip, emulated by blargg's Snes_Spc (`deps/rommusic/spc`, in the `rommusic` library) and
 //! driven the way the SNES drives it: through its four I/O ports, in time. Loaded at run time;
 //! [`available`] is false when the library has not been built for this machine.
 //!
@@ -40,19 +40,13 @@ struct Api {
     save_spc: SaveFn,
 }
 
-fn find_library() -> Option<PathBuf> {
-    if let Some(path) = native_lib::find_app_root_library("gmespc") {
-        return Some(path);
-    }
-    native_lib::find_native_library(&native_lib::source_root().join("deps/gme/release"), "gmespc")
-}
 
 fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
     API.get_or_init(|| {
-        let path = find_library()?;
+        let path = native_lib::rommusic_library()?;
         unsafe {
-            let lib = Library::new(&path).map_err(|e| log::warn!("gmespc: {} would not load: {e}", path.display())).ok()?;
+            let lib = Library::new(&path).map_err(|e| log::warn!("rommusic: {} would not load: {e}", path.display())).ok()?;
             Some(Api {
                 new: *lib.get(b"rspc_new\0").ok()?,
                 delete: *lib.get(b"rspc_delete\0").ok()?,
@@ -107,7 +101,7 @@ unsafe impl Send for Apu {}
 impl Apu {
     /// A chip just powered on, its boot ROM waiting for an upload.
     pub fn new() -> Result<Self, String> {
-        let api = api().ok_or("the SNES sound chip emulator (gmespc) is not installed")?;
+        let api = api().ok_or("the SNES sound chip emulator (rommusic) is not installed")?;
         let handle = unsafe { (api.new)() };
         if handle.is_null() {
             return Err("the SNES sound chip emulator would not start".into());
@@ -241,7 +235,7 @@ mod tests {
     #[test]
     fn an_upload_lands_in_sound_memory_and_runs() {
         if !available() {
-            eprintln!("gmespc not built; skipped");
+            eprintln!("rommusic not built; skipped");
             return;
         }
         let mut apu = Apu::new().unwrap();

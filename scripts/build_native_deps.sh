@@ -142,7 +142,7 @@ stream_flag() { [[ "$STREAMING" -eq 1 ]] || echo "--nostreaming"; }
 # --- the build order --------------------------------------------------------------------
 # openssl and zlib-ng first because things link against their *release trees*; everything
 # after them is free. Kept as one list so --list and the run agree by construction.
-ORDER=(openssl zlib-ng 7-Zip-zstd mariadb-connector-c mariadb-server chdman-simd dolphin RALibretro libxaac ffmpeg vgmstream gme agbplay cemu extract-xiso beetle-psx-libretro)
+ORDER=(openssl zlib-ng 7-Zip-zstd mariadb-connector-c mariadb-server chdman-simd dolphin RALibretro libxaac ffmpeg vgmstream rommusic cemu extract-xiso beetle-psx-libretro)
 
 # Whether a submodule has been *verified* to build linux/arm64 or windows/arm64 -- by an
 # actual build whose output was checked to be AArch64, not by reading the script. Every
@@ -165,8 +165,7 @@ declare -A SUPPORTS_ARM64_LINUX=(
     [libxaac]=1
     [ffmpeg]=0
     [vgmstream]=0
-    [gme]=0
-    [agbplay]=0
+    [rommusic]=0
     [cemu]=0
     [extract-xiso]=0
     [beetle-psx-libretro]=0
@@ -183,8 +182,7 @@ declare -A SUPPORTS_ARM64_WINDOWS=(
     [libxaac]=1
     [ffmpeg]=0
     [vgmstream]=0
-    [gme]=0
-    [agbplay]=0
+    [rommusic]=0
     [cemu]=0
     [extract-xiso]=0
     [beetle-psx-libretro]=0
@@ -302,7 +300,7 @@ for name in 7-Zip-zstd chdman-simd RALibretro ffmpeg; do
     break
 done
 if [[ "$PLATFORM/$ARCH" == "windows/arm64" && "$HOST_ARCH" != "arm64" ]]; then
-    for name in zlib-ng 7-Zip-zstd chdman-simd RALibretro libxaac ffmpeg vgmstream gme agbplay; do
+    for name in zlib-ng 7-Zip-zstd chdman-simd RALibretro libxaac ffmpeg vgmstream rommusic; do
         is_selected "$name" || continue
         command -v aarch64-w64-mingw32-clang >/dev/null 2>&1 || PREFLIGHT_ERRORS+=("missing llvm-mingw (aarch64-w64-mingw32-clang) -- needed by $name for windows/arm64; unpack https://github.com/mstorsjo/llvm-mingw to C:\\llvm-mingw or set LLVM_MINGW_ROOT")
         break
@@ -399,8 +397,7 @@ for name in "${SELECTED[@]}"; do
         libxaac)    script="$ROOT_DIR/deps/libxaac/scripts/build.sh" ;;
         ffmpeg)     script="$ROOT_DIR/deps/ffmpeg/scripts/build.sh" ;;
         vgmstream)  script="$ROOT_DIR/deps/vgmstream/scripts/build.sh" ;;
-        gme)        script="$ROOT_DIR/deps/gme/scripts/build.sh" ;;
-        agbplay)    script="$ROOT_DIR/deps/agbplay/scripts/build.sh" ;;
+        rommusic)   script="$ROOT_DIR/deps/rommusic/scripts/build.sh" ;;
         cemu)       script="$ROOT_DIR/deps/cemu/scripts/build.sh" ;;
         extract-xiso) script="$ROOT_DIR/deps/extract-xiso/scripts/build.sh" ;;
         beetle-psx-libretro) script="$ROOT_DIR/deps/beetle-psx-libretro/scripts/build.sh" ;;
@@ -585,15 +582,11 @@ build_one() {
             # comes from cross_env like 7-Zip's.
             run_step "$name" env $(cross_env) bash "$sub/vgmstream/scripts/build.sh" "$PLATFORM" "$ARCH"
             ;;
-        gme)
-            # Game Music Emu: rip sets of older consoles (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP).
-            # Upstream's CMake as it is; gme.h is already a flat C API. CC/CXX from cross_env.
-            run_step "$name" env $(cross_env) bash "$sub/gme/scripts/build.sh" "$PLATFORM" "$ARCH"
-            ;;
-        agbplay)
-            # GBA music from the ROM: agbplay's playback core behind the ragb_ C shim
-            # (deps/agbplay/shim/ragb.cpp). C++23, fmt header-only. CC/CXX from cross_env.
-            run_step "$name" env $(cross_env) bash "$sub/agbplay/scripts/build.sh" "$PLATFORM" "$ARCH"
+        rommusic)
+            # The console sound-chip players in one library: Game Music Emu for rip sets, SGC
+            # from kode54's fork (names prefixed), the SNES sound chip through its ports, and
+            # agbplay for GBA music from the ROM (C++23). CC/CXX from cross_env.
+            run_step "$name" env $(cross_env) bash "$sub/rommusic/scripts/build.sh" "$PLATFORM" "$ARCH"
             ;;
         cemu)
             # cemuwua: Wii U .wud/.wux into .wua through Cemu's own disc and FST code
