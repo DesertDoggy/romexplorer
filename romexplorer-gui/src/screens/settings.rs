@@ -42,7 +42,7 @@ const EDITORS: &[&str] = &[
     "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
-    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
+    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_ram_cache_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
     "merge_review_order", "gemini_model", "dat_sync_platforms",
 ];
@@ -303,7 +303,7 @@ fn initial(key: &str, value: &Value) -> Value {
         "release_edition_order" => json!(edition_order(value)),
         "audio_dsd_cache_format" => if value.as_str() == Some("flac") { json!("flac") } else { json!("aac") },
         "audio_client_format" => if matches!(value.as_str(), Some("aac" | "xhe_aac" | "none")) { value.clone() } else { json!("aac") },
-        "audio_fallback" => if matches!(value.as_str(), Some("random" | "generic_bgm")) { value.clone() } else { json!("none") },
+        "audio_fallback" => if matches!(value.as_str(), Some("none" | "generic_bgm")) { value.clone() } else { json!("random") },
         "audio_title_sources" => if matches!(value.as_str(), Some("tagged" | "rom")) { value.clone() } else { json!("both") },
         "audio_rom_kinds" => if matches!(value.as_str(), Some("bgm_jingle" | "all")) { value.clone() } else { json!("bgm") },
         "audio_rom_not_owned" => if matches!(value.as_str(), Some("random" | "none")) { value.clone() } else { json!("related") },
@@ -369,6 +369,7 @@ fn num_spec(key: &str) -> Option<(i64, i64, Option<i64>, &'static str, &'static 
     Some(match key {
         "audio_client_bitrate_kbps" => (128, 48, Some(320), "kbps", "Client mode: the bitrate a kept copy is converted to. A track already at or below it is copied as it is; DSD, ALAC and AIFF are always converted."),
         "audio_cache_max_mb" => (4096, 0, None, "MiB", "Size cap of the converted-audio cache; 0 = no cap. The least recently played conversions are removed first and made again when next needed."),
+        "audio_ram_cache_mb" => (256, 0, None, "MiB", "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk."),
         "media_list_cap" => (6, 1, Some(50), "per game", "How many screenshots / fan art images are taken per game from one provider."),
         "hasheous_parallel_downloads" => (4, 1, Some(16), "zips", "Hasheous per-platform dump zips downloaded at once during a full sync."),
         "playmatch_batch_size" => (100, -1, None, "contents", "Background PlayMatch gap filler (runs only while no other sync job is queued, and only for providers with usable credentials): N = at most N contents per batch; 0 = unlimited (still 100 per request, rate-limited); -1 = off."),
@@ -846,7 +847,7 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
         },
         "audio_fallback" => rsx! {
             {muted("What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.")}
-            {radios(&[("none", "nothing: silent (default)"), ("random", "random tracks from the audio linked to other titles"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("none"))}
+            {radios(&[("none", "nothing: silent"), ("random", "random tracks from the audio linked to other titles, or a random title's ROM music (default)"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("random"))}
         },
         "audio_title_sources" => rsx! {
             {muted("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}

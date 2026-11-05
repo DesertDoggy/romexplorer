@@ -141,12 +141,14 @@ pub const KEY_MEDIA_CLIENT_KEEP: &str = "media_client_keep";
 pub const KEY_AUDIO_DSD_CACHE_FORMAT: &str = "audio_dsd_cache_format";
 /// Size cap of the converted-audio cache, in MiB (0 = uncapped; default 4096).
 pub const KEY_AUDIO_CACHE_MAX_MB: &str = "audio_cache_max_mb";
+/// Size of the RAM cache of ROM music decoded for playing, in MiB (0 = off; default 256).
+pub const KEY_AUDIO_RAM_CACHE_MB: &str = "audio_ram_cache_mb";
 /// Client mode: the format a kept copy of the main server's audio is fetched in:
 /// `none` (default: as it is) | `aac` | `xhe_aac`.
 pub const KEY_AUDIO_CLIENT_FORMAT: &str = "audio_client_format";
 /// Client mode: tracks above this bitrate (kbps) are converted, the rest copied as they are.
 pub const KEY_AUDIO_CLIENT_BITRATE: &str = "audio_client_bitrate_kbps";
-/// What a title with no audio of its own plays: `none` (default: silence) | `random` |
+/// What a title with no audio of its own plays: `none` (silence) | `random` (default) |
 /// `generic_bgm` (the files carrying that tag).
 pub const KEY_AUDIO_FALLBACK: &str = "audio_fallback";
 /// Where a title page's music comes from: `tagged` (audio files tagged with the title) |
@@ -398,7 +400,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 102] = [
+pub const KNOWN_KEYS: [(&str, &str); 103] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -437,9 +439,10 @@ pub const KNOWN_KEYS: [(&str, &str); 102] = [
     (KEY_MEDIA_CLIENT_KEEP, "Client mode only: which media types this machine keeps its own copy of, {\"video\": false, ...}. Images are stored as AVIF when that is smaller. A type that is off is streamed from the main server instead. Video and bgm (audio) are off unless listed: a downloaded video stays in its original format, so streaming is the better choice; kept audio is fetched by the audio_sync job in the format audio_client_format names."),
     (KEY_AUDIO_DSD_CACHE_FORMAT, "What audio the browser cannot play (DSD, ALAC, AIFF) is converted to when it is played from this machine: aac (default; 256 kbps, small) | flac (lossless, larger). Converted once and cached. Without the AAC encoder library the lossless form is used either way."),
     (KEY_AUDIO_CACHE_MAX_MB, "Size cap of the converted-audio cache in MiB (default 4096; 0 = no cap). The least recently played conversions are removed first and made again when next needed."),
+    (KEY_AUDIO_RAM_CACHE_MB, "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off). When it is full, the least recently played tracks move to the converted-audio cache on disk."),
     (KEY_AUDIO_CLIENT_FORMAT, "Client mode: the format this machine's kept copies of the main server's audio are fetched in: none (as they are) | aac (the default on Linux) | xhe_aac (the default elsewhere). AAC is recommended when a Linux client is involved; xHE-AAC saves the most storage and plays on Windows 11, macOS, iOS and Android."),
     (KEY_AUDIO_CLIENT_BITRATE, "Client mode: the bitrate (kbps, 48-320, default 128) a kept copy is converted to. A track already at or below it is copied as it is."),
-    (KEY_AUDIO_FALLBACK, "What a title with no audio linked to it plays: none (default; silent) | random (tracks picked at random from the audio linked to other titles) | generic_bgm (the audio files tagged generic_bgm)."),
+    (KEY_AUDIO_FALLBACK, "What a title with no audio linked to it plays: none (silent) | random (default; tracks picked at random from the audio linked to other titles, or ROM music of a random title when there is none) | generic_bgm (the audio files tagged generic_bgm)."),
     (KEY_AUDIO_TITLE_SOURCES, "Where a title page's music comes from: tagged (audio files tagged with the title) | rom (the music inside the title's ROMs, played from the ROM) | both (default)."),
     (KEY_AUDIO_ROM_KINDS, "Which sounds from a ROM a title page plays: bgm (default; music only) | bgm_jingle (music and short jingles) | all (sound effects too)."),
     (KEY_AUDIO_ROM_NOT_OWNED, "ROM music for a title with no ROM here: related (default; another version of the game, such as the original of a remake) | random (another title's) | none."),
@@ -818,6 +821,10 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
         "Size cap of the converted-audio cache, in MiB (default 4096; 0 = no cap).",
         "The least recently played conversions are removed first and made again when next needed.",
     ]),
+    (KEY_AUDIO_RAM_CACHE_MB, &[
+        "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).",
+        "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.",
+    ]),
     (KEY_AUDIO_CLIENT_FORMAT, &[
         "Client mode: the format this machine fetches its kept copies of the main server's audio in (bgm ticked under media_client_keep). The server does the converting.",
         "AAC plays everywhere, Linux included, and is the default on Linux. xHE-AAC saves the most storage and plays on Windows 11, macOS, iOS and Android, and is the default there. No conversion keeps the original files.",
@@ -845,7 +852,7 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
         "Seconds. A ROM sound that does not loop is music from this length (default 60), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.",
     ]),
     (KEY_AUDIO_FALLBACK, &[
-        "What a title with no audio linked to it plays: nothing (default), tracks picked at random from the audio linked to other titles, or the audio files tagged generic_bgm.",
+        "What a title with no audio linked to it plays: nothing, tracks picked at random from the audio linked to other titles (default; ROM music of a random title when there is no such audio), or the audio files tagged generic_bgm.",
         "generic_bgm is a tag of its own: it is put on audio files and taken off them like any keyword tag, but a title cannot carry it and it cannot be renamed or deleted.",
     ]),
     (KEY_ALLOW_REMOTE_LAUNCH, &[

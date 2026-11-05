@@ -282,10 +282,10 @@ async fn fetch(app: &App, source_id: u16, track: &AudioRow, format: &str, bitrat
     let text = path.display().to_string();
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| text.clone());
     sqlx::query(
-        "INSERT INTO audio_files (path, path_hash, file_name, size, last_modified, format, playable, support, duration_ms, loudness_lufs, title, album, artist, album_artist, disc_number, track_number, year, remote_source_id, remote_id, scanned_at, deleted) \
-         VALUES (?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), FALSE) \
+        "INSERT INTO audio_files (path, path_hash, file_name, size, last_modified, format, playable, support, duration_ms, loudness_lufs, sound_end_ms, title, album, artist, album_artist, disc_number, track_number, year, remote_source_id, remote_id, scanned_at, deleted) \
+         VALUES (?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), FALSE) \
          ON DUPLICATE KEY UPDATE path = VALUES(path), file_name = VALUES(file_name), size = VALUES(size), last_modified = NOW(), format = VALUES(format), playable = VALUES(playable), support = VALUES(support), \
-           duration_ms = VALUES(duration_ms), loudness_lufs = VALUES(loudness_lufs), title = VALUES(title), album = VALUES(album), artist = VALUES(artist), album_artist = VALUES(album_artist), \
+           duration_ms = VALUES(duration_ms), loudness_lufs = VALUES(loudness_lufs), sound_end_ms = VALUES(sound_end_ms), title = VALUES(title), album = VALUES(album), artist = VALUES(artist), album_artist = VALUES(album_artist), \
            disc_number = VALUES(disc_number), track_number = VALUES(track_number), year = VALUES(year), remote_source_id = VALUES(remote_source_id), remote_id = VALUES(remote_id), scanned_at = NOW(), deleted = FALSE",
     )
     .bind(&text)
@@ -297,6 +297,7 @@ async fn fetch(app: &App, source_id: u16, track: &AudioRow, format: &str, bitrat
     .bind(support.name())
     .bind(track.duration_ms)
     .bind(track.loudness_lufs)
+    .bind(track.sound_end_ms)
     // A file with no title tag is still called something on the list.
     .bind(track.title.clone().or_else(|| Path::new(&track.file_name).file_stem().map(|s| s.to_string_lossy().into_owned())))
     .bind(&track.album)
@@ -332,6 +333,7 @@ mod tests {
             support: "direct".to_string(),
             duration_ms: None,
             loudness_lufs: None,
+            sound_end_ms: None,
             title: None,
             album: album.map(str::to_string),
             artist: None,

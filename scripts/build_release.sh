@@ -30,7 +30,8 @@
 #   --platform LIST   linux,windows,macos           (default: this host)
 #   --arch LIST       x64,arm64                     (default: this host's)
 #   --mode LIST       server,desktop,cli            (default: server,desktop). cli is the
-#                     standalone chdlite tools, into release/cli/<chdlite version>/
+#                     standalone chdlite tools, into release/cli/<chdlite version>/, and
+#                     rommusic, into release/rommusic/<rommusic version>/
 #   --version V       (default: the workspace version)
 #   --no-clean        pass --no-clean to the native builds
 #   --skip-native     use the libraries already in app_root_ex/lib/
@@ -193,9 +194,10 @@ native_platform() { [[ "$1" == "macos" ]] && echo mac || echo "$1"; }
 native_flags=()
 [[ "$CLEAN" -eq 0 ]] && native_flags+=(--no-clean)
 [[ "$CORE" -eq 1 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,mariadb-connector-c,mariadb-server)
-# chdlite on its own loads two libraries; openssl is still needed to build the romexplorer
-# crate it depends on.
-[[ "$MODES" == "cli" && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,chdman-simd,dolphin)
+# The cli tools need only what chdlite and rommusic load (rommusic: the players, the stream
+# decoder and the disc and archive readers); openssl is still needed to build the romexplorer
+# crate they depend on.
+[[ "$MODES" == "cli" && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu,extract-xiso)
 [[ -n "$JOBS" ]] && native_flags+=(--jobs "$JOBS")
 [[ "$UNVERIFIED" -eq 1 ]] && native_flags+=(--unverified-arm64)
 
@@ -304,6 +306,8 @@ for t in "${TARGETS[@]}"; do
         if [[ "$m" == "cli" ]]; then
             # No --version: the cli tools carry their own (chdlite/Cargo.toml), not the workspace's.
             step "package $t cli" bash "$SCRIPTS/package.sh" --kind cli --os "$p" --arch "$a" || true
+            # rommusic ships beside chdlite, under its own version (rommusic-cli/Cargo.toml).
+            step "package $t rommusic" bash "$SCRIPTS/package.sh" --kind rommusic --os "$p" --arch "$a" || true
             continue
         fi
         step "package $t $m" bash "$SCRIPTS/package.sh" --kind "$m" --os "$p" --arch "$a" --version "$VERSION" || continue
@@ -326,7 +330,7 @@ done
 # --- 6. SHA256SUMS -------------------------------------------------------------------------------
 # One file over everything in dist/, in the format `sha256sum -c` reads; the per-archive
 # .sha256 files package.sh writes stay alongside for single downloads.
-for DIST in "$DIST" "$ROOT_DIR"/release/cli/*/dist; do
+for DIST in "$DIST" "$ROOT_DIR"/release/cli/*/dist "$ROOT_DIR"/release/rommusic/*/dist; do
 if [[ -d "$DIST" ]]; then
     (
         cd "$DIST"

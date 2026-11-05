@@ -27,16 +27,15 @@ replacing a build.
 - Title pages can play the music inside your ROMs, straight from the disc image like a CD
   player: CD audio tracks and the music files on the disc (PlayStation, Saturn, Dreamcast,
   GameCube, Xbox, Xbox 360, PSP and more, and dumped folders), including WMA, XMA and ATRAC3
-  music. Run Index ROM audio on the Audio tab first. Zip and 7z archives and Wii discs are not
-  read yet.
+  music. Run Index ROM audio on the Audio tab first. Zip and 7z archives are not read yet.
 - Settings choose tagged audio, ROM music or both, whether jingles and sound effects play
   too, and what a title you don't own plays (another version, such as the original of a
   remake, or a random one).
 - The music can keep playing on other screens until you open another title page.
 - The sound of title movies and other videos in a ROM can play too. It is off by default, and
   each title page can turn it on or off for that title.
-- DS and 3DS cartridges are read too: the music streams in DS sound archives, and the music
-  files of 3DS images that are stored decrypted.
+- DS and 3DS cartridges are read too: DS music, streamed or sequenced, plays straight from the
+  sound archive, and 3DS music files from images stored decrypted.
 - Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
 - The sound of PSP movies (.pmf) can play too, like other title movies.
 - Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s). Files named as fanfares or music effects ("me") count as jingles. A short first audio track (the spoken "this is a game disc" warning) counts as a sound effect.
@@ -45,6 +44,28 @@ replacing a build.
 - A rip library: list the folders where you keep rip sets in Settings › Audio, and Index ROM
   audio matches each set to your ROMs by their content, so one set plays for every region of
   the game whatever its name.
+- Game Boy Advance music plays straight from the ROM, with no rip, for games made with
+  Nintendo's standard sound engine (about half of them).
+- The player on title pages has a "don't play this track" button. Hidden tracks are listed under
+  the playlist, where a click plays one and Restore brings it back.
+- ROM music decoded for playing is kept in memory (Settings › Audio, 256 MiB by default).
+  When that is full, tracks move to the audio cache on disk, which now uses the tier 1 cache
+  folder when one is set.
+- Wii discs are read too (ISO, RVZ, WIA, GCZ and WBFS), and Wii U titles: .wua, and
+  .wud/.wux or downloaded title folders when their key is beside them.
+- Tracks in rip sets whose playlists count from 0 (many Game Boy sets) played the track before
+  the one named, and the first one was silent.
+- Music rips whose tracks have no length, or only a guessed one, now end where the music
+  does: silence at the end is cut, and a track that repeats plays its loop twice and fades.
+  A track cut at its playlist length fades out instead of stopping dead.
+- Normalise in the player now also turns quiet ROM tracks up, as far as they go without
+  clipping.
+- The player can crossfade: the next track fades in while the current one fades out. The
+  overlap is set in ms next to Normalise (2000 to begin with, 0 for off).
+- Silence at the end of a track is skipped: ROM tracks are trimmed, and for audio files the
+  audio scan measures where the sound ends (run it again to measure files scanned before).
+- Music on title pages is on by default, and the first start asks whether you want it, right
+  after the language. A title with no audio of its own now plays random tracks by default.
 
 **Merge review and combined titles**
 - Releases on a card can be dragged to the title they belong to, or onto "+" for a new title

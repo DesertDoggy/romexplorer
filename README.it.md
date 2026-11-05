@@ -96,10 +96,12 @@ avvio serve clic destro > Apri). Il primo avvio crea e avvia il proprio database
 
 ### Strumenti da riga di comando (chdlite)
 
-Si trascina un'immagine disco e si ottiene un CHD o un RVZ. `chdlite` (veloce), `chdcomp` (il più
-compatto), `chdread` (estrazione) e `chdhash` (hash) sono uno strumento per modalità, così un file
-trascinato sull'eseguibile fa la cosa giusta; `chdlite-gui` fa lo stesso in una finestra. Ogni
-opzione è disponibile anche come flag (`--help`). chdlite viene pubblicato separatamente: vedere
+Si trascina un'immagine disco e si ottiene un CHD o un RVZ. `chdlite` (veloce) e `chdcomp` (il più
+compatto) funzionano in entrambi i sensi: un'immagine non compressa viene compressa, un `.chd` o un
+`.rvz` viene estratto. `chdread` mostra i metadati di un file e `chdhash` ne calcola l'hash. Ogni
+strumento fa una sola cosa, così un file trascinato sull'eseguibile fa la cosa giusta;
+`chdlite-gui` fa lo stesso in una finestra. Ogni opzione è disponibile anche come flag (`--help`).
+chdlite viene pubblicato separatamente: vedere
 [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
 
 ### Chiavi dei provider

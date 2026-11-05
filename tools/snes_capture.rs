@@ -1,0 +1,115 @@
+//! Developer tool: runs a SNES ROM headless (`rom::snes_capture`) and writes what it left in
+//! the sound chip as an `.spc`, plus what the sound chip played as a `.wav`. With a reference
+//! `.spc` it also prints how much of the sound memory matches it.
+//!
+//!   snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]
+//!
+//! `--start` presses Start now and then, for games whose music waits past an intro.
+//! `--watch 4200` logs every write to that I/O register with the instruction that made it.
+//! `--ports N` prints the first N port writes and answers after the last driver start.
+
+use std::io::Write;
+
+use romexplorer::rom::{snes_capture, snes_sound};
+
+fn wav(path: &str, pcm: &[i16], rate: u32) -> std::io::Result<()> {
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let data = (pcm.len() * 2) as u32;
+    f.write_all(b"RIFF")?;
+    f.write_all(&(36 + data).to_le_bytes())?;
+    f.write_all(b"WAVEfmt ")?;
+    f.write_all(&16u32.to_le_bytes())?;
+    f.write_all(&1u16.to_le_bytes())?;
+    f.write_all(&2u16.to_le_bytes())?;
+    f.write_all(&rate.to_le_bytes())?;
+    f.write_all(&(rate * 4).to_le_bytes())?;
+    f.write_all(&4u16.to_le_bytes())?;
+    f.write_all(&16u16.to_le_bytes())?;
+    f.write_all(b"data")?;
+    f.write_all(&data.to_le_bytes())?;
+    for s in pcm {
+        f.write_all(&s.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+fn main() {
+    let mut args: Vec<String> = std::env::args().collect();
+    let press_start = args.iter().any(|a| a == "--start");
+    args.retain(|a| a != "--start");
+    let mut watch_register = None;
+    if let Some(i) = args.iter().position(|a| a == "--watch") {
+        watch_register = args.get(i + 1).and_then(|n| u16::from_str_radix(n.trim_start_matches('$'), 16).ok());
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    let mut show_ports = 0usize;
+    if let Some(i) = args.iter().position(|a| a == "--ports") {
+        show_ports = args.get(i + 1).and_then(|n| n.parse().ok()).unwrap_or(40);
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if args.len() < 4 {
+        eprintln!("usage: snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]");
+        std::process::exit(2);
+    }
+    let rom = std::fs::read(&args[1]).expect("read the ROM");
+    let seconds: f32 = args[2].parse().expect("seconds");
+    let started = std::time::Instant::now();
+    let c = match snes_capture::capture(&rom, &snes_capture::Options { seconds, keep_audio: true, press_start, watch_register }) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let peak = c.audio.iter().map(|s| (*s as i32).abs()).max().unwrap_or(0);
+    println!(
+        "ran {:.1} s of console time in {:.1} s ({} instructions); drivers started: {:?}; port writes: {}; peak {}; stopped: {:?}",
+        seconds,
+        started.elapsed().as_secs_f32(),
+        c.instructions,
+        c.driver_starts.iter().map(|d| format!("{:04x}@{:.2}s", d.entry, d.at as f64 / 21_477_272.0)).collect::<Vec<_>>(),
+        c.port_writes.len(),
+        peak,
+        c.stopped
+    );
+    println!("interrupts: {} NMI, {} IRQ; last $4200 write {:#04x}; IRQs masked at the end: {}", c.nmis, c.irqs, c.nmitimen, c.irq_masked);
+    if let Some(trace) = &c.crash_trace {
+        println!("ran into the vector table or a BRK after: {}", trace.iter().map(|a| format!("{:02x}:{:04x}", a >> 16, a & 0xFFFF)).collect::<Vec<_>>().join(" "));
+    }
+    if c.driver_starts.is_empty() {
+        println!(
+            "no driver started; in the last second the CPU was mostly at {:?}, reading {:?}",
+            c.busy_at.iter().map(|(a, n)| format!("{:02x}:{:04x} x{n}", a >> 16, a & 0xFFFF)).collect::<Vec<_>>(),
+            c.busy_reads.iter().map(|(a, n)| format!("${a:04x} x{n}")).collect::<Vec<_>>()
+        );
+    }
+    if let Some(r) = watch_register {
+        println!(
+            "writes to ${r:04x}: {}",
+            c.watched_writes.iter().map(|(pc, v)| format!("{:02x}:{:04x}={v:02x}", pc >> 16, pc & 0xFFFF)).collect::<Vec<_>>().join(" ")
+        );
+    }
+    if show_ports > 0 {
+        let from = c.driver_starts.last().map_or(0, |d| d.at);
+        let mut log: Vec<(u64, char, u8, u8)> = c.port_writes.iter().filter(|w| w.at >= from).map(|w| (w.at, 'w', w.port, w.value)).take(show_ports).collect();
+        log.extend(c.port_replies.iter().filter(|w| w.at >= from).map(|w| (w.at, 'r', w.port, w.value)).take(show_ports));
+        log.sort();
+        for (at, dir, port, value) in log.iter().take(show_ports * 2) {
+            let arrow = if *dir == 'w' { "game ->" } else { "chip ->" };
+            println!("  {:.4}s {arrow} ${:02x} = {value:02x}", *at as f64 / 21_477_272.0, 0x40 + port);
+        }
+    }
+    std::fs::write(format!("{}.spc", args[3]), &c.spc).expect("write the .spc");
+    wav(&format!("{}.wav", args[3]), &c.audio, 32_000).expect("write the .wav");
+    if let Some(reference) = args.get(4) {
+        let reference = std::fs::read(reference).expect("read the reference .spc");
+        let (Some(ours), Some(theirs)) = (snes_sound::spc_aram(&c.spc), snes_sound::spc_aram(&reference)) else {
+            println!("not an .spc");
+            return;
+        };
+        // Sound memory both have in use (not left at the power-on fill), and where they agree.
+        let used = (0..0x10000).filter(|&i| !(0xF0..0x100).contains(&i) && theirs[i] != 0xFF && theirs[i] != 0).count();
+        let same = (0..0x10000).filter(|&i| !(0xF0..0x100).contains(&i) && theirs[i] != 0xFF && theirs[i] != 0 && ours[i] == theirs[i]).count();
+        println!("sound memory agreement with the reference: {same} of {used} bytes ({:.1}%)", same as f64 * 100.0 / used.max(1) as f64);
+    }
+}
