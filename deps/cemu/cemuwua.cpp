@@ -130,7 +130,7 @@ public:
 	virtual std::optional<std::vector<uint8>> ReadWhole(std::string_view path) = 0;
 	// Up to `len` bytes of file `path` from `offset`, for cemuwua_reader_read. -1 when the file
 	// is not there, -2 on a read error, else the bytes read.
-	virtual int64 ReadAt(const std::string& path, uint64 offset, uint8* out, size_t len, uint64* size) { return -2; }
+	virtual sint64 ReadAt(const std::string& path, uint64 offset, uint8* out, size_t len, uint64* size) { return -2; }
 };
 
 constexpr size_t TRANSFER = 1024 * 1024;
@@ -163,7 +163,7 @@ public:
 		return true;
 	}
 
-	int64 ReadAt(const std::string& path, uint64 offset, uint8* out, size_t len, uint64* size) override
+	sint64 ReadAt(const std::string& path, uint64 offset, uint8* out, size_t len, uint64* size) override
 	{
 		FSTFileHandle h;
 		if (!m_volume->OpenFile(path, h, true))
@@ -1373,6 +1373,8 @@ CEMUWUA_API cemuwua_reader* cemuwua_reader_open(const char* path, const uint8_t*
 			}
 			return r.release();
 		}
+		// Cemu's AES is set up here, as for every other entry point that decrypts.
+		init_once();
 		Failure fail{CEMUWUA_OK, ""};
 		r->title = open_source(path, key, load_keys_txt(keys_txt), fail);
 		if (!r->title)
@@ -1455,7 +1457,7 @@ CEMUWUA_API int cemuwua_reader_read(cemuwua_reader* r, const char* inner_path, u
 			*got = (size_t)want;
 			return CEMUWUA_OK;
 		}
-		int64 n = r->title->ReadAt(inner_path, offset, out, out_len, file_size);
+		sint64 n = r->title->ReadAt(inner_path, offset, out, out_len, file_size);
 		if (n == -1)
 			return CEMUWUA_NOT_FOUND;
 		if (n < 0)
