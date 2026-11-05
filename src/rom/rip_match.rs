@@ -255,21 +255,11 @@ pub fn skip_rom(path: &Path) -> bool {
     name.contains("[bios]") || name.contains("(bios)") || name.contains("super game boy") || name.contains("system card")
 }
 
-/// A ROM's file name without its extension and bracketed tags (region, revision, dump flags),
-/// lowercased: the same for the versions of one game named the No-Intro way.
-pub fn bare_name(path: &Path) -> String {
-    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut out = String::new();
-    let mut depth = 0i32;
-    for c in stem.chars() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = (depth - 1).max(0),
-            _ if depth == 0 => out.push(c),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+/// Whether a ROM's file name says it is a multi-cart ("36 in 1", "110-in-1").
+pub fn multi_cart(path: &Path) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?i)\b\d+\s*-?\s*in\s*-?\s*1\b").expect("pattern"));
+    path.file_name().is_some_and(|n| re.is_match(&n.to_string_lossy()))
 }
 
 /// Which of a ROM's matches (best first) it keeps. A weak match (under [`SURE_SHARE`]) is
@@ -506,7 +496,9 @@ mod tests {
         assert!(skip_rom(Path::new("x/Super Game Boy (World) (Rev 2).sfc")));
         assert!(skip_rom(Path::new("[BIOS] Something (Japan).pce")));
         assert!(!skip_rom(Path::new("Some Game (USA).sfc")));
-        assert_eq!(bare_name(Path::new("d/Some Game (Europe) (Rev 1) [b].nes")), bare_name(Path::new("Some Game (Japan) (Beta).nes")));
+        assert!(multi_cart(Path::new("110-in-1 (Asia) (Unl).nes")));
+        assert!(multi_cart(Path::new("36 in 1 (Unl).nes")));
+        assert!(!multi_cart(Path::new("Game 2 (Japan).nes")));
     }
 
     #[test]
