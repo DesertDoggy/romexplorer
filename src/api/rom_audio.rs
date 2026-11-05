@@ -549,7 +549,9 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
         .into_iter()
         .map(|(rom_id, m)| {
             let mine = titles.get(&rom_id).copied();
-            (rom_id, m.map(|sets| rip_match::choose(&sets, |set| mine.is_some_and(|me| owners.get(set).is_some_and(|o| o.iter().any(|t| *t != me))))))
+            let other = |set: &Path| mine.is_some_and(|me| owners.get(set).is_some_and(|o| o.iter().any(|t| *t != me)));
+            let sibling = |set: &Path| mine.is_some_and(|me| owners.get(set).is_some_and(|o| o.contains(&me)));
+            (rom_id, m.map(|sets| rip_match::choose(&sets, other, sibling)))
         })
         .collect())
 }

@@ -19,6 +19,9 @@ const MAX_RUNS: usize = 48;
 const MIN_DISTINCT: usize = 12;
 /// A set belongs to a ROM when at least this share of its runs is found there.
 pub const MATCH_SHARE: f32 = 0.5;
+/// ...or this share, when another ROM of the same title holds the set strongly: a PAL version
+/// keeps much of its NTSC music but changes tempo tables and moves code.
+pub const SIBLING_SHARE: f32 = 0.3;
 /// ...and at least this many runs: a set with a few runs proves too little.
 const MIN_RUNS: usize = 6;
 
@@ -229,7 +232,7 @@ impl Scanner<'_> {
             .filter_map(|(set, hits)| {
                 let total = hits.len();
                 let share = hits.iter().filter(|&&h| h).count() as f32 / total as f32;
-                (total >= MIN_RUNS && share >= MATCH_SHARE).then_some((set as usize, share))
+                (total >= MIN_RUNS && share >= SIBLING_SHARE).then_some((set as usize, share))
             })
             .collect();
         out.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -263,11 +266,16 @@ pub fn multi_cart(path: &Path) -> bool {
 }
 
 /// Which of a ROM's matches (best first) it keeps. A weak match (under [`SURE_SHARE`]) is
-/// dropped when `claimed(set)` says another ROM holds that set strongly: that is the set's own
-/// game, and this ROM only shares its driver. Then the best set stays, with the others close
-/// to it.
-pub fn choose(matches: &[(PathBuf, f32)], claimed: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
-    let kept: Vec<&(PathBuf, f32)> = matches.iter().filter(|(set, share)| *share >= SURE_SHARE || !claimed(set)).collect();
+/// dropped when `claimed(set)` says a ROM of another title holds that set strongly: that is the
+/// set's own game, and this ROM only shares its driver. A match under [`MATCH_SHARE`] stays only
+/// when `sibling(set)` says a ROM of this same title holds it strongly (another region or
+/// revision). Then the best set stays, with the others close to it.
+pub fn choose(matches: &[(PathBuf, f32)], claimed: impl Fn(&Path) -> bool, sibling: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let kept: Vec<&(PathBuf, f32)> = matches
+        .iter()
+        .filter(|(set, share)| *share >= MATCH_SHARE || sibling(set))
+        .filter(|(set, share)| *share >= SURE_SHARE || !claimed(set))
+        .collect();
     let Some(best) = kept.first().map(|m| m.1) else { return Vec::new() };
     kept.into_iter().filter(|(_, share)| *share >= best - NEAR_BEST).take(MAX_SETS_PER_ROM).map(|(set, _)| set.clone()).collect()
 }
@@ -485,14 +493,18 @@ mod tests {
         let m = |name: &str, share: f32| (PathBuf::from(name), share);
         let none = |_: &Path| false;
         // A shared driver well below the game's own set is left out.
-        assert_eq!(choose(&[m("own", 0.98), m("sibling", 0.6)], none), [PathBuf::from("own")]);
+        assert_eq!(choose(&[m("own", 0.98), m("sibling", 0.6)], none, none), [PathBuf::from("own")]);
         // A compilation keeps every game it holds whole.
-        assert_eq!(choose(&[m("a", 0.99), m("b", 0.97), m("c", 0.96)], none).len(), 3);
+        assert_eq!(choose(&[m("a", 0.99), m("b", 0.97), m("c", 0.96)], none, none).len(), 3);
         // A weak best match whose set belongs strongly to another ROM is that game's, not this one's.
         let claimed = |set: &Path| set == Path::new("other game");
-        assert!(choose(&[m("other game", 0.55)], claimed).is_empty());
+        assert!(choose(&[m("other game", 0.55)], claimed, none).is_empty());
         // ...but with no stronger owner it stays (a port on another system, say).
-        assert_eq!(choose(&[m("port", 0.55)], none), [PathBuf::from("port")]);
+        assert_eq!(choose(&[m("port", 0.55)], none, none), [PathBuf::from("port")]);
+        // A low match is kept only when the same title's other version holds the set.
+        let ntsc = |set: &Path| set == Path::new("ntsc rip");
+        assert_eq!(choose(&[m("ntsc rip", 0.42)], none, ntsc), [PathBuf::from("ntsc rip")]);
+        assert!(choose(&[m("ntsc rip", 0.42)], none, none).is_empty());
         assert!(skip_rom(Path::new("x/Super Game Boy (World) (Rev 2).sfc")));
         assert!(skip_rom(Path::new("[BIOS] Something (Japan).pce")));
         assert!(!skip_rom(Path::new("Some Game (USA).sfc")));

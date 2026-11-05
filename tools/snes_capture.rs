@@ -5,6 +5,7 @@
 //!   snes_capture [--start] <rom.sfc> <seconds> <out-stem> [reference.spc]
 //!
 //! `--start` presses Start now and then, for games whose music waits past an intro.
+//! `--watch 4200` logs every write to that I/O register with the instruction that made it.
 //! `--ports N` prints the first N port writes and answers after the last driver start.
 
 use std::io::Write;
@@ -36,6 +37,11 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     let press_start = args.iter().any(|a| a == "--start");
     args.retain(|a| a != "--start");
+    let mut watch_register = None;
+    if let Some(i) = args.iter().position(|a| a == "--watch") {
+        watch_register = args.get(i + 1).and_then(|n| u16::from_str_radix(n.trim_start_matches('$'), 16).ok());
+        args.drain(i..(i + 2).min(args.len()));
+    }
     let mut show_ports = 0usize;
     if let Some(i) = args.iter().position(|a| a == "--ports") {
         show_ports = args.get(i + 1).and_then(|n| n.parse().ok()).unwrap_or(40);
@@ -48,7 +54,7 @@ fn main() {
     let rom = std::fs::read(&args[1]).expect("read the ROM");
     let seconds: f32 = args[2].parse().expect("seconds");
     let started = std::time::Instant::now();
-    let c = match snes_capture::capture(&rom, &snes_capture::Options { seconds, keep_audio: true, press_start }) {
+    let c = match snes_capture::capture(&rom, &snes_capture::Options { seconds, keep_audio: true, press_start, watch_register }) {
         Ok(c) => c,
         Err(e) => {
             println!("error: {e}");
@@ -75,6 +81,12 @@ fn main() {
             "no driver started; in the last second the CPU was mostly at {:?}, reading {:?}",
             c.busy_at.iter().map(|(a, n)| format!("{:02x}:{:04x} x{n}", a >> 16, a & 0xFFFF)).collect::<Vec<_>>(),
             c.busy_reads.iter().map(|(a, n)| format!("${a:04x} x{n}")).collect::<Vec<_>>()
+        );
+    }
+    if let Some(r) = watch_register {
+        println!(
+            "writes to ${r:04x}: {}",
+            c.watched_writes.iter().map(|(pc, v)| format!("{:02x}:{:04x}={v:02x}", pc >> 16, pc & 0xFFFF)).collect::<Vec<_>>().join(" ")
         );
     }
     if show_ports > 0 {
