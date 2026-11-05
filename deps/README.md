@@ -23,6 +23,7 @@ Build output stays here too, in `<name>/release/`, `<name>/_build/` and `<name>/
 | ffmpeg | FFmpeg/FFmpeg (tag n9.0.2) | none; built static, LGPL, audio decoders only, and linked into rvgmstream (no DLL of its own) |
 | vgmstream | vgmstream/vgmstream | none; `rvgm.c` wraps its API, `CMakeLists.txt` compiles its sources and links ffmpeg's static build when there is one |
 | gme | libgme/game-music-emu (tag 0.6.5) | none; upstream's CMake as it is, Nuked YM2612 (LGPL), no zlib |
+| agbplay | ipatix/agbplay (LGPL-3.0) | `CMakeLists.txt` builds only the playback core, behind the `ragb_` C API in `shim/ragb.cpp`; `shim/rom_buffer.cpp` replaces upstream's Rom.cpp (no file, zip or GSF loading), `compat/` stands in for the one Boost function used |
 | gme (SGC) | kode54/Game_Music_Emu, as external/gme-kode54 | `patches/01_sgc_rst_vectors.patch` (an SGC's RST vectors were read one entry late); `sgc/` builds only its SGC player, YM2413 silent, behind `rsgc.cpp` |
 | cemu | cemu-project/Cemu | none; `wiiu_wua` compiles the files it needs |
 | extract-xiso | XboxDev/extract-xiso | none; `exiso.c` compiles `extract-xiso.c` as it is |

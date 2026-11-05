@@ -73,3 +73,6 @@
 [submodule "external/gme-kode54"]
 	path = external/gme-kode54
 	url = https://github.com/kode54/Game_Music_Emu
+[submodule "external/agbplay"]
+	path = external/agbplay
+	url = https://github.com/ipatix/agbplay
