@@ -18,7 +18,11 @@ set(SOURCES shim/ragb.cpp shim/rom_buffer.cpp)
 foreach(f ${CORE})
   list(APPEND SOURCES ${SRC}/${f}.cpp)
 endforeach()
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+# The AVX2 resamplers, on x86-64 targets. Asked of the compiler itself: MSYS2's CMake leaves
+# CMAKE_SYSTEM_PROCESSOR empty, and Resampler.cpp links them whenever immintrin.h exists.
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles("#if !defined(__x86_64__)\n#error not x86-64\n#endif\nint main() { return 0; }" RAGB_X86_64)
+if(RAGB_X86_64)
   list(APPEND SOURCES ${SRC}/ResamplerAVX2.cpp)
   set_source_files_properties(${SRC}/ResamplerAVX2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
 endif()
