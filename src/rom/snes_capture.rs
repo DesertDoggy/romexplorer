@@ -14,6 +14,8 @@ use super::w65816::{Bus, Cpu};
 /// Master clocks (21.477 MHz) per scanline, and scanlines per frame (NTSC).
 const LINE_CLOCKS: u32 = 1364;
 const LINES: u32 = 262;
+/// Scanlines per frame on a PAL console (50 Hz).
+const PAL_LINES: u32 = 312;
 /// The first line of vertical blank.
 const VBLANK_LINE: u32 = 225;
 const MASTER_RATE: u64 = 21_477_272;
@@ -86,6 +88,17 @@ fn save_ram_size(rom: &[u8], mapping: Mapping) -> usize {
     }
 }
 
+/// Whether the header's region is a PAL one (Europe, Australia and the rest outside Japan and
+/// the Americas).
+fn pal_region(rom: &[u8], mapping: Mapping) -> bool {
+    let header = match mapping {
+        Mapping::LoRom => 0x7FC0,
+        Mapping::HiRom => 0xFFC0,
+        Mapping::ExHiRom => 0x40FFC0,
+    };
+    matches!(rom.get(header + 0x19), Some(2..=12 | 17))
+}
+
 /// The S-DD1 decompression chip (chipset $43 or $45).
 fn s_dd1(rom: &[u8], mapping: Mapping) -> bool {
     let header = if mapping == Mapping::LoRom { 0x7FC0 } else { 0xFFC0 };
@@ -125,6 +138,12 @@ struct Snes<'a> {
     nmi_enable: bool,
     /// An NMI that came due, waiting for the CPU (also when it came due inside a DMA).
     nmi_due: bool,
+    /// A PAL cartridge, by its header's region: a 50 Hz console.
+    pal: bool,
+    /// Where the CPU's current instruction is, and the writes logged to `watched_register`.
+    pc: u32,
+    watched_register: Option<u16>,
+    watched: Vec<(u32, u8)>,
     /// $420D: banks $80 and up run at the fast ROM speed.
     fast_rom: bool,
     /// The last value written to $4200 (interrupt enables), for diagnosis.
@@ -227,7 +246,9 @@ impl Snes<'_> {
                 v
             }
             0x213E => 0x01,
-            0x213F => 0x01,
+            // Bit 4 is the console's video standard; PAL games check it and lock out an NTSC
+            // console.
+            0x213F => 0x01 | (self.pal as u8) << 4,
             0x2140..=0x217F => {
                 self.catch_up_apu();
                 let port = a as usize & 3;
@@ -300,6 +321,9 @@ impl Snes<'_> {
     }
 
     fn write_io(&mut self, a: u16, v: u8) {
+        if self.watched_register == Some(a) && self.watched.len() < 256 {
+            self.watched.push((self.pc, v));
+        }
         match a {
             0x4016 => {
                 self.strobe = v & 1 != 0;
@@ -446,7 +470,7 @@ impl Snes<'_> {
         while self.line_clock >= LINE_CLOCKS {
             self.line_clock -= LINE_CLOCKS;
             self.line += 1;
-            if self.line == LINES {
+            if self.line == if self.pal { PAL_LINES } else { LINES } {
                 self.line = 0;
                 self.nmi_flag = false;
                 self.catch_up_apu();
@@ -545,6 +569,8 @@ pub struct Capture {
     /// The last instructions (bank:address) before the CPU first ran into the vector table or
     /// a BRK, oldest first, when it did.
     pub crash_trace: Option<Vec<u32>>,
+    /// Writes to the watched register: (bank:address of the instruction, value).
+    pub watched_writes: Vec<(u32, u8)>,
 }
 
 /// How a capture runs.
@@ -556,6 +582,8 @@ pub struct Options {
     pub keep_audio: bool,
     /// Press Start now and then, for games whose music waits for it past an intro.
     pub press_start: bool,
+    /// An I/O register whose writes are logged with the instruction that made them.
+    pub watch_register: Option<u16>,
 }
 
 /// When Start is pressed: from 2 s on, for 0.1 s every 1.5 s.
@@ -568,7 +596,7 @@ const START: u16 = 0x1000;
 
 /// Runs the game from power on and returns what it left in the sound chip.
 pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
-    let Options { seconds, keep_audio, press_start } = *options;
+    let Options { seconds, keep_audio, press_start, .. } = *options;
     let rom = rom_image(file);
     let mapping = mapping(rom).ok_or("no SNES header found")?;
     if coprocessor_cpu(rom, mapping) {
@@ -592,6 +620,10 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         line_clock: 0,
         nmi_enable: false,
         nmi_due: false,
+        pal: pal_region(rom, mapping),
+        pc: 0,
+        watched_register: options.watch_register,
+        watched: Vec::new(),
         fast_rom: false,
         nmitimen: 0,
         nmi_flag: false,
@@ -637,6 +669,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         if snes.master >= watch_from && snes.watch.is_none() {
             snes.watch = Some(Default::default());
         }
+        snes.pc = (cpu.pbr as u32) << 16 | cpu.pc as u32;
         let cycles = cpu.step(&mut snes);
         instructions += 1;
         let fast = snes.fast_rom && cpu.pbr >= 0x80;
@@ -690,7 +723,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
     snes.catch_up_apu();
     let spc = snes.apu.save_spc();
     let audio = std::mem::take(&mut snes.apu.output);
-    Ok(Capture { spc, driver_starts, port_writes: snes.writes, port_replies: snes.replies, audio, instructions, stopped, busy_at, busy_reads, nmis, irqs, nmitimen: snes.nmitimen, irq_masked: cpu.p & 0x04 != 0, crash_trace: crash })
+    Ok(Capture { spc, driver_starts, port_writes: snes.writes, port_replies: snes.replies, audio, instructions, stopped, busy_at, busy_reads, nmis, irqs, nmitimen: snes.nmitimen, irq_masked: cpu.p & 0x04 != 0, crash_trace: crash, watched_writes: std::mem::take(&mut snes.watched) })
 }
 
 #[cfg(test)]
@@ -763,7 +796,7 @@ mod tests {
         let mut driver = vec![0xE8, 0x5A, 0xC4, 0xF4, 0x2F, 0xFA];
         driver.extend((0..500u32).map(|i| (i * 13) as u8));
         let rom = lorom_with_upload(&driver, 0x0400);
-        let c = capture(&rom, &Options { seconds: 0.5, keep_audio: false, press_start: true }).unwrap();
+        let c = capture(&rom, &Options { seconds: 0.5, keep_audio: false, press_start: true, watch_register: None }).unwrap();
         assert!(c.stopped.is_none(), "{:?}", c.stopped);
         let aram = &c.spc[0x100..0x100 + 0x10000];
         assert_eq!(&aram[0x0400..0x0400 + driver.len()], &driver[..]);
