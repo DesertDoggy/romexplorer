@@ -99,6 +99,12 @@ pub struct Listener {
 /// so two blocks compare by their cosine. All zero for a block with no tone in it.
 type Chroma = [f32; 12];
 
+/// A note's peak counts when it stands this many times above the mean of the bins within
+/// `PEAK_SPAN` of it. A tone's peak stands about ten times over; a bin of noise passes about
+/// one time in fifty.
+const PEAK_OVER: f32 = 4.0;
+const PEAK_SPAN: usize = 8;
+
 /// What a block's pitch content is computed with: Hann-windowed FFTs of `n` samples (a power
 /// of two) across the block, and the pitch class of each bin that is a note's range.
 struct Spectrum {
@@ -139,9 +145,17 @@ impl Spectrum {
             let mut re: Vec<f32> = samples[at..at + self.n].iter().zip(&self.window).map(|(s, w)| s * w).collect();
             let mut im = vec![0f32; self.n];
             fft(&mut re, &mut im, &self.twiddle);
+            let power: Vec<f32> = (0..self.n / 2).map(|k| re[k] * re[k] + im[k] * im[k]).collect();
+            // Only peaks well above the bins around them: a note's partials. Drums and noise
+            // spread over many bins and never quite repeat from one pass of a loop to the next.
             for (k, class) in self.class.iter().enumerate() {
-                if let Some(c) = class {
-                    out[*c] += re[k] * re[k] + im[k] * im[k];
+                let Some(c) = class else { continue };
+                if k == 0 || k + 1 >= power.len() || power[k] < power[k - 1] || power[k] < power[k + 1] {
+                    continue;
+                }
+                let around = &power[k.saturating_sub(PEAK_SPAN)..(k + PEAK_SPAN + 1).min(power.len())];
+                if power[k] >= PEAK_OVER * around.iter().sum::<f32>() / around.len() as f32 {
+                    out[*c] += power[k];
                 }
             }
             at += self.n / 2;
@@ -527,6 +541,27 @@ mod tests {
         });
         match listen(phrase, 40).finish(false) {
             Timing::Loops { loop_ms, .. } => assert!((5_900..=6_100).contains(&loop_ms), "{loop_ms}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn loud_noise_that_never_repeats_does_not_hide_a_long_loop() {
+        // A 20 s melody under noise as loud as the notes: the notes must still match.
+        let mut x = 11u32;
+        let mut y = 5u32;
+        let notes: Vec<(f32, f32)> = (0..40).map(|_| {
+            y = y.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (200.0 + (y >> 16) as f32 % 800.0, 0.3 + ((y >> 8) & 0xFF) as f32 / 400.0)
+        }).collect();
+        let mixed = melody(&notes, RATE as usize / 2).map(move |v| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            v / 2 + ((x >> 18) as i16 - 8192)
+        });
+        match listen(mixed, 70).finish(false) {
+            Timing::Loops { loop_ms, .. } => assert!((19_900..=20_100).contains(&loop_ms), "{loop_ms}"),
             other => panic!("{other:?}"),
         }
     }
