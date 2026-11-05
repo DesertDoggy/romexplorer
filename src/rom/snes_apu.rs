@@ -6,7 +6,6 @@
 //! upload routine does, so a driver rebuilt from a ROM starts the way it does on the console.
 
 use std::ffi::{c_int, c_long, c_void};
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use libloading::Library;

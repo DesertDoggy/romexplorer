@@ -43,7 +43,7 @@ const KEPT_ROMS: usize = 4;
 
 /// A ROM's bytes, kept for the next track: see [`KEPT_ROMS`]. A file that changed (size or
 /// time) is read again.
-fn read_rom(path: &Path) -> Result<std::sync::Arc<Vec<u8>>, String> {
+pub fn read_rom(path: &Path) -> Result<std::sync::Arc<Vec<u8>>, String> {
     type Kept = std::collections::VecDeque<((PathBuf, u64, Option<std::time::SystemTime>), std::sync::Arc<Vec<u8>>)>;
     static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(Kept::new());
     let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;

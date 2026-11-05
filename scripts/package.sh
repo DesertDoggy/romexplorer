@@ -14,10 +14,12 @@
 #   scripts/package.sh --kind server  --os windows --arch arm64
 #
 #   scripts/package.sh --kind cli     --os windows --arch x64
+#   scripts/package.sh --kind rommusic --os windows --arch x64
 #
 # Kinds: `server` (the three server binaries + bundled MariaDB + installer), `desktop` (the
 # GUI + bundled MariaDB) and `cli` (the standalone tools: today chdlite, with its own version
-# and its own tree -- see below). `cli` used to name a server package without MariaDB, which
+# and its own tree -- see below) and `rommusic` (the ROM music tool, versioned by
+# rommusic-cli/Cargo.toml, in release/rommusic/<version>/). `cli` used to name a server package without MariaDB, which
 # was a server under the wrong name.
 #
 # A different arch on the same OS (windows/arm64 on an x64 PC) is built with
@@ -108,9 +110,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-case "$KIND" in server|desktop|cli) ;; *) echo "error: --kind must be server, desktop or cli" >&2; usage 2 ;; esac
+case "$KIND" in server|desktop|cli|rommusic) ;; *) echo "error: --kind must be server, desktop, cli or rommusic" >&2; usage 2 ;; esac
 # The crate whose version names the package: the cli tools are released on their own schedule.
-VERSION_PACKAGE="romexplorer"; [[ "$KIND" == "cli" ]] && VERSION_PACKAGE="chdlite"
+VERSION_PACKAGE="romexplorer"; [[ "$KIND" == "cli" ]] && VERSION_PACKAGE="chdlite"; [[ "$KIND" == "rommusic" ]] && VERSION_PACKAGE="rommusic-cli"
 
 # --- host defaults, in the app layout's spelling (native_lib::os_dir_name) ----------------
 if [[ -z "$OS" ]]; then
@@ -177,15 +179,17 @@ case "$KIND" in
     server)  NAME="romexplorer-server-$VERSION-$OS-$ARCH" ;;
     desktop) NAME="romexplorer-$VERSION-$OS-$ARCH" ;;
     cli)     NAME="chdlite-$VERSION-$OS-$ARCH" ;;
+    rommusic) NAME="rommusic-$VERSION-$OS-$ARCH" ;;
 esac
 # Version first, then platform, arch, kind -- so everything belonging to one release sits
 # under one directory and can be archived, copied or deleted as a unit. The archives for
 # every platform share that version's dist/, which is what a release upload actually needs.
 STAGE="${OUT_DIR:-$ROOT_DIR/release/$VERSION/$OS/$ARCH/$KIND}"
 DIST="$ROOT_DIR/release/$VERSION/dist"
-if [[ "$KIND" == "cli" ]]; then
-    STAGE="${OUT_DIR:-$ROOT_DIR/release/cli/$VERSION/$OS/$ARCH}"
-    DIST="$ROOT_DIR/release/cli/$VERSION/dist"
+if [[ "$KIND" == "cli" || "$KIND" == "rommusic" ]]; then
+    tree="cli"; [[ "$KIND" == "rommusic" ]] && tree="rommusic"
+    STAGE="${OUT_DIR:-$ROOT_DIR/release/$tree/$VERSION/$OS/$ARCH}"
+    DIST="$ROOT_DIR/release/$tree/$VERSION/dist"
 fi
 
 echo "=== $KIND $VERSION for $OS/$ARCH ==="
@@ -335,6 +339,9 @@ if [[ "$BUILD" -eq 1 ]]; then
                 gui_features="gui"; [[ "$OS" == "windows" ]] && gui_features="gui,bundled-natives"
                 note "cargo build --release -p chdlite --features $gui_features --bin chdlite-gui ${target_args[*]}"
                 (cd "$ROOT_DIR" && CHDLITE_NATIVE_LIB_DIR="$(native_path "$SRC_LIB")"                     cargo build --release -p chdlite --features "$gui_features" --bin chdlite-gui "${target_args[@]}") || die "the build failed" ;;
+            rommusic)
+                note "cargo build --release -p rommusic-cli ${target_args[*]}"
+                (cd "$ROOT_DIR" && cargo build --release -p rommusic-cli "${target_args[@]}") || die "the build failed" ;;
         esac
         unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS OPENSSL_INCLUDE_DIR OPENSSL_LIB_DIR ROMEXPLORER_SOURCE_ROOT
     fi
@@ -345,6 +352,7 @@ case "$KIND" in
     server)  BINS=(romexplorer_server romexplorer_worker romexplorer_dbtool) ;;
     desktop)    BINS=(romexplorer-gui) ;;
     cli)        BINS=(chdlite chdcomp chdread chdhash chdlite-gui) ;;
+    rommusic)   BINS=(rommusic) ;;
 esac
 for b in "${BINS[@]}"; do
     src="$BIN_DIR/$b$EXE"
@@ -385,6 +393,22 @@ if [[ "$KIND" == "cli" ]]; then
     [[ "$have_chdman" -eq 1 && "$have_dolphin" -eq 1 ]] || die "chdman and dolphinrvz are not both in $SRC_LIB -- build them with scripts/build_native_deps.sh --only chdman-simd,dolphin $OS $ARCH, then scripts/move_libs_to_app_root.sh"
     mkdir -p "$APP/lib/LICENSES"
     for l in chdman-simd mame libchdr dolphin cemu ZArchive zstd fmt extract-xiso beetle-psx-libretro zlib-ng openssl; do
+        [[ -f "$LIB_ROOT/LICENSES/$l.LICENSE" ]] && cp -a "$LIB_ROOT/LICENSES/$l.LICENSE" "$APP/lib/LICENSES/"
+    done
+    note "lib/LICENSES/"
+elif [[ "$KIND" == "rommusic" ]]; then
+    # What rommusic reads music with: the chip players (rommusic), the stream decoder
+    # (rvgmstream, FFmpeg inside), and the disc and archive readers (chdman, dolphinrvz,
+    # cemuwua, exiso, 7-Zip with the zlib-ng it links). No MariaDB, AAC encoder or OpenSSL.
+    have_players=0
+    for f in "$SRC_LIB"/*rommusic* "$SRC_LIB"/*rvgmstream* "$SRC_LIB"/*chdman* "$SRC_LIB"/*dolphinrvz* "$SRC_LIB"/*cemuwua* "$SRC_LIB"/*exiso* "$SRC_LIB"/7z* "$SRC_LIB"/libz.* "$SRC_LIB"/zlib.dll; do
+        [[ -f "$f" ]] || continue
+        cp -a "$f" "$APP/lib/$OS/$ARCH/"; note "lib/$OS/$ARCH/$(basename "$f")"
+        case "$(basename "$f")" in *rommusic*|*rvgmstream*) have_players=$((have_players + 1)) ;; esac
+    done
+    [[ "$have_players" -ge 2 ]] || die "rommusic and rvgmstream are not both in $SRC_LIB -- build them with scripts/build_native_deps.sh --only ffmpeg,vgmstream,rommusic $OS $ARCH, then scripts/move_libs_to_app_root.sh"
+    mkdir -p "$APP/lib/LICENSES"
+    for l in gme gme-kode54 agbplay fmt vgmstream ffmpeg chdman-simd mame libchdr dolphin cemu ZArchive zstd extract-xiso 7-Zip-zstd zlib-ng; do
         [[ -f "$LIB_ROOT/LICENSES/$l.LICENSE" ]] && cp -a "$LIB_ROOT/LICENSES/$l.LICENSE" "$APP/lib/LICENSES/"
     done
     note "lib/LICENSES/"
@@ -437,6 +461,13 @@ fi
 # The cli tools read nothing from assets/: their images and stylesheet are compiled in.
 if [[ "$KIND" == "cli" ]]; then
     for doc in chdlite_release_notes.md chdlite_release_notes.ja.md; do
+        [[ -f "$ROOT_DIR/docs/$doc" ]] && cp -f "$ROOT_DIR/docs/$doc" "$STAGE/$doc" && note "$doc"
+    done
+elif [[ "$KIND" == "rommusic" ]]; then
+    for doc in README.md README.ja.md; do
+        [[ -f "$ROOT_DIR/rommusic-cli/$doc" ]] && cp -f "$ROOT_DIR/rommusic-cli/$doc" "$STAGE/$doc" && note "$doc"
+    done
+    for doc in rommusic_release_notes.md rommusic_release_notes.ja.md; do
         [[ -f "$ROOT_DIR/docs/$doc" ]] && cp -f "$ROOT_DIR/docs/$doc" "$STAGE/$doc" && note "$doc"
     done
 else
@@ -575,7 +606,7 @@ fail=0
 # What src/database/server.rs::check_layout insists on. Getting this wrong means the server
 # and the desktop both refuse to start, which is exactly how the Windows tree is broken today.
 md="$DEST_LIB/mariadb"
-if [[ "$KIND" != "cli" ]]; then
+if [[ "$KIND" != "cli" && "$KIND" != "rommusic" ]]; then
 for required in "bin/mariadbd$EXE" "share/english/errmsg.sys"; do
     [[ -f "$md/$required" ]] || { echo "error: bundled MariaDB is incomplete: missing $required under $md" >&2; fail=1; }
 done
