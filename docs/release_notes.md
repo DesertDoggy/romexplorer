@@ -47,6 +47,8 @@ replacing a build.
   the game whatever its name.
 - Game Boy Advance music plays straight from the ROM, with no rip, for games made with
   Nintendo's standard sound engine (about half of them).
+- The player on title pages has a "don't play this track" button. Hidden tracks are listed under
+  the playlist, where a click plays one and Restore brings it back.
 - ROM music decoded for playing is kept in memory (Settings › Audio, 256 MiB by default).
   When that is full, tracks move to the audio cache on disk, which now uses the tier 1 cache
   folder when one is set.

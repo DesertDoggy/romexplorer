@@ -7,6 +7,9 @@
 //   tracks:  [{ id, url, title, artist, album, file_name, duration_ms, loudness_lufs }]
 //   labels:  translated text for the buttons (the UI's own language layer supplies them)
 //   options: { keep: true } -- the `audio_keep_playing` setting (the playlist says it)
+//            hidden: [tracks] -- tracks hidden from this page, listed under the playlist
+//            onHide(track, hidden) -- called by the "don't play this track" button (hidden
+//              true) and by "restore" (false); the page records it. Without it, no button.
 // rxPlayer.leave(): the page is being left. With `keep`, the bar moves to a strip along the
 //   bottom of the window and the music goes on until another title page starts its own (or
 //   stops it); without, this is stop().
@@ -38,6 +41,11 @@
     #rx-player-list div.rxp-row:hover { filter:brightness(1.25); }
     #rx-player-list div.rxp-row.now { font-weight:600; border-left:3px solid var(--accent, #6aa3ff); padding-left:5px; }
     #rx-player-list .rxp-sub { opacity:.65; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #rx-player-list div.rxp-hrow { display:flex; align-items:center; gap:6px; padding:4px 8px; cursor:pointer; border-bottom:1px solid var(--line, #2b3040); opacity:.7; }
+    #rx-player-list div.rxp-hrow:hover { opacity:1; }
+    #rx-player-list div.rxp-hrow.now { opacity:1; font-weight:600; border-left:3px solid var(--accent, #6aa3ff); padding-left:5px; }
+    #rx-player-list div.rxp-hrow > div { flex:1 1 auto; min-width:0; }
+    #rx-player-list div.rxp-hrow button { flex:0 0 auto; font-size:11px; padding:1px 6px; cursor:pointer; }
     body.rx-has-playlist main { margin-right:270px; }
     @media (max-width: 900px) { #rx-player-list { display:none; } body.rx-has-playlist main { margin-right:0; } }
     #rx-player-dock { position:fixed; left:8px; right:8px; bottom:8px; z-index:5; }
@@ -50,7 +58,8 @@
   // full volume, un-normalised, every time.
   const recall = (key, fallback) => { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } };
   const remember = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* not remembered */ } };
-  const state = { audio: null, tracks: [], order: [], at: 0, shuffle: true, bar: null, list: null, labels: {}, volume: 1, normalise: false, keep: false };
+  const state = { audio: null, tracks: [], order: [], at: 0, shuffle: true, bar: null, list: null, labels: {}, volume: 1, normalise: false, keep: false,
+    hidden: [], onHide: null, preview: null, undo: null };
 
   // The factor for one track: 1 unless normalising and the track is louder than the target.
   function gainFor(track) {
@@ -74,7 +83,53 @@
     }
   }
 
-  function current() { return state.tracks[state.order[state.at]]; }
+  // A hidden track played from the hidden list is playing; otherwise the list's own track.
+  function current() { return state.preview || state.tracks[state.order[state.at]]; }
+
+  function renderList() {
+    if (!state.list) return;
+    const row = (t, i) => `<div>${esc(nameOf(t))}</div><div class="rxp-sub">${esc([t.artist, t.album].filter(Boolean).join(' · '))}${t.duration_ms ? ' · ' + clock(t.duration_ms / 1000) : ''}</div>`;
+    let html = `<h4>${esc(L('playlist'))} (${state.tracks.length})</h4>` + state.tracks.map((t, i) => `<div class="rxp-row" data-i="${i}">${row(t, i)}</div>`).join('');
+    if (state.hidden.length) {
+      html += `<h4>${esc(L('hidden tracks'))} (${state.hidden.length})</h4>` + state.hidden.map((t, i) =>
+        `<div class="rxp-hrow" data-h="${i}" title="${esc(L('click to listen'))}"><div>${row(t, i)}</div><button type="button" data-r="${i}">${esc(L('restore'))}</button></div>`).join('');
+    }
+    state.list.innerHTML = html;
+  }
+
+  // "Don't play this track": out of the list now, and recorded by the page. Undo for a while.
+  function hideCurrent() {
+    const t = current(); if (!t || !state.onHide || t.remote) return;
+    if (state.preview) return;
+    const i = state.order[state.at];
+    state.tracks.splice(i, 1);
+    state.order = state.order.filter(j => j !== i).map(j => j > i ? j - 1 : j);
+    state.hidden.unshift(t);
+    state.onHide(t, true);
+    showUndo(t);
+    renderList();
+    if (!state.tracks.length) { if (state.audio) state.audio.pause(); paint(); return; }
+    if (state.at >= state.order.length) state.at = 0;
+    load(true);
+  }
+
+  function restore(t) {
+    const h = state.hidden.indexOf(t); if (h < 0) return;
+    state.hidden.splice(h, 1);
+    state.tracks.push(t);
+    state.order.push(state.tracks.length - 1);
+    if (state.onHide) state.onHide(t, false);
+    renderList(); paint();
+  }
+
+  function showUndo(t) {
+    const old = state.bar && state.bar.querySelector('[data-a=undo]'); if (old) old.remove();
+    if (state.undo) clearTimeout(state.undo.timer);
+    if (!state.bar) return;
+    const b = document.createElement('button'); b.type = 'button'; b.dataset.a = 'undo'; b.textContent = L('undo');
+    state.bar.querySelector('[data-a=hide]').after(b);
+    state.undo = { track: t, timer: setTimeout(() => { b.remove(); state.undo = null; }, 10000) };
+  }
 
   function paint() {
     if (!state.bar) return;
@@ -84,7 +139,12 @@
     state.bar.querySelector('[data-a=shuffle]').classList.toggle('on', state.shuffle);
     state.bar.querySelector('[data-a=mute]').classList.toggle('on', !!(a && a.muted));
     state.bar.querySelector('[data-a=mute]').textContent = a && a.muted ? '🔇' : '🔊';
-    if (state.list) for (const row of state.list.querySelectorAll('.rxp-row')) row.classList.toggle('now', !!t && Number(row.dataset.i) === state.order[state.at]);
+    const hide = state.bar.querySelector('[data-a=hide]');
+    if (hide) hide.disabled = !t || !!t.remote || !!state.preview;
+    if (state.list) {
+      for (const row of state.list.querySelectorAll('.rxp-row')) row.classList.toggle('now', !state.preview && !!t && Number(row.dataset.i) === state.order[state.at]);
+      for (const row of state.list.querySelectorAll('.rxp-hrow')) row.classList.toggle('now', !!state.preview && state.hidden[Number(row.dataset.h)] === state.preview);
+    }
   }
 
   function load(autoplay) {
@@ -98,7 +158,9 @@
   }
 
   function step(delta, autoplay) {
-    if (!state.tracks.length) return;
+    // After a hidden track played once, the list goes on from where it was.
+    if (state.preview) { state.preview = null; delta = Math.max(0, delta); if (delta === 0) { load(autoplay); return; } }
+    if (!state.tracks.length) { paint(); return; }
     state.at = (state.at + delta + state.order.length) % state.order.length;
     load(autoplay);
   }
@@ -109,7 +171,7 @@
     if (state.list) state.list.remove();
     document.body.classList.remove('rx-has-playlist');
     undock();
-    state.audio = null; state.bar = null; state.list = null; state.tracks = [];
+    state.audio = null; state.bar = null; state.list = null; state.tracks = []; state.hidden = []; state.preview = null;
   }
 
   function undock() {
@@ -134,6 +196,8 @@
     stop();
     if (!host || !tracks || !tracks.length) return;
     state.keep = !!(options && options.keep);
+    state.hidden = (options && options.hidden || []).slice();
+    state.onHide = options && typeof options.onHide === 'function' ? options.onHide : null;
     if (!document.getElementById('rx-player-css')) { const s = document.createElement('style'); s.id = 'rx-player-css'; s.textContent = CSS; document.head.appendChild(s); }
     state.labels = labels || {};
     state.tracks = tracks; state.shuffle = true; state.at = 0; makeOrder();
@@ -148,6 +212,7 @@
       <button type="button" data-a="next" title="${esc(L('next'))}">⏭</button>
       <button type="button" data-a="shuffle" class="on" title="${esc(L('shuffle'))}">🔀</button>
       <button type="button" data-a="mute" title="${esc(L('mute'))}">🔊</button>
+      ${state.onHide ? `<button type="button" data-a="hide" title="${esc(L("don't play this track on this page again"))}">🚫</button>` : ''}
       <input type="range" class="rxp-vol" min="0" max="100" value="${Math.round(state.volume * 100)}" title="${esc(L('volume'))}">
       <label class="rxp-norm" title="${esc(L('normalise: play every track at about the same loudness (loud tracks are turned down)'))}"><input type="checkbox" ${state.normalise ? 'checked' : ''}>${esc(L('normalise'))}</label>
       <span class="rxp-title"></span>
@@ -156,9 +221,8 @@
     host.appendChild(bar);
 
     const list = document.createElement('div'); list.id = 'rx-player-list';
-    list.innerHTML = `<h4>${esc(L('playlist'))} (${tracks.length})</h4>` + tracks.map((t, i) =>
-      `<div class="rxp-row" data-i="${i}"><div>${esc(nameOf(t))}</div><div class="rxp-sub">${esc([t.artist, t.album].filter(Boolean).join(' · '))}${t.duration_ms ? ' · ' + clock(t.duration_ms / 1000) : ''}</div></div>`).join('');
     document.body.appendChild(list);
+    state.list = list; renderList();
     document.body.classList.add('rx-has-playlist');
 
     const audio = new Audio(); audio.preload = 'metadata';
@@ -189,12 +253,19 @@
       else if (a === 'next') step(1, true);
       else if (a === 'prev') step(-1, true);
       else if (a === 'mute') audio.muted = !audio.muted;
+      else if (a === 'hide') hideCurrent();
+      else if (a === 'undo') { const u = state.undo; if (u) { clearTimeout(u.timer); state.undo = null; e.target.remove(); restore(u.track); } }
       else if (a === 'shuffle') { const keep = state.order[state.at]; state.shuffle = !state.shuffle; makeOrder(); state.at = Math.max(0, state.order.indexOf(keep)); }
       paint();
     });
     list.addEventListener('click', e => {
+      const back = e.target.closest && e.target.closest('[data-r]');
+      if (back) { restore(state.hidden[Number(back.dataset.r)]); return; }
+      // A hidden track plays once, to decide whether to bring it back.
+      const hrow = e.target.closest && e.target.closest('.rxp-hrow');
+      if (hrow) { const t = state.hidden[Number(hrow.dataset.h)]; if (t) { state.preview = t; load(true); } return; }
       const row = e.target.closest && e.target.closest('.rxp-row'); if (!row) return;
-      const i = state.order.indexOf(Number(row.dataset.i)); if (i >= 0) { state.at = i; load(true); }
+      const i = state.order.indexOf(Number(row.dataset.i)); if (i >= 0) { state.preview = null; state.at = i; load(true); }
     });
     load(true);
   }

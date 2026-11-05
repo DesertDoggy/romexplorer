@@ -693,10 +693,24 @@ fn row_to_track(row: &sqlx::mysql::MySqlRow, s: &Settings) -> Result<Option<Audi
     let data_track = row.try_get::<u16, _>("data_track")?;
     let rip = data_track == rip_sets::RIP_VIEW as u16 || data_track == rom_songs::ROM_SONG_VIEW as u16;
     let shape = rom_audio::Shape { looping, duration_ms: u64::from(duration), channels: u16::from(channels), cd_track: cd_track.unwrap_or(0), rip };
+    // Hidden from the player by hand: it plays under no setting.
+    if manual.as_deref() == Some(HIDDEN_KIND) {
+        return Ok(None);
+    }
     let kind = kind_of(manual.as_deref(), &shape, inner.as_deref().unwrap_or(""), &name, &s.thresholds);
     if !s.kinds.plays(kind) {
         return Ok(None);
     }
+    build_row(row, kind)
+}
+
+/// A track row as the player gets it, played as `kind`.
+fn build_row(row: &sqlx::mysql::MySqlRow, kind: SoundKind) -> Result<Option<AudioRow>> {
+    let inner: Option<String> = row.try_get("inner_path")?;
+    let name: String = row.try_get("name")?;
+    let duration: u32 = row.try_get("duration_ms")?;
+    let cd_track: Option<u16> = row.try_get("cd_track")?;
+    let data_track = row.try_get::<u16, _>("data_track")?;
     let main_path: String = row.try_get("main_path")?;
     let rom_name = Path::new(&main_path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
     Ok(Some(AudioRow {
@@ -724,6 +738,62 @@ fn row_to_track(row: &sqlx::mysql::MySqlRow, s: &Settings) -> Result<Option<Audi
         tags: None,
         auto_tags: None,
     }))
+}
+
+/// The manual kind the player's "don't play this track" button gives a ROM track. Nothing
+/// else sets a manual kind to it, so it is read as hidden: the track plays under no
+/// `audio_rom_kinds` setting. A re-index keeps manual kinds, so it stays hidden.
+pub const HIDDEN_KIND: &str = "se";
+
+/// Hides a ROM track from title pages' players, or brings it back. A rip-library set is one
+/// set for every ROM it matched (a title's regions), so all its rows for that track change.
+pub async fn set_hidden(app: &App, id: u64, hidden: bool) -> Result<()> {
+    let row = sqlx::query("SELECT data_track, inner_path, subsong FROM rom_audio_tracks WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&app.pool)
+        .await?
+        .ok_or_else(|| Error::not_found(format!("no ROM audio track {id}")))?;
+    let data_track: u16 = row.try_get("data_track")?;
+    let inner: Option<String> = row.try_get("inner_path")?;
+    let subsong: u32 = row.try_get("subsong")?;
+    let value = hidden.then_some(HIDDEN_KIND);
+    let library = data_track == rip_sets::RIP_VIEW as u16 && inner.as_deref().is_some_and(|p| Path::new(p.split('|').next().unwrap_or(p)).is_absolute());
+    if library {
+        sqlx::query("UPDATE rom_audio_tracks SET kind_manual = ? WHERE data_track = ? AND inner_path = ? AND subsong = ?")
+            .bind(value)
+            .bind(data_track)
+            .bind(inner)
+            .bind(subsong)
+            .execute(&app.pool)
+            .await?;
+    } else {
+        sqlx::query("UPDATE rom_audio_tracks SET kind_manual = ? WHERE id = ?").bind(value).bind(id).execute(&app.pool).await?;
+    }
+    Ok(())
+}
+
+/// The hidden ROM tracks of `titles`, for the player's "hidden tracks" list.
+pub async fn hidden_tracks(app: &App, titles: &[u64]) -> Result<Vec<AudioRow>> {
+    if titles.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE t.rom_id IN ({}) AND t.kind_manual = '{HIDDEN_KIND}' ORDER BY r.main_path, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong LIMIT {MAX_TRACKS}",
+        roms_of(titles)
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&app.pool).await?;
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for row in &rows {
+        let key = (row.try_get::<Option<String>, _>("inner_path")?.unwrap_or_default(), row.try_get::<u32, _>("subsong")?, row.try_get::<u16, _>("data_track")?);
+        if key.2 == rip_sets::RIP_VIEW as u16 && !seen.insert(key) {
+            continue;
+        }
+        if let Some(track) = build_row(row, SoundKind::Se)? {
+            out.push(track);
+        }
+    }
+    Ok(out)
 }
 
 /// How many ROM tracks a page is handed at most.

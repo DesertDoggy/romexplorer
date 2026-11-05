@@ -54,6 +54,10 @@ pub async fn list(app: &App) -> Result<Vec<SettingEntry>> {
         })
         .collect();
     for (key, value, updated_at) in stored {
+        // Kept by the title page player's "don't play this track" button, not edited here.
+        if key == super::audio::KEY_HIDDEN_FILES {
+            continue;
+        }
         if !db_settings::KNOWN_KEYS.iter().any(|(k, _)| *k == key) {
             let (group, group_label) = group_fields(&key);
             out.push(SettingEntry { key, value: Some(value), description: None, explain: Vec::new(), default: None, updated_at: Some(updated_at), group, group_label });

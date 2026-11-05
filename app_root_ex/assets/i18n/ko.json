@@ -2584,5 +2584,11 @@
   "don't use it": "사용 안 함",
   "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.": "재생용으로 디코딩한 ROM 음악을 메모리에 둘 크기입니다. 0 = 사용 안 함. 가득 차면 가장 오래 재생하지 않은 곡부터 디스크의 변환된 오디오 캐시로 옮깁니다.",
   "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).": "재생용으로 디코딩한 ROM 음악을 메모리에 둘 크기(MiB, 기본 256, 0 = 사용 안 함).",
-  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "가득 차면 가장 오래 재생하지 않은 곡부터 디스크의 변환된 오디오 캐시로 옮기며, 다시 디코딩하지 않고 그곳에서 읽습니다."
+  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "가득 차면 가장 오래 재생하지 않은 곡부터 디스크의 변환된 오디오 캐시로 옮기며, 다시 디코딩하지 않고 그곳에서 읽습니다.",
+  "hidden tracks": "숨긴 곡",
+  "click to listen": "클릭해서 듣기",
+  "undo": "실행 취소",
+  "don't play this track on this page again": "이 페이지에서 이 곡을 재생하지 않기",
+  "hidden from this page": "이 페이지에서 숨겼습니다",
+  "restored": "되돌렸습니다"
 }
