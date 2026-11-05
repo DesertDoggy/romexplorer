@@ -60,6 +60,10 @@ fn main() {
         peak,
         c.stopped
     );
+    println!("interrupts: {} NMI, {} IRQ; last $4200 write {:#04x}; IRQs masked at the end: {}", c.nmis, c.irqs, c.nmitimen, c.irq_masked);
+    if let Some(trace) = &c.crash_trace {
+        println!("ran into the vector table or a BRK after: {}", trace.iter().map(|a| format!("{:02x}:{:04x}", a >> 16, a & 0xFFFF)).collect::<Vec<_>>().join(" "));
+    }
     if c.driver_starts.is_empty() {
         println!(
             "no driver started; in the last second the CPU was mostly at {:?}, reading {:?}",

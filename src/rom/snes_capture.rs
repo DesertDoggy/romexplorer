@@ -106,6 +106,10 @@ struct Snes<'a> {
     line: u32,
     line_clock: u32,
     nmi_enable: bool,
+    /// An NMI that came due, waiting for the CPU (also when it came due inside a DMA).
+    nmi_due: bool,
+    /// The last value written to $4200 (interrupt enables), for diagnosis.
+    nmitimen: u8,
     nmi_flag: bool,
     irq_mode: u8,
     irq_flag: bool,
@@ -305,6 +309,7 @@ impl Snes<'_> {
             0x2182 => self.wram_addr = (self.wram_addr & 0x100FF) | (v as u32) << 8,
             0x2183 => self.wram_addr = (self.wram_addr & 0x0FFFF) | ((v as u32 & 1) << 16),
             0x4200 => {
+                self.nmitimen = v;
                 self.nmi_enable = v & 0x80 != 0;
                 self.irq_mode = (v >> 4) & 3;
                 if self.irq_mode == 0 {
@@ -348,6 +353,20 @@ impl Snes<'_> {
         }
     }
 
+    /// The opcode the CPU runs next, read without side effects where that matters (I/O is
+    /// never code).
+    fn peek_opcode(&mut self, cpu: &Cpu) -> u8 {
+        let bank = cpu.pbr;
+        let a = cpu.pc;
+        if bank & 0x7F < 0x40 && (0x2000..0x6000).contains(&a) {
+            return 0xFF;
+        }
+        let open = self.open_bus;
+        let v = self.read((bank as u32) << 16 | a as u32);
+        self.open_bus = open;
+        v
+    }
+
     fn run_dma(&mut self, channels: u8) {
         const PATTERNS: [&[u8]; 8] = [&[0], &[0, 1], &[0, 0], &[0, 0, 1, 1], &[0, 1, 2, 3], &[0, 1, 0, 1], &[0, 0], &[0, 0, 1, 1]];
         for c in 0..8 {
@@ -373,7 +392,9 @@ impl Snes<'_> {
                 }
                 i += 1;
                 n -= 1;
-                self.tick(8);
+                if self.tick(8) {
+                    self.nmi_due = true;
+                }
             }
             d.count = 0;
             self.dma[c] = d;
@@ -481,6 +502,15 @@ pub struct Capture {
     /// usually polling something here.
     pub busy_at: Vec<(u32, u32)>,
     pub busy_reads: Vec<(u16, u32)>,
+    /// Interrupts the CPU took, the last interrupt-enable value written to $4200, and whether
+    /// the CPU ended with IRQs masked.
+    pub nmis: u32,
+    pub irqs: u32,
+    pub nmitimen: u8,
+    pub irq_masked: bool,
+    /// The last instructions (bank:address) before the CPU first ran into the vector table or
+    /// a BRK, oldest first, when it did.
+    pub crash_trace: Option<Vec<u32>>,
 }
 
 /// How a capture runs.
@@ -527,6 +557,8 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         line: 0,
         line_clock: 0,
         nmi_enable: false,
+        nmi_due: false,
+        nmitimen: 0,
         nmi_flag: false,
         irq_mode: 0,
         irq_flag: false,
@@ -558,6 +590,9 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
     let mut stopped = None;
     let watch_from = end.saturating_sub(MASTER_RATE);
     let mut busy: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let (mut nmis, mut irqs) = (0u32, 0u32);
+    let mut recent = [0u32; 64];
+    let mut crash: Option<Vec<u32>> = None;
     while snes.master < end {
         if press_start {
             snes.buttons = if start_held(snes.master) { START } else { 0 };
@@ -568,10 +603,24 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         let cycles = cpu.step(&mut snes);
         instructions += 1;
         if snes.tick(cycles * CYCLE_CLOCKS) {
+            snes.nmi_due = true;
+        }
+        if std::mem::take(&mut snes.nmi_due) {
             cpu.nmi(&mut snes);
+            nmis += 1;
         }
         if snes.irq_flag {
+            if cpu.p & 0x04 == 0 {
+                irqs += 1;
+            }
             cpu.irq(&mut snes);
+        }
+        recent[instructions as usize % recent.len()] = (cpu.pbr as u32) << 16 | cpu.pc as u32;
+        // Running into the vector table, or a BRK, means the game went off the rails: keep the
+        // way it got there.
+        if crash.is_none() && ((cpu.pbr == 0 && cpu.pc >= 0xFFE0) || snes.peek_opcode(&cpu) == 0x00) {
+            let n = recent.len();
+            crash = Some((1..=n).map(|i| recent[(instructions as usize + i) % n]).collect());
         }
         if cpu.stopped {
             stopped = Some(format!("the CPU stopped at {:02x}:{:04x}", cpu.pbr, cpu.pc));
@@ -602,7 +651,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
     snes.catch_up_apu();
     let spc = snes.apu.save_spc();
     let audio = std::mem::take(&mut snes.apu.output);
-    Ok(Capture { spc, driver_starts, port_writes: snes.writes, audio, instructions, stopped, busy_at, busy_reads })
+    Ok(Capture { spc, driver_starts, port_writes: snes.writes, audio, instructions, stopped, busy_at, busy_reads, nmis, irqs, nmitimen: snes.nmitimen, irq_masked: cpu.p & 0x04 != 0, crash_trace: crash })
 }
 
 #[cfg(test)]
