@@ -9,6 +9,11 @@
 //   rsseq_render   interleaved stereo int16
 //   rsseq_ended    every track has reached its end and every note has died away; a song that
 //                  loops never does
+//   rsseq_timing   runs the sequencer alone, without sound, to find where a song ends or how it
+//                  loops (each track's jumps back), much faster than playing it
+//
+// The mix is played 6 dB down: the hardware's own sum of 16 channels clips on loud songs, and
+// the player's normalising turns quiet ones up again.
 //
 // deps/rommusic/patches/sseq/ bounds-checks the player's reading of the archive, so damaged
 // data throws, and nothing here lets an exception cross the API.
@@ -18,6 +23,7 @@
 #include "SYMBSection.h"
 #include "INFOSection.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -108,6 +114,7 @@ RSSEQ_API void *rsseq_open(const uint8_t *sdat, size_t len, uint32_t id, uint32_
         h->player.sampleRate = rate;
         h->player.interpolation = INTERPOLATION_4POINTLEGRANGE;
         h->player.sseqVol = Cnv_Scale(h->sdat->sseq->info.vol);
+        h->player.mixGain = 128;
         if (!h->player.Setup(h->sdat->sseq.get())) {
             copy_error(err, err_len, "the song could not be set up");
             return nullptr;
@@ -157,4 +164,62 @@ RSSEQ_API int rsseq_ended(void *handle)
         if (chn.state != CS_NONE)
             return 0;
     return 1;
+}
+
+// Runs song `id` for up to `max_seconds` of song time without making sound. Returns 0 when every
+// track ends (`*end_seconds` is when), 1 when it loops (`*intro_seconds` and `*loop_seconds`:
+// the longest loop of any track, and the latest any track's loop starts), 2 when it does
+// neither in that time, -1 on an error (with `err` filled in).
+RSSEQ_API int rsseq_timing(const uint8_t *sdat, size_t len, uint32_t id, double max_seconds, double *end_seconds, double *intro_seconds, double *loop_seconds, char *err, size_t err_len)
+{
+    try {
+        std::vector<uint8_t> bytes(sdat, sdat + len);
+        PseudoFile file;
+        file.data = &bytes;
+        SDAT archive(file, id);
+        auto player = std::make_unique<Player>();
+        player->sampleRate = 32768;
+        if (!player->Setup(archive.sseq.get())) {
+            copy_error(err, err_len, "the song could not be set up");
+            return -1;
+        }
+        const uint64_t limit = static_cast<uint64_t>(max_seconds / SecondsPerClockCycle);
+        while (player->clocks < limit) {
+            player->Timer();
+            bool all_ended = true, all_known = true;
+            int64_t intro = 0, loop = 0;
+            for (uint8_t i = 0; i < player->nTracks; ++i) {
+                int t = player->trackIds[i];
+                if (player->tracks[t].state[TS_END])
+                    continue;
+                all_ended = false;
+                const int64_t *j = player->jumps[t];
+                if (j[1] < 0) {
+                    all_known = false;
+                    break;
+                }
+                int64_t lp = j[1] - j[0];
+                loop = std::max(loop, lp);
+                intro = std::max(intro, j[0] - lp);
+            }
+            if (all_ended) {
+                if (end_seconds)
+                    *end_seconds = player->clocks * SecondsPerClockCycle;
+                return 0;
+            }
+            if (all_known && loop > 0) {
+                if (intro_seconds)
+                    *intro_seconds = intro * SecondsPerClockCycle;
+                if (loop_seconds)
+                    *loop_seconds = loop * SecondsPerClockCycle;
+                return 1;
+            }
+        }
+        return 2;
+    } catch (const std::exception &e) {
+        copy_error(err, err_len, e.what());
+    } catch (...) {
+        copy_error(err, err_len, "the song could not be read");
+    }
+    return -1;
 }

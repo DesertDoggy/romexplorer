@@ -1,0 +1,77 @@
+--- a/Player.h
++++ b/Player.h
+@@ -49,4 +49,11 @@
+ 	double secondsPerSample, secondsIntoPlayback, secondsUntilNextClock;
+ 	std::bitset<16> mutes;
+ 	void GenerateSamples(std::vector<uint8_t> &buf, unsigned offset, unsigned samples);
++
++	/* Loop finding: sequencer clocks run, and when each track first and second jumped back */
++	uint64_t clocks = 0;
++	int64_t jumps[FSS_MAXTRACKS][2];
++	void Jumped(int track);
++	/* Mix level, 256 = as the hardware sums; less leaves headroom before the clamp */
++	int32_t mixGain = 256;
+ };
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -21,6 +21,17 @@
+ 		this->channels[i].ply = this;
+ 	}
+ 	memset(this->variables, -1, sizeof(this->variables));
++	memset(this->jumps, -1, sizeof(this->jumps));
++}
++
++void Player::Jumped(int track)
++{
++	if (track < 0 || track >= FSS_MAXTRACKS)
++		return;
++	if (this->jumps[track][0] < 0)
++		this->jumps[track][0] = static_cast<int64_t>(this->clocks);
++	else if (this->jumps[track][1] < 0)
++		this->jumps[track][1] = static_cast<int64_t>(this->clocks);
+ }
+ 
+ // Original FSS Function: Player_Setup
+@@ -164,6 +175,7 @@
+ // Original FSS Function: Snd_Timer
+ void Player::Timer()
+ {
++	++this->clocks;
+ 	this->UpdateTracks();
+ 
+ 	for (int i = 0; i < 16; ++i)
+@@ -210,6 +222,8 @@
+ 			}
+ 		}
+ 
++		leftChannel = (leftChannel * this->mixGain) >> 8;
++		rightChannel = (rightChannel * this->mixGain) >> 8;
+ 		clamp(leftChannel, -0x8000, 0x7FFF);
+ 		clamp(rightChannel, -0x8000, 0x7FFF);
+ 
+--- a/Track.cpp
++++ b/Track.cpp
+@@ -555,8 +555,13 @@
+ 					break;
+ 
+ 				case SSEQ_CMD_GOTO:
+-					*pData = this->ply->sseq->At(read24(pData));
++				{
++					const uint8_t *dest = this->ply->sseq->At(read24(pData));
++					if (dest <= *pData)
++						this->ply->Jumped(static_cast<int>(this - this->ply->tracks));
++					*pData = dest;
+ 					break;
++				}
+ 
+ 				case SSEQ_CMD_CALL:
+ 					value = read24(pData);
+@@ -631,6 +636,8 @@
+ 						const uint8_t *rPos = this->stack[this->stackPos - 1].dest;
+ 						uint8_t &nR = this->loopCount[this->stackPos - 1];
+ 						uint8_t prevR = nR;
++						if (!prevR)
++							this->ply->Jumped(static_cast<int>(this - this->ply->tracks));
+ 						if (!prevR || --nR)
+ 							*pData = rPos;
+ 						else

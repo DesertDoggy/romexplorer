@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use super::gme::{self, Emu};
-use super::track_timing::{Listener, Timing};
+use super::track_timing::{self, Listener, Timing};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
 
@@ -425,8 +425,9 @@ fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, Strin
             let (intro, lp) = (u32::try_from(start_ms).unwrap_or(u32::MAX), u32::try_from(loop_ms).unwrap_or(u32::MAX));
             let body = intro.saturating_add(lp.saturating_mul(2)).min(limit);
             Some(match own {
-                // Two loops would take about as long as listed anyway.
-                Some((len, fade, _)) if body + 5_000 >= len => Plan { body: len, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
+                // Two loops would take about as long as listed anyway; or the listing goes
+                // round a long loop only a few times, which is a choice, not a padded guess.
+                Some((len, fade, _)) if body + 5_000 >= len || intro.saturating_add(lp.saturating_mul(4)) >= len => Plan { body: len, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
                 Some((_, fade, _)) => Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: true, intro: Some(intro), lp: Some(lp) },
                 None => Plan { body, fade: LOOP_FADE_MS, looping: true, intro: Some(intro), lp: Some(lp) },
             })
@@ -434,7 +435,8 @@ fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, Strin
         Timing::RunsOn => Some(match own {
             // Still playing at its listed length: faded there, not cut.
             Some((body, fade, _)) => Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
-            None => Plan { body: RUN_ON_MS, fade: LOOP_FADE_MS, looping: true, intro: None, lp: None },
+            // Not heard to loop, so not called one: it is faded where it is cut.
+            None => Plan { body: RUN_ON_MS, fade: LOOP_FADE_MS, looping: false, intro: None, lp: None },
         }),
     };
     if let Ok(mut m) = PLANS.lock() {
@@ -598,9 +600,10 @@ struct GmePcm {
     emu: Emu,
     /// Samples (both channels) left to give, when the length is known.
     left: Option<u64>,
-    /// The last this many of them fade out. Done here and not by gme, whose fade some sets'
-    /// tracks ended before reaching.
+    /// Before the last `tail` of them, this many fade out ([`track_timing::fade_gain`]).
+    /// Done here and not by gme, whose fade some sets' tracks ended before reaching.
     fade: u64,
+    tail: u64,
 }
 
 impl PcmStream for GmePcm {
@@ -623,9 +626,8 @@ impl PcmStream for GmePcm {
         if let Some(l) = &mut self.left {
             if self.fade > 0 {
                 for (i, pair) in buf.chunks_exact_mut(2).enumerate() {
-                    let remaining = l.saturating_sub(2 * i as u64);
-                    if remaining < self.fade {
-                        let g = remaining as f32 / self.fade as f32;
+                    let g = track_timing::fade_gain(l.saturating_sub(2 * i as u64), self.fade, self.tail);
+                    if g < 1.0 {
                         pair[0] = (f32::from(pair[0]) * g) as i16;
                         pair[1] = (f32::from(pair[1]) * g) as i16;
                     }
@@ -652,7 +654,8 @@ pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, 
     emu.ignore_silence(true);
     emu.start(track, None)?;
     let samples = |ms: u32| u64::from(ms) * u64::from(emu.sample_rate()) / 1000 * 2;
-    Ok(Box::new(GmePcm { left: Some(samples(body + fade)), fade: samples(fade), emu }))
+    let tail = if fade > 0 { track_timing::FADE_TAIL_MS as u32 } else { 0 };
+    Ok(Box::new(GmePcm { left: Some(samples(body + fade + tail)), fade: samples(fade), tail: samples(tail), emu }))
 }
 
 #[cfg(test)]

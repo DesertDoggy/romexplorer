@@ -87,10 +87,21 @@ trap 'rm -rf "$build_dir"' EXIT
 # fork, patches/sseq/*.patch to the SSEQ Player. They show as modified in `git status` inside
 # those submodules afterwards; that is expected.
 apply_patches() {
-  local dir="$1" root="$2" p
-  for p in "$dir"/*.patch; do
-    [[ -e "$p" ]] || continue
-    if (cd "$root" && patch -p1 -R -f --dry-run <"$p") >/dev/null 2>&1; then
+  # The patches of a directory are a series, applied in name order. Later ones may touch what
+  # earlier ones did, so whether the series is applied is told from the last one that undoes
+  # cleanly: those up to it are in, the rest are applied.
+  local dir="$1" root="$2" p i done_upto=-1
+  local series=()
+  for p in "$dir"/*.patch; do [[ -e "$p" ]] && series+=("$p"); done
+  for ((i = ${#series[@]} - 1; i >= 0; i--)); do
+    if (cd "$root" && patch -p1 -R -f --dry-run <"${series[$i]}") >/dev/null 2>&1; then
+      done_upto=$i
+      break
+    fi
+  done
+  for ((i = 0; i < ${#series[@]}; i++)); do
+    p="${series[$i]}"
+    if ((i <= done_upto)); then
       echo "[INFO] patch already applied: $(basename "$p")" | tee -a "$log_file"
     elif (cd "$root" && patch -p1 -N -f --dry-run <"$p") >/dev/null 2>&1; then
       (cd "$root" && patch -p1 -N -f <"$p") | tee -a "$log_file"
