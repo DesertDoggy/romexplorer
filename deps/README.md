@@ -22,10 +22,7 @@ Build output stays here too, in `<name>/release/`, `<name>/_build/` and `<name>/
 | libxaac | ittiam-systems/libxaac | none |
 | ffmpeg | FFmpeg/FFmpeg (tag n9.0.2) | none; built static, LGPL, audio decoders only, and linked into rvgmstream (no DLL of its own) |
 | vgmstream | vgmstream/vgmstream | none; `rvgm.c` wraps its API, `CMakeLists.txt` compiles its sources and links ffmpeg's static build when there is one |
-| gme | libgme/game-music-emu (tag 0.6.5) | none; upstream's CMake as it is, Nuked YM2612 (LGPL), no zlib |
-| agbplay | ipatix/agbplay (LGPL-3.0) | `CMakeLists.txt` builds only the playback core, behind the `ragb_` C API in `shim/ragb.cpp`; `shim/rom_buffer.cpp` replaces upstream's Rom.cpp (no file, zip or GSF loading), `compat/` stands in for the one Boost function used |
-| gme (SNES sound chip) | libgme/game-music-emu, as for gme | `spc/` builds only Snes_Spc behind `rspc.cpp`, driven through its ports |
-| gme (SGC) | kode54/Game_Music_Emu, as external/gme-kode54 | `patches/01_sgc_rst_vectors.patch` (an SGC's RST vectors were read one entry late); `sgc/` builds only its SGC player, YM2413 silent, behind `rsgc.cpp` |
+| rommusic | libgme/game-music-emu (tag 0.6.5), kode54/Game_Music_Emu (external/gme-kode54), ipatix/agbplay (LGPL-3.0), fmt | One library (`CMakeLists.txt`): upstream gme as it is (Nuked YM2612, no zlib), linked in whole; `spc/rspc.cpp` drives its Snes_Spc through the ports; `sgc/` builds only the fork's SGC player (YM2413 silent) behind `rsgc.cpp`, with `sgc/rename.h` (from `sgc/make_rename.sh`) prefixing the fork's names so they do not collide with upstream's, and `patches/01_sgc_rst_vectors.patch` (an SGC's RST vectors were read one entry late); `agbplay/` builds only agbplay's playback core behind `ragb.cpp`, `rom_buffer.cpp` replacing upstream's Rom.cpp (no file, zip or GSF loading) and `compat/` standing in for the one Boost function used |
 | cemu | cemu-project/Cemu | none; `wiiu_wua` compiles the files it needs |
 | extract-xiso | XboxDev/extract-xiso | none; `exiso.c` compiles `extract-xiso.c` as it is |
 | beetle-psx-libretro | libretro/beetle-psx-libretro | none; `psxpbp.c` compiles its PBP reader |

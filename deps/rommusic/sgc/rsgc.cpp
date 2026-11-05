@@ -1,7 +1,8 @@
 // rsgc: SGC (Game Gear, Master System and ColecoVision music rips) through kode54's
 // Game_Music_Emu fork, under the names and the struct layout of upstream libgme's C API with
-// an `rsgc_` prefix, so src/rom/gme.rs drives both libraries the same way. Only the rsgc_
-// functions are exported; the fork's own gme_* stay inside this library.
+// an `rsgc_` prefix, so src/rom/gme.rs drives both players the same way. It is built into
+// rommusic next to upstream libgme; sgc/rename.h gives the fork's own names (its gme_*, its
+// Blip_Buffer...) an rsgc_ prefix, and only the rsgc_ functions are exported from it.
 #include "gme.h"
 #include "Music_Emu.h"
 #include <stdlib.h>

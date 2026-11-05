@@ -8,7 +8,7 @@ mod chip_music;
 
 fn need_lib() -> bool {
     if !gme::available() {
-        eprintln!("skipped: gme is not built for this machine (deps/gme/scripts/build.sh)");
+        eprintln!("skipped: gme is not built for this machine (deps/rommusic/scripts/build.sh)");
         return false;
     }
     true
@@ -173,13 +173,13 @@ fn a_track_with_no_length_is_measured() {
 #[test]
 fn sgc_plays_through_the_second_library() {
     if !need_lib() || !gme::sgc_available() {
-        eprintln!("skipped: gmesgc is not built for this machine (deps/gme/scripts/build.sh)");
+        eprintln!("skipped: the SGC player is not built for this machine (deps/rommusic/scripts/build.sh)");
         return;
     }
     assert!(gme::known_extension("a.sgc"));
     let data = chip_music::sgc(3, "Test Game");
     assert_eq!(gme::identify(&data).as_deref(), Some("SGC"));
-    let mut emu = Emu::open(data, Emu::SAMPLE_RATE).expect("gmesgc opens an SGC");
+    let mut emu = Emu::open(data, Emu::SAMPLE_RATE).expect("rommusic opens an SGC");
     assert_eq!(emu.track_count(), 3);
     let info = emu.track_info(1).unwrap();
     assert_eq!(info.game, "Test Game");

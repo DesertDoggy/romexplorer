@@ -282,7 +282,7 @@ pub fn one_liner(s: &IndexSummary) -> String {
 
 pub async fn validate(_app: &App, _request: &RomAudioIndexRequest) -> Result<()> {
     if !vgmstream::available() && !gme::available() && !crate::rom::agbplay::available() {
-        return Err(Error::unavailable("none of the game audio decoder (rvgmstream), the chip music player (gme) or the GBA music player (ragb) is built for this machine"));
+        return Err(Error::unavailable("none of the game audio decoder (rvgmstream), the chip music players (rommusic) is built for this machine"));
     }
     Ok(())
 }
