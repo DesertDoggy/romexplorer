@@ -223,7 +223,8 @@ fn one(input: &Path, a: &Args, library: Option<&rip_match::Library>) -> Result<(
     if a.list {
         for (n, job) in plan.jobs.iter().enumerate() {
             match job {
-                Job::Track { track, .. } => println!("  {:02}  {:<6} {:>6}  {}  ({})", n + 1, track.kind.name(), length(track.duration_ms), track.name, track.codec),
+                // A looping track's length is one pass; the file holds it twice, then a fade.
+                Job::Track { track, .. } => println!("  {:02}  {:<6} {:>6}{}  {}  ({})", n + 1, track.kind.name(), length(track.duration_ms), if track.looping { " loop" } else { "     " }, track.name, track.codec),
                 Job::Spc { .. } => println!("  {:02}  bgm    {:>6}  Title  (SNES sound chip)", n + 1, length(u64::from(SPC_PLAY_MS + SPC_FADE_MS))),
             }
         }

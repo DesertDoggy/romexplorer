@@ -55,7 +55,7 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--rips DIR` | A folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC; loose, in folders, or zipped) to match cartridges against by their content. File names do not matter. Can be given more than once. |
 | `--seconds N` | SNES: how long the game runs before its music is taken (default 20). |
 | `--start` | SNES: press Start now and then while the game runs, for games whose music starts after the title screen. |
-| `--list` | Only list the tracks; write nothing. |
+| `--list` | Only list the tracks; write nothing. A looping track shows one pass and "loop"; its file plays the loop twice and fades. |
 | `--no-pause` | Don't wait for Enter at the end. It only waits in the window that opens for a dropped file. |
 | `-h`, `--help` / `-V`, `--version` | Help and version. |
 

@@ -14,6 +14,7 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
   a rip.
 - **Rip tracks with no length** (or a guessed one) end where the music does: no silence at
   the end, and a repeating track plays its loop twice and fades.
+- Rip sets whose playlists count tracks from 0 play the right track for each name.
 - **Wii and Wii U:** Wii discs, and Wii U .wua files, or .wud/.wux and downloaded titles
   when their key is beside them.
 - The supported systems and formats are listed in README.md.

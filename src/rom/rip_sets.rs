@@ -301,11 +301,45 @@ fn load(file: &RipFile) -> Result<Emu, String> {
     let mut emu = Emu::open(file.data.clone(), Emu::SAMPLE_RATE)?;
     if !file.playlist.is_empty() {
         // A playlist gme cannot use leaves the file's own tracks, which still play.
-        if let Err(e) = emu.load_m3u(&file.playlist) {
+        if let Err(e) = emu.load_m3u(&one_based(&file.playlist)) {
             log::debug!("{}: playlist not used: {e}", file.rel);
         }
     }
     Ok(emu)
+}
+
+/// The track number field of a playlist line (`file::TYPE,<number>,title,...`): where it is.
+fn number_field(line: &[u8]) -> Option<std::ops::Range<usize>> {
+    let after = line.windows(2).position(|w| w == b"::")? + 2;
+    let start = after + line[after..].iter().position(|&b| b == b',')? + 1;
+    let end = start + line[start..].iter().position(|&b| b == b',').unwrap_or(line.len() - start);
+    Some(start..end)
+}
+
+/// gme reads a playlist's decimal track numbers as counting from 1 (as NEZplug defines
+/// them), but many sets' playlists count from 0: every title then lands on the track before
+/// it, and the first plays nothing. A playlist with a track 0 is one of those, and its
+/// decimal numbers are moved up by one. (`$`-prefixed hex numbers count from 0 either way.)
+fn one_based(playlist: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let decimal = |line: &[u8]| number_field(line).and_then(|r| std::str::from_utf8(&line[r]).ok()?.trim().parse::<u32>().ok());
+    if !playlist.split(|&b| b == b'\n').any(|line| decimal(line) == Some(0)) {
+        return std::borrow::Cow::Borrowed(playlist);
+    }
+    let mut out = Vec::with_capacity(playlist.len() + 16);
+    for (i, line) in playlist.split(|&b| b == b'\n').enumerate() {
+        if i > 0 {
+            out.push(b'\n');
+        }
+        match (decimal(line), number_field(line)) {
+            (Some(n), Some(r)) if !line.starts_with(b"#") => {
+                out.extend_from_slice(&line[..r.start]);
+                out.extend_from_slice((n + 1).to_string().as_bytes());
+                out.extend_from_slice(&line[r.end..]);
+            }
+            _ => out.extend_from_slice(line),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// How a track is played: `body` ms, then a `fade`; `intro`/`lp` where it loops.
@@ -330,6 +364,15 @@ impl Plan {
 
 /// A playlist length shorter than this is taken as it is: a jingle has no room to repeat.
 const CHECK_LISTED_MIN_MS: u32 = 60_000;
+/// How long a track with no length is listened to for a loop: two passes of a long one.
+const LISTEN_MS: u32 = 200_000;
+/// The fade of a listed length that gives none: a track cut there would stop dead.
+const LISTED_FADE_MS: u32 = 1_000;
+
+/// A listed fade, or `fallback` where the listing has none.
+fn or_fade(fade: u32, fallback: u32) -> u32 {
+    if fade > 0 { fade } else { fallback }
+}
 
 /// How track `track` plays. A length of the track's own with an intro and a loop is used as
 /// it is. Otherwise the track is played through once, quietly, and its sound decides
@@ -343,13 +386,13 @@ fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, Strin
         return Ok(Some(Plan { body, fade, looping: true, intro: info.intro_ms, lp: info.loop_ms }));
     }
     if let Some((body, fade, false)) = own.filter(|o| o.0 < CHECK_LISTED_MIN_MS) {
-        return Ok(Some(Plan { body, fade, looping: false, intro: None, lp: None }));
+        return Ok(Some(Plan { body, fade: or_fade(fade, LISTED_FADE_MS), looping: false, intro: None, lp: None }));
     }
     let key = (fingerprint(file), track);
     if let Some(known) = PLANS.lock().ok().and_then(|m| m.get(&key).copied()) {
         return Ok(known);
     }
-    let limit = own.map_or(RUN_ON_MS, |o| o.0);
+    let limit = own.map_or(LISTEN_MS, |o| o.0);
     let found = match listen(emu, track, limit)? {
         Timing::Silent => None,
         Timing::Ends { ms } => {
@@ -365,13 +408,14 @@ fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, Strin
             let body = intro.saturating_add(lp.saturating_mul(2)).min(limit);
             Some(match own {
                 // Two loops would take about as long as listed anyway.
-                Some((len, fade, _)) if body + 5_000 >= len => Plan { body: len, fade, looping: false, intro: None, lp: None },
-                Some((_, fade, _)) => Plan { body, fade: if fade > 0 { fade } else { LOOP_FADE_MS }, looping: true, intro: Some(intro), lp: Some(lp) },
+                Some((len, fade, _)) if body + 5_000 >= len => Plan { body: len, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
+                Some((_, fade, _)) => Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: true, intro: Some(intro), lp: Some(lp) },
                 None => Plan { body, fade: LOOP_FADE_MS, looping: true, intro: Some(intro), lp: Some(lp) },
             })
         }
         Timing::RunsOn => Some(match own {
-            Some((body, fade, _)) => Plan { body, fade, looping: false, intro: None, lp: None },
+            // Still playing at its listed length: faded there, not cut.
+            Some((body, fade, _)) => Plan { body, fade: or_fade(fade, LOOP_FADE_MS), looping: false, intro: None, lp: None },
             None => Plan { body: RUN_ON_MS, fade: LOOP_FADE_MS, looping: true, intro: None, lp: None },
         }),
     };
@@ -592,6 +636,14 @@ mod tests {
         ];
         let got = String::from_utf8(playlist_for("music/Game.nsf", &m3us)).unwrap();
         assert_eq!(got, "Game.nsf::NSF,1,Title,2:00,,10\nsub/GAME.NSF::NSF,3,Ending,1:30\n");
+    }
+
+    #[test]
+    fn a_playlist_counting_from_zero_is_moved_up_by_one() {
+        let zero = b"# x\nGame.gbs::GBS,0,Prologue,1:00\nGame.gbs::GBS,12,Town\nGame.gbs::GBS,$0C,Hex";
+        assert_eq!(&*one_based(zero), b"# x\nGame.gbs::GBS,1,Prologue,1:00\nGame.gbs::GBS,13,Town\nGame.gbs::GBS,$0C,Hex");
+        let one = b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field";
+        assert_eq!(&*one_based(one), one);
     }
 
     #[test]
