@@ -9,6 +9,9 @@ set -euo pipefail
 # upstream does not play, from kode54's fork (external/gme-kode54, LGPL) behind the rsgc_
 # functions in deps/gme/sgc/rsgc.cpp. deps/gme/patches/ is applied to the fork first.
 #
+# Then gmespc.dll / libgmespc.so / libgmespc.dylib: upstream's SNES sound chip emulator behind
+# the rspc_ functions in deps/gme/spc/rspc.cpp, driven through its ports (SNES music from ROMs).
+#
 # Usage:
 #   deps/gme/scripts/build.sh                    # auto-detect platform/arch
 #   deps/gme/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64
@@ -63,9 +66,9 @@ case "$arch" in
   *) echo "[ERROR] Unsupported arch: $arch (x64 | arm64)" >&2; exit 2 ;;
 esac
 case "$platform" in
-  windows) lib_name="gme.dll"; system_name="Windows"; built_glob="*gme.dll"; sgc_name="gmesgc.dll"; sgc_glob="*gmesgc.dll" ;;
-  mac) lib_name="libgme.dylib"; system_name="Darwin"; built_glob="libgme*.dylib"; sgc_name="libgmesgc.dylib"; sgc_glob="libgmesgc*.dylib" ;;
-  linux) lib_name="libgme.so"; system_name="Linux"; built_glob="libgme.so*"; sgc_name="libgmesgc.so"; sgc_glob="libgmesgc.so*" ;;
+  windows) lib_name="gme.dll"; system_name="Windows"; built_glob="*gme.dll"; sgc_name="gmesgc.dll"; sgc_glob="*gmesgc.dll"; spc_name="gmespc.dll"; spc_glob="*gmespc.dll" ;;
+  mac) lib_name="libgme.dylib"; system_name="Darwin"; built_glob="libgme*.dylib"; sgc_name="libgmesgc.dylib"; sgc_glob="libgmesgc*.dylib"; spc_name="libgmespc.dylib"; spc_glob="libgmespc*.dylib" ;;
+  linux) lib_name="libgme.so"; system_name="Linux"; built_glob="libgme.so*"; sgc_name="libgmesgc.so"; sgc_glob="libgmesgc.so*"; spc_name="libgmespc.so"; spc_glob="libgmespc.so*" ;;
   *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows)" >&2; exit 2 ;;
 esac
 
@@ -76,7 +79,8 @@ output_version="$(git -C "$repo_root" describe --tags --exact-match 2>/dev/null 
 out_dir="$user_dir/release/$platform/$arch/$output_version"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gme_build.XXXXXX")"
 sgc_build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gmesgc_build.XXXXXX")"
-trap 'rm -rf "$build_dir" "$sgc_build_dir"' EXIT
+spc_build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gmespc_build.XXXXXX")"
+trap 'rm -rf "$build_dir" "$sgc_build_dir" "$spc_build_dir"' EXIT
 
 # Our fixes to the fork, applied to the checkout idempotently (the 7-Zip scheme). They show as
 # modified in `git status` inside external/gme-kode54 afterwards; that is expected.
@@ -126,6 +130,7 @@ if [[ "$host_platform" == "windows" ]]; then
   fi
 fi
 sgc_args=(-S "$user_dir/sgc" -B "$sgc_build_dir" "-DGME_FORK_ROOT=$fork_root" "-DDATA_READER_DIR=$repo_root/gme" "${common_args[@]}")
+spc_args=(-S "$user_dir/spc" -B "$spc_build_dir" "-DGME_ROOT=$repo_root" "${common_args[@]}")
 
 jobs="${JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
@@ -138,6 +143,9 @@ jobs="${JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncp
   echo "[INFO] cmake ${sgc_args[*]}"
   cmake "${sgc_args[@]}"
   cmake --build "$sgc_build_dir" --target gmesgc -j "$jobs"
+  echo "[INFO] gmespc $platform/$arch"
+  cmake "${spc_args[@]}"
+  cmake --build "$spc_build_dir" --target gmespc -j "$jobs"
 } 2>&1 | tee -a "$log_file"
 
 # The real file, not a SONAME symlink (libgme.so.0 -> libgme.so.0.6.5). MinGW names it
@@ -154,7 +162,14 @@ if [[ -z "$sgc_built" ]]; then
   exit 1
 fi
 
+spc_built="$(find "$spc_build_dir" -name "$spc_glob" -type f ! -name '*.a' | head -1)"
+if [[ -z "$spc_built" ]]; then
+  echo "[ERROR] the gmespc library was not produced; see $log_file" >&2
+  exit 1
+fi
+
 mkdir -p "$out_dir/dynamic" "$out_dir/include"
+cp "$spc_built" "$out_dir/dynamic/$spc_name"
 cp "$built" "$out_dir/dynamic/$lib_name"
 cp "$sgc_built" "$out_dir/dynamic/$sgc_name"
 cp "$repo_root/gme/gme.h" "$out_dir/include/gme.h"
@@ -169,3 +184,4 @@ cp "$repo_root/gme/gme.h" "$out_dir/include/gme.h"
 } > "$out_dir/build-info.txt"
 echo "[INFO] built $out_dir/dynamic/$lib_name ($(wc -c < "$out_dir/dynamic/$lib_name") bytes)"
 echo "[INFO] built $out_dir/dynamic/$sgc_name ($(wc -c < "$out_dir/dynamic/$sgc_name") bytes)"
+echo "[INFO] built $out_dir/dynamic/$spc_name ($(wc -c < "$out_dir/dynamic/$spc_name") bytes)"
