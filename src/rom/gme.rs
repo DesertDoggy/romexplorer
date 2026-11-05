@@ -51,6 +51,7 @@ type PlayFn = unsafe extern "C" fn(*mut c_void, c_int, *mut i16) -> Err;
 type DeleteFn = unsafe extern "C" fn(*mut c_void);
 type SetFadeMsecsFn = unsafe extern "C" fn(*mut c_void, c_int, c_int);
 type SetAutoloadLimitFn = unsafe extern "C" fn(*mut c_void, c_int);
+type IgnoreSilenceFn = unsafe extern "C" fn(*mut c_void, c_int);
 type TrackEndedFn = unsafe extern "C" fn(*const c_void) -> c_int;
 type TellFn = unsafe extern "C" fn(*const c_void) -> c_int;
 type SeekFn = unsafe extern "C" fn(*mut c_void, c_int) -> Err;
@@ -68,6 +69,8 @@ struct Api {
     delete: DeleteFn,
     set_fade_msecs: SetFadeMsecsFn,
     set_autoload_limit: SetAutoloadLimitFn,
+    /// Missing from a library built before it was exported.
+    ignore_silence: Option<IgnoreSilenceFn>,
     track_ended: TrackEndedFn,
     tell: TellFn,
     seek: SeekFn,
@@ -91,6 +94,7 @@ fn load_api(base: &str, prefix: &str) -> Option<Api> {
             delete: *lib.get(&sym("delete")).ok()?,
             set_fade_msecs: *lib.get(&sym("set_fade_msecs")).ok()?,
             set_autoload_limit: *lib.get(&sym("set_autoload_playback_limit")).ok()?,
+            ignore_silence: lib.get(&sym("ignore_silence")).ok().map(|f| *f),
             track_ended: *lib.get(&sym("track_ended")).ok()?,
             tell: *lib.get(&sym("tell")).ok()?,
             seek: *lib.get(&sym("seek")).ok()?,
@@ -317,6 +321,15 @@ impl Emu {
             unsafe { (self.api.set_fade_msecs)(self.handle, at.min(i32::MAX as u32) as c_int, len.min(i32::MAX as u32) as c_int) };
         }
         Ok(())
+    }
+
+    /// Plays on through silence instead of ending the track there. For a track whose length
+    /// is known (a playlist or the file says it): some start with a pause or have a quiet
+    /// passage, which silence detection would take for the end.
+    pub fn ignore_silence(&mut self, ignore: bool) {
+        if let Some(f) = self.api.ignore_silence {
+            unsafe { f(self.handle, c_int::from(ignore)) };
+        }
     }
 
     /// Fills `out` with interleaved stereo samples. `out.len()` must be even.

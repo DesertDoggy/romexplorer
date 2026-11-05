@@ -490,7 +490,10 @@ pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, 
     let mut emu = load(&file)?;
     let info = emu.track_info(track)?;
     let (body, fade) = match own_length(&info) {
-        Some((len, fade, _)) => (len, fade),
+        Some((len, fade, _)) => {
+            emu.ignore_silence(true);
+            (len, fade)
+        }
         None => (RUN_ON_MS, LOOP_FADE_MS),
     };
     emu.start(track, Some((body, fade)))?;
