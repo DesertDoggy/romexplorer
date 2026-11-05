@@ -91,6 +91,32 @@ RAGB_API void *ragb_open(const uint8_t *data, size_t len, uint32_t rate, char *e
     }
 }
 
+/// Like ragb_open, for a song table found some other way (by its shape) that agbplay's own
+/// scanner turned down, because it could not also find the engine's player table and mixing
+/// settings. Those take the engine's usual values: four players of up to 16 tracks, full volume,
+/// 13,379 Hz mixing, no reverb.
+RAGB_API void *ragb_open_at(const uint8_t *data, size_t len, uint32_t rate, uint64_t table, uint32_t count, char *err, size_t err_len)
+{
+    try {
+        auto h = std::make_unique<Handle>();
+        h->bytes.assign(data, data + len);
+        h->rate = rate;
+        h->rom = std::make_unique<Rom>(Rom::LoadFromBufferRef(h->bytes));
+        if (table + uint64_t(count) * 8 > len || count == 0) {
+            copy_error(err, err_len, "the song table lies outside the ROM");
+            return nullptr;
+        }
+        h->scan.songTableInfo.pos = static_cast<size_t>(table);
+        h->scan.songTableInfo.count = static_cast<uint16_t>(std::min<uint32_t>(count, 0xFFFE));
+        h->scan.playerTableInfo = PlayerTableInfo(4, PlayerInfo{.maxTracks = 16, .usePriority = 0});
+        h->scan.mp2kSoundMode = MP2KSoundMode{.vol = 15, .rev = 0, .freq = 4, .maxChannels = 12, .dacConfig = 9};
+        return h.release();
+    } catch (const std::exception &e) {
+        copy_error(err, err_len, e.what());
+        return nullptr;
+    }
+}
+
 RAGB_API void ragb_close(void *handle)
 {
     delete static_cast<Handle *>(handle);
