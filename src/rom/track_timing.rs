@@ -26,9 +26,6 @@ const MIN_LOOP_MS: u64 = 1_000;
 const SAME: f32 = 0.10;
 /// The same, for the short window that finds where the loop begins.
 const SAME_LOCAL: f32 = 0.25;
-/// A block whose level differs from the one before by more than this share of the louder
-/// is an onset, left out of the notes' comparison.
-const ONSET: f32 = 0.3;
 /// How alike the notes of two stretches must be: one minus the mean cosine of their blocks'
 /// pitch content. Measured on NES music: true loops 0.007-0.037 over two periods, a bar
 /// repeating under a changing melody 0.067 and up.
@@ -334,35 +331,21 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
     };
     // One minus the mean cosine of the blocks' pitch content against `back` blocks earlier,
     // over the blocks that have notes in both.
-    // A block where the level jumps: a drum hit or a note's onset, which lands a little
-    // differently against the blocks on each pass of the loop.
-    let jumps = |k: usize| k > 0 && (level[k] - level[k - 1]).abs() > ONSET * level[k].max(level[k - 1]);
     let tonal_at = |from: usize, to: usize, back: usize| {
         let (mut sum, mut count) = (0f32, 0usize);
-        let (mut steady_sum, mut steady) = (0f32, 0usize);
         for i in from..to {
             let (a, b) = (&chroma[i], &chroma[i - back]);
             if a.iter().all(|v| *v == 0.0) || b.iter().all(|v| *v == 0.0) {
                 continue;
             }
-            let cos = a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-            sum += cos;
+            sum += a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
             count += 1;
-            if !jumps(i) && !jumps(i - back) {
-                steady_sum += cos;
-                steady += 1;
-            }
         }
         // Too little tone to tell: the level decides alone.
         if count * 2 < to - from {
             return 0.0;
         }
-        // Compared on the steady blocks, when there are enough of them.
-        if steady * 2 >= count {
-            1.0 - steady_sum / steady as f32
-        } else {
-            1.0 - sum / count as f32
-        }
+        1.0 - sum / count as f32
     };
     // A true period is rarely a whole number of blocks: a copy `back` blocks earlier sits up
     // to half a block off, and twice that two periods back. So the best of the nearby offsets.
