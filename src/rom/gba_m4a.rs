@@ -67,11 +67,10 @@ fn song_header(rom: &[u8], at: usize) -> Option<u8> {
     (0..tracks as usize).all(|t| u32_at(rom, at + 8 + t * 4).and_then(|p| offset(rom, p)).is_some()).then_some(tracks)
 }
 
-/// The song table, read entry by entry until an entry stops looking like one. Empty slots
-/// (headers with no tracks) are left out of `songs`; the numbers of the rest are kept.
-pub fn song_table(rom: &[u8]) -> Option<SongTable> {
-    let routine = find_select_song(rom)?;
-    let table = offset(rom, u32_at(rom, routine + TABLE_POINTER_AT)?)?;
+/// The song table at `table`, read entry by entry until an entry stops looking like one.
+/// Empty slots (headers with no tracks) are left out of `songs`; the numbers of the rest are
+/// kept.
+fn read_table(rom: &[u8], table: usize) -> SongTable {
     let mut songs = Vec::new();
     for n in 0..MAX_SONGS {
         let at = table + n * 8;
@@ -86,7 +85,54 @@ pub fn song_table(rom: &[u8]) -> Option<SongTable> {
             None => break,
         }
     }
-    Some(SongTable { offset: table, songs })
+    SongTable { offset: table, songs }
+}
+
+/// The song table: from the engine's song-select routine where the ROM has the usual build of
+/// it, else by the table's own shape.
+pub fn song_table(rom: &[u8]) -> Option<SongTable> {
+    let from_code = find_select_song(rom).and_then(|r| offset(rom, u32_at(rom, r + TABLE_POINTER_AT)?)).map(|t| read_table(rom, t));
+    match from_code {
+        Some(t) if t.songs.len() >= MIN_SONGS => Some(t),
+        other => find_by_shape(rom).or(other),
+    }
+}
+
+/// A table found by shape has at least this many songs; fewer is likely chance.
+const MIN_SONGS: usize = 4;
+
+/// Whether an entry at `at` looks like a song table entry: a pointer to a song header (or an
+/// empty one), then the music player number twice, small.
+fn entry_shape(rom: &[u8], at: usize) -> bool {
+    let Some(e) = rom.get(at..at + 8) else { return false };
+    let player = u16::from_le_bytes([e[4], e[5]]);
+    if player >= 32 || e[4..6] != e[6..8] {
+        return false;
+    }
+    u32_at(rom, at).and_then(|p| offset(rom, p)).is_some_and(|h| rom.get(h) == Some(&0) || song_header(rom, h).is_some())
+}
+
+/// The longest run of song-table entries in the ROM, for engines whose song-select routine was
+/// built differently (another SDK version or compiler).
+pub fn find_by_shape(rom: &[u8]) -> Option<SongTable> {
+    let mut best: Option<SongTable> = None;
+    let mut at = 0;
+    while at + 8 <= rom.len() {
+        if !entry_shape(rom, at) {
+            at += 4;
+            continue;
+        }
+        let table = read_table(rom, at);
+        let mut len = 0;
+        while entry_shape(rom, at + len * 8) && len < MAX_SONGS {
+            len += 1;
+        }
+        if table.songs.len() >= MIN_SONGS && best.as_ref().is_none_or(|b| table.songs.len() > b.songs.len()) {
+            best = Some(table);
+        }
+        at += len.max(1) * 8;
+    }
+    best
 }
 
 #[cfg(test)]
@@ -116,8 +162,9 @@ mod tests {
         put32(&mut rom, 0x1000, ROM_BASE + 0x2100);
         rom[0x1004] = 0;
         put32(&mut rom, 0x1008, ROM_BASE + empty as u32);
-        put32(&mut rom, 0x1010, ROM_BASE + 0x2200);
         rom[0x1014] = 1;
+        rom[0x1016] = 1;
+        put32(&mut rom, 0x1010, ROM_BASE + 0x2200);
         put32(&mut rom, 0x1018, 0xFFFF_FFFF);
         rom
     }
@@ -130,6 +177,23 @@ mod tests {
         assert_eq!(table.offset, 0x1000);
         let numbers: Vec<(u32, u8, u16)> = table.songs.iter().map(|s| (s.number, s.tracks, s.player)).collect();
         assert_eq!(numbers, [(0, 2, 0), (2, 1, 1)]);
+    }
+
+    #[test]
+    fn a_table_is_found_by_shape_without_the_usual_routine() {
+        let mut rom = rom();
+        rom[0x100..0x100 + SELECT_SONG.len()].fill(0);
+        // Two songs is too few to trust by shape alone; add more.
+        for n in 3..8u32 {
+            let at = 0x1000 + n as usize * 8;
+            put32(&mut rom, at, ROM_BASE + 0x2200);
+            rom[at + 4] = 1;
+            rom[at + 6] = 1;
+        }
+        put32(&mut rom, 0x1040, 0xFFFF_FFFF);
+        let table = song_table(&rom).unwrap();
+        assert_eq!(table.offset, 0x1000);
+        assert_eq!(table.songs.len(), 7);
     }
 
     #[test]
