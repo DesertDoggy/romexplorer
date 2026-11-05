@@ -166,16 +166,22 @@ pub struct Served {
     pub converted: bool,
     /// Why the original went out when a conversion was asked for.
     pub note: Option<String>,
+    /// The whole body, when it is held in memory (`api::audio_ram`); `path` is then only
+    /// where it would be on disk.
+    pub body: Option<super::audio_ram::Bytes>,
 }
 
 fn original(path: PathBuf, note: Option<String>) -> Served {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    Served { mime: crate::database::media_store::mime_for(&path), path, ext, converted: false, note }
+    Served { mime: crate::database::media_store::mime_for(&path), path, ext, converted: false, note, body: None }
 }
 
-/// `<media>/_audio_cache/`.
-pub fn cache_dir(app: &App) -> PathBuf {
-    app.paths.media_dir().join("_audio_cache")
+/// Where converted audio is kept on disk: `_audio_cache` in the tier 1 cache folder when one
+/// is set (a fast drive set aside for caches), else in the app's media folder.
+pub async fn cache_dir(app: &App) -> PathBuf {
+    let media = app.paths.media_dir();
+    let tier1 = crate::database::media_store::Roots::load(&app.pool, &media).await.ok().and_then(|r| r.tier1);
+    tier1.unwrap_or(media).join("_audio_cache")
 }
 
 /// `<id>-<what>-<source mtime>.<ext>`: a source file that changed gets a new name, and the
@@ -238,7 +244,7 @@ pub async fn serve(app: &App, id: u64, query: &FileQuery) -> Result<Served> {
         },
     };
 
-    let dir = cache_dir(app);
+    let dir = cache_dir(app).await;
     let cached = dir.join(cache_name(id, target, row.try_get("last_modified")?));
     let _turn = CONVERTING.lock().await;
     if !cached.is_file() {
@@ -260,7 +266,7 @@ pub async fn serve(app: &App, id: u64, query: &FileQuery) -> Result<Served> {
         // Recently used is what the cap keeps.
         let _ = std::fs::File::options().write(true).open(&cached).and_then(|f| f.set_modified(std::time::SystemTime::now()));
     }
-    Ok(Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached, converted: true, note: None })
+    Ok(Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached, converted: true, note: None, body: None })
 }
 
 /// The cache's size cap when the setting is unset, in MiB.

@@ -2581,5 +2581,8 @@
   "A serial in the file name, per platform:": "파일 이름의 시리얼 사용(플랫폼별):",
   "(as above)": "(위 설정대로)",
   "use it": "사용",
-  "don't use it": "사용 안 함"
+  "don't use it": "사용 안 함",
+  "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.": "재생용으로 디코딩한 ROM 음악을 메모리에 둘 크기입니다. 0 = 사용 안 함. 가득 차면 가장 오래 재생하지 않은 곡부터 디스크의 변환된 오디오 캐시로 옮깁니다.",
+  "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).": "재생용으로 디코딩한 ROM 음악을 메모리에 둘 크기(MiB, 기본 256, 0 = 사용 안 함).",
+  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "가득 차면 가장 오래 재생하지 않은 곡부터 디스크의 변환된 오디오 캐시로 옮기며, 다시 디코딩하지 않고 그곳에서 읽습니다."
 }

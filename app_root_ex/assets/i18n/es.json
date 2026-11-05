@@ -2581,5 +2581,8 @@
   "A serial in the file name, per platform:": "Un número de serie en el nombre del archivo, por plataforma:",
   "(as above)": "(como arriba)",
   "use it": "usarlo",
-  "don't use it": "no usarlo"
+  "don't use it": "no usarlo",
+  "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.": "Memoria reservada para la música de ROM decodificada para reproducir; 0 = desactivada. Cuando se llena, las pistas reproducidas hace más tiempo pasan a la caché de audio convertido en disco.",
+  "Memory kept for ROM music decoded for playing, in MiB (default 256; 0 = off).": "Memoria reservada para la música de ROM decodificada para reproducir, en MiB (256 por defecto; 0 = desactivada).",
+  "When it is full, the least recently played tracks move to the converted-audio cache on disk instead of being decoded again.": "Cuando se llena, las pistas reproducidas hace más tiempo pasan a la caché de audio convertido en disco en lugar de volver a decodificarse."
 }
