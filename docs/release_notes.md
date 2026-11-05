@@ -60,6 +60,8 @@ replacing a build.
   A track cut at its playlist length fades out instead of stopping dead.
 - Normalise in the player now also turns quiet ROM tracks up, as far as they go without
   clipping.
+- The player can crossfade: the next track fades in while the current one fades out. The
+  overlap is set in ms next to Normalise (2000 to begin with, 0 for off).
 
 # romexplorer 0.1.8 (alpha)
 

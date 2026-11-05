@@ -23,6 +23,10 @@
 // A ROM track (`rom`) is decoded by the server anyway, so normalise asks for it levelled
 // there (`?level=1`), quiet tracks turned up as far as their peaks allow.
 //
+// Crossfade (ms, 2000 to begin with, 0 = off, remembered here too): the next track starts that long before the
+// current one ends, fading in while the current one fades out -- also on next / previous. It
+// takes a second `<audio>` element for the overlap, faded by its volume like normalise.
+//
 // Shuffle is on to begin with. Playback starts by itself; where the browser refuses to
 // start audio without a click, the bar simply shows "play" and waits.
 (function () {
@@ -36,7 +40,8 @@
     #rx-player-bar .rxp-time { font-variant-numeric:tabular-nums; opacity:.75; }
     #rx-player-bar input.rxp-seek { flex:0 1 180px; min-width:60px; }
     #rx-player-bar input.rxp-vol { width:70px; }
-    #rx-player-bar label.rxp-norm { display:flex; align-items:center; gap:3px; white-space:nowrap; opacity:.85; cursor:pointer; }
+    #rx-player-bar label.rxp-norm, #rx-player-bar label.rxp-xf { display:flex; align-items:center; gap:3px; white-space:nowrap; opacity:.85; cursor:pointer; }
+    #rx-player-bar label.rxp-xf input { width:64px; }
     #rx-player-list { position:fixed; top:96px; right:0; bottom:0; width:270px; overflow-y:auto; z-index:4; border-left:1px solid var(--line, #2b3040); background:var(--card, #171b26); font-size:12px; }
     #rx-player-list h4 { margin:0; padding:6px 8px; position:sticky; top:0; background:inherit; border-bottom:1px solid var(--line, #2b3040); }
     #rx-player-list div.rxp-row { padding:4px 8px; cursor:pointer; border-bottom:1px solid var(--line, #2b3040); }
@@ -61,7 +66,8 @@
   const recall = (key, fallback) => { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } };
   const remember = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* not remembered */ } };
   const state = { audio: null, tracks: [], order: [], at: 0, shuffle: true, bar: null, list: null, labels: {}, volume: 1, normalise: false, keep: false,
-    hidden: [], onHide: null, preview: null, undo: null };
+    hidden: [], onHide: null, preview: null, undo: null, crossfade: 0, fadeIn: 1, crossing: false, outgoing: new Set() };
+  const FADE_TICK_MS = 40;
 
   // The factor for one track: 1 unless normalising and the track is louder than the target.
   function gainFor(track) {
@@ -74,7 +80,39 @@
     return t.url + (t.url.indexOf('?') < 0 ? '?' : '&') + 'level=1';
   }
   function applyVolume() {
-    if (state.audio) state.audio.volume = Math.max(0, Math.min(1, state.volume * gainFor(current())));
+    if (state.audio) state.audio.volume = Math.max(0, Math.min(1, state.volume * gainFor(current()) * state.fadeIn));
+  }
+
+  // Ramps `step(f)` from f = 0 to 1 over `ms`, then calls `done`. Returns a cancel function.
+  function ramp(ms, each, done) {
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      const f = Math.min(1, (Date.now() - t0) / Math.max(1, ms));
+      each(f);
+      if (f >= 1) { clearInterval(timer); if (done) done(); }
+    }, FADE_TICK_MS);
+    return () => clearInterval(timer);
+  }
+
+  // The playing element fades out on its own and is dropped; the caller makes a new one.
+  function fadeOut(el, ms) {
+    const from = el.volume;
+    state.outgoing.add(el);
+    ramp(ms, f => { el.volume = Math.max(0, from * (1 - f)); }, () => { el.pause(); el.removeAttribute('src'); el.load(); state.outgoing.delete(el); });
+  }
+  function dropOutgoing() {
+    for (const el of state.outgoing) { el.pause(); el.removeAttribute('src'); }
+    state.outgoing.clear();
+  }
+
+  // The overlap for this change of track: the setting, but at most half the shorter track.
+  function overlapMs() {
+    const a = state.audio, t = current();
+    if (!state.crossfade || !a || a.paused || !(a.currentTime > 0)) return 0;
+    let ms = state.crossfade;
+    if (isFinite(a.duration) && a.duration > 0) ms = Math.min(ms, a.duration * 500);
+    if (t && t.duration_ms) ms = Math.min(ms, t.duration_ms / 2);
+    return Math.max(0, Math.floor(ms));
   }
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -153,8 +191,18 @@
     }
   }
 
-  function load(autoplay) {
+  function load(autoplay, overlap) {
     const t = current(); if (!t || !state.audio) return;
+    state.crossing = false;
+    if (autoplay && overlap > 0) {
+      // The old element fades out by itself; a fresh one fades in.
+      fadeOut(state.audio, overlap);
+      state.audio = makeAudio();
+      state.fadeIn = 0;
+      ramp(overlap, f => { state.fadeIn = f; applyVolume(); });
+    } else {
+      state.fadeIn = 1;
+    }
     state.audio.src = sourceOf(t);
     applyVolume();
     if (autoplay) state.audio.play().catch(() => paint());
@@ -167,12 +215,17 @@
     // After a hidden track played once, the list goes on from where it was.
     if (state.preview) { state.preview = null; delta = Math.max(0, delta); if (delta === 0) { load(autoplay); return; } }
     if (!state.tracks.length) { paint(); return; }
+    const overlap = overlapMs();
     state.at = (state.at + delta + state.order.length) % state.order.length;
-    load(autoplay);
+    load(autoplay, overlap);
   }
+
+  // Set by start(): a new `<audio>` element wired to the bar.
+  let makeAudio = () => new Audio();
 
   function stop() {
     if (state.audio) { state.audio.pause(); state.audio.removeAttribute('src'); state.audio.load(); }
+    dropOutgoing();
     if (state.bar) state.bar.remove();
     if (state.list) state.list.remove();
     document.body.classList.remove('rx-has-playlist');
@@ -210,6 +263,8 @@
     const stored = parseFloat(recall('rxplayer_volume', '1'));
     state.volume = isFinite(stored) ? Math.max(0, Math.min(1, stored)) : 1;
     state.normalise = recall('rxplayer_normalise', '0') === '1';
+    const xf = parseInt(recall('rxplayer_crossfade', '2000'), 10);
+    state.crossfade = isFinite(xf) && xf > 0 ? xf : 0;
 
     const bar = document.createElement('div'); bar.id = 'rx-player-bar';
     bar.innerHTML = `<button type="button" data-a="prev" title="${esc(L('previous'))}">⏮</button>
@@ -221,6 +276,7 @@
       ${state.onHide ? `<button type="button" data-a="hide" title="${esc(L("don't play this track on this page again"))}">🚫</button>` : ''}
       <input type="range" class="rxp-vol" min="0" max="100" value="${Math.round(state.volume * 100)}" title="${esc(L('volume'))}">
       <label class="rxp-norm" title="${esc(L('normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)'))}"><input type="checkbox" ${state.normalise ? 'checked' : ''}>${esc(L('normalise'))}</label>
+      <label class="rxp-xf" title="${esc(L('crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)'))}">${esc(L('crossfade'))} <input type="number" min="0" step="100" value="${state.crossfade}"> ms</label>
       <span class="rxp-title"></span>
       <input type="range" class="rxp-seek" min="0" max="1000" value="0" title="${esc(L('position'))}">
       <span class="rxp-time">0:00 / 0:00</span>`;
@@ -231,31 +287,50 @@
     state.list = list; renderList();
     document.body.classList.add('rx-has-playlist');
 
-    const audio = new Audio(); audio.preload = 'metadata';
-    state.audio = audio; state.bar = bar; state.list = list;
+    state.bar = bar; state.list = list;
     const seek = bar.querySelector('.rxp-seek'), time = bar.querySelector('.rxp-time');
     const volume = bar.querySelector('.rxp-vol'), normalise = bar.querySelector('.rxp-norm input');
+    const crossfade = bar.querySelector('.rxp-xf input');
     volume.addEventListener('input', () => { state.volume = volume.value / 100; remember('rxplayer_volume', state.volume); applyVolume(); });
     normalise.addEventListener('change', () => { state.normalise = normalise.checked; remember('rxplayer_normalise', state.normalise ? '1' : '0'); applyVolume(); });
+    crossfade.addEventListener('change', () => {
+      const v = Math.max(0, Math.floor(Number(crossfade.value) || 0));
+      crossfade.value = String(v); state.crossfade = v; remember('rxplayer_crossfade', v);
+    });
     let dragging = false;
-    audio.addEventListener('ended', () => step(1, true));
     // A track that will not load (moved, or a format this browser lacks) is skipped, once
     // round the list at most, so one bad file cannot stall the page.
     let failures = 0;
-    audio.addEventListener('error', () => { if (++failures < state.tracks.length) step(1, true); else paint(); });
-    audio.addEventListener('playing', () => { failures = 0; paint(); });
-    audio.addEventListener('pause', paint);
-    audio.addEventListener('timeupdate', () => {
-      const d = audio.duration || ((current() || {}).duration_ms || 0) / 1000;
-      time.textContent = clock(audio.currentTime) + ' / ' + clock(d);
-      if (!dragging && d > 0) seek.value = String(Math.round(audio.currentTime / d * 1000));
-    });
+    // Each element's events count only while it is the one playing: one fading out is done.
+    makeAudio = () => {
+      const audio = new Audio(); audio.preload = 'metadata';
+      const mine = f => (...args) => { if (state.audio === audio) f(...args); };
+      audio.addEventListener('ended', mine(() => { if (!state.crossing) step(1, true); }));
+      audio.addEventListener('error', mine(() => { if (++failures < state.tracks.length) step(1, true); else paint(); }));
+      audio.addEventListener('playing', mine(() => { failures = 0; paint(); }));
+      audio.addEventListener('pause', mine(paint));
+      audio.addEventListener('timeupdate', mine(() => {
+        const d = audio.duration || ((current() || {}).duration_ms || 0) / 1000;
+        time.textContent = clock(audio.currentTime) + ' / ' + clock(d);
+        if (!dragging && d > 0) seek.value = String(Math.round(audio.currentTime / d * 1000));
+        // Near the end: the next track starts now and the two overlap.
+        if (!state.crossing && state.crossfade > 0 && isFinite(audio.duration) && audio.duration > 0 && !audio.paused
+            && (audio.duration - audio.currentTime) * 1000 <= overlapMs()) {
+          state.crossing = true;
+          step(1, true);
+        }
+      }));
+      return audio;
+    };
+    const audio = makeAudio();
+    state.audio = audio;
     seek.addEventListener('input', () => { dragging = true; });
-    seek.addEventListener('change', () => { const d = audio.duration; if (isFinite(d) && d > 0) audio.currentTime = seek.value / 1000 * d; dragging = false; });
+    seek.addEventListener('change', () => { const a = state.audio; const d = a && a.duration; if (isFinite(d) && d > 0) a.currentTime = seek.value / 1000 * d; dragging = false; });
     bar.addEventListener('click', e => {
       const a = e.target && e.target.dataset && e.target.dataset.a; if (!a) return;
+      const audio = state.audio; if (!audio) return;
       if (a === 'play') { if (audio.paused) audio.play().catch(() => paint()); else audio.pause(); }
-      else if (a === 'stop') { audio.pause(); audio.currentTime = 0; }
+      else if (a === 'stop') { dropOutgoing(); audio.pause(); audio.currentTime = 0; }
       else if (a === 'next') step(1, true);
       else if (a === 'prev') step(-1, true);
       else if (a === 'mute') audio.muted = !audio.muted;

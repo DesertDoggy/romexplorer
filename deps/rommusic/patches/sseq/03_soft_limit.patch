@@ -1,0 +1,41 @@
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -8,6 +8,7 @@
+  * https://github.com/fincs/FSS
+  */
+ 
++#include <cmath>
+ #include "Player.h"
+ #include "common.h"
+ 
+@@ -184,6 +185,19 @@
+ 	this->Run();
+ }
+ 
++// Above the knee, peaks are bent towards full scale instead of cut off at it: a few loud songs
++// still sum past it after the mix gain, and a hard clamp there crackles.
++static inline int32_t SoftLimit(int32_t x)
++{
++	const int32_t knee = 0x5000;
++	const int32_t mag = x < 0 ? -x : x;
++	if (mag <= knee)
++		return x;
++	const double room = 0x7FFF - knee;
++	const int32_t bent = knee + static_cast<int32_t>(room * std::tanh((mag - knee) / room));
++	return x < 0 ? -bent : bent;
++}
++
+ static inline int32_t muldiv7(int32_t val, uint8_t mul)
+ {
+ 	return mul == 127 ? val : ((val * mul) >> 7);
+@@ -222,8 +236,8 @@
+ 			}
+ 		}
+ 
+-		leftChannel = (leftChannel * this->mixGain) >> 8;
+-		rightChannel = (rightChannel * this->mixGain) >> 8;
++		leftChannel = SoftLimit((leftChannel * this->mixGain) >> 8);
++		rightChannel = SoftLimit((rightChannel * this->mixGain) >> 8);
+ 		clamp(leftChannel, -0x8000, 0x7FFF);
+ 		clamp(rightChannel, -0x8000, 0x7FFF);
+ 

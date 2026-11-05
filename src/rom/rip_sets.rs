@@ -379,6 +379,9 @@ impl Plan {
 const CHECK_LISTED_MIN_MS: u32 = 60_000;
 /// How long a track with no length is listened to for a loop: two passes of a long one.
 const LISTEN_MS: u32 = 200_000;
+/// How long one still not heard to loop then is, for a loop of over a minute to be heard
+/// three times.
+const LONG_LISTEN_MS: u32 = 300_000;
 /// The fade of a listed length that gives none: a track cut there would stop dead.
 const LISTED_FADE_MS: u32 = 2_000;
 
@@ -406,7 +409,11 @@ fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, Strin
         return Ok(known);
     }
     let limit = own.map_or(LISTEN_MS, |o| o.0);
-    let found = match listen(emu, track, limit)? {
+    // A track with no length of its own is listened to longer when it is not heard to loop
+    // in the first stretch.
+    let limits: &[u32] = if own.is_some() { &[limit] } else { &[LISTEN_MS, LONG_LISTEN_MS] };
+    let limit = *limits.last().unwrap_or(&limit);
+    let found = match listen(emu, track, limits)? {
         Timing::Silent => None,
         Timing::Ends { ms } => {
             let ms = u32::try_from(ms).unwrap_or(u32::MAX);
@@ -461,18 +468,26 @@ fn fingerprint(file: &RipFile) -> u64 {
     h.finish()
 }
 
-/// Plays `track` through, unheard, for up to `limit_ms`, and says what its sound did.
-fn listen(emu: &mut Emu, track: u32, limit_ms: u32) -> Result<Timing, String> {
+/// Plays `track` through, unheard, and says what its sound did: up to the first of `limits_ms`,
+/// and on to the next while it runs on.
+fn listen(emu: &mut Emu, track: u32, limits_ms: &[u32]) -> Result<Timing, String> {
     // Silence is judged here, over a longer stretch than the player's own detection.
     emu.ignore_silence(true);
     emu.start(track, None)?;
     let mut ear = Listener::new(emu.sample_rate());
     let mut buf = vec![0i16; 8192];
-    while !emu.ended() && ear.played_ms() < u64::from(limit_ms) && !ear.fell_silent() {
-        emu.play(&mut buf)?;
-        ear.feed(&buf);
+    let mut heard = Timing::RunsOn;
+    for &limit in limits_ms {
+        while !emu.ended() && ear.played_ms() < u64::from(limit) && !ear.fell_silent() {
+            emu.play(&mut buf)?;
+            ear.feed(&buf);
+        }
+        heard = ear.finish(emu.ended());
+        if heard != Timing::RunsOn {
+            break;
+        }
     }
-    Ok(ear.finish(emu.ended()))
+    Ok(heard)
 }
 
 /// What a track's own data says about how to play it: `(length before any fade, fade,

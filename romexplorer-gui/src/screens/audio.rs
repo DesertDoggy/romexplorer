@@ -285,6 +285,7 @@ pub fn PagePlayer(query: String) -> Element {
             "previous": state::tr("previous"), "next": state::tr("next"), "stop": state::tr("stop"), "shuffle": state::tr("shuffle"),
             "mute": state::tr("mute"), "playlist": state::tr("playlist"), "position": state::tr("position"), "play / pause": state::tr("play / pause"),
             "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)"),
+            "crossfade": state::tr("crossfade"), "crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)": state::tr("crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)"),
         });
         // "Don't play this track" and "restore" come back here as messages, and are recorded
         // for this page's title.
