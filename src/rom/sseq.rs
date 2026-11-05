@@ -20,6 +20,7 @@ type OpenFn = unsafe extern "C" fn(*const u8, usize, u32, u32, *mut c_char, usiz
 type CloseFn = unsafe extern "C" fn(*mut c_void);
 type RenderFn = unsafe extern "C" fn(*mut c_void, *mut i16, usize) -> usize;
 type EndedFn = unsafe extern "C" fn(*mut c_void) -> i32;
+type TimingFn = unsafe extern "C" fn(*const u8, usize, u32, f64, *mut f64, *mut f64, *mut f64, *mut c_char, usize) -> i32;
 
 struct Api {
     _lib: Library,
@@ -28,6 +29,7 @@ struct Api {
     close: CloseFn,
     render: RenderFn,
     ended: EndedFn,
+    timing: TimingFn,
 }
 
 fn api() -> Option<&'static Api> {
@@ -42,6 +44,7 @@ fn api() -> Option<&'static Api> {
                 close: *lib.get(b"rsseq_close\0").ok()?,
                 render: *lib.get(b"rsseq_render\0").ok()?,
                 ended: *lib.get(b"rsseq_ended\0").ok()?,
+                timing: *lib.get(b"rsseq_timing\0").ok()?,
                 _lib: lib,
             })
         }
@@ -85,6 +88,31 @@ pub fn songs(sdat: &[u8]) -> Result<Vec<Song>, String> {
         return Err(error_text(&err));
     }
     Ok(out)
+}
+
+/// How a song runs, read from its sequence alone (no sound is made, so this is quick).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SongTiming {
+    /// Every track ends this many seconds in (notes may ring on a little after).
+    Ends(f64),
+    /// Repeats from `intro` seconds, every `period` seconds.
+    Loops { intro: f64, period: f64 },
+    /// Neither, in the time looked at.
+    Unknown,
+}
+
+/// Runs song `id` of `sdat` for up to `max_seconds` of song time and says how it runs.
+pub fn timing(sdat: &[u8], id: u32, max_seconds: f64) -> Result<SongTiming, String> {
+    let api = api().ok_or("the DS music player (rommusic) is not installed")?;
+    let mut err = [0 as c_char; 256];
+    let (mut end, mut intro, mut period) = (0f64, 0f64, 0f64);
+    let r = unsafe { (api.timing)(sdat.as_ptr(), sdat.len(), id, max_seconds, &mut end, &mut intro, &mut period, err.as_mut_ptr(), err.len()) };
+    match r {
+        0 => Ok(SongTiming::Ends(end)),
+        1 => Ok(SongTiming::Loops { intro, period }),
+        2 => Ok(SongTiming::Unknown),
+        _ => Err(error_text(&err)),
+    }
 }
 
 /// One song, playing.
@@ -289,7 +317,28 @@ pub(crate) mod tests {
             p.render(&mut buf).unwrap();
         }
         assert!(p.ended());
+        match timing(&sdat, 0, 60.0).unwrap() {
+            SongTiming::Ends(t) => assert!((1.1..1.4).contains(&t), "{t}"),
+            other => panic!("{other:?}"),
+        }
         assert!(Player::open(&sdat, 7, 32_000).is_err());
         assert!(songs(&sdat[..40]).is_err());
+    }
+
+    #[test]
+    fn a_song_that_jumps_back_loops() {
+        if !available() {
+            return;
+        }
+        // An intro note of a beat, then a beat's note and half a beat's rest, jumped back to.
+        let seq = [0x81, 0x00, 60, 100, 48, 64, 100, 48, 0x80, 24, 0x94, 5, 0, 0];
+        let sdat = sdat_with(&seq, "SEQ_BGM_LOOP");
+        match timing(&sdat, 0, 60.0).unwrap() {
+            SongTiming::Loops { intro, period } => {
+                assert!((0.7..0.8).contains(&period), "{period}");
+                assert!((0.45..0.55).contains(&intro), "{intro}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

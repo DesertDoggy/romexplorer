@@ -31,9 +31,31 @@ const SAME_LOCAL: f32 = 0.18;
 /// The least that is compared to accept a loop: the last this many ms (or a whole period,
 /// when that is longer) against the same a period back and two periods back.
 const COMPARED_MS: u64 = 8_000;
+/// A loop at least this long may be accepted from one period's match, when two do not fit in
+/// what was rendered.
+const LONG_LOOP_MS: u64 = 30_000;
 /// How much the level must move within what is compared for periods to be told apart
 /// (standard deviation over the mean).
 const MIN_MOVEMENT: f32 = 0.12;
+/// Silence after a fade-out: a track that stops the moment its fade does sounds cut off.
+pub const FADE_TAIL_MS: u64 = 500;
+/// How far a fade-out falls, in dB, before the silence.
+const FADE_DEPTH_DB: f32 = 60.0;
+
+/// The gain of a fade-out of `fade` frames followed by `tail` frames of silence, `remaining`
+/// frames before the end. Even in decibels, as an ear hears a fade (and as gme fades): a
+/// straight line in amplitude stays loud until the last moment.
+pub fn fade_gain(remaining: u64, fade: u64, tail: u64) -> f32 {
+    if remaining <= tail {
+        return 0.0;
+    }
+    let into = remaining - tail;
+    if fade == 0 || into >= fade {
+        return 1.0;
+    }
+    10f32.powf(-FADE_DEPTH_DB / 20.0 * (1.0 - into as f32 / fade as f32))
+}
+
 /// Band edges, in Hz.
 const LOW_HZ: f32 = 300.0;
 const HIGH_HZ: f32 = 2_500.0;
@@ -145,6 +167,8 @@ impl Listener {
 /// period over which the envelope's end repeats twice over, and how far back that goes.
 fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(usize, usize, f32)> {
     let n = blocks.len();
+    // Shorter than this, a loop is always checked over two periods.
+    let long = (LONG_LOOP_MS / (1000 / u64::from(BLOCKS_PER_SECOND))) as usize;
     let min_period = min_period.max(1);
     if n < compared + 2 * min_period {
         return None;
@@ -168,11 +192,17 @@ fn find_loop(blocks: &[Block], min_period: usize, compared: usize) -> Option<(us
     };
     let (period, score) = (min_period..=(n - compared) / 2).find_map(|p| {
         let w = p.max(compared);
-        if w + 2 * p > n || !moves(n - w, n) {
+        if w + p > n || !moves(n - w, n) {
             return None;
         }
-        let d = (n - w..n).map(|i| differ(i, i - p).max(differ(i, i - 2 * p))).sum::<f32>() / w as f32;
-        (d < SAME).then_some((p, d))
+        if w + 2 * p <= n {
+            let d = (n - w..n).map(|i| differ(i, i - p).max(differ(i, i - 2 * p))).sum::<f32>() / w as f32;
+            return (d < SAME).then_some((p, d));
+        }
+        // A loop too long to be heard three times in what was rendered: one whole period
+        // matching the one before it, closely, will do.
+        let d = (n - w..n).map(|i| differ(i, i - p)).sum::<f32>() / w as f32;
+        (p >= long && d < SURE).then_some((p, d))
     })?;
     // Walking back from the end, the loop starts after the last window that does not match
     // its copy one period later.
@@ -258,6 +288,30 @@ mod tests {
         });
         match listen(phrase, 40).finish(false) {
             Timing::Loops { loop_ms, .. } => assert!((5_900..=6_100).contains(&loop_ms), "{loop_ms}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fade_falls_evenly_in_decibels_then_is_silent() {
+        assert_eq!(fade_gain(2_000, 1_000, 100), 1.0);
+        assert!((fade_gain(600, 1_000, 100) - 10f32.powf(-1.5)).abs() < 1e-4);
+        assert!(fade_gain(101, 1_000, 100) < 0.0011);
+        assert_eq!(fade_gain(50, 1_000, 100), 0.0);
+    }
+
+    #[test]
+    fn a_long_loop_heard_not_quite_three_times_is_found() {
+        let mut x = 9u32;
+        let notes: Vec<(f32, f32)> = (0..40).map(|_| {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (200.0 + (x >> 16) as f32 % 800.0, 0.2 + ((x >> 8) & 0xFF) as f32 / 320.0)
+        }).collect();
+        match listen(melody(&notes, RATE as usize), 100).finish(false) {
+            Timing::Loops { loop_ms, start_ms, .. } => {
+                assert!((39_900..=40_100).contains(&loop_ms), "{loop_ms}");
+                assert!(start_ms < 1_000, "{start_ms}");
+            }
             other => panic!("{other:?}"),
         }
     }

@@ -40,6 +40,12 @@ const SSEQ_LISTEN_MS: u64 = 120_000;
 const SSEQ_RUN_ON_MS: u64 = 150_000;
 /// How a looping DS song fades out.
 const SSEQ_FADE_MS: u64 = 8_000;
+/// How far into a song its sequence is followed to find its loop: past any intro and two
+/// passes of the longest loop.
+const SSEQ_TIMING_MAX_S: f64 = 900.0;
+/// A loop shorter than this is not taken from the sequence (a pulse, not the song's loop): the
+/// song is listened to instead.
+const SSEQ_MIN_LOOP_MS: u64 = 1_000;
 /// The largest sound archive read: they are tens of megabytes at most.
 pub const MAX_SDAT_BYTES: u64 = 128 << 20;
 
@@ -206,13 +212,21 @@ impl PcmStream for AgbPcm {
     }
 }
 
-/// The songs in a DS sound archive (`sdat`, stored at `path` on data view `view`), timed by
-/// listening to each once ([`super::track_timing`]): a song that ends is played to its end, one
-/// that repeats plays its loop twice and fades.
+/// The songs in a DS sound archive (`sdat`, stored at `path` on data view `view`). A song whose
+/// sequence jumps back plays that loop twice and fades; the rest are listened to once
+/// ([`super::track_timing`]) and play to where they end.
 pub fn index_sdat(sdat: &[u8], view: u32, path: &str, t: &Thresholds) -> Vec<FoundTrack> {
     let Ok(songs) = super::sseq::songs(sdat) else { return Vec::new() };
     let mut found = Vec::with_capacity(songs.len());
     for song in songs {
+        // The sequence says where it jumps back, exactly and without playing it.
+        if let Ok(super::sseq::SongTiming::Loops { intro, period }) = super::sseq::timing(sdat, song.id, SSEQ_TIMING_MAX_S) {
+            let (intro, lp) = ((intro * 1000.0) as u64, (period * 1000.0) as u64);
+            if lp >= SSEQ_MIN_LOOP_MS {
+                found.push(sseq_track(&song, view, path, t, (intro + 2 * lp, SSEQ_FADE_MS, true, intro, lp)));
+                continue;
+            }
+        }
         let Ok(mut player) = super::sseq::Player::open(sdat, song.id, SSEQ_MEASURE_RATE) else { continue };
         let mut ear = super::track_timing::Listener::new(SSEQ_MEASURE_RATE);
         let mut buf = vec![0i16; 4096];
@@ -228,28 +242,34 @@ pub fn index_sdat(sdat: &[u8], view: u32, path: &str, t: &Thresholds) -> Vec<Fou
             super::track_timing::Timing::Loops { start_ms, loop_ms, .. } => (start_ms + 2 * loop_ms, SSEQ_FADE_MS, true, start_ms, loop_ms),
             super::track_timing::Timing::RunsOn => (SSEQ_RUN_ON_MS, SSEQ_FADE_MS, true, 0, 0),
         };
-        let duration_ms = if looping && lp > 0 { intro + lp } else { body };
-        let name = if song.name.is_empty() { format!("Song {}", song.id) } else { song.name.clone() };
-        let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
-        let kind = classify(&shape, &format!("{path}/{name}"), t);
-        let rate = u64::from(PLAY_RATE);
-        found.push(FoundTrack {
-            location: TrackLocation::RomSong { engine: format!("{NDS_SSEQ}@{view}@{body}@{fade}@{path}"), song: song.id },
-            name,
-            kind,
-            sample_rate: PLAY_RATE,
-            channels: 2,
-            duration_ms,
-            looping,
-            loop_start: intro * rate / 1000,
-            loop_end: (intro + lp) * rate / 1000,
-            codec: "DS sequence".into(),
-            format: "SSEQ".into(),
-            bytes: 0,
-            video: false,
-        });
+        found.push(sseq_track(&song, view, path, t, (body, fade, looping, intro, lp)));
     }
     found
+}
+
+/// The index entry of DS song `song`, played `body` ms then faded over `fade`; `intro`/`lp`
+/// where it loops.
+fn sseq_track(song: &super::sseq::Song, view: u32, path: &str, t: &Thresholds, (body, fade, looping, intro, lp): (u64, u64, bool, u64, u64)) -> FoundTrack {
+    let duration_ms = if looping && lp > 0 { intro + lp } else { body };
+    let name = if song.name.is_empty() { format!("Song {}", song.id) } else { song.name.clone() };
+    let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
+    let kind = classify(&shape, &format!("{path}/{name}"), t);
+    let rate = u64::from(PLAY_RATE);
+    FoundTrack {
+        location: TrackLocation::RomSong { engine: format!("{NDS_SSEQ}@{view}@{body}@{fade}@{path}"), song: song.id },
+        name,
+        kind,
+        sample_rate: PLAY_RATE,
+        channels: 2,
+        duration_ms,
+        looping,
+        loop_start: intro * rate / 1000,
+        loop_end: (intro + lp) * rate / 1000,
+        codec: "DS sequence".into(),
+        format: "SSEQ".into(),
+        bytes: 0,
+        video: false,
+    }
 }
 
 /// A DS song, played for `left` more frames, the last `fade` of them fading out.
@@ -257,6 +277,8 @@ struct SseqPcm {
     player: super::sseq::Player,
     left: u64,
     fade: u64,
+    /// Silent frames after the fade.
+    tail: u64,
     /// Stops at the song's own end too.
     stop_at_end: bool,
 }
@@ -278,12 +300,13 @@ impl PcmStream for SseqPcm {
         let frames = self.left.min(4096) as usize;
         let mut buf = vec![0i16; frames * 2];
         self.player.render(&mut buf)?;
-        for (i, pair) in buf.chunks_exact_mut(2).enumerate() {
-            let remaining = self.left - i as u64;
-            if remaining <= self.fade && self.fade > 0 {
-                let g = remaining as f32 / self.fade as f32;
-                for s in pair {
-                    *s = (f32::from(*s) * g) as i16;
+        if self.fade > 0 {
+            for (i, pair) in buf.chunks_exact_mut(2).enumerate() {
+                let g = super::track_timing::fade_gain(self.left - i as u64, self.fade, self.tail);
+                if g < 1.0 {
+                    for s in pair {
+                        *s = (f32::from(*s) * g) as i16;
+                    }
                 }
             }
         }
@@ -303,7 +326,8 @@ fn open_sseq(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>,
     let sdat = sdat_bytes(path, view, inner)?;
     let player = super::sseq::Player::open(&sdat, song, PLAY_RATE)?;
     let rate = u64::from(PLAY_RATE);
-    Ok(Box::new(SseqPcm { player, left: (body + fade) * rate / 1000, fade: fade * rate / 1000, stop_at_end: fade == 0 }))
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(SseqPcm { player, left: (body + fade + tail) * rate / 1000, fade: fade * rate / 1000, tail: tail * rate / 1000, stop_at_end: fade == 0 }))
 }
 
 /// A sound archive's bytes, kept for the next song of the same game, like [`read_rom`].
