@@ -42,6 +42,132 @@ enum Mode {
     SrIndY,
 }
 
+
+// How cycle counts grow: +1 with a 16-bit accumulator (M1), +2 for a read-modify-write on a
+// 16-bit accumulator (M2), +1 with 16-bit index registers (X1), +1 when the direct page is not
+// page aligned (DP), +1 when an index crosses a page or index registers are 16-bit (IX), +1 in
+// native mode (NAT).
+const M1: u8 = 1;
+const M2: u8 = 2;
+const X1: u8 = 4;
+const DP: u8 = 8;
+const IX: u8 = 16;
+const NAT: u8 = 32;
+
+/// Base cycles (8-bit registers, aligned direct page, emulation mode) and the rules above, per
+/// opcode, from the 65816 data sheet. Checked against the SingleStepTests suite.
+const CYCLES: [(u8, u8); 256] = {
+    let mut t = [(2u8, 0u8); 256];
+    // The ALU group: ORA AND EOR ADC (STA) LDA CMP SBC share their addressing modes.
+    let alu: [(u8, u8, u8); 15] = [
+        (0x01, 6, M1 | DP), (0x03, 4, M1), (0x05, 3, M1 | DP), (0x07, 6, M1 | DP), (0x09, 2, M1), (0x0D, 4, M1),
+        (0x0F, 5, M1), (0x11, 5, M1 | DP | IX), (0x12, 5, M1 | DP), (0x13, 7, M1), (0x15, 4, M1 | DP),
+        (0x17, 6, M1 | DP), (0x19, 4, M1 | IX), (0x1D, 4, M1 | IX), (0x1F, 5, M1),
+    ];
+    let mut g = 0;
+    while g < 8 {
+        let mut i = 0;
+        while i < alu.len() {
+            let (low, c, r) = alu[i];
+            t[(g * 0x20 + low as usize)] = (c, r);
+            i += 1;
+        }
+        g += 1;
+    }
+    // STA writes without the index penalty, taking the extra cycle always.
+    t[0x91] = (6, M1 | DP);
+    t[0x99] = (5, M1);
+    t[0x9D] = (5, M1);
+    t[0x89] = (2, M1);
+    // Read-modify-write: ASL ROL LSR ROR (dp, abs, dp,X, abs,X), INC DEC, TSB TRB.
+    let rmw: [u8; 8] = [0x00, 0x20, 0x40, 0x60, 0xC0, 0xE0, 0, 0];
+    let mut i = 0;
+    while i < 6 {
+        let b = rmw[i] as usize;
+        t[b + 0x06] = (5, M2 | DP);
+        t[b + 0x0E] = (6, M2);
+        t[b + 0x16] = (6, M2 | DP);
+        t[b + 0x1E] = (7, M2);
+        i += 1;
+    }
+    t[0x04] = (5, M2 | DP);
+    t[0x0C] = (6, M2);
+    t[0x14] = (5, M2 | DP);
+    t[0x1C] = (6, M2);
+    // BIT, STZ
+    t[0x24] = (3, M1 | DP);
+    t[0x2C] = (4, M1);
+    t[0x34] = (4, M1 | DP);
+    t[0x3C] = (4, M1 | IX);
+    t[0x64] = (3, M1 | DP);
+    t[0x74] = (4, M1 | DP);
+    t[0x9C] = (4, M1);
+    t[0x9E] = (5, M1);
+    // Index loads, stores, compares.
+    t[0xA0] = (2, X1);
+    t[0xA2] = (2, X1);
+    t[0xA4] = (3, X1 | DP);
+    t[0xA6] = (3, X1 | DP);
+    t[0xAC] = (4, X1);
+    t[0xAE] = (4, X1);
+    t[0xB4] = (4, X1 | DP);
+    t[0xB6] = (4, X1 | DP);
+    t[0xBC] = (4, X1 | IX);
+    t[0xBE] = (4, X1 | IX);
+    t[0x84] = (3, X1 | DP);
+    t[0x86] = (3, X1 | DP);
+    t[0x8C] = (4, X1);
+    t[0x8E] = (4, X1);
+    t[0x94] = (4, X1 | DP);
+    t[0x96] = (4, X1 | DP);
+    t[0xC0] = (2, X1);
+    t[0xE0] = (2, X1);
+    t[0xC4] = (3, X1 | DP);
+    t[0xE4] = (3, X1 | DP);
+    t[0xCC] = (4, X1);
+    t[0xEC] = (4, X1);
+    // Branches and jumps.
+    t[0x80] = (2, 0);
+    t[0x82] = (4, 0);
+    t[0x4C] = (3, 0);
+    t[0x5C] = (4, 0);
+    t[0x6C] = (5, 0);
+    t[0x7C] = (6, 0);
+    t[0xDC] = (6, 0);
+    t[0x20] = (6, 0);
+    t[0xFC] = (8, 0);
+    t[0x22] = (8, 0);
+    t[0x60] = (6, 0);
+    t[0x6B] = (6, 0);
+    t[0x40] = (6, NAT);
+    t[0x00] = (7, NAT);
+    t[0x02] = (7, NAT);
+    // Stack.
+    t[0x08] = (3, 0);
+    t[0x28] = (4, 0);
+    t[0x48] = (3, M1);
+    t[0x68] = (4, M1);
+    t[0xDA] = (3, X1);
+    t[0x5A] = (3, X1);
+    t[0xFA] = (4, X1);
+    t[0x7A] = (4, X1);
+    t[0x8B] = (3, 0);
+    t[0xAB] = (4, 0);
+    t[0x0B] = (4, 0);
+    t[0x2B] = (5, 0);
+    t[0x4B] = (3, 0);
+    t[0xF4] = (5, 0);
+    t[0xD4] = (6, DP);
+    t[0x62] = (6, 0);
+    // The rest of the two- and three-cycle ones.
+    t[0xC2] = (3, 0);
+    t[0xE2] = (3, 0);
+    t[0xEB] = (3, 0);
+    t[0xCB] = (4, 0);
+    t[0xDB] = (4, 0);
+    t
+};
+
 #[derive(Debug, Clone)]
 pub struct Cpu {
     pub a: u16,
@@ -59,6 +185,10 @@ pub struct Cpu {
     pub waiting: bool,
     /// Stopped for good (STP).
     pub stopped: bool,
+    /// Set while an instruction runs: its index crossed a page, or its branch was taken
+    /// (2 when that also crossed a page in emulation mode). They cost a cycle each.
+    pub page_crossed: bool,
+    pub branch_taken: u8,
 }
 
 impl Cpu {
@@ -66,7 +196,7 @@ impl Cpu {
     pub fn reset(bus: &mut impl Bus) -> Self {
         let lo = bus.read(0xFFFC) as u16;
         let hi = bus.read(0xFFFD) as u16;
-        Self { a: 0, x: 0, y: 0, s: 0x01FF, d: 0, dbr: 0, pbr: 0, pc: lo | hi << 8, p: M | X | I, e: true, waiting: false, stopped: false }
+        Self { a: 0, x: 0, y: 0, s: 0x01FF, d: 0, dbr: 0, pbr: 0, pc: lo | hi << 8, p: M | X | I, e: true, waiting: false, stopped: false, page_crossed: false, branch_taken: 0 }
     }
 
     fn m8(&self) -> bool {
@@ -212,6 +342,12 @@ impl Cpu {
         r
     }
 
+    fn indexed(&mut self, base: u32, index: u16) -> u32 {
+        let a = base.wrapping_add(index as u32) & 0xFF_FFFF;
+        self.page_crossed = a & 0xFFFF00 != base & 0xFFFF00;
+        a
+    }
+
     /// The operand's address (immediate modes never come here).
     fn address(&mut self, bus: &mut impl Bus, mode: Mode) -> u32 {
         match mode {
@@ -239,7 +375,7 @@ impl Cpu {
             Mode::DpIndY => {
                 let p = self.d.wrapping_add(self.fetch(bus) as u16);
                 let ptr = self.dp_pointer(bus, p);
-                self.data(ptr).wrapping_add(self.y as u32) & 0xFF_FFFF
+                self.indexed(self.data(ptr), self.y)
             }
             Mode::DpLong => {
                 let p = self.d.wrapping_add(self.fetch(bus) as u16);
@@ -255,11 +391,11 @@ impl Cpu {
             }
             Mode::AbsX => {
                 let a = self.fetch16(bus);
-                self.data(a).wrapping_add(self.x as u32) & 0xFF_FFFF
+                self.indexed(self.data(a), self.x)
             }
             Mode::AbsY => {
                 let a = self.fetch16(bus);
-                self.data(a).wrapping_add(self.y as u32) & 0xFF_FFFF
+                self.indexed(self.data(a), self.y)
             }
             Mode::Long => self.fetch24(bus),
             Mode::LongX => self.fetch24(bus).wrapping_add(self.x as u32) & 0xFF_FFFF,
@@ -421,7 +557,9 @@ impl Cpu {
     fn branch(&mut self, bus: &mut impl Bus, taken: bool) {
         let off = self.fetch(bus) as i8;
         if taken {
-            self.pc = self.pc.wrapping_add(off as i16 as u16);
+            let to = self.pc.wrapping_add(off as i16 as u16);
+            self.branch_taken = if self.e && to & 0xFF00 != self.pc & 0xFF00 { 2 } else { 1 };
+            self.pc = to;
         }
     }
 
@@ -462,11 +600,43 @@ impl Cpu {
         }
     }
 
-    /// Runs one instruction. Returns roughly how many CPU cycles it took.
+    /// Runs one instruction. Returns the CPU cycles it took, as the 65816 counts them.
     pub fn step(&mut self, bus: &mut impl Bus) -> u32 {
         if self.stopped || self.waiting {
             return 2;
         }
+        let (m16, x16, native, dp_offset) = (!self.m8(), !self.x8(), !self.e, self.d & 0xFF != 0);
+        self.page_crossed = false;
+        self.branch_taken = 0;
+        let op = bus.read((self.pbr as u32) << 16 | self.pc as u32);
+        let moved = self.run(bus);
+        if op == 0x44 || op == 0x54 {
+            return moved;
+        }
+        let (base, rules) = CYCLES[op as usize];
+        let mut n = base as u32;
+        if rules & M1 != 0 && m16 {
+            n += 1;
+        }
+        if rules & M2 != 0 && m16 {
+            n += 2;
+        }
+        if rules & X1 != 0 && x16 {
+            n += 1;
+        }
+        if rules & DP != 0 && dp_offset {
+            n += 1;
+        }
+        if rules & IX != 0 && (x16 || self.page_crossed) {
+            n += 1;
+        }
+        if rules & NAT != 0 && native {
+            n += 1;
+        }
+        n + self.branch_taken as u32
+    }
+
+    fn run(&mut self, bus: &mut impl Bus) -> u32 {
         let op = self.fetch(bus);
         let m16 = !self.m8();
         let x16 = !self.x8();
@@ -1038,7 +1208,7 @@ mod tests {
 
     /// Runs the public SingleStepTests 65816 suite (one JSON file per opcode and mode, from
     /// github.com/SingleStepTests/65816) when `W65816_TESTS` names a folder holding its files.
-    /// Registers and memory are compared; cycle timing is not.
+    /// Registers, memory and cycle counts are compared.
     #[test]
     fn single_step_suite() {
         let Ok(dir) = std::env::var("W65816_TESTS") else { return };
@@ -1067,14 +1237,15 @@ mod tests {
                 let mut cpu = Cpu {
                     a: n(i, "a") as u16, x: n(i, "x") as u16, y: n(i, "y") as u16, s: n(i, "s") as u16, d: n(i, "d") as u16,
                     dbr: n(i, "dbr") as u8, pbr: n(i, "pbr") as u8, pc: n(i, "pc") as u16, p: n(i, "p") as u8, e: n(i, "e") != 0,
-                    waiting: false, stopped: false,
+                    waiting: false, stopped: false, page_crossed: false, branch_taken: 0,
                 };
                 // The suite's starting states leave bits a real CPU cannot hold in them.
                 if cpu.e {
                     cpu.s = 0x0100 | (cpu.s & 0xFF);
                 }
                 cpu.fix_p();
-                cpu.step(&mut bus);
+                let cycles = cpu.step(&mut bus) as usize;
+                let want_cycles = t["cycles"].as_array().unwrap().len();
                 let regs = [
                     ("a", cpu.a as u64), ("x", cpu.x as u64), ("y", cpu.y as u64), ("s", cpu.s as u64), ("d", cpu.d as u64),
                     ("dbr", cpu.dbr as u64), ("pbr", cpu.pbr as u64), ("pc", cpu.pc as u64), ("p", cpu.p as u64), ("e", cpu.e as u64),
@@ -1086,6 +1257,9 @@ mod tests {
                     if got != want {
                         wrong.push(format!("[{addr:#08x}]={got:#04x} want {want:#04x}"));
                     }
+                }
+                if cycles != want_cycles {
+                    wrong.push(format!("cycles={cycles} want {want_cycles}"));
                 }
                 if !wrong.is_empty() {
                     failed += 1;
