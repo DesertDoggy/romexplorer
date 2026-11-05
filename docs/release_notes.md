@@ -51,7 +51,8 @@ replacing a build.
 - ROM music decoded for playing is kept in memory (Settings › Audio, 256 MiB by default).
   When that is full, tracks move to the audio cache on disk, which now uses the tier 1 cache
   folder when one is set.
-- Wii discs are read too (ISO, RVZ, WIA, GCZ and WBFS).
+- Wii discs are read too (ISO, RVZ, WIA, GCZ and WBFS), and Wii U titles: .wua, and
+  .wud/.wux or downloaded title folders when their key is beside them.
 - Normalise in the player now also turns quiet ROM tracks up, as far as they go without
   clipping.
 

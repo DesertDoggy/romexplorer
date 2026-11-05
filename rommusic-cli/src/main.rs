@@ -45,6 +45,8 @@ Options:
   --start           SNES: press Start now and then while it runs, for games whose music
                     begins after the title screen
   --list            only list the tracks
+  --no-pause        don't wait for Enter at the end (it only waits in a window opened
+                    for a dropped file)
   -h, --help        this text
   -V, --version     the version"
     )
@@ -80,6 +82,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--all" => a.all = true,
             "--list" => a.list = true,
             "--start" => a.press_start = true,
+            "--no-pause" => {}
             "--cd" => a.rate = Some(44_100),
             "--dvd" => (a.rate, a.bits) = (Some(48_000), if a.bits == 0 { 24 } else { a.bits }),
             "--hires" => (a.rate, a.bits) = (Some(96_000), if a.bits == 0 { 24 } else { a.bits }),
@@ -158,6 +161,7 @@ fn main() {
 
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    NO_PAUSE.store(args.iter().any(|a| a == "--no-pause"), std::sync::atomic::Ordering::Relaxed);
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{}", usage());
         return finish(0);
@@ -207,6 +211,8 @@ fn one(input: &Path, a: &Args, library: Option<&rip_match::Library>) -> Result<(
     if let Some(max) = a.max {
         plan.jobs.truncate(max);
     }
+    // After the filter and --max, so the originals are those of the tracks written.
+    originals(&mut plan, a);
     if plan.jobs.is_empty() {
         return Err(plan.why_none.unwrap_or_else(|| if a.all { "no music found".into() } else { "no background music found (--all lists jingles and sound effects too)".into() }));
     }
@@ -312,7 +318,6 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
             plan.jobs.extend(tracks(input, found));
         }
         plan.jobs.extend(tracks(input, rip_sets::index(input, t, progress)));
-        originals(&mut plan, a);
         return Ok(plan);
     }
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -322,12 +327,10 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         let me = input.to_string_lossy().into_owned();
         let found: Vec<FoundTrack> = rip_sets::index_set(&parent, t, progress).into_iter().filter(|f| matches!(&f.location, TrackLocation::Rip { path, .. } if *path == me)).collect();
         plan.jobs.extend(tracks(Path::new(""), found));
-        originals(&mut plan, a);
         return Ok(plan);
     }
     if rom_audio::may_hold_audio(input) {
         plan.jobs.extend(tracks(input, rom_audio::index_rom(input, t, progress)?));
-        originals(&mut plan, a);
         return Ok(plan);
     }
     let member = archive_format(input).and_then(|f| main_member(input, f));
@@ -336,7 +339,6 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         let found = rip_sets::index_set(input, t, progress);
         if !found.is_empty() {
             plan.jobs.extend(tracks(Path::new(""), found));
-            originals(&mut plan, a);
             return Ok(plan);
         }
     }
@@ -351,7 +353,6 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
             plan.jobs.extend(tracks(Path::new(""), rip_sets::index_set(&set, t, progress)));
         }
         if !plan.jobs.is_empty() {
-            originals(&mut plan, a);
             return Ok(plan);
         }
     }
@@ -502,6 +503,8 @@ fn render(job: &Job, a: &Args, album: &str, number: usize, total: usize, out: &P
         .tag("TRACKTOTAL", total)
         .tag("COMMENT", format!("ROM music ({source}){}", if to != from { format!(", resampled from {from} Hz") } else { String::new() }))
         .tag("ENCODER", format!("rommusic {VERSION}"));
+    // A file left by an earlier run (or by another input with the same name) is replaced.
+    let _ = std::fs::remove_file(out);
     let mut writer = flac_codec::encode::FlacSampleWriter::create(out, options, to, a.bits, u8::try_from(channels).map_err(|_| "too many channels")?, None).map_err(|e| format!("create {}: {e}", out.display()))?;
     writer.write(&samples).map_err(|e| format!("FLAC: {e}"))?;
     writer.finalize().map_err(|e| format!("FLAC: {e}"))?;
@@ -528,8 +531,14 @@ fn clean_path(path: &str) -> PathBuf {
 
 /// Dropping files on rommusic opens a console that closes as soon as it ends: keep it open
 /// until Enter so what happened can be read.
+static NO_PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn finish(code: i32) -> i32 {
-    if owns_console() {
+    use std::io::IsTerminal;
+    // Only a console opened for this run, read and written by a person: not a shell's, not
+    // a pipe or a redirect, and not with --no-pause.
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive && !NO_PAUSE.load(std::sync::atomic::Ordering::Relaxed) && owns_console() {
         print!("\nPress Enter to close...");
         let _ = std::io::stdout().flush();
         let _ = std::io::stdin().read_line(&mut String::new());

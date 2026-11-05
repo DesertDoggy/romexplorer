@@ -109,6 +109,10 @@ type ZarWriteFn = unsafe extern "C" fn(*mut c_void, *const u8, usize) -> c_int;
 type ZarFinishFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_char, usize) -> c_int;
 type ZarAbortFn = unsafe extern "C" fn(*mut c_void);
 type ReadFileFn = unsafe extern "C" fn(*const c_char, *const c_char, u64, *mut u8, usize, *mut usize, *mut u64, *mut c_char, usize) -> c_int;
+type ReaderOpenFn = unsafe extern "C" fn(*const c_char, *const u8, *const c_char, *mut c_char, usize) -> *mut c_void;
+type ReaderListFn = unsafe extern "C" fn(*mut c_void, FileFn, *mut c_void) -> c_int;
+type ReaderReadFn = unsafe extern "C" fn(*mut c_void, *const c_char, u64, *mut u8, usize, *mut usize, *mut u64) -> c_int;
+type ReaderCloseFn = unsafe extern "C" fn(*mut c_void);
 
 struct Api {
     // Kept so the function pointers below stay valid.
@@ -127,6 +131,8 @@ struct Api {
     zar_stream: WuaStreamFn,
     /// Added after ABI version 2 without a bump: `None` from a library built before it.
     read_file: Option<ReadFileFn>,
+    /// `cemuwua_reader_*`, added the same way: `None` from a library built before them.
+    reader: Option<(ReaderOpenFn, ReaderListFn, ReaderReadFn, ReaderCloseFn)>,
 }
 
 fn find_library() -> Option<PathBuf> {
@@ -161,7 +167,15 @@ fn api() -> Option<&'static Api> {
             let zar_abort = *lib.get::<ZarAbortFn>(b"cemuwua_zar_abort").ok()?;
             let zar_stream = *lib.get::<WuaStreamFn>(b"cemuwua_zar_stream").ok()?;
             let read_file = lib.get::<ReadFileFn>(b"cemuwua_read_file").ok().map(|f| *f);
-            Some(Api { _lib: lib, create, title_info, wua_titles, wua_manifest, wua_stream, zar_create, zar_dir, zar_file, zar_write, zar_finish, zar_abort, zar_stream, read_file })
+            let reader = (|| {
+                Some((
+                    *lib.get::<ReaderOpenFn>(b"cemuwua_reader_open").ok()?,
+                    *lib.get::<ReaderListFn>(b"cemuwua_reader_list").ok()?,
+                    *lib.get::<ReaderReadFn>(b"cemuwua_reader_read").ok()?,
+                    *lib.get::<ReaderCloseFn>(b"cemuwua_reader_close").ok()?,
+                ))
+            })();
+            Some(Api { _lib: lib, create, title_info, wua_titles, wua_manifest, wua_stream, zar_create, zar_dir, zar_file, zar_write, zar_finish, zar_abort, zar_stream, read_file, reader })
         }
     })
     .as_ref()
@@ -357,6 +371,73 @@ pub fn read_file(archive: &Path, inner: &str, max: usize) -> Result<Option<Vec<u
     check(code, &error, &archive.display().to_string())?;
     out.truncate(got);
     Ok(Some(out))
+}
+
+/// A title's files read where they are (`cemuwua_reader_*`): a `.wua`, a `.wud`/`.wux` with
+/// its key (`key`, then `keys_txt`, then a `<image>.key` beside it), or a NUS/CDN folder.
+/// For playing the music inside a title without unpacking it.
+pub struct TitleReader {
+    handle: *mut c_void,
+    read: ReaderReadFn,
+    list: ReaderListFn,
+    close: ReaderCloseFn,
+}
+
+// The library takes one call at a time on a reader (it locks), so it can be shared.
+unsafe impl Send for TitleReader {}
+unsafe impl Sync for TitleReader {}
+
+impl TitleReader {
+    pub fn open(path: &Path, key: Option<[u8; 16]>, keys_txt: Option<&Path>) -> Result<Self> {
+        let api = api().ok_or_else(unavailable)?;
+        let (open, list, read, close) = api.reader.ok_or_else(|| Error { status: Status::Unavailable, message: "the Wii U reader (cemuwua) is older than this build; rebuild it (deps/cemu/scripts/build.sh)".into() })?;
+        let c = c_path(path)?;
+        let keys = c_opt(keys_txt)?;
+        let mut error = [0u8; ERROR_LEN];
+        let handle = unsafe {
+            open(c.as_ptr(), key.as_ref().map_or(std::ptr::null(), |k| k.as_ptr()), keys.as_ref().map_or(std::ptr::null(), |k| k.as_ptr()), error.as_mut_ptr() as *mut c_char, error.len())
+        };
+        if handle.is_null() {
+            let message = CStr::from_bytes_until_nul(&error).ok().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{} could not be opened", path.display()));
+            let status = if message.contains("key") { Status::Key } else { Status::Open };
+            return Err(Error { status, message });
+        }
+        Ok(Self { handle, read, list, close })
+    }
+
+    /// Every file: its path from the title's root, `/`-separated, and its size.
+    pub fn files(&self) -> Result<Vec<(String, u64)>> {
+        unsafe extern "C" fn each(path: *const c_char, size: u64, user: *mut c_void) -> c_int {
+            guarded(1, || {
+                let out = unsafe { &mut *(user as *mut Vec<(String, u64)>) };
+                out.push((unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned(), size));
+                0
+            })
+        }
+        let mut out: Vec<(String, u64)> = Vec::new();
+        let code = unsafe { (self.list)(self.handle, each, &mut out as *mut _ as *mut c_void) };
+        check(code, &[0], "the title's files")?;
+        Ok(out)
+    }
+
+    /// Up to `buf.len()` bytes of `inner` from `offset`: the bytes read and the file's size,
+    /// or `None` when there is no such file.
+    pub fn read_at(&self, inner: &str, offset: u64, buf: &mut [u8]) -> Result<Option<(usize, u64)>> {
+        let name = CString::new(inner).map_err(|_| Error { status: Status::Args, message: format!("{inner} has a NUL in its name") })?;
+        let (mut got, mut size) = (0usize, 0u64);
+        let code = unsafe { (self.read)(self.handle, name.as_ptr(), offset, buf.as_mut_ptr(), buf.len(), &mut got, &mut size) };
+        if Status::from_code(code) == Some(Status::NotFound) {
+            return Ok(None);
+        }
+        check(code, &[0], inner)?;
+        Ok(Some((got, size)))
+    }
+}
+
+impl Drop for TitleReader {
+    fn drop(&mut self) {
+        unsafe { (self.close)(self.handle) };
+    }
 }
 
 /// `romexplorer.json`: what a `.wua` written here holds, and what it was made from.

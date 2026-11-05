@@ -13,7 +13,8 @@
 //! | ISO, BIN, IMG, GCM, XISO | the image, as a filesystem |
 //! | RVZ, WIA, GCZ, WBFS | the image through Dolphin's reader; a Wii disc's game partition decrypted by it |
 //! | CSO, ZSO | the ISO inside |
-//! | a folder (PS3, Vita, Wii U dumps) | its files |
+//! | WUA; WUD, WUX and NUS title folders with their key | the title's files through Cemu's code ([`super::cemu_wrapper::TitleReader`]) |
+//! | a folder (PS3, Vita, extracted Wii U dumps) | its files |
 //!
 //! Files are handed to vgmstream ([`super::vgmstream`]) by extension first, then by content:
 //! whatever it opens is a track, and a bank holding many sounds gives one track per subsong.
@@ -211,6 +212,8 @@ pub struct OpenedRom {
     pub cdda: Vec<(u32, DiscView)>,
     /// A folder dump.
     pub folder: Option<PathBuf>,
+    /// A Wii U title (`.wua`, or a `.wud`/`.wux` or NUS folder with its key), read in place.
+    pub title: Option<Arc<super::cemu_wrapper::TitleReader>>,
 }
 
 struct ChdBytes(ChdReader);
@@ -242,7 +245,7 @@ fn extension(path: &Path) -> String {
 /// ROM files [`open_rom`] can find audio in: disc images and their sheets, and the DS / 3DS
 /// cartridges, which carry a filesystem. Other cartridges hold sequenced music only, and
 /// archives are not read yet.
-pub const DISC_EXTENSIONS: [&str; 18] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "cso", "zso", "nds", "dsi", "3ds", "cci"];
+pub const DISC_EXTENSIONS: [&str; 21] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "wua", "wud", "wux", "cso", "zso", "nds", "dsi", "3ds", "cci"];
 
 /// Whether [`index_rom`] is worth running on `path`: a folder dump or a disc image.
 pub fn may_hold_audio(path: &Path) -> bool {
@@ -251,8 +254,12 @@ pub fn may_hold_audio(path: &Path) -> bool {
 
 /// Opens `path` (a ROM file, a cue/gdi sheet, or a folder dump) for reading its audio.
 pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
+    // A Wii U title folder as downloaded (title.tmd and encrypted .app files).
+    if path.is_dir() && path.join("title.tmd").is_file() {
+        return open_wiiu(path);
+    }
     if path.is_dir() {
-        return Ok(OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: Some(path.to_path_buf()) });
+        return Ok(OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: Some(path.to_path_buf()), title: None });
     }
     match extension(path).as_str() {
         "chd" => open_chd(path),
@@ -264,16 +271,17 @@ pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
                 return open_wii(path);
             }
             let size = reader.info().map_err(|e| e.to_string())?.data_size;
-            Ok(OpenedRom { data: vec![DiscView::new(Box::new(DolphinBytes(reader)), size)], cdda: Vec::new(), folder: None })
+            Ok(OpenedRom { data: vec![DiscView::new(Box::new(DolphinBytes(reader)), size)], cdda: Vec::new(), folder: None, title: None })
         }
         "iso" | "gcm" if is_wii_iso(path) => open_wii(path),
+        "wua" | "wud" | "wux" => open_wiiu(path),
         "cso" | "zso" => {
             let reader = super::cso::CsoReader::open(path).map_err(|e| e.to_string())?;
             let size = reader.size();
-            Ok(OpenedRom { data: vec![DiscView::new(Box::new(reader), size)], cdda: Vec::new(), folder: None })
+            Ok(OpenedRom { data: vec![DiscView::new(Box::new(reader), size)], cdda: Vec::new(), folder: None, title: None })
         }
         "zip" | "7z" | "rar" => Err("audio in zip/7z archives is not read yet".into()),
-        _ => Ok(OpenedRom { data: vec![whole_file(path)?], cdda: Vec::new(), folder: None }),
+        _ => Ok(OpenedRom { data: vec![whole_file(path)?], cdda: Vec::new(), folder: None, title: None }),
     }
 }
 
@@ -291,7 +299,18 @@ fn is_wii_iso(path: &Path) -> bool {
 fn open_wii(path: &Path) -> Result<OpenedRom, String> {
     let reader = super::dolphin_wrapper::DiscReader::open_wii_game(path, None).map_err(|e| format!("the Wii disc's game partition: {e}"))?;
     let size = reader.info().map_err(|e| e.to_string())?.data_size;
-    Ok(OpenedRom { data: vec![DiscView::wii_partition(Box::new(DolphinBytes(reader)), size)], cdda: Vec::new(), folder: None })
+    Ok(OpenedRom { data: vec![DiscView::wii_partition(Box::new(DolphinBytes(reader)), size)], cdda: Vec::new(), folder: None, title: None })
+}
+
+/// A Wii U title, read where it is through Cemu's code. A `.wua` holds its files decrypted;
+/// a `.wud`/`.wux` needs its disc key: a `.key` file beside it, or a `keys.txt` in its folder.
+/// No key is ever shipped with romexplorer.
+fn open_wiiu(path: &Path) -> Result<OpenedRom, String> {
+    use super::cemu_wrapper::{key_file_for, read_key_file, TitleReader};
+    let key = key_file_for(path).and_then(|k| read_key_file(&k));
+    let keys_txt = path.parent().map(|d| d.join("keys.txt")).filter(|p| p.is_file());
+    let reader = TitleReader::open(path, key, keys_txt.as_deref()).map_err(|e| e.to_string())?;
+    Ok(OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None, title: Some(Arc::new(reader)) })
 }
 
 fn open_chd(path: &Path) -> Result<OpenedRom, String> {
@@ -299,7 +318,7 @@ fn open_chd(path: &Path) -> Result<OpenedRom, String> {
     let info = reader.info().map_err(|e| e.to_string())?;
     if !info.is_cd || info.num_tracks == 0 {
         let size = info.logical_bytes;
-        return Ok(OpenedRom { data: vec![DiscView::new(Box::new(ChdBytes(reader)), size)], cdda: Vec::new(), folder: None });
+        return Ok(OpenedRom { data: vec![DiscView::new(Box::new(ChdBytes(reader)), size)], cdda: Vec::new(), folder: None, title: None });
     }
     let metadata = super::chd_info::read_chd_metadata(path).ok();
     let kind = if info.is_gdrom { SheetKind::Gdi } else { SheetKind::Cue };
@@ -307,7 +326,7 @@ fn open_chd(path: &Path) -> Result<OpenedRom, String> {
     let total = layout.total_bytes;
     let tracks: Arc<[_]> = layout.tracks.clone().into();
     let image = DiscView::new(Box::new(CdImageReader::new(reader, tracks)), total);
-    let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None };
+    let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None, title: None };
     let mut high_density = Vec::new();
     for (i, track) in layout.tracks.iter().enumerate() {
         if track.is_empty() {
@@ -392,7 +411,7 @@ fn gd_area(tracks: Vec<GdTrack>) -> Option<DiscView> {
 fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
     let sheet = Sheet::parse(path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None };
+    let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None, title: None };
     let mut opened: std::collections::HashMap<String, DiscView> = std::collections::HashMap::new();
     let mut high_density = Vec::new();
     for (i, track) in sheet.tracks.iter().enumerate() {
@@ -524,6 +543,62 @@ impl VgmSource for FolderSource {
         let rel = if dir.is_empty() { hit.file_name().to_string_lossy().into_owned() } else { format!("{dir}/{}", hit.file_name().to_string_lossy()) };
         Self::open_rel(&self.root, &rel).map(|s| Box::new(s) as Box<dyn VgmSource>)
     }
+}
+
+/// A file of a Wii U title, for vgmstream; reaches the files beside it through `listing`.
+#[derive(Clone)]
+struct TitleFileSource {
+    reader: Arc<super::cemu_wrapper::TitleReader>,
+    listing: Arc<Vec<(String, u64)>>,
+    path: String,
+    size: u64,
+}
+
+impl TitleFileSource {
+    fn open(reader: &Arc<super::cemu_wrapper::TitleReader>, listing: &Arc<Vec<(String, u64)>>, path: &str) -> Option<Self> {
+        let (path, size) = listing.iter().find(|(p, _)| p.eq_ignore_ascii_case(path))?.clone();
+        Some(Self { reader: reader.clone(), listing: listing.clone(), path, size })
+    }
+}
+
+impl VgmSource for TitleFileSource {
+    fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> usize {
+        match self.reader.read_at(&self.path, offset, dst) {
+            Ok(Some((n, _))) => n,
+            _ => 0,
+        }
+    }
+
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn open(&self, name: &str) -> Option<Box<dyn VgmSource>> {
+        let wanted = name.replace('\\', "/");
+        let wanted = wanted.trim_start_matches('/');
+        if let Some(found) = Self::open(&self.reader, &self.listing, wanted) {
+            return Some(Box::new(found));
+        }
+        let dir = self.path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        let file_name = vgmstream::file_name_of(wanted);
+        let rel = if dir.is_empty() { file_name.to_string() } else { format!("{dir}/{file_name}") };
+        Self::open(&self.reader, &self.listing, &rel).map(|s| Box::new(s) as Box<dyn VgmSource>)
+    }
+}
+
+/// The source for `file_path` in a folder dump or a Wii U title, when the ROM is one.
+fn tree_source(rom: &OpenedRom, file_path: &str) -> Option<Result<Box<dyn VgmSource>, String>> {
+    if let Some(root) = &rom.folder {
+        return Some(FolderSource::open_rel(root, file_path).map(|s| Box::new(s) as Box<dyn VgmSource>).ok_or_else(|| format!("{file_path} is not in the folder")));
+    }
+    let reader = rom.title.as_ref()?;
+    Some(
+        reader
+            .files()
+            .map_err(|e| e.to_string())
+            .and_then(|files| TitleFileSource::open(reader, &Arc::new(files), file_path).ok_or_else(|| format!("{file_path} is not in the title")))
+            .map(|s| Box::new(s) as Box<dyn VgmSource>),
+    )
 }
 
 /// Companion files (a bank's cue names, its header beside the data) read whole into memory
@@ -800,14 +875,22 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
             index_file(&shared, &file.path, file.size, n as u32, t, &mut out);
         }
     }
-    if let Some(root) = &rom.folder {
+    let tree: Option<(Vec<(String, u64)>, Box<dyn Fn(&str) -> Option<Box<dyn VgmSource>>>)> = if let Some(root) = rom.folder.clone() {
+        Some((folder_files(&root), Box::new(move |rel: &str| FolderSource::open_rel(&root, rel).map(|s| Box::new(s) as Box<dyn VgmSource>))))
+    } else if let Some(reader) = rom.title.clone() {
+        let listing = Arc::new(reader.files().map_err(|e| e.to_string())?);
+        Some(((*listing).clone(), Box::new(move |rel: &str| TitleFileSource::open(&reader, &listing, rel).map(|s| Box::new(s) as Box<dyn VgmSource>))))
+    } else {
+        None
+    };
+    if let Some((files, opener)) = &tree {
         let cache = Companions::default();
-        for (rel, size) in folder_files(root) {
+        for (rel, size) in files.iter().cloned() {
             let name = vgmstream::file_name_of(&rel);
             if size < MIN_FILE_BYTES {
                 continue;
             }
-            let file = || FolderSource::open_rel(root, &rel).map(|s| Box::new(s) as Box<dyn VgmSource>).unwrap_or_else(|| Box::new(vgmstream::MemorySource::new("missing", Vec::new())));
+            let file = || opener(&rel).unwrap_or_else(|| Box::new(vgmstream::MemorySource::new("missing", Vec::new())));
             if let Some(kind) = inner_archives::kind_of(&rel) {
                 progress(&rel);
                 index_members(&file, &rel, kind, 0, t, &mut out);
@@ -898,8 +981,8 @@ pub fn open_track(path: &Path, location: &TrackLocation, config: PlayConfig) -> 
         TrackLocation::File { view, path: inner, subsong } => {
             let member = inner_archives::split(inner);
             let file_path = member.map_or(inner.as_str(), |(base, _)| base);
-            let mut source: Box<dyn VgmSource> = if let Some(root) = &rom.folder {
-                Box::new(FolderSource::open_rel(root, file_path).ok_or_else(|| format!("{file_path} is not in the folder"))?)
+            let mut source: Box<dyn VgmSource> = if let Some(source) = tree_source(&rom, file_path) {
+                source?
             } else {
                 let disc = rom.data.get(*view as usize).ok_or_else(|| format!("the ROM has no data track {}", view + 1))?;
                 let listing = Arc::new(disc_files::list(disc)?.files);
@@ -925,8 +1008,8 @@ pub fn stored_file(path: &Path, location: &TrackLocation) -> Result<(String, Vec
     let TrackLocation::File { view, path: inner, .. } = location else { return Err("only a file on the disc is stored as one".into()) };
     let file_path = inner_archives::split(inner).map_or(inner.as_str(), |(base, _)| base).to_string();
     let rom = open_rom(path)?;
-    let mut source: Box<dyn VgmSource> = if let Some(root) = &rom.folder {
-        Box::new(FolderSource::open_rel(root, &file_path).ok_or_else(|| format!("{file_path} is not in the folder"))?)
+    let mut source: Box<dyn VgmSource> = if let Some(source) = tree_source(&rom, &file_path) {
+        source?
     } else {
         let disc = rom.data.get(*view as usize).ok_or_else(|| format!("the ROM has no data track {}", view + 1))?;
         let listing = Arc::new(disc_files::list(disc)?.files);
