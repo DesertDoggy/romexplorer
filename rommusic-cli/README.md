@@ -16,6 +16,8 @@ Linux and macOS). For each one it makes a folder named `<name> (music)` next to 
 - `index.txt`: each track's number, kind, length, whether it loops, and what it was decoded
   from.
 
+A file already there from an earlier run is replaced.
+
 Dropping always gives FLAC with the defaults below. Everything else needs the command line.
 
 **Command line.**
@@ -54,6 +56,7 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--seconds N` | SNES: how long the game runs before its music is taken (default 20). |
 | `--start` | SNES: press Start now and then while the game runs, for games whose music starts after the title screen. |
 | `--list` | Only list the tracks; write nothing. |
+| `--no-pause` | Don't wait for Enter at the end. It only waits in the window that opens for a dropped file. |
 | `-h`, `--help` / `-V`, `--version` | Help and version. |
 
 A rate other than `native` is resampled. Resampling does not add detail; it is for players
@@ -77,11 +80,13 @@ them.
 
 **Disc images and folders.** `.chd`, `.cue`/`.bin`, `.gdi`, `.iso`, `.img`, `.gcm`,
 `.rvz`, `.wia`, `.gcz`, `.wbfs`, `.cso`, `.zso`, XISO, and dumped game folders.
+Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is beside it (a
+`.key` file, or `keys.txt` in the same folder). No keys come with rommusic.
 
 | Source | Systems | Rate (native) |
 |---|---|---|
 | CD audio tracks | PlayStation, Saturn, Sega CD, PC Engine CD, Neo Geo CD, Dreamcast, and others | 44.1 kHz |
-| Music files on the disc, decoded by vgmstream, including ATRAC3, WMA and XMA | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360, and others | as stored |
+| Music files on the disc, decoded by vgmstream, including ATRAC3, WMA and XMA | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Wii U, Xbox, Xbox 360, and others | as stored |
 | Music inside common game archives on the disc (CRI CPK, AFS, GameCube .arc/.szs) | as above | as stored |
 
 **Cartridges.**
@@ -111,7 +116,8 @@ sets. A zipped disc image is not read; extract it first.
   own, but it can't be matched to a ROM.
 - Game Boy Advance games that use other sound engines.
 - Sequenced music on DS and 3DS.
-- Wii U, PS3, Vita and downloaded packages.
+- PS3, Vita and downloaded packages.
+- Wii U disc images without their key.
 - Encrypted 3DS images.
 
 ## Files beside it

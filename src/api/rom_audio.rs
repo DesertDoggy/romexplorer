@@ -294,7 +294,8 @@ fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
     let main = PathBuf::from(main_path);
     let ext = main.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     // A sheet names its own tracks; an archive's members are not files on disk.
-    if matches!(ext.as_str(), "cue" | "gdi") || main.is_dir() {
+    // A Wii U image counts its key file among its files, and is still one image.
+    if matches!(ext.as_str(), "cue" | "gdi" | "wua" | "wud" | "wux") || main.is_dir() {
         return Some(main);
     }
     if matches!(ext.as_str(), "zip" | "7z" | "rar") {

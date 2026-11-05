@@ -12,4 +12,6 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 - **Cartridges** are matched to your own rip sets by their content (`--rips`). Game Boy
   Advance music plays straight from the ROM, and SNES games give their title music without
   a rip.
+- **Wii and Wii U:** Wii discs, and Wii U .wua files, or .wud/.wux and downloaded titles
+  when their key is beside them.
 - The supported systems and formats are listed in README.md.
