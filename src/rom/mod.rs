@@ -14,6 +14,7 @@ pub mod inner_archives;
 pub mod disk_kind;
 pub mod dolphin_wrapper;
 pub mod extract;
+pub mod gba_m4a;
 pub mod gme;
 pub mod hash;
 pub mod models;
