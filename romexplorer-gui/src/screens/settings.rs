@@ -303,7 +303,7 @@ fn initial(key: &str, value: &Value) -> Value {
         "release_edition_order" => json!(edition_order(value)),
         "audio_dsd_cache_format" => if value.as_str() == Some("flac") { json!("flac") } else { json!("aac") },
         "audio_client_format" => if matches!(value.as_str(), Some("aac" | "xhe_aac" | "none")) { value.clone() } else { json!("aac") },
-        "audio_fallback" => if matches!(value.as_str(), Some("random" | "generic_bgm")) { value.clone() } else { json!("none") },
+        "audio_fallback" => if matches!(value.as_str(), Some("none" | "generic_bgm")) { value.clone() } else { json!("random") },
         "audio_title_sources" => if matches!(value.as_str(), Some("tagged" | "rom")) { value.clone() } else { json!("both") },
         "audio_rom_kinds" => if matches!(value.as_str(), Some("bgm_jingle" | "all")) { value.clone() } else { json!("bgm") },
         "audio_rom_not_owned" => if matches!(value.as_str(), Some("random" | "none")) { value.clone() } else { json!("related") },
