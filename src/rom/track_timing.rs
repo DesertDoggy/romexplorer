@@ -29,8 +29,13 @@ const SURE: f32 = 0.05;
 /// The same, for the short window that finds where the loop begins.
 const SAME_LOCAL: f32 = 0.25;
 /// How alike the notes of two stretches must be: one minus the mean cosine of their blocks'
-/// pitch content.
-const TONAL_SAME: f32 = 0.25;
+/// pitch content. Measured on NES music: true loops 0.007-0.037 over two periods, a bar
+/// repeating under a changing melody 0.067 and up.
+const TONAL_SAME: f32 = 0.05;
+/// A loop whose notes match this closely is [`Timing::Loops::sure`].
+const TONAL_SURE: f32 = 0.03;
+/// How alike the level must be for a period to be looked at: loose, since the notes decide.
+const LEVEL_PROPOSE: f32 = 0.20;
 /// That window, in ms.
 const LOCAL_WINDOW_MS: u64 = 3_000;
 /// The least that is compared to accept a loop: the last this many ms (or a whole period,
@@ -266,7 +271,7 @@ impl Listener {
         let block_ms = 1000 / u64::from(BLOCKS_PER_SECOND);
         let blocks = |ms: u64| ms.div_ceil(block_ms) as usize;
         match find_loop(&self.blocks, &self.chroma, blocks(MIN_LOOP_MS), blocks(COMPARED_MS)) {
-            Some((start, period, score)) => Timing::Loops { start_ms: start as u64 * block_ms, loop_ms: period as u64 * block_ms, sure: score < SURE },
+            Some((start, period, score)) => Timing::Loops { start_ms: start as u64 * block_ms, loop_ms: period as u64 * block_ms, sure: score < TONAL_SURE },
             None => Timing::RunsOn,
         }
     }
@@ -343,22 +348,22 @@ fn find_loop(blocks: &[Block], chroma: &[Chroma], min_period: usize, compared: u
         }
         if w + 2 * p <= n {
             let d = unlike(n - w, n, p).max(unlike(n - w, n, 2 * p));
-            if d >= SAME {
+            if d >= LEVEL_PROPOSE {
                 return None;
             }
             let t = tonal_unlike(n - w, n, p).max(tonal_unlike(n - w, n, 2 * p));
             log::debug!("loop candidate {p} blocks: level {d:.3}, notes {t:.3}");
-            return (t < TONAL_SAME).then_some((p, d));
+            return (t < TONAL_SAME).then_some((p, t));
         }
         // A loop too long to be heard three times in what was rendered: one whole period
         // matching the one before it, closely, will do.
         let d = unlike(n - w, n, p);
-        if p < long || d >= SURE {
+        if p < long || d >= SAME {
             return None;
         }
         let t = tonal_unlike(n - w, n, p);
         log::debug!("loop candidate {p} blocks (one period): level {d:.3}, notes {t:.3}");
-        (t < TONAL_SAME).then_some((p, d))
+        (t < TONAL_SAME).then_some((p, t))
     })?;
     // Walking back from the end, the loop starts where a stretch of a few seconds stops
     // matching its copy one period later.
