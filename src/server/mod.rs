@@ -892,8 +892,24 @@ async fn media_remote(State(s): State<Shared>, Path(id): Path<u64>, headers: Hea
 
 /// A track inside a ROM, decoded on its first play and then served from the audio cache
 /// (`api::rom_audio::serve`), with `Range` support like any other track.
-async fn audio_rom_file(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
-    let served = api::rom_audio::serve(&s.app, id).await?;
+/// `?level=1`: the player's "normalise" is on, so the track is brought to its loudness target.
+#[derive(Deserialize, Default)]
+struct LevelQuery {
+    #[serde(default)]
+    level: Option<u8>,
+}
+
+impl LevelQuery {
+    fn on(&self) -> bool {
+        self.level == Some(1)
+    }
+    fn suffix(&self) -> &'static str {
+        if self.on() { "?level=1" } else { "" }
+    }
+}
+
+async fn audio_rom_file(State(s): State<Shared>, Path(id): Path<u64>, Query(q): Query<LevelQuery>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    let served = api::rom_audio::serve(&s.app, id, q.on()).await?;
     match served.body {
         Some(body) => Ok(bytes_response(body, served.mime, &headers)),
         None => stream_file(&served.path, served.mime, Some(&headers)).await,
@@ -933,8 +949,8 @@ fn bytes_response(body: api::audio_ram::Bytes, mime: &str, headers: &HeaderMap) 
 }
 
 /// A ROM track of the main server's, streamed.
-async fn audio_remote_rom(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
-    relay_from_main(&s.app, &format!("/api/v1/audio/rom/{id}/file"), &headers).await
+async fn audio_remote_rom(State(s): State<Shared>, Path(id): Path<u64>, Query(q): Query<LevelQuery>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    relay_from_main(&s.app, &format!("/api/v1/audio/rom/{id}/file{}", q.suffix()), &headers).await
 }
 
 /// A track of the main server's audio library, streamed.

@@ -20,6 +20,8 @@
 // tracks down and never a quiet one up, so nothing clips; a track with no measurement plays
 // as it is. It is the element's volume that is scaled -- no Web Audio graph, which would
 // need the audio to be same-origin and would not survive a streamed track on a client.
+// A ROM track (`rom`) is decoded by the server anyway, so normalise asks for it levelled
+// there (`?level=1`), quiet tracks turned up as far as their peaks allow.
 //
 // Shuffle is on to begin with. Playback starts by itself; where the browser refuses to
 // start audio without a click, the bar simply shows "play" and waits.
@@ -66,6 +68,10 @@
     const lufs = track && track.loudness_lufs;
     if (!state.normalise || typeof lufs !== 'number' || !isFinite(lufs)) return 1;
     return Math.min(1, Math.pow(10, (TARGET_LUFS - lufs) / 20));
+  }
+  function sourceOf(t) {
+    if (!t.rom || !state.normalise) return t.url;
+    return t.url + (t.url.indexOf('?') < 0 ? '?' : '&') + 'level=1';
   }
   function applyVolume() {
     if (state.audio) state.audio.volume = Math.max(0, Math.min(1, state.volume * gainFor(current())));
@@ -149,7 +155,7 @@
 
   function load(autoplay) {
     const t = current(); if (!t || !state.audio) return;
-    state.audio.src = t.url;
+    state.audio.src = sourceOf(t);
     applyVolume();
     if (autoplay) state.audio.play().catch(() => paint());
     paint();
@@ -214,7 +220,7 @@
       <button type="button" data-a="mute" title="${esc(L('mute'))}">🔊</button>
       ${state.onHide ? `<button type="button" data-a="hide" title="${esc(L("don't play this track on this page again"))}">🚫</button>` : ''}
       <input type="range" class="rxp-vol" min="0" max="100" value="${Math.round(state.volume * 100)}" title="${esc(L('volume'))}">
-      <label class="rxp-norm" title="${esc(L('normalise: play every track at about the same loudness (loud tracks are turned down)'))}"><input type="checkbox" ${state.normalise ? 'checked' : ''}>${esc(L('normalise'))}</label>
+      <label class="rxp-norm" title="${esc(L('normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)'))}"><input type="checkbox" ${state.normalise ? 'checked' : ''}>${esc(L('normalise'))}</label>
       <span class="rxp-title"></span>
       <input type="range" class="rxp-seek" min="0" max="1000" value="0" title="${esc(L('position'))}">
       <span class="rxp-time">0:00 / 0:00</span>`;

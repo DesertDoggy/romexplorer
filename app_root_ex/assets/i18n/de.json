@@ -68,7 +68,7 @@
   "{n} title(s)": "{n} Titel",
   "volume": "Lautstärke",
   "normalise": "normalisieren",
-  "normalise: play every track at about the same loudness (loud tracks are turned down)": "normalisieren: alle Tracks etwa gleich laut abspielen (laute Tracks werden leiser gestellt)",
+  "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": "normalisieren: alle Tracks etwa gleich laut abspielen (laute Tracks leiser, leise ROM-Tracks lauter)",
   "What audio the browser cannot play (DSD, ALAC, AIFF) is converted to when it is played from this machine. Converted once, on first play, and cached. Without the AAC encoder library the lossless form is used either way.": "In welches Format Audio, das der Browser nicht abspielen kann (DSD, ALAC, AIFF), beim Abspielen von diesem Rechner konvertiert wird. Einmal beim ersten Abspielen konvertiert und zwischengespeichert. Ohne die AAC-Encoder-Bibliothek wird in jedem Fall das verlustfreie Format verwendet.",
   "AAC, 256 kbps: small, plays everywhere (default)": "AAC, 256 kbps: klein, läuft überall (Standard)",
   "FLAC: lossless, several times larger": "FLAC: verlustfrei, um ein Vielfaches größer",

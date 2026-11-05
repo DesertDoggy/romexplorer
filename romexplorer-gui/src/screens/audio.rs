@@ -284,7 +284,7 @@ pub fn PagePlayer(query: String) -> Element {
             "don't play this track on this page again": state::tr("don't play this track on this page again"),
             "previous": state::tr("previous"), "next": state::tr("next"), "stop": state::tr("stop"), "shuffle": state::tr("shuffle"),
             "mute": state::tr("mute"), "playlist": state::tr("playlist"), "position": state::tr("position"), "play / pause": state::tr("play / pause"),
-            "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down)"),
+            "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)"),
         });
         // "Don't play this track" and "restore" come back here as messages, and are recorded
         // for this page's title.

@@ -68,7 +68,7 @@
   "{n} title(s)": "타이틀 {n}개",
   "volume": "볼륨",
   "normalise": "음량 평준화",
-  "normalise: play every track at about the same loudness (loud tracks are turned down)": "음량 평준화: 모든 트랙을 비슷한 음량으로 재생합니다(큰 트랙은 줄임)",
+  "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": "음량 평준화: 모든 트랙을 비슷한 음량으로 재생합니다(큰 트랙은 줄이고 작은 ROM 트랙은 키움)",
   "What audio the browser cannot play (DSD, ALAC, AIFF) is converted to when it is played from this machine. Converted once, on first play, and cached. Without the AAC encoder library the lossless form is used either way.": "브라우저가 재생할 수 없는 오디오(DSD, ALAC, AIFF)를 이 기기에서 재생할 때 변환할 형식입니다. 처음 재생할 때 한 번 변환해 캐시합니다. AAC 인코더 라이브러리가 없으면 어느 쪽이든 무손실 형식을 사용합니다.",
   "AAC, 256 kbps: small, plays everywhere (default)": "AAC, 256 kbps: 작고 어디서나 재생됨(기본값)",
   "FLAC: lossless, several times larger": "FLAC: 무손실, 몇 배 더 큼",
