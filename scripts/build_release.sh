@@ -23,6 +23,7 @@
 #   5b. android   build_chdlite_android.sh --release --cli: the chdlite app (APK) and its
 #                 command-line tool (chdlite alone) for android/arm64, into release/<version>/dist/ as
 #                 chdlite-<v>-android-arm64[-unsigned].apk and chdlite-cli-<v>-android-arm64.zip.
+#                 Signed with CHDLITE_KEYSTORE / CHDLITE_KEY_ALIAS / CHDLITE_KEYSTORE_PASS set.
 #                 On whenever the Android SDK, NDK and JDK are found (see that script's
 #                 --check); skipped with the reason otherwise. Uses the libraries already in
 #                 app_root_ex/lib/android/arm64/ (build_chdlite_android.sh --natives makes them).
@@ -338,8 +339,9 @@ for t in "${TARGETS[@]}"; do
 done
 
 # --- 5b. android: the chdlite app and its command-line tools ------------------------------------
-# Unsigned unless chdlite/Dioxus.toml has an [android.signing] keystore (then Gradle writes
-# app-release.apk); the file name says which.
+# Signed when the environment names a keystore (CHDLITE_KEYSTORE and the rest: see
+# build_chdlite_android.sh), which writes app-release.apk; unsigned otherwise. The file
+# name says which.
 android_release() {
     bash "$SCRIPTS/build_chdlite_android.sh" --release --cli || return 1
     local cli_version apk_dir apk name cli_dir zip
@@ -352,6 +354,8 @@ android_release() {
     fi
     [[ -f "$apk" ]] || { echo "error: no release APK in $apk_dir" >&2; return 1; }
     mkdir -p "$DIST"
+    # Only one of the two names: a signed build replaces an earlier unsigned one, and back.
+    rm -f "$DIST/chdlite-$cli_version-android-arm64.apk"* "$DIST/chdlite-$cli_version-android-arm64-unsigned.apk"*
     cp -f "$apk" "$DIST/$name"
     # chdlite alone, one file with its libraries inside (chdcomp and the rest are the same program
     # under another name, which a phone's terminal has no use for); deflate (what a phone's file

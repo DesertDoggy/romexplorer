@@ -54,3 +54,7 @@ target/
 
 # Packages built by scripts/package.sh and scripts/build_release.sh.
 /release/
+
+# Android signing keys: never in the repo (keep them under C:\Android\keys or the like).
+*.jks
+*.keystore

@@ -11,8 +11,9 @@
 #               cemu, extract-xiso, beetle-psx-libretro) for android/arm64
 #               (scripts/build_native_deps.sh --only ...) and deploy them to
 #               app_root_ex/lib/android/arm64/. Needed once, and after a native change.
-#   --release   a release APK (`dx bundle`); signing comes from Dioxus.toml's
-#               [android.signing] if set there, otherwise the APK is unsigned.
+#   --release   a release APK (`dx bundle`), signed when the environment names a keystore
+#               (below), otherwise unsigned (app-release-unsigned.apk, which Android will
+#               not install).
 #   --cli       also the command-line tool for android/arm64 (cargo, the NDK's clang as
 #               linker, `bundled-natives`), into release/cli/<chdlite version>/android/arm64/
 #               -- run them from a terminal app on the device (Termux) or `adb shell`.
@@ -30,6 +31,10 @@
 #   * For --natives, everything scripts/build_native_deps.sh needs (on Windows: an MSYS2
 #     MINGW64 shell with cmake and ninja; see deps/README.md).
 #   * Network access on the first run: Gradle fetches itself and the Android build plugins.
+#   * To sign a release APK: CHDLITE_KEYSTORE (the .jks, kept outside the repo),
+#     CHDLITE_KEY_ALIAS and CHDLITE_KEYSTORE_PASS, plus CHDLITE_KEY_PASS when the key has a
+#     password of its own. The passwords go to apksigner through the environment
+#     (`env:`), never on a command line. Every update must be signed with the same key.
 #
 # The APK ends up under target/dx/chdlite-gui/<debug|release>/android/app/app/build/outputs/.
 # The command-line tool (--cli) under release/cli/<chdlite version>/android/arm64/.
@@ -191,6 +196,34 @@ if [[ "$copied" -gt 0 ]]; then
         (cd "$PROJECT" && ./gradlew.bat "$TASK")
     else
         (cd "$PROJECT" && sh ./gradlew "$TASK")
+    fi
+fi
+
+# --- signing --------------------------------------------------------------------------------------
+# Gradle leaves the release APK unsigned (dx sets up no signing config). zipalign, then
+# apksigner with the keystore the environment names, into app-release.apk; then verified.
+if [[ "$RELEASE" -eq 1 ]]; then
+    OUT="$PROJECT/app/build/outputs/apk/release"
+    # A signed APK from an earlier run must not outlive a build that was not signed.
+    rm -f "$OUT/app-release.apk" "$OUT/app-release-aligned.apk"
+    if [[ -n "${CHDLITE_KEYSTORE:-}" && -n "${CHDLITE_KEY_ALIAS:-}" && -n "${CHDLITE_KEYSTORE_PASS:-}" ]]; then
+        [[ -f "$CHDLITE_KEYSTORE" ]] || { echo "error: CHDLITE_KEYSTORE names no file: $CHDLITE_KEYSTORE" >&2; exit 1; }
+        BT="$(ls -1d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -1)"
+        BT="${BT%/}"
+        ZIPALIGN="$BT/zipalign"; [[ -f "$ZIPALIGN.exe" ]] && ZIPALIGN="$ZIPALIGN.exe"
+        APKSIGNER="$BT/apksigner"; [[ -f "$APKSIGNER.bat" ]] && APKSIGNER="$APKSIGNER.bat"
+        [[ -f "$ZIPALIGN" && -f "$APKSIGNER" ]] || { echo "error: no zipalign / apksigner in $BT" >&2; exit 1; }
+        "$ZIPALIGN" -f -p 4 "$OUT/app-release-unsigned.apk" "$OUT/app-release-aligned.apk"
+        KEY_PASS=()
+        [[ -n "${CHDLITE_KEY_PASS:-}" ]] && KEY_PASS=(--key-pass env:CHDLITE_KEY_PASS)
+        "$APKSIGNER" sign --ks "$CHDLITE_KEYSTORE" --ks-key-alias "$CHDLITE_KEY_ALIAS" --ks-pass env:CHDLITE_KEYSTORE_PASS "${KEY_PASS[@]}" \
+            --out "$OUT/app-release.apk" "$OUT/app-release-aligned.apk"
+        rm -f "$OUT/app-release-aligned.apk" "$OUT/app-release.apk.idsig"
+        "$APKSIGNER" verify --print-certs "$OUT/app-release.apk" | grep -E 'Signer.*certificate (DN|SHA-256)' || { echo "error: apksigner could not verify $OUT/app-release.apk" >&2; exit 1; }
+        echo "signed: $OUT/app-release.apk"
+    else
+        echo "note: the release APK is unsigned (Android will not install it). To sign it, set" >&2
+        echo "      CHDLITE_KEYSTORE, CHDLITE_KEY_ALIAS and CHDLITE_KEYSTORE_PASS (see --help)." >&2
     fi
 fi
 
