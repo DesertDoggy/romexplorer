@@ -177,7 +177,7 @@ fn run() -> i32 {
             return finish(2);
         }
     };
-    if !vgmstream::available() && !gme::available() {
+    if !vgmstream::available() && !rip_sets::available() {
         eprintln!("rommusic: the music libraries (rvgmstream, rommusic) were not found in lib/ beside rommusic");
         return finish(1);
     }
@@ -322,7 +322,7 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         return Ok(plan);
     }
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if gme::known_extension(&name) {
+    if rip_sets::is_music(&name) {
         // One rip file: its folder is its set, and only its own tracks are wanted.
         let parent = input.parent().map(Path::to_path_buf).unwrap_or_default();
         let me = input.to_string_lossy().into_owned();
