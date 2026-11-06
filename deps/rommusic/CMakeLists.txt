@@ -13,14 +13,20 @@
 #           (external/SSEQPlayer, WTFPL), with deps/rommusic/patches/sseq/ applied.
 #   rusf_*  N64 music from USF rips through lazyusf2 (external/lazyusf2, GPL-2.0+): the
 #           cached interpreter, no recompiler, so it builds the same everywhere.
+#   rpsx_*  PS1 and PS2 music from PSF/PSF2 rips through Highly Experimental
+#           (external/highly_experimental, GPL-3.0). It needs a PS2 BIOS, which the caller
+#           hands over from the user's own files; none is bundled.
+#   rsega_* Saturn and Dreamcast music from SSF/DSF rips through Highly Theoretical
+#           (external/highly_theoretical, GPL-3.0), with its C68K core (GPL-2.0+); the
+#           old Musashi copy it also carries is under MAME's licence and is not built.
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.24)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT and USF_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT and HT_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -104,17 +110,42 @@ set(USF_SOURCES ai/ai_controller api/callbacks debugger/dbg_decoder main/main ma
   si/pif si/si_controller usf/usf usf/barray usf/resampler vi/vi_controller)
 list(TRANSFORM USF_SOURCES PREPEND ${USF_ROOT}/)
 list(TRANSFORM USF_SOURCES APPEND .c)
-add_library(rommusic_usf OBJECT usf/rusf.c ${USF_SOURCES})
+add_library(rommusic_usf OBJECT usf/rusf.c usf/adler32.c ${USF_SOURCES})
 target_include_directories(rommusic_usf PRIVATE ${USF_ROOT})
 set_target_properties(rommusic_usf PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
-# Upstream's own build is this lax: old mupen64plus code.
-target_compile_options(rommusic_usf PRIVATE -w -fno-strict-aliasing)
+# Upstream's own build is this lax: old mupen64plus code. GCC 14 and later make a `return 0`
+# in a void function (rsp_hle/plugin.c) an error, which -fpermissive turns back into a warning.
+target_compile_options(rommusic_usf PRIVATE -w -fno-strict-aliasing -fpermissive)
+
+# --- Highly Experimental: the PS1/PS2 sound CPU and SPU -----------------------------
+set(HE_SOURCES psx ioptimer iop bios r3000dis r3000asm r3000 vfs spucore spu mkhebios)
+list(TRANSFORM HE_SOURCES PREPEND ${HE_ROOT}/Core/)
+list(TRANSFORM HE_SOURCES APPEND .c)
+add_library(rommusic_psx OBJECT psx/rpsx.c ${HE_SOURCES})
+target_include_directories(rommusic_psx PRIVATE ${HE_ROOT}/Core)
+target_compile_definitions(rommusic_psx PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN HAVE_STDINT_H)
+set_target_properties(rommusic_psx PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
+target_compile_options(rommusic_psx PRIVATE -w -fno-strict-aliasing)
+
+# --- Highly Theoretical: the Saturn SCSP and Dreamcast AICA, with their sound CPUs -----
+set(HT ${HT_ROOT}/Core)
+add_library(rommusic_sega OBJECT sega/rsega.c
+  ${HT}/sega.c ${HT}/dcsound.c ${HT}/satsound.c ${HT}/yam.c ${HT}/arm.c ${HT}/c68k/c68k.c ${HT}/c68k/c68kexec.c)
+target_include_directories(rommusic_sega PRIVATE ${HT})
+# Its op files are generated as switch cases, so the switch build it is.
+target_compile_definitions(rommusic_sega PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN HAVE_STDINT_H C68K_NO_JUMP_TABLE)
+set_target_properties(rommusic_sega PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
+target_compile_options(rommusic_sega PRIVATE -w -fno-strict-aliasing)
 
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
-  $<TARGET_OBJECTS:rommusic_usf>)
+  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega>)
 target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>")
 set_target_properties(rommusic PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON LINKER_LANGUAGE CXX)
+if(NOT WIN32 AND NOT APPLE)
+  # A symbol nothing defines fails the link here, as it does on Windows, not at load time.
+  target_link_options(rommusic PRIVATE -Wl,--no-undefined)
+endif()
 if(WIN32)
   # The MinGW runtime (libstdc++, libgcc, winpthread) linked in, so the DLL imports only
   # system DLLs.

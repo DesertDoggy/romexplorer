@@ -66,8 +66,9 @@ replacing a build.
   audio scan measures where the sound ends (run it again to measure files scanned before).
 - Music on title pages is on by default, and the first start asks whether you want it, right
   after the language. A title with no audio of its own now plays random tracks by default.
-- Nintendo 64 music rips (USF, with their .usflib) play like the other rip sets, in a game's
-  folder or the rip library, and in rommusic.
+- Nintendo 64, PlayStation, PlayStation 2, Saturn and Dreamcast music rips (USF, PSF, PSF2,
+  SSF, DSF, with their library files) play like the other rip sets, in a game's folder or the rip library, and in rommusic.
+  PlayStation rips use a PS2 BIOS from your collection and are skipped without one.
 
 **Merge review and combined titles**
 - Releases on a card can be dragged to the title they belong to, or onto "+" for a new title

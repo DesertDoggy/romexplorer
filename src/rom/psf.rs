@@ -1,6 +1,17 @@
 //! The PSF family of rip files: one track per file, a console's own code and data cut out of
-//! the game, played by emulating the console's sound hardware. So far N64 (USF) through
-//! lazyusf2, built into the `rommusic` library as `rusf_` (`deps/rommusic/usf/rusf.c`).
+//! the game, played by emulating the console's sound hardware, all in the `rommusic` library:
+//!
+//! | console | files | player |
+//! |---|---|---|
+//! | N64 | `usf`, `miniusf`, `usflib` | lazyusf2 (`rusf_`, `deps/rommusic/usf/rusf.c`) |
+//! | PS1 | `psf`, `minipsf`, `psflib` | Highly Experimental (`rpsx_`, `deps/rommusic/psx/rpsx.c`) |
+//! | PS2 | `psf2`, `minipsf2`, `psf2lib` | the same |
+//! | Saturn | `ssf`, `minissf`, `ssflib` | Highly Theoretical (`rsega_`, `deps/rommusic/sega/rsega.c`) |
+//! | Dreamcast | `dsf`, `minidsf`, `dsflib` | the same |
+//!
+//! Highly Experimental runs on a kernel built from a real PS2 BIOS, which never ships with
+//! romexplorer: [`set_ps2_bios`] takes one from the user's own files. Without it PS1 and PS2
+//! rips are not tracks at all, so an index skips them.
 //!
 //! A file is `PSF`, a version byte saying which console, a reserved area, a zlib-packed
 //! program area, and an optional `[TAG]` text block of `name=value` lines. A `minixxx` file
@@ -15,10 +26,21 @@ use libloading::Library;
 use super::gme::TrackInfo;
 use super::{native_lib, zlib_ng};
 
-/// Track files, by extension.
-const TRACK_EXTENSIONS: &[&str] = &["usf", "miniusf"];
+/// Track files, by extension, and the console each is for.
+const TRACK_EXTENSIONS: &[(&str, System)] = &[
+    ("usf", System::N64),
+    ("miniusf", System::N64),
+    ("psf", System::Ps1),
+    ("minipsf", System::Ps1),
+    ("psf2", System::Ps2),
+    ("minipsf2", System::Ps2),
+    ("ssf", System::Saturn),
+    ("minissf", System::Saturn),
+    ("dsf", System::Dreamcast),
+    ("minidsf", System::Dreamcast),
+];
 /// Library files, which are not tracks themselves.
-const LIB_EXTENSIONS: &[&str] = &["usflib"];
+const LIB_EXTENSIONS: &[&str] = &["usflib", "psflib", "psf2lib", "ssflib", "dsflib"];
 /// Nothing in this family is larger.
 const MAX_FILE_BYTES: usize = 32 << 20;
 /// How deep `_lib` files may name further libraries.
@@ -30,7 +52,8 @@ fn ext_of(name: &str) -> String {
 
 /// Whether `name` is a track of this family that a player here can play.
 pub fn is_track_file(name: &str) -> bool {
-    TRACK_EXTENSIONS.contains(&ext_of(name).as_str()) && available()
+    let ext = ext_of(name);
+    TRACK_EXTENSIONS.iter().any(|(e, system)| *e == ext && system.playable())
 }
 
 /// Whether `name` is a library file of this family: needed by tracks, not a track itself.
@@ -42,11 +65,19 @@ pub fn is_lib_file(name: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum System {
     N64,
+    Ps1,
+    Ps2,
+    Saturn,
+    Dreamcast,
 }
 
 impl System {
     fn of(version: u8) -> Option<Self> {
         match version {
+            0x01 => Some(System::Ps1),
+            0x02 => Some(System::Ps2),
+            0x11 => Some(System::Saturn),
+            0x12 => Some(System::Dreamcast),
             0x21 => Some(System::N64),
             _ => None,
         }
@@ -55,12 +86,39 @@ impl System {
     pub fn name(self) -> &'static str {
         match self {
             System::N64 => "Nintendo 64",
+            System::Ps1 => "PlayStation",
+            System::Ps2 => "PlayStation 2",
+            System::Saturn => "Saturn",
+            System::Dreamcast => "Dreamcast",
         }
     }
 
     pub fn codec(self) -> &'static str {
         match self {
             System::N64 => "USF",
+            System::Ps1 => "PSF",
+            System::Ps2 => "PSF2",
+            System::Saturn => "SSF",
+            System::Dreamcast => "DSF",
+        }
+    }
+
+    /// Whether this machine can play it now: the player is installed and, for PS1 and PS2,
+    /// a BIOS has been given.
+    pub fn playable(self) -> bool {
+        match self {
+            System::N64 => usf_api().is_some(),
+            System::Ps1 | System::Ps2 => psx_api().is_some_and(|api| unsafe { (api.bios_ready)() } != 0),
+            System::Saturn | System::Dreamcast => sega_api().is_some(),
+        }
+    }
+
+    /// The rate the console's sound chip runs at, which its player renders at.
+    fn native_rate(self) -> Option<u32> {
+        match self {
+            System::N64 => None,
+            System::Ps1 | System::Saturn | System::Dreamcast => Some(44_100),
+            System::Ps2 => Some(48_000),
         }
     }
 }
@@ -70,9 +128,8 @@ impl System {
 struct PsfFile {
     version: u8,
     reserved: Vec<u8>,
-    /// The unpacked program area: the code and data the PS1, PS2, Saturn and Dreamcast
-    /// players load. USF keeps everything in `reserved`.
-    #[allow(dead_code)]
+    /// The unpacked program area: a PS-X EXE for PS1, a load address and sound RAM bytes
+    /// for Saturn and Dreamcast. USF and PSF2 keep everything in `reserved`.
     program: Vec<u8>,
     /// In file order; a name given twice is a value of several lines.
     tags: Vec<(String, String)>,
@@ -141,6 +198,60 @@ fn parse_time(text: &str) -> Option<u32> {
     Some((ms * 1000.0).round() as u32)
 }
 
+/// The files of a PSF2's file system (its reserved area), by path with `/` between parts.
+///
+/// A directory is a count and 48-byte entries: a 36-byte name, then the offset, the unpacked
+/// size and the block size. An entry with only an offset is a subdirectory at that offset;
+/// a file's offset leads to its blocks' packed sizes and then the zlib blocks themselves.
+fn psf2_files(reserved: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    const CORRUPT: &str = "the PSF2 file system is damaged";
+    fn dir(fs: &[u8], at: usize, prefix: &str, depth: usize, out: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+        if depth > 16 {
+            return Err(CORRUPT.into());
+        }
+        let count = u32_at(fs, at).ok_or(CORRUPT)? as usize;
+        let mut entry = at + 4;
+        for _ in 0..count {
+            let raw = fs.get(entry..entry + 48).ok_or(CORRUPT)?;
+            let name_len = raw[..36].iter().position(|&b| b == 0).unwrap_or(36);
+            let name = String::from_utf8_lossy(&raw[..name_len]).to_string();
+            let (offset, size, block) = (u32_at(raw, 36).unwrap_or(0) as usize, u32_at(raw, 40).unwrap_or(0) as usize, u32_at(raw, 44).unwrap_or(0) as usize);
+            entry += 48;
+            let path = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+            if size == 0 && block == 0 && offset != 0 {
+                if offset < entry {
+                    return Err(CORRUPT.into());
+                }
+                dir(fs, offset, &path, depth + 1, out)?;
+            } else if size == 0 || block == 0 || offset == 0 {
+                out.push((path, Vec::new()));
+            } else {
+                if size > MAX_FILE_BYTES {
+                    return Err(CORRUPT.into());
+                }
+                let blocks = size.div_ceil(block);
+                let mut data = Vec::with_capacity(size);
+                let mut packed = offset.checked_add(4 * blocks).ok_or(CORRUPT)?;
+                for b in 0..blocks {
+                    let len = u32_at(fs, offset + 4 * b).ok_or(CORRUPT)? as usize;
+                    let chunk = fs.get(packed..packed.checked_add(len).ok_or(CORRUPT)?).ok_or(CORRUPT)?;
+                    let want = block.min(size - data.len());
+                    let unpacked = zlib_ng::zlib_inflate(chunk, want).filter(|u| u.len() == want).ok_or(CORRUPT)?;
+                    data.extend_from_slice(&unpacked);
+                    packed += len;
+                }
+                out.push((path, data));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    if !reserved.is_empty() {
+        dir(reserved, 0, "", 0, &mut out)?;
+    }
+    Ok(out)
+}
+
 /// A file and the libraries it builds on, in load order, with the top file's tags.
 #[derive(Debug, Clone)]
 pub struct Loaded {
@@ -155,7 +266,8 @@ pub struct Loaded {
 /// by the name the tag gives.
 pub fn load(data: &[u8], read_lib: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<Loaded, String> {
     fn lib(name: &str, version: u8, depth: usize, read_lib: &mut dyn FnMut(&str) -> Option<Vec<u8>>, out: &mut Vec<PsfFile>, flags: &mut Vec<(String, String)>) -> Result<(), String> {
-        let bytes = read_lib(name).ok_or_else(|| format!("its library {name} is missing"))?;
+        // Some sets name a library without its extension.
+        let bytes = read_lib(name).or_else(|| LIB_EXTENSIONS.iter().find_map(|e| read_lib(&format!("{name}.{e}")))).ok_or_else(|| format!("its library {name} is missing"))?;
         let parsed = parse(&bytes).map_err(|e| format!("{name}: {e}"))?;
         if parsed.version != version {
             return Err(format!("{name} is for another console"));
@@ -192,6 +304,11 @@ impl Loaded {
     }
 
     /// What the top file's tags say, in the shape the rest of the rip-set code reads.
+    /// The `_refresh` tag (50 or 60), which overrides what a PS-X EXE header names.
+    fn refresh(&self) -> Option<i32> {
+        self.flags.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case("_refresh")).and_then(|(_, v)| v.trim().parse().ok())
+    }
+
     pub fn info(&self) -> TrackInfo {
         let tag = |name: &str| self.top.tag(name).unwrap_or_default().to_string();
         TrackInfo {
@@ -246,9 +363,107 @@ fn usf_api() -> Option<&'static UsfApi> {
     .as_ref()
 }
 
+type BiosFn = unsafe extern "C" fn(*const u8, usize) -> i32;
+type ReadyFn = unsafe extern "C" fn() -> i32;
+type PsxNewFn = unsafe extern "C" fn(i32) -> *mut c_void;
+type ExeFn = unsafe extern "C" fn(*mut c_void, *const u8, usize) -> i32;
+type AddFileFn = unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize) -> i32;
+type StartFn = unsafe extern "C" fn(*mut c_void, i32);
+type PsxRenderFn = unsafe extern "C" fn(*mut c_void, *mut i16, usize) -> i32;
+
+struct PsxApi {
+    _lib: Library,
+    set_bios: BiosFn,
+    bios_ready: ReadyFn,
+    new: PsxNewFn,
+    upload_exe: ExeFn,
+    add_file: AddFileFn,
+    start: StartFn,
+    render: PsxRenderFn,
+    free: FreeFn,
+}
+
+fn psx_api() -> Option<&'static PsxApi> {
+    static API: OnceLock<Option<PsxApi>> = OnceLock::new();
+    API.get_or_init(|| {
+        let path = native_lib::rommusic_library()?;
+        unsafe {
+            let lib = Library::new(&path).ok()?;
+            Some(PsxApi {
+                set_bios: *lib.get(b"rpsx_set_bios\0").ok()?,
+                bios_ready: *lib.get(b"rpsx_bios_ready\0").ok()?,
+                new: *lib.get(b"rpsx_new\0").ok()?,
+                upload_exe: *lib.get(b"rpsx_upload_exe\0").ok()?,
+                add_file: *lib.get(b"rpsx_add_file\0").ok()?,
+                start: *lib.get(b"rpsx_start\0").ok()?,
+                render: *lib.get(b"rpsx_render\0").ok()?,
+                free: *lib.get(b"rpsx_free\0").ok()?,
+                _lib: lib,
+            })
+        }
+    })
+    .as_ref()
+}
+
+type SegaNewFn = unsafe extern "C" fn(i32) -> *mut c_void;
+type SegaUploadFn = unsafe extern "C" fn(*mut c_void, *const u8, usize) -> i32;
+type SegaRenderFn = unsafe extern "C" fn(*mut c_void, *mut i16, usize) -> i32;
+
+struct SegaApi {
+    _lib: Library,
+    new: SegaNewFn,
+    upload: SegaUploadFn,
+    render: SegaRenderFn,
+    free: FreeFn,
+}
+
+fn sega_api() -> Option<&'static SegaApi> {
+    static API: OnceLock<Option<SegaApi>> = OnceLock::new();
+    API.get_or_init(|| {
+        let path = native_lib::rommusic_library()?;
+        unsafe {
+            let lib = Library::new(&path).ok()?;
+            Some(SegaApi {
+                new: *lib.get(b"rsega_new\0").ok()?,
+                upload: *lib.get(b"rsega_upload\0").ok()?,
+                render: *lib.get(b"rsega_render\0").ok()?,
+                free: *lib.get(b"rsega_free\0").ok()?,
+                _lib: lib,
+            })
+        }
+    })
+    .as_ref()
+}
+
+/// The size of a PS2 BIOS image, the only kind the PS1/PS2 player can build its kernel from.
+pub const PS2_BIOS_BYTES: usize = 0x40_0000;
+
+/// Hands the PS1/PS2 player a PS2 BIOS image from the user's own files. The first one that
+/// works stays for the life of the process. `Ok(false)` when the player is not installed.
+pub fn set_ps2_bios(image: &[u8]) -> Result<bool, String> {
+    let Some(api) = psx_api() else { return Ok(false) };
+    if image.len() != PS2_BIOS_BYTES {
+        return Err("a PS2 BIOS image is 4 MB".into());
+    }
+    match unsafe { (api.set_bios)(image.as_ptr(), image.len()) } {
+        0 => Ok(true),
+        _ => Err("this PS2 BIOS image could not be used".into()),
+    }
+}
+
+/// Whether the PS1/PS2 player has a BIOS.
+pub fn has_ps2_bios() -> bool {
+    System::Ps1.playable()
+}
+
+/// Whether the PS1/PS2 player is installed, BIOS or not.
+pub fn psx_installed() -> bool {
+    psx_api().is_some()
+}
+
 /// Whether any player of this family is in this machine's `rommusic` library.
 pub fn available() -> bool {
-    usf_api().is_some()
+    usf_api().is_some() || psx_api().is_some() || sega_api().is_some()
 }
 
 /// One track, playing.
@@ -264,7 +479,9 @@ unsafe impl Send for Player {}
 impl Player {
     pub const CHANNELS: u16 = 2;
 
+    /// `rate` is for players that resample; the PS1 and PS2 players render at the chip's own.
     pub fn open(loaded: Loaded, rate: u32) -> Result<Self, String> {
+        let rate = loaded.system.native_rate().unwrap_or(rate);
         let mut player = Player { loaded, state: std::ptr::null_mut(), rate };
         player.restart()?;
         Ok(player)
@@ -302,6 +519,47 @@ impl Player {
                 // The faster high-level audio, as most players default to.
                 unsafe { (api.flags)(state, i32::from(compare), i32::from(fifo), 1) };
             }
+            System::Ps1 | System::Ps2 => {
+                let api = psx_api().ok_or("the PlayStation music player (rommusic) is not installed")?;
+                let ps2 = self.loaded.system == System::Ps2;
+                let state = unsafe { (api.new)(if ps2 { 2 } else { 1 }) };
+                if state.is_null() {
+                    return Err("PlayStation music needs a PS2 BIOS in your collection".into());
+                }
+                self.state = state;
+                let mut refresh = 0;
+                for section in &self.loaded.sections {
+                    if ps2 {
+                        for (path, data) in psf2_files(&section.reserved)? {
+                            let path = std::ffi::CString::new(path).map_err(|_| "the PSF2 file system is damaged")?;
+                            if unsafe { (api.add_file)(state, path.as_ptr(), data.as_ptr(), data.len()) } < 0 {
+                                return Err("out of memory".into());
+                            }
+                        }
+                    } else if !section.program.is_empty() {
+                        match unsafe { (api.upload_exe)(state, section.program.as_ptr(), section.program.len()) } {
+                            r if r < 0 => return Err("the rip's data is damaged".into()),
+                            0 => {}
+                            r if refresh == 0 => refresh = r,
+                            _ => {}
+                        }
+                    }
+                }
+                unsafe { (api.start)(state, self.loaded.refresh().unwrap_or(refresh)) };
+            }
+            System::Saturn | System::Dreamcast => {
+                let api = sega_api().ok_or("the Saturn/Dreamcast music player (rommusic) is not installed")?;
+                let state = unsafe { (api.new)(if self.loaded.system == System::Saturn { 1 } else { 2 }) };
+                if state.is_null() {
+                    return Err("out of memory".into());
+                }
+                self.state = state;
+                for section in &self.loaded.sections {
+                    if !section.program.is_empty() && unsafe { (api.upload)(state, section.program.as_ptr(), section.program.len()) } < 0 {
+                        return Err("the rip's data is damaged".into());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -317,6 +575,19 @@ impl Player {
                     return Err(unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned());
                 }
             }
+            System::Ps1 | System::Ps2 => {
+                let api = psx_api().ok_or("the PlayStation music player (rommusic) is not installed")?;
+                // 1: the program stopped, and the rest is silence.
+                if unsafe { (api.render)(self.state, out.as_mut_ptr(), out.len() / 2) } < 0 {
+                    return Err("the PlayStation player stopped on an error".into());
+                }
+            }
+            System::Saturn | System::Dreamcast => {
+                let api = sega_api().ok_or("the Saturn/Dreamcast music player (rommusic) is not installed")?;
+                if unsafe { (api.render)(self.state, out.as_mut_ptr(), out.len() / 2) } < 0 {
+                    return Err("the Saturn/Dreamcast player stopped on an error".into());
+                }
+            }
         }
         Ok(())
     }
@@ -328,6 +599,16 @@ impl Player {
         match self.loaded.system {
             System::N64 => {
                 if let Some(api) = usf_api() {
+                    unsafe { (api.free)(self.state) };
+                }
+            }
+            System::Ps1 | System::Ps2 => {
+                if let Some(api) = psx_api() {
+                    unsafe { (api.free)(self.state) };
+                }
+            }
+            System::Saturn | System::Dreamcast => {
+                if let Some(api) = sega_api() {
                     unsafe { (api.free)(self.state) };
                 }
             }
@@ -397,6 +678,72 @@ mod tests {
         assert!(load(&top, &mut |_| None).unwrap_err().contains("gone.usflib"));
         let other = psf(0x01, b"", "");
         assert!(load(&top, &mut |_| Some(other.clone())).unwrap_err().contains("another console"));
+    }
+
+    /// A zlib stream of one stored (unpacked) block.
+    fn stored(data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x78, 0x01, 0x01];
+        v.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        v.extend_from_slice(&(!(data.len() as u16)).to_le_bytes());
+        v.extend_from_slice(data);
+        let (mut a, mut b) = (1u32, 0u32);
+        for &x in data {
+            a = (a + u32::from(x)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        v.extend_from_slice(&((b << 16) | a).to_be_bytes());
+        v
+    }
+
+    fn entry(name: &str, offset: u32, size: u32, block: u32) -> Vec<u8> {
+        let mut v = name.as_bytes().to_vec();
+        v.resize(36, 0);
+        for n in [offset, size, block] {
+            v.extend_from_slice(&n.to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn a_psf2_file_system_unpacks_into_paths() {
+        if !zlib_ng::available() {
+            return;
+        }
+        // Root: "PSF2.IRX" (two blocks of 4) and "sub/"; sub: "a.bin".
+        let file = b"0123456789";
+        let (b1, b2, b3) = (stored(&file[..4]), stored(&file[4..8]), stored(&file[8..]));
+        let root_len = 4 + 2 * 48;
+        let file_at = root_len;
+        let blocks_at = file_at + 3 * 4;
+        let sub_at = blocks_at + b1.len() + b2.len() + b3.len();
+        let a = stored(b"A!");
+        let a_at = sub_at + 4 + 48;
+        let mut fs = 2u32.to_le_bytes().to_vec();
+        fs.extend(entry("PSF2.IRX", file_at as u32, 10, 4));
+        fs.extend(entry("sub", sub_at as u32, 0, 0));
+        for b in [&b1, &b2, &b3] {
+            fs.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        }
+        for b in [&b1, &b2, &b3] {
+            fs.extend_from_slice(b);
+        }
+        fs.extend_from_slice(&1u32.to_le_bytes());
+        fs.extend(entry("a.bin", a_at as u32 , 2, 0x8000));
+        fs.extend_from_slice(&(a.len() as u32).to_le_bytes());
+        fs.extend_from_slice(&a);
+        let files = psf2_files(&fs).unwrap();
+        assert_eq!(files, vec![("PSF2.IRX".to_string(), file.to_vec()), ("sub/a.bin".to_string(), b"A!".to_vec())]);
+        assert!(psf2_files(&fs[..fs.len() - 3]).is_err(), "a cut-off block");
+    }
+
+    #[test]
+    fn ps1_and_ps2_rips_are_their_own_consoles() {
+        let top = psf(0x02, b"", "_lib=x.psf2lib\n_refresh=50\n");
+        let lib = psf(0x02, b"", "");
+        let loaded = load(&top, &mut |_| Some(lib.clone())).unwrap();
+        assert_eq!((loaded.system, loaded.refresh()), (System::Ps2, Some(50)));
+        assert_eq!(System::of(0x01), Some(System::Ps1));
+        assert!(is_lib_file("Set.PSF2LIB") && is_lib_file("a.psflib"));
     }
 
     #[test]
