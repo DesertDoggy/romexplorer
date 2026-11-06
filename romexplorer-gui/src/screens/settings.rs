@@ -42,7 +42,7 @@ const EDITORS: &[&str] = &[
     "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
-    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
+    "audio_dsd_cache_format", "audio_cache_max_mb", "audio_ram_cache_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
     "merge_review_order", "gemini_model", "dat_sync_platforms",
 ];
@@ -103,6 +103,8 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
     ("media_export_prefer_region", true, "exported art: the release's own region first, whatever the provider order (default)", "exported art follows the provider order"),
     ("scan_pkg_titles", false, "read the title inside PS3 and PSP .pkg files", "name them from the content id only (default)"),
     ("media_reuse_existing", true, "take art already in the media folder instead of downloading it again (default)", "always download"),
+    ("audio_keep_playing", true, "keep a title's music playing on other screens until another title page opens (default)", "stop the music when the page is left"),
+    ("audio_rom_videos", false, "play the sound of video files in ROMs, such as title movies", "leave video sound out (default)"),
 ];
 
 /// Hashes a file scan can compute, in the order they are shown. Default: all but sha256.
@@ -260,7 +262,7 @@ fn initial(key: &str, value: &Value) -> Value {
         "copy_populate_hash" | "integrity_populate_hash" => if value.is_null() { json!("xxh3_128") } else { value.clone() },
         "backup_dir" => json!(value.as_str().unwrap_or("")),
         "backup_keep" => if value.is_null() { json!(0) } else { value.clone() },
-        "copy_recent_destinations" => json!(str_list(value)),
+        "copy_recent_destinations" | "audio_rip_folders" => json!(str_list(value)),
         "scan_hashes" => {
             let mut m = Map::new();
             for (name, def) in SCAN_HASHES {
@@ -301,7 +303,10 @@ fn initial(key: &str, value: &Value) -> Value {
         "release_edition_order" => json!(edition_order(value)),
         "audio_dsd_cache_format" => if value.as_str() == Some("flac") { json!("flac") } else { json!("aac") },
         "audio_client_format" => if matches!(value.as_str(), Some("aac" | "xhe_aac" | "none")) { value.clone() } else { json!("aac") },
-        "audio_fallback" => if matches!(value.as_str(), Some("random" | "generic_bgm")) { value.clone() } else { json!("none") },
+        "audio_fallback" => if matches!(value.as_str(), Some("none" | "generic_bgm")) { value.clone() } else { json!("random") },
+        "audio_title_sources" => if matches!(value.as_str(), Some("tagged" | "rom")) { value.clone() } else { json!("both") },
+        "audio_rom_kinds" => if matches!(value.as_str(), Some("bgm_jingle" | "all")) { value.clone() } else { json!("bgm") },
+        "audio_rom_not_owned" => if matches!(value.as_str(), Some("random" | "none")) { value.clone() } else { json!("related") },
         "collection_default_tab" => if value.is_null() { json!("titles") } else { value.clone() },
         "collection_hidden_tabs" => json!(str_list(value)),
         "copy_definitive" => if value.as_str() == Some("definitive_only") { value.clone() } else { json!("best_held") },
@@ -354,7 +359,7 @@ fn finalize(key: &str, cur: &Value) -> Value {
             if EXPORT_SLOTS.iter().all(|slot| str_list(&cur[*slot]) == export_slot_default(slot)) { Value::Null } else { cur.clone() }
         }
         "backup_dir" => if cur.as_str().is_some_and(|d| d.trim().is_empty()) { Value::Null } else { json!(cur.as_str().unwrap_or("").trim()) },
-        "copy_recent_destinations" => if cur.as_array().is_some_and(|a| a.is_empty()) { Value::Null } else { cur.clone() },
+        "copy_recent_destinations" | "audio_rip_folders" => if cur.as_array().is_some_and(|a| a.is_empty()) { Value::Null } else { cur.clone() },
         _ => cur.clone(),
     }
 }
@@ -364,6 +369,7 @@ fn num_spec(key: &str) -> Option<(i64, i64, Option<i64>, &'static str, &'static 
     Some(match key {
         "audio_client_bitrate_kbps" => (128, 48, Some(320), "kbps", "Client mode: the bitrate a kept copy is converted to. A track already at or below it is copied as it is; DSD, ALAC and AIFF are always converted."),
         "audio_cache_max_mb" => (4096, 0, None, "MiB", "Size cap of the converted-audio cache; 0 = no cap. The least recently played conversions are removed first and made again when next needed."),
+        "audio_ram_cache_mb" => (256, 0, None, "MiB", "Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk."),
         "media_list_cap" => (6, 1, Some(50), "per game", "How many screenshots / fan art images are taken per game from one provider."),
         "hasheous_parallel_downloads" => (4, 1, Some(16), "zips", "Hasheous per-platform dump zips downloaded at once during a full sync."),
         "playmatch_batch_size" => (100, -1, None, "contents", "Background PlayMatch gap filler (runs only while no other sync job is queued, and only for providers with usable credentials): N = at most N contents per batch; 0 = unlimited (still 100 per request, rate-limited); -1 = off."),
@@ -374,6 +380,9 @@ fn num_spec(key: &str) -> Option<(i64, i64, Option<i64>, &'static str, &'static 
         "backup_keep" => (0, 0, None, "per kind", "How many backups of each kind to keep; 0 = all. A database backup never prunes a catalogue one."),
         "definitive_pc_max_age" => (10, 0, Some(100), "years", "Collection › Definitive: a PC version less than this many years older than the newest version takes the \"PC (Definitive tab)\" place in the platform priority; an older one ranks by its own year. 0 = PC versions never move up."),
         "media_export_cache_max_mb" => (1024, 0, None, "MiB", "Size cap of the cache of pictures converted for emulators; 0 = no cap. The least recently used go first."),
+        "audio_rom_loop_min_s" => (3, 0, None, "s", "ROM audio: a sound that loops is music from this length."),
+        "audio_rom_bgm_min_s" => (60, 0, None, "s", "ROM audio: a sound that does not loop is music from this length."),
+        "audio_rom_jingle_min_s" => (8, 0, None, "s", "ROM audio: a sound that does not loop is a jingle from this length; shorter is a sound effect."),
         _ => return None,
     })
 }
@@ -611,6 +620,32 @@ fn ParallelEditor(name: String, cur: Signal<Value>) -> Element {
 
 /// `dat_sync_platforms`: which platforms a DAT sync downloads and imports -- all, the
 /// scanned ones (as the scan placed them, or strictly the hash-matched ones), or ticked here.
+/// Folders of music rip sets: a list to reorder or remove from, and a box to add one.
+#[component]
+fn RipFoldersEditor(cur: Signal<Value>) -> Element {
+    let mut cur = cur;
+    let mut draft = use_signal(String::new);
+    let items = str_list(&cur());
+    let labels = items.iter().map(|d| esc(d)).collect();
+    let mut add = move || {
+        let folder = draft().trim().to_string();
+        let mut list = str_list(&cur());
+        if !folder.is_empty() && !list.contains(&folder) {
+            list.push(folder);
+            cur.set(json!(list));
+        }
+        draft.set(String::new());
+    };
+    rsx! {
+        div { class: "muted", {state::tr("Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.")} }
+        OrderList { items, labels, removable: true, on_change: move |o: Vec<String>| cur.set(json!(o)) }
+        div { class: "toolbar",
+            input { r#type: "text", style: "min-width:420px", placeholder: "D:\\Emulator\\ripsets", value: "{draft}", oninput: move |e| draft.set(e.value()), onkeydown: move |e| if e.key() == Key::Enter { add() } }
+            button { class: "btn small", r#type: "button", onclick: move |_| add(), {state::tr("add folder")} }
+        }
+    }
+}
+
 #[component]
 fn DatPlatformsEditor(cur: Signal<Value>) -> Element {
     let mut cur = cur;
@@ -669,6 +704,7 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
     match key.as_str() {
         "scan_parallel_files" | "copy_parallel_files" => rsx! { ParallelEditor { name: key.clone(), cur } },
         "dat_sync_platforms" => rsx! { DatPlatformsEditor { cur } },
+        "audio_rip_folders" => rsx! { RipFoldersEditor { cur } },
         "provider_priority" => {
             let items = str_list(&v);
             let labels = items.iter().map(|p| format!("{}{}", html::provider_icon(p), esc(p))).collect();
@@ -811,7 +847,19 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
         },
         "audio_fallback" => rsx! {
             {muted("What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.")}
-            {radios(&[("none", "nothing: silent (default)"), ("random", "random tracks from the audio linked to other titles"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("none"))}
+            {radios(&[("none", "nothing: silent"), ("random", "random tracks from the audio linked to other titles, or a random title's ROM music (default)"), ("generic_bgm", "the audio files tagged generic_bgm")], sv("random"))}
+        },
+        "audio_title_sources" => rsx! {
+            {muted("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}
+            {radios(&[("both", "tagged audio files and the music in the title's ROMs (default)"), ("tagged", "tagged audio files only"), ("rom", "the music in the title's ROMs only")], sv("both"))}
+        },
+        "audio_rom_kinds" => rsx! {
+            {muted("Which sounds from a ROM a title page plays. Sounds are sorted by whether they loop and how long they are.")}
+            {radios(&[("bgm", "music only (default)"), ("bgm_jingle", "music and jingles"), ("all", "everything, sound effects too")], sv("bgm"))}
+        },
+        "audio_rom_not_owned" => rsx! {
+            {muted("ROM music for a title with no ROM here. When this finds nothing, audio_fallback decides.")}
+            {radios(&[("related", "another version you have, such as the original of a remake (default)"), ("random", "another title's, picked at random"), ("none", "none")], sv("related"))}
         },
         "release_edition_order" => {
             let items = edition_order(&v);

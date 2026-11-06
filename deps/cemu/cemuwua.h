@@ -183,6 +183,25 @@ CEMUWUA_API int cemuwua_read_file(const char *archive_path, const char *inner_pa
                                   size_t *got, uint64_t *file_size,
                                   char *error, size_t error_len);
 
+/*
+ * Reads a title's files in place, for playing what is inside it: `path` is a .wua (or .zar),
+ * a .wud/.wux disc image (key as for cemuwua_create: `key`, then `keys_txt`, then a
+ * "<image>.key" beside it), or a NUS/CDN title folder. cemuwua_reader_list calls `each` once
+ * per file (path '/'-separated from the title's root, size), and cemuwua_reader_read reads
+ * like cemuwua_read_file but without opening the archive again. One reader may be used from
+ * several threads; calls are taken one at a time. cemuwua_reader_open returns NULL with
+ * `error` filled in when the input cannot be opened.
+ *
+ * Added after ABI version 2 without bumping it, like cemuwua_read_file.
+ */
+typedef struct cemuwua_reader cemuwua_reader;
+CEMUWUA_API cemuwua_reader *cemuwua_reader_open(const char *path, const uint8_t *key, const char *keys_txt,
+                                                char *error, size_t error_len);
+CEMUWUA_API int cemuwua_reader_list(cemuwua_reader *r, cemuwua_file_fn each, void *user);
+CEMUWUA_API int cemuwua_reader_read(cemuwua_reader *r, const char *inner_path, uint64_t offset,
+                                    uint8_t *out, size_t out_len, size_t *got, uint64_t *file_size);
+CEMUWUA_API void cemuwua_reader_close(cemuwua_reader *r);
+
 #ifdef __cplusplus
 }
 #endif

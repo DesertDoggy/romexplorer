@@ -1,0 +1,17 @@
+[package]
+name = "rommusic-cli"
+# rommusic's own version, not the workspace's: it is released on its own schedule, like
+# chdlite.
+version = "0.1.0"
+edition.workspace = true
+repository.workspace = true
+description = "Drop a ROM, get its music as FLAC: the standalone ROM music tool built on the romexplorer core."
+
+[[bin]]
+name = "rommusic"
+path = "src/main.rs"
+
+[dependencies]
+romexplorer = { path = ".." }
+# The FLAC writer romexplorer already uses for converted audio.
+flac-codec = "1.2"

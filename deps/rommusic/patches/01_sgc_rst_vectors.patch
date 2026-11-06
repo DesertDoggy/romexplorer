@@ -1,0 +1,15 @@
+diff --git a/gme/Sgc_Impl.cpp b/gme/Sgc_Impl.cpp
+index 0e48ed4..cd19111 100644
+--- a/gme/Sgc_Impl.cpp
++++ b/gme/Sgc_Impl.cpp
+@@ -93,8 +93,8 @@ blargg_err_t Sgc_Impl::start_track( int track )
+ 		for ( int i = 1; i < 8; ++i )
+ 		{
+ 			vectors [i*8 + 0] = 0xC3; // JP addr
+-			vectors [i*8 + 1] = header_.rst_addrs [i*2 + 0];
+-			vectors [i*8 + 2] = header_.rst_addrs [i*2 + 1];
++			vectors [i*8 + 1] = header_.rst_addrs [(i - 1)*2 + 0];
++			vectors [i*8 + 2] = header_.rst_addrs [(i - 1)*2 + 1];
+ 		}
+ 		
+ 		cpu.map_mem( 0xC000, 0x2000, ram.begin() );

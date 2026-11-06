@@ -86,7 +86,7 @@ pub enum Target {
 }
 
 impl Target {
-    fn ext(self) -> &'static str {
+    pub(crate) fn ext(self) -> &'static str {
         match self {
             Self::Flac => "flac",
             _ => "m4a",
@@ -94,7 +94,7 @@ impl Target {
     }
 
     /// The part of the cache file's name that says what is in it.
-    fn tag(self) -> String {
+    pub(crate) fn tag(self) -> String {
         match self {
             Self::Aac { kbps } => format!("aac{kbps}"),
             Self::XheAac { kbps } => format!("xhe{kbps}"),
@@ -115,7 +115,7 @@ impl Target {
 pub const BITRATE_RANGE: std::ops::RangeInclusive<u32> = 48..=320;
 /// What a browser-unplayable track is cached at when the cache format is AAC: high enough
 /// that the conversion is not what limits it.
-const CACHE_AAC_KBPS: u32 = 256;
+pub(crate) const CACHE_AAC_KBPS: u32 = 256;
 
 /// A track's own bitrate in kbps, from its size and length. `None` when the length is not
 /// known (DSD and anything the tag reader could not parse).
@@ -166,16 +166,22 @@ pub struct Served {
     pub converted: bool,
     /// Why the original went out when a conversion was asked for.
     pub note: Option<String>,
+    /// The whole body, when it is held in memory (`api::audio_ram`); `path` is then only
+    /// where it would be on disk.
+    pub body: Option<super::audio_ram::Bytes>,
 }
 
 fn original(path: PathBuf, note: Option<String>) -> Served {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    Served { mime: crate::database::media_store::mime_for(&path), path, ext, converted: false, note }
+    Served { mime: crate::database::media_store::mime_for(&path), path, ext, converted: false, note, body: None }
 }
 
-/// `<media>/_audio_cache/`.
-pub fn cache_dir(app: &App) -> PathBuf {
-    app.paths.media_dir().join("_audio_cache")
+/// Where converted audio is kept on disk: `_audio_cache` in the tier 1 cache folder when one
+/// is set (a fast drive set aside for caches), else in the app's media folder.
+pub async fn cache_dir(app: &App) -> PathBuf {
+    let media = app.paths.media_dir();
+    let tier1 = crate::database::media_store::Roots::load(&app.pool, &media).await.ok().and_then(|r| r.tier1);
+    tier1.unwrap_or(media).join("_audio_cache")
 }
 
 /// `<id>-<what>-<source mtime>.<ext>`: a source file that changed gets a new name, and the
@@ -188,7 +194,7 @@ fn cache_name(id: u64, target: Target, modified: Option<chrono::NaiveDateTime>) 
 /// One conversion at a time. A conversion uses a whole core for seconds; two listeners
 /// opening the same DSD album should queue, not each start encoding every track, and the
 /// second finds the first one's file when its turn comes.
-static CONVERTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static CONVERTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The file for track `id`: the original, or its conversion -- made now if this is the
 /// first time it is asked for.
@@ -238,7 +244,7 @@ pub async fn serve(app: &App, id: u64, query: &FileQuery) -> Result<Served> {
         },
     };
 
-    let dir = cache_dir(app);
+    let dir = cache_dir(app).await;
     let cached = dir.join(cache_name(id, target, row.try_get("last_modified")?));
     let _turn = CONVERTING.lock().await;
     if !cached.is_file() {
@@ -260,7 +266,7 @@ pub async fn serve(app: &App, id: u64, query: &FileQuery) -> Result<Served> {
         // Recently used is what the cap keeps.
         let _ = std::fs::File::options().write(true).open(&cached).and_then(|f| f.set_modified(std::time::SystemTime::now()));
     }
-    Ok(Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached, converted: true, note: None })
+    Ok(Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached, converted: true, note: None, body: None })
 }
 
 /// The cache's size cap when the setting is unset, in MiB.
@@ -268,7 +274,7 @@ pub const DEFAULT_CACHE_MB: u64 = 4096;
 
 /// Removes the least recently used files until the cache fits `cap` bytes (0 = no cap).
 /// `keep` is never removed: it is what is about to be served.
-fn evict(dir: &Path, cap: u64, keep: &Path) {
+pub(crate) fn evict(dir: &Path, cap: u64, keep: &Path) {
     if cap == 0 {
         return;
     }
@@ -357,10 +363,19 @@ fn dsd_to_pcm(source: &Path, scratch: &Path, kind: rdsd2pcm::OutputType, bits: u
 
 /// A decodable file to `out` in `target`'s format, a packet at a time.
 fn encode(source: &Path, out: &Path, target: Target) -> std::result::Result<(), String> {
+    encode_with(out, target, |sink| audio_decode::decode_file_with(source, sink))
+}
+
+/// The sink a decoder pushes interleaved 16-bit PCM into, with its rate and channel count.
+pub(crate) type PcmSink<'a> = &'a mut dyn FnMut(&[i16], u32, u16) -> std::result::Result<(), String>;
+
+/// `out` in `target`'s format from whatever `decode` pushes into the sink it is given;
+/// `decode` returns the rate and channel count. Shared with ROM audio (`api::rom_audio`).
+pub(crate) fn encode_with(out: &Path, target: Target, decode: impl FnOnce(PcmSink<'_>) -> std::result::Result<(u32, u16), String>) -> std::result::Result<(), String> {
     match target.encoder() {
         Some((format, bitrate)) => {
             let mut stream: Option<xaac::StreamEncoder> = None;
-            let (rate, channels) = audio_decode::decode_file_with(source, |pcm, rate, channels| {
+            let (rate, channels) = decode(&mut |pcm, rate, channels| {
                 if stream.is_none() {
                     stream = Some(xaac::StreamEncoder::new(rate, channels, bitrate, format)?);
                 }
@@ -376,7 +391,7 @@ fn encode(source: &Path, out: &Path, target: Target) -> std::result::Result<(), 
             // byte here. DSD does not come this way (rdsd2pcm writes its FLAC itself).
             let mut writer: Option<flac_codec::encode::FlacSampleWriter<std::io::BufWriter<std::fs::File>>> = None;
             let mut wide = Vec::new();
-            audio_decode::decode_file_with(source, |pcm, rate, channels| {
+            decode(&mut |pcm, rate, channels| {
                 if writer.is_none() {
                     writer = Some(flac_codec::encode::FlacSampleWriter::create(out, flac_codec::encode::Options::default(), rate, 16, u8::try_from(channels).map_err(|_| "too many channels")?, None).map_err(|e| format!("create {}: {e}", out.display()))?);
                 }

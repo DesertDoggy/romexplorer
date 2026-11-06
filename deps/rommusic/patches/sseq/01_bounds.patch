@@ -1,0 +1,251 @@
+diff --git a/Channel.cpp b/Channel.cpp
+index e5bb0ee..419407e 100644
+--- a/Channel.cpp
++++ b/Channel.cpp
+@@ -723,6 +723,13 @@ void Channel::IncrementSample()
+ {
+ 	double samplePosition = this->reg.samplePosition + this->reg.sampleIncrease;
+ 
++	// rommusic: a looping sample with an empty loop would never get back inside the data.
++	if (this->reg.format != 3 && this->reg.length == 0 && samplePosition >= this->reg.totalLength)
++	{
++		this->Kill();
++		return;
++	}
++
+ 	if (this->reg.format != 3 && this->reg.samplePosition >= 0)
+ 	{
+ 		uint32_t loc = static_cast<uint32_t>(this->reg.samplePosition);
+diff --git a/Player.cpp b/Player.cpp
+index 654e8a5..8bd3168 100644
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -11,10 +11,6 @@
+ #include "Player.h"
+ #include "common.h"
+ 
+-#if (defined(__GNUC__) || defined(__clang__)) && !defined(_LIBCPP_VERSION)
+-std::locale::id std::codecvt<char16_t, char, mbstate_t>::id;
+-std::locale::id std::codecvt<char32_t, char, mbstate_t>::id;
+-#endif
+ 
+ Player::Player() : prio(0), nTracks(0), tempo(0), tempoCount(0), tempoRate(0), masterVol(0), sseqVol(0), sseq(nullptr), sampleRate(0), interpolation(INTERPOLATION_NONE)
+ {
+diff --git a/SDAT.cpp b/SDAT.cpp
+index 89d96f4..25f5f2c 100644
+--- a/SDAT.cpp
++++ b/SDAT.cpp
+@@ -52,7 +52,7 @@ SDAT::SDAT(PseudoFile &file, uint32_t sseqToLoad) : sseq(), sbnk()
+ 		std::string name = "SSEQ" + NumToHexString(fileID).substr(2);
+ 		if (SYMBOffset)
+ 			name = NumToHexString(sseqToLoad).substr(6) + " - " + symbSection.SEQrecord.entries[sseqToLoad];
+-		file.pos = fatSection.records[fileID].offset;
++		file.pos = fatSection.records.at(fileID).offset;
+ 		SSEQ *newSSEQ = new SSEQ(name);
+ 		newSSEQ->info = infoSection.SEQrecord.entries[sseqToLoad];
+ 		newSSEQ->Read(file);
+@@ -64,7 +64,7 @@ SDAT::SDAT(PseudoFile &file, uint32_t sseqToLoad) : sseq(), sbnk()
+ 		name = "SBNK" + NumToHexString(fileID).substr(2);
+ 		if (SYMBOffset)
+ 			name = NumToHexString(bank).substr(2) + " - " + symbSection.BANKrecord.entries[bank];
+-		file.pos = fatSection.records[fileID].offset;
++		file.pos = fatSection.records.at(fileID).offset;
+ 		SBNK *newSBNK = new SBNK(name);
+ 		newSSEQ->bank = newSBNK;
+ 		newSBNK->info = infoSection.BANKrecord.entries[bank];
+@@ -80,7 +80,7 @@ SDAT::SDAT(PseudoFile &file, uint32_t sseqToLoad) : sseq(), sbnk()
+ 				name = "SWAR" + NumToHexString(fileID).substr(2);
+ 				if (SYMBOffset)
+ 					name = NumToHexString(waveArc).substr(2) + " - " + symbSection.WAVEARCrecord.entries[waveArc];
+-				file.pos = fatSection.records[fileID].offset;
++				file.pos = fatSection.records.at(fileID).offset;
+ 				SWAR *newSWAR = new SWAR(name);
+ 				newSBNK->waveArc[i] = newSWAR;
+ 				newSWAR->info = infoSection.WAVEARCrecord.entries[waveArc];
+diff --git a/SSEQ.cpp b/SSEQ.cpp
+index 03847bc..5368690 100644
+--- a/SSEQ.cpp
++++ b/SSEQ.cpp
+@@ -44,7 +44,12 @@ void SSEQ::Read(PseudoFile &file)
+ 		throw std::runtime_error("SSEQ DATA structure invalid");
+ 	uint32_t size = file.ReadLE<uint32_t>();
+ 	uint32_t dataOffset = file.ReadLE<uint32_t>();
++	if (size < 12)
++		throw std::runtime_error("SSEQ DATA structure invalid");
+ 	this->data.resize(size - 12, 0);
+ 	file.pos = startOfSSEQ + dataOffset;
+ 	file.ReadLE(this->data);
++	// rommusic: end-of-track commands after the data, where a track that runs off the end or
++	// jumps outside the sequence lands (see Track.cpp).
++	this->data.insert(this->data.end(), 16, 0xFF);
+ }
+diff --git a/SSEQ.h b/SSEQ.h
+index d036f7e..8005804 100644
+--- a/SSEQ.h
++++ b/SSEQ.h
+@@ -26,4 +26,7 @@ struct SSEQ
+ 	SSEQ &operator=(const SSEQ &sseq);
+ 
+ 	void Read(PseudoFile &file);
++
++	// rommusic: a place in the sequence, or the end-of-track padding when it is outside.
++	const uint8_t *At(uint32_t offset) const { return &this->data[offset < this->data.size() ? offset : this->data.size() - 1]; }
+ };
+diff --git a/SWAV.cpp b/SWAV.cpp
+index 9ea5e33..5799868 100644
+--- a/SWAV.cpp
++++ b/SWAV.cpp
+@@ -89,6 +89,9 @@ void SWAV::Read(PseudoFile &file)
+ 	this->loopOffset = file.ReadLE<uint16_t>();
+ 	this->nonLoopLength = file.ReadLE<uint32_t>();
+ 	uint32_t size = (this->loopOffset + this->nonLoopLength) * 4;
++	// rommusic: an ADPCM sample needs its 4-byte header.
++	if (this->waveType == 2 && size < 4)
++		throw std::runtime_error("SWAV too short");
+ 	auto origData = std::vector<uint8_t>(size);
+ 	file.ReadLE(origData);
+ 
+@@ -121,5 +124,8 @@ void SWAV::Read(PseudoFile &file)
+ 		this->loopOffset *= 8;
+ 		this->nonLoopLength *= 8;
+ 	}
++	// rommusic: silence after the sample, for a header whose lengths overrun the data by a
++	// block (an ADPCM sample with no loop counts its header as samples).
++	this->data.resize(this->data.size() + 64, 0);
+ 	this->dataptr = &this->data[0];
+ }
+diff --git a/Track.cpp b/Track.cpp
+index 1f1b5f9..c529d11 100644
+--- a/Track.cpp
++++ b/Track.cpp
+@@ -112,12 +112,17 @@ int Track::NoteOn(int key, int vel, int len)
+ 	auto &instrument = sbnk->instruments[this->patch];
+ 	const SBNKInstrumentRange *noteDef = nullptr;
+ 	int fRecord = instrument.record;
++	// rommusic: a damaged bank has no ranges to look in.
++	if (fRecord && instrument.ranges.empty())
++		return -1;
+ 
+ 	if (fRecord == 16)
+ 	{
+ 		if (!(instrument.ranges[0].lowNote <= key && key <= instrument.ranges[instrument.ranges.size() - 1].highNote))
+ 			return -1;
+ 		int rn = key - instrument.ranges[0].lowNote;
++		if (rn < 0 || static_cast<size_t>(rn) >= instrument.ranges.size())
++			return -1;
+ 		noteDef = &instrument.ranges[rn];
+ 		fRecord = noteDef->record;
+ 	}
+@@ -172,12 +177,18 @@ int Track::NoteOn(int key, int vel, int len)
+ 
+ 	if (bIsPCM)
+ 	{
++		// rommusic: a note whose wave archive or wave is missing is not played.
++		if (noteDef->swar >= 4 || !sbnk->waveArc[noteDef->swar])
++			return -1;
++		auto found = sbnk->waveArc[noteDef->swar]->swavs.find(noteDef->swav);
++		if (found == sbnk->waveArc[noteDef->swar]->swavs.end())
++			return -1;
+ 		nCh = this->ply->ChannelAlloc(TYPE_PCM, this->prio);
+ 		if (nCh < 0)
+ 			return -1;
+ 		chn = &this->ply->channels[nCh];
+ 
+-		auto swav = &sbnk->waveArc[noteDef->swar]->swavs.find(noteDef->swav)->second;
++		auto swav = &found->second;
+ 		chn->tempReg.CR = SOUND_FORMAT(swav->waveType & 3) | SOUND_LOOP(!!swav->loop) | SCHANNEL_ENABLE;
+ 		chn->tempReg.SOURCE = swav;
+ 		chn->tempReg.TIMER = swav->time;
+@@ -525,7 +536,7 @@ void Track::Run()
+ 				case SSEQ_CMD_OPENTRACK:
+ 				{
+ 					int tNum = read8(pData);
+-					auto trackPos = &this->ply->sseq->data[read24(pData)];
++					auto trackPos = this->ply->sseq->At(read24(pData));
+ 					int newTrack = this->ply->TrackAlloc();
+ 					if (newTrack != -1)
+ 					{
+@@ -544,14 +555,14 @@ void Track::Run()
+ 					break;
+ 
+ 				case SSEQ_CMD_GOTO:
+-					*pData = &this->ply->sseq->data[read24(pData)];
++					*pData = this->ply->sseq->At(read24(pData));
+ 					break;
+ 
+ 				case SSEQ_CMD_CALL:
+ 					value = read24(pData);
+ 					if (this->stackPos < FSS_TRACKSTACKSIZE)
+ 					{
+-						const uint8_t *dest = &this->ply->sseq->data[value];
++						const uint8_t *dest = this->ply->sseq->At(value);
+ 						this->stack[this->stackPos++] = StackValue(STACKTYPE_CALL, *pData);
+ 						*pData = dest;
+ 					}
+diff --git a/common.h b/common.h
+index 7470006..bfcc771 100644
+--- a/common.h
++++ b/common.h
+@@ -14,6 +14,7 @@
+ #include <vector>
+ #include <cstring>
+ #include <cstdint>
++#include <stdexcept>
+ 
+ /*
+  * Pseudo-file data structure
+@@ -28,8 +29,17 @@ struct PseudoFile
+ 	{
+ 	}
+ 
++	// rommusic: every read is checked against the data, so a damaged SDAT throws instead of
++	// reading past it.
++	void Need(size_t n) const
++	{
++		if (!this->data || this->pos > this->data->size() || n > this->data->size() - this->pos)
++			throw std::out_of_range("read past the end of the SDAT");
++	}
++
+ 	template<typename T> T ReadLE()
+ 	{
++		this->Need(sizeof(T));
+ 		T finalVal = 0;
+ 		for (size_t i = 0; i < sizeof(T); ++i)
+ 			finalVal |= (*this->data)[this->pos++] << (i * 8);
+@@ -44,6 +54,7 @@ struct PseudoFile
+ 
+ 	template<size_t N> void ReadLE( uint8_t arr[N])
+ 	{
++		this->Need(N);
+ 		memcpy(&arr[0], &(*this->data)[this->pos], N);
+ 		this->pos += N;
+ 	}
+@@ -56,6 +67,9 @@ struct PseudoFile
+ 
+ 	void ReadLE(std::vector<uint8_t> &arr)
+ 	{
++		this->Need(arr.size());
++		if (arr.empty())
++			return;
+ 		memcpy(&arr[0], &(*this->data)[this->pos], arr.size());
+ 		this->pos += arr.size();
+ 	}
+diff --git a/convert.h b/convert.h
+index db5ade1..af435b4 100644
+--- a/convert.h
++++ b/convert.h
+@@ -11,12 +11,8 @@
+ #include <sstream>
+ #include <typeinfo>
+ #include <locale>
+-#if (defined(__GNUC__) || defined(__clang__)) && !defined(_LIBCPP_VERSION)
+-# include "wstring_convert.h"
+-# include "codecvt.h"
+-#else
+-# include <codecvt>
+-#endif
++// rommusic: today's libstdc++ has <codecvt>; the stand-ins for old GCC clash with it.
++#include <codecvt>
+ #include <vector>
+ #include <cmath>
+ 

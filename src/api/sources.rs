@@ -882,11 +882,13 @@ mod mode_tests {
             JobType::ArtworkExport,
             // Saves AI answers, this machine's own cache.
             JobType::AiBatchRate,
+            // Reads this machine's ROMs into its own tables.
+            JobType::RomAudioIndex,
         ] {
             assert!(!t.writes_catalog(), "{} should be allowed on a client", t.name());
         }
         // Exhaustive: every job type is on one of the two lists above.
-        assert_eq!(JobType::ALL.len(), 10 + 27, "a new job type needs classifying in this test");
+        assert_eq!(JobType::ALL.len(), 10 + 28, "a new job type needs classifying in this test");
     }
 }
 

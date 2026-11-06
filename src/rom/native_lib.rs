@@ -332,6 +332,12 @@ pub fn source_root() -> PathBuf {
 /// submodule-tree search (`find_native_library`, or a wrapper's own equivalent) when
 /// nothing has been moved to the app root yet -- so a dev who's only built a submodule
 /// directly still has everything work exactly as before this existed.
+/// `rommusic`: the console sound-chip players in one library (`deps/rommusic`), used by
+/// [`super::gme`], [`super::snes_apu`] and [`super::agbplay`].
+pub fn rommusic_library() -> Option<PathBuf> {
+    find_app_root_library("rommusic").or_else(|| find_native_library(&source_root().join("deps/rommusic/release"), "rommusic"))
+}
+
 pub fn find_app_root_library(base_name: &str) -> Option<PathBuf> {
     let filename = dynamic_lib_filename(base_name)?;
     let candidate = exe_root()?.join("lib").join(os_dir_name()).join(arch_dir_name()).join(filename);

@@ -63,6 +63,7 @@ pub async fn validate(app: &App, request: &JobRequest) -> Result<()> {
         JobRequest::SheetCreate(r) => crate::api::sheets::run::validate_create(app, r).await,
         JobRequest::SheetVerify(r) | JobRequest::M3uVerify(r) => crate::api::sheets::run::validate_verify(r),
         JobRequest::AudioScan(r) => crate::api::audio::validate(app, r).await,
+        JobRequest::RomAudioIndex(r) => crate::api::rom_audio::validate(app, r).await,
         JobRequest::AudioSync => crate::api::audio_sync::validate(app).await,
         JobRequest::MediaBackfill(r) => crate::api::media_backfill::validate_with(app, r).await,
         JobRequest::CopyFiles(r) => {

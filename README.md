@@ -90,10 +90,11 @@ launch needs right-click > Open). The first launch creates and starts its own da
 
 ### Command-line tools (chdlite)
 
-Drop a disc image, get a CHD or RVZ. `chdlite` (fast), `chdcomp` (smallest), `chdread`
-(extract) and `chdhash` (hash) are one tool per mode, so a file dropped onto the executable
-does the right thing; `chdlite-gui` is the same in a window. Every option is also a flag
-(`--help`). chdlite is released separately: see
+Drop a disc image, get a CHD or RVZ. `chdlite` (fast) and `chdcomp` (smallest) work both
+ways: an uncompressed image is compressed, and a `.chd` or `.rvz` is extracted. `chdread` shows
+a file's metadata and `chdhash` hashes it. Each tool does one thing, so a file dropped onto the
+executable does the right thing; `chdlite-gui` is the same in a window. Every option is also a
+flag (`--help`). chdlite is released separately: see
 [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
 
 ### Provider keys

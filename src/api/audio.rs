@@ -221,7 +221,7 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
         sqlx::query(
             "INSERT INTO audio_files (path, path_hash, file_name, size, last_modified, format, playable, support, duration_ms, title, album, artist, album_artist, disc_number, track_number, year, scanned_at, deleted) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), FALSE) \
-             ON DUPLICATE KEY UPDATE loudness_lufs = IF(size <=> VALUES(size) AND last_modified <=> VALUES(last_modified), loudness_lufs, NULL), path = VALUES(path), file_name = VALUES(file_name), size = VALUES(size), last_modified = VALUES(last_modified), format = VALUES(format), playable = VALUES(playable), support = VALUES(support), \
+             ON DUPLICATE KEY UPDATE loudness_lufs = IF(size <=> VALUES(size) AND last_modified <=> VALUES(last_modified), loudness_lufs, NULL), sound_end_ms = IF(size <=> VALUES(size) AND last_modified <=> VALUES(last_modified), sound_end_ms, NULL), path = VALUES(path), file_name = VALUES(file_name), size = VALUES(size), last_modified = VALUES(last_modified), format = VALUES(format), playable = VALUES(playable), support = VALUES(support), \
                duration_ms = VALUES(duration_ms), title = VALUES(title), album = VALUES(album), artist = VALUES(artist), album_artist = VALUES(album_artist), disc_number = VALUES(disc_number), \
                track_number = VALUES(track_number), year = VALUES(year), scanned_at = NOW(), deleted = FALSE",
         )
@@ -262,7 +262,7 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
 /// copies carry the server's measurement and are not re-measured.
 async fn measure_loudness(app: &App, progress: &Progress) -> Result<u64> {
     let pending: Vec<(u64, String)> =
-        sqlx::query_as("SELECT id, path FROM audio_files WHERE deleted = FALSE AND loudness_lufs IS NULL AND remote_id IS NULL AND support <> 'unsupported' AND format NOT IN ('dsf', 'dff') ORDER BY id").fetch_all(&app.pool).await?;
+        sqlx::query_as("SELECT id, path FROM audio_files WHERE deleted = FALSE AND (loudness_lufs IS NULL OR sound_end_ms IS NULL) AND remote_id IS NULL AND support <> 'unsupported' AND format NOT IN ('dsf', 'dff') ORDER BY id").fetch_all(&app.pool).await?;
     if pending.is_empty() {
         return Ok(0);
     }
@@ -275,15 +275,17 @@ async fn measure_loudness(app: &App, progress: &Progress) -> Result<u64> {
         let permit = gate.clone().acquire_owned().await.map_err(|e| Error::internal(format!("loudness gate: {e}")))?;
         tasks.spawn_blocking(move || {
             let _permit = permit;
-            (id, crate::rom::audio_decode::loudness_lufs(Path::new(&path)))
+            (id, crate::rom::audio_decode::measure(Path::new(&path)))
         });
     }
     let (mut done, mut measured) = (0u64, 0u64);
     while let Some(result) = tasks.join_next().await {
         done += 1;
-        if let Ok((id, Some(lufs))) = result {
-            sqlx::query("UPDATE audio_files SET loudness_lufs = ? WHERE id = ?").bind(lufs).bind(id).execute(&app.pool).await?;
-            measured += 1;
+        if let Ok((id, Some(m))) = result {
+            sqlx::query("UPDATE audio_files SET loudness_lufs = ?, sound_end_ms = ? WHERE id = ?").bind(m.lufs).bind(m.sound_end_ms).bind(id).execute(&app.pool).await?;
+            if m.lufs.is_some() {
+                measured += 1;
+            }
         }
         progress.report(done, Some(total), &format!("measuring loudness: file {done} of {total}")).await;
     }
@@ -340,6 +342,13 @@ pub struct AudioRow {
     /// On the main server, not here: `id` is the server's, and the file is streamed from it.
     #[serde(default)]
     pub remote: bool,
+    /// Music inside a ROM (`api::rom_audio`): `id` is a `rom_audio_tracks` row, played from
+    /// `/api/v1/audio/rom/{id}/file`, and `path` is the ROM.
+    #[serde(default)]
+    pub rom: bool,
+    /// For a ROM track: bgm | jingle | se.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rom_kind: Option<String>,
     pub id: u64,
     pub path: String,
     pub file_name: String,
@@ -354,6 +363,10 @@ pub struct AudioRow {
     /// Integrated loudness in LUFS, when it has been measured.
     #[serde(default)]
     pub loudness_lufs: Option<f32>,
+    /// Where the sound ends (ms), when measured: the player moves on there instead of playing
+    /// the file's silent end.
+    #[serde(default)]
+    pub sound_end_ms: Option<u32>,
     pub title: Option<String>,
     pub album: Option<String>,
     pub artist: Option<String>,
@@ -381,13 +394,15 @@ fn default_support() -> String {
     "direct".to_string()
 }
 
-const AUDIO_SELECT: &str = "a.id, a.path, a.file_name, a.size, a.format, a.playable, a.support, a.duration_ms, a.loudness_lufs, a.title, a.album, a.artist, a.album_artist, a.disc_number, a.track_number, a.year, a.deleted, \
+const AUDIO_SELECT: &str = "a.id, a.path, a.file_name, a.size, a.format, a.playable, a.support, a.duration_ms, a.loudness_lufs, a.sound_end_ms, a.title, a.album, a.artist, a.album_artist, a.disc_number, a.track_number, a.year, a.deleted, \
     (SELECT GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') FROM audio_file_tags t WHERE t.audio_file_id = a.id) AS tags, \
     (SELECT GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') FROM audio_file_tags t WHERE t.audio_file_id = a.id AND t.source = 'auto') AS auto_tags";
 
 fn row_to_audio(row: &sqlx::mysql::MySqlRow) -> Result<AudioRow> {
     Ok(AudioRow {
         remote: false,
+        rom: false,
+        rom_kind: None,
         id: row.try_get("id")?,
         path: row.try_get("path")?,
         file_name: row.try_get("file_name")?,
@@ -397,6 +412,7 @@ fn row_to_audio(row: &sqlx::mysql::MySqlRow) -> Result<AudioRow> {
         support: row.try_get("support")?,
         duration_ms: row.try_get("duration_ms")?,
         loudness_lufs: row.try_get("loudness_lufs")?,
+        sound_end_ms: row.try_get("sound_end_ms")?,
         title: row.try_get("title")?,
         album: row.try_get("album")?,
         artist: row.try_get("artist")?,
@@ -670,6 +686,18 @@ pub struct PlaylistQuery {
     /// how a client asks the main server for its own setting's answer rather than the
     /// server's.
     pub fallback: Option<String>,
+    /// The ROM audio settings to answer by instead of this machine's (`audio_title_sources`,
+    /// `audio_rom_kinds`, `audio_rom_not_owned`, `audio_rom_*_min_s`): what a client sends
+    /// so the main server picks tracks the way the client is set up to.
+    pub sources: Option<String>,
+    pub kinds: Option<String>,
+    pub not_owned: Option<String>,
+    pub loop_min_s: Option<f64>,
+    pub bgm_min_s: Option<f64>,
+    pub jingle_min_s: Option<f64>,
+    /// Whether video sound plays, for every title of the page (`audio_rom_videos` and the
+    /// title's own choice, as the client worked it out).
+    pub videos: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -681,9 +709,71 @@ pub struct Playlist {
     /// `audio_fallback` mode that chose them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
+    /// `audio_keep_playing`: the page's music keeps going on other screens until another
+    /// title page opens.
+    #[serde(default)]
+    pub keep_playing: bool,
+    /// A title page's video sound choice, for the switch next to the player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_videos: Option<TitleVideos>,
+    /// Tracks hidden from this page with the player's "don't play this track" button, for
+    /// its "hidden tracks" list, where they can be played once or brought back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<AudioRow>,
+    /// The title a hide on this page is recorded for (`PUT /audio/hidden`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_title: Option<u64>,
 }
 
-/// `audio_fallback`: what a title with no audio of its own plays.
+/// What `PUT /audio/hidden` is sent: a track of a page's player to hide or bring back.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HideRequest {
+    /// The page's title (the playlist's `hide_title`). A tagged file is hidden for this title
+    /// only, since the same file can be another title's music too.
+    pub title_id: u64,
+    /// The track: an audio file, or with `rom` a ROM track.
+    pub id: u64,
+    #[serde(default)]
+    pub rom: bool,
+    pub hidden: bool,
+}
+
+/// Which tagged audio files are hidden on which title's page: `{"<title id>": [file ids]}`,
+/// kept by the player's button (`set_hidden`), not a setting anyone edits.
+pub const KEY_HIDDEN_FILES: &str = "audio_hidden_files";
+
+async fn hidden_files(app: &App) -> Result<std::collections::BTreeMap<String, Vec<u64>>> {
+    Ok(crate::database::settings::get::<std::collections::BTreeMap<String, Vec<u64>>>(&app.pool, KEY_HIDDEN_FILES).await?.unwrap_or_default())
+}
+
+/// Hides a track from a title page's player, or brings it back. A ROM track is hidden
+/// wherever it plays (`rom_audio::set_hidden`); a tagged file only on this title's page.
+pub async fn set_hidden(app: &App, request: &HideRequest) -> Result<()> {
+    if request.rom {
+        return super::rom_audio::set_hidden(app, request.id, request.hidden).await;
+    }
+    let mut map = hidden_files(app).await?;
+    let ids = map.entry(request.title_id.to_string()).or_default();
+    ids.retain(|&i| i != request.id);
+    if request.hidden {
+        ids.push(request.id);
+    }
+    map.retain(|_, ids| !ids.is_empty());
+    crate::database::settings::set(&app.pool, KEY_HIDDEN_FILES, &serde_json::to_value(&map).map_err(|e| Error::internal(e.to_string()))?).await?;
+    Ok(())
+}
+
+/// A title's own choice on whether its ROMs' video sound plays.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TitleVideos {
+    pub title_id: u64,
+    /// `default` (the `audio_rom_videos` setting decides), `on` or `off`.
+    pub choice: String,
+    /// Whether the title's ROMs (here, or on the main server for a client) have video sound.
+    pub has_video: bool,
+}
+
+/// `audio_fallback`: what a title with no audio of its own plays (unset: random).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fallback {
     /// Nothing: the page is silent.
@@ -744,27 +834,87 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
     if !crate::database::settings::MediaRules::load(&app.pool).await?.shows("bgm") {
         return Ok(Playlist::default());
     }
+    let mut rom = super::rom_audio::Settings::load(app).await?.overridden(q)?;
+    // A client answers for its own titles' choices on video sound when it asks the main
+    // server, which then takes that answer for the page.
+    if !rom.videos_forced && crate::database::settings::instance_mode(&app.pool).await? == crate::database::settings::InstanceMode::Client {
+        if let Some(title) = titles_of(app, q).await?.first() {
+            rom.videos = super::rom_audio::videos_for(app, *title, &rom).await?;
+        }
+    }
+    let mut list = playlist_inner(app, q, &rom).await?;
+    list.keep_playing = rom.keep_playing;
+    // What was hidden on this page, so it can be played once or brought back.
+    let titles = titles_of(app, q).await?;
+    if let Some(&title) = titles.first() {
+        list.hide_title = Some(title);
+        let hidden = hidden_files(app).await?;
+        let mine: std::collections::HashSet<u64> = titles.iter().filter_map(|t| hidden.get(&t.to_string())).flatten().copied().collect();
+        let (shown, hid): (Vec<AudioRow>, Vec<AudioRow>) = std::mem::take(&mut list.tracks).into_iter().partition(|t| t.rom || t.remote || !mine.contains(&t.id));
+        list.tracks = shown;
+        list.hidden = hid;
+        if rom.sources.rom() {
+            list.hidden.extend(super::rom_audio::hidden_tracks(app, &titles).await?);
+        }
+    }
+    if let Some(title) = q.title_id {
+        let remote = list.title_videos.take().is_some_and(|t| t.has_video);
+        let mut mine = super::rom_audio::title_videos(app, title).await?;
+        mine.has_video |= remote;
+        list.title_videos = Some(mine);
+    }
+    Ok(list)
+}
+
+async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Settings) -> Result<Playlist> {
     let client = crate::database::settings::instance_mode(&app.pool).await? == crate::database::settings::InstanceMode::Client;
-    let mut list = local_playlist(app, q).await?;
+    let titles = titles_of(app, q).await?;
+    let mut list = if rom.sources.tagged() { local_playlist(app, &titles).await? } else { Playlist::default() };
+    // The music inside the title's own ROMs, after the tagged albums.
+    if rom.sources.rom() {
+        list.tracks.extend(super::rom_audio::title_tracks(app, &titles, rom).await?);
+    }
     // A client plays the main server's library too, streamed: its catalogue is the server's,
     // so the same ids name the same title there. A server that cannot be reached, or one too
     // old to have an audio library, just contributes nothing.
     if client {
-        add_from_main(app, q, Fallback::None, &mut list).await?;
+        // Only this title's own tracks for now: the stand-ins below come after.
+        add_from_main(app, q, Fallback::None, &rom.query(super::rom_audio::NotOwned::None), &mut list).await?;
     }
     if !list.tracks.is_empty() {
         return Ok(list);
     }
+    // No ROM of its own: another version's ROM music, or a random title's.
+    if rom.sources.rom() {
+        let (tracks, chose) = super::rom_audio::stand_in(app, &titles, rom).await?;
+        if !tracks.is_empty() {
+            list.tracks = tracks;
+            list.fallback = Some(chose.name().to_string());
+            return Ok(list);
+        }
+        // None here: the main server's ROMs, chosen by this machine's `audio_rom_not_owned`.
+        if client && rom.not_owned != super::rom_audio::NotOwned::None {
+            add_from_main(app, q, Fallback::None, &rom.query(rom.not_owned), &mut list).await?;
+            if !list.tracks.is_empty() {
+                return Ok(list);
+            }
+        }
+    }
     let fallback = match q.fallback.as_deref() {
         Some(name) => Fallback::parse(name).ok_or_else(|| Error::invalid("fallback must be none, random or generic_bgm"))?,
-        None => crate::database::settings::get::<String>(&app.pool, crate::database::settings::KEY_AUDIO_FALLBACK).await?.as_deref().and_then(Fallback::parse).unwrap_or(Fallback::None),
+        None => crate::database::settings::get::<String>(&app.pool, crate::database::settings::KEY_AUDIO_FALLBACK).await?.as_deref().and_then(Fallback::parse).unwrap_or(Fallback::Random),
     };
     if fallback == Fallback::None {
         return Ok(list);
     }
     list.tracks = fallback_tracks(app, fallback).await?;
+    // Random with no tagged audio to pick from: ROM music, a random title's.
+    if fallback == Fallback::Random && list.tracks.is_empty() && rom.sources.rom() && rom.not_owned != super::rom_audio::NotOwned::Random {
+        let any = super::rom_audio::Settings { not_owned: super::rom_audio::NotOwned::Random, ..*rom };
+        list.tracks = super::rom_audio::stand_in(app, &titles, &any).await?.0;
+    }
     if client {
-        add_from_main(app, q, fallback, &mut list).await?;
+        add_from_main(app, q, fallback, &rom.query(super::rom_audio::NotOwned::None), &mut list).await?;
     }
     if !list.tracks.is_empty() {
         list.fallback = Some(fallback.name().to_string());
@@ -774,14 +924,14 @@ pub async fn playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
 
 /// Adds the main server's playlist for the same page to `list`. `fallback` is passed along
 /// spelled out, so the server answers by this machine's setting and not its own.
-async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, list: &mut Playlist) -> Result<()> {
+async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, rom: &str, list: &mut Playlist) -> Result<()> {
     let query = match (q.title_id, q.release_id, q.ra_game_id) {
         (Some(id), _, _) => format!("title_id={id}"),
         (_, Some(id), _) => format!("release_id={id}"),
         (_, _, Some(id)) => format!("ra_game_id={id}"),
         _ => return Ok(()),
     };
-    match super::media_sync::from_main(app, &format!("/api/v1/audio/playlist?{query}&fallback={}", fallback.name()), None).await {
+    match super::media_sync::from_main(app, &format!("/api/v1/audio/playlist?{query}&fallback={}&{rom}", fallback.name()), None).await {
         Ok(response) => match response.json::<Playlist>().await {
             Ok(theirs) => {
                 // A server track this machine keeps a copy of is already in the list, as
@@ -789,7 +939,13 @@ async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, list: &
                 let held: Vec<u64> = sqlx::query_scalar("SELECT a.remote_id FROM audio_files a JOIN remote_sources s ON s.id = a.remote_source_id AND s.role = 'main' AND s.deleted = FALSE WHERE a.deleted = FALSE AND a.remote_id IS NOT NULL")
                     .fetch_all(&app.pool)
                     .await?;
-                list.tracks.extend(theirs.tracks.into_iter().filter(|t| !held.contains(&t.id)).map(|t| AudioRow { remote: true, ..t }));
+                list.tracks.extend(theirs.tracks.into_iter().filter(|t| t.rom || !held.contains(&t.id)).map(|t| AudioRow { remote: true, ..t }));
+                if theirs.title_videos.as_ref().is_some_and(|t| t.has_video) {
+                    list.title_videos.get_or_insert_with(Default::default).has_video = true;
+                }
+                if list.fallback.is_none() && !list.tracks.is_empty() {
+                    list.fallback = theirs.fallback;
+                }
                 for tag in theirs.tags {
                     if !list.tags.contains(&tag) {
                         list.tags.push(tag);
@@ -824,8 +980,7 @@ async fn fallback_tracks(app: &App, fallback: Fallback) -> Result<Vec<AudioRow>>
     rows.iter().map(row_to_audio).collect()
 }
 
-async fn local_playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
-    let titles = titles_of(app, q).await?;
+async fn local_playlist(app: &App, titles: &[u64]) -> Result<Playlist> {
     if titles.is_empty() {
         return Ok(Playlist::default());
     }
@@ -842,7 +997,7 @@ async fn local_playlist(app: &App, q: &PlaylistQuery) -> Result<Playlist> {
         "SELECT DISTINCT m.name FROM audio_file_tags m JOIN audio_files a ON a.id = m.audio_file_id AND a.deleted = FALSE AND a.playable = TRUE WHERE m.name IN ({keyword_names}) ORDER BY m.name"
     );
     let tags: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(tags_sql)).fetch_all(&app.pool).await?;
-    Ok(Playlist { tags, tracks, fallback: None })
+    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false, title_videos: None, hidden: Vec::new(), hide_title: None })
 }
 
 #[cfg(test)]

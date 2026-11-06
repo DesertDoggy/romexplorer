@@ -213,6 +213,14 @@ pub fn Audio() -> Element {
             }
         });
     };
+    let rom_index = move |mode: &'static str| {
+        spawn(async move {
+            match api::post("/api/v1/jobs", json!({ "job_type": "rom_audio_index", "mode": mode })).await {
+                Ok(r) => job.set(Some(u(&r, "id"))),
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
     let Some(facets) = facets.read().clone() else { return rsx! { div { class: "muted", {state::tr("loading…")} } } };
     let spec = Spec(Rc::new(audio_spec(&facets)));
     rsx! {
@@ -227,6 +235,10 @@ pub fn Audio() -> Element {
                 crate::ui::QueueButton {}
                 button { class: "btn", r#type: "button", title: state::tr("Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep."), onclick: fetch, {state::tr("Fetch from the main server")} }
                 crate::ui::QueueButton {}
+                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("full"), {state::tr("Index ROM audio")} }
+                crate::ui::QueueButton {}
+                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("new_only"), {state::tr("Index ROM audio (new only)")} }
+                crate::ui::QueueButton {}
             }
             if let Some(id) = job() {
                 JobWatch { key: "{id}", job_id: id, on_done: move |_| bump(reload) }
@@ -238,53 +250,117 @@ pub fn Audio() -> Element {
 }
 
 /// The player for a title / release / RA game page: `query` is `title_id=…`, `release_id=…`
-/// or `ra_game_id=…`. Draws nothing unless the page has music; starts it (shuffled) when it
-/// does, and stops it when the page is left.
+/// or `ra_game_id=…`. Draws nothing unless the page has music (tagged files, and the music in
+/// its ROMs); starts it (shuffled) when it does. When the page is left it stops, or with
+/// `audio_keep_playing` moves to a strip at the bottom until another title page opens.
 #[component]
 pub fn PagePlayer(query: String) -> Element {
     let host = use_hook(|| format!("rx-player-host-{}", query.replace('=', "-")));
-    let tracks = use_resource({
+    let mut playlist = use_resource({
         let query = query.clone();
         move || {
             let query = query.clone();
-            async move { api::get(&format!("/api/v1/audio/playlist?{query}")).await.ok().map(|v| api::arr(&v, "tracks").to_vec()).unwrap_or_default() }
+            async move { api::get(&format!("/api/v1/audio/playlist?{query}")).await.unwrap_or_else(|_| json!({})) }
         }
     });
-    let list = tracks.read().clone().unwrap_or_default();
+    // `None` until it has loaded.
+    let loaded = playlist.read().clone();
     let start_host = host.clone();
-    use_effect(use_reactive!(|list| {
-        if list.is_empty() {
+    use_effect(use_reactive!(|loaded| {
+        let Some(playlist) = loaded else { return };
+        let list = api::arr(&playlist, "tracks").to_vec();
+        if list.is_empty() && api::arr(&playlist, "hidden").is_empty() {
+            // A title page with nothing to play ends music kept from an earlier one.
+            let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
             return;
         }
+        let keep = api::b(&playlist, "keep_playing");
         // The page's own URL for each track, then the shared script takes over.
-        let playable: Vec<Value> = list
-            .iter()
-            .map(|t| {
-                let mut t = t.clone();
-                // A track on the main server is streamed from it; one held here is read here.
-                let route = if api::b(&t, "remote") { format!("/api/v1/audio/remote/{}/file", u(&t, "id")) } else { format!("/api/v1/audio/{}/file", u(&t, "id")) };
-                t["url"] = json!(api::media_url(&route));
-                t
-            })
-            .collect();
+        let playable_list: Vec<Value> = list.iter().cloned().map(playable).collect();
+        let hidden: Vec<Value> = api::arr(&playlist, "hidden").iter().map(|t| playable(t.clone())).collect();
+        let hide_title = playlist.get("hide_title").and_then(Value::as_u64);
         let labels = json!({
+            "hidden tracks": state::tr("hidden tracks"), "click to listen": state::tr("click to listen"), "restore": state::tr("restore"), "undo": state::tr("undo"),
+            "don't play this track on this page again": state::tr("don't play this track on this page again"),
             "previous": state::tr("previous"), "next": state::tr("next"), "stop": state::tr("stop"), "shuffle": state::tr("shuffle"),
             "mute": state::tr("mute"), "playlist": state::tr("playlist"), "position": state::tr("position"), "play / pause": state::tr("play / pause"),
-            "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down)"),
+            "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)"),
+            "crossfade": state::tr("crossfade"), "crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)": state::tr("crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)"),
         });
+        // "Don't play this track" and "restore" come back here as messages, and are recorded
+        // for this page's title.
+        let on_hide = if hide_title.is_some() { "(t, hidden) => dioxus.send({ id: t.id, rom: !!t.rom, hidden })" } else { "null" };
         let js = format!(
-            "{}\nwindow.rxPlayer.start(document.getElementById({}), {}, {});",
+            "{}\nwindow.rxPlayer.start(document.getElementById({}), {}, {}, {{ keep: {keep}, hidden: {}, onHide: {on_hide} }});",
             romexplorer_types::PLAYER_JS,
             serde_json::to_string(&start_host).unwrap_or_default(),
-            serde_json::to_string(&playable).unwrap_or_default(),
-            labels
+            serde_json::to_string(&playable_list).unwrap_or_default(),
+            labels,
+            serde_json::to_string(&hidden).unwrap_or_default(),
         );
-        let _ = document::eval(&js);
+        let mut eval = document::eval(&js);
+        if let Some(title) = hide_title {
+            spawn(async move {
+                while let Ok(msg) = eval.recv::<Value>().await {
+                    let hidden = api::b(&msg, "hidden");
+                    let body = json!({ "title_id": title, "id": u(&msg, "id"), "rom": api::b(&msg, "rom"), "hidden": hidden });
+                    match api::put("/api/v1/audio/hidden", body).await {
+                        Ok(_) => ui::toast(state::tr(if hidden { "hidden from this page" } else { "restored" }), false),
+                        Err(e) => ui::toast(e.to_string(), true),
+                    }
+                }
+            });
+        }
     }));
     use_drop(|| {
-        let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
+        let _ = document::eval("if (window.rxPlayer) window.rxPlayer.leave();");
+    });
+    // A title page whose ROMs have video sound (a title movie): this title's own on / off,
+    // over the audio_rom_videos setting.
+    let videos = playlist.read().as_ref().and_then(|p| p.get("title_videos").cloned()).filter(|tv| api::b(tv, "has_video") || s(tv, "choice") != "default");
+    let switch = videos.map(|tv| {
+        let title = u(&tv, "title_id");
+        let choice = s(&tv, "choice");
+        rsx! {
+            div { class: "toolbar rx-videos",
+                label { {state::tr("Video sound for this title")} " "
+                    select {
+                        onchange: move |e| {
+                            let value = e.value();
+                            spawn(async move {
+                                match api::put(&format!("/api/v1/audio/rom/title/{title}"), json!({ "videos": value })).await {
+                                    Ok(_) => {
+                                        ui::toast(state::tr("saved"), false);
+                                        playlist.restart();
+                                    }
+                                    Err(e) => ui::toast(e.to_string(), true),
+                                }
+                            });
+                        },
+                        for (v, l) in [("default", state::tr("as in Settings")), ("on", state::tr("on")), ("off", state::tr("off"))] {
+                            option { value: "{v}", selected: choice == v, "{l}" }
+                        }
+                    }
+                }
+            }
+        }
     });
     // An empty element the script draws the bar into. It holds nothing Dioxus renders, so a
     // re-render leaves what the script put there alone.
-    rsx! { div { id: "{host}" } Html { html: String::new() } }
+    rsx! { div { id: "{host}" } Html { html: String::new() } {switch} }
+}
+
+/// A playlist track with the URL this app reads it from.
+fn playable(mut t: Value) -> Value {
+    // A track on the main server is streamed from it; one held here is read here.
+    // A ROM track is decoded out of the ROM on its first play.
+    let remote = if api::b(&t, "remote") { "remote/" } else { "" };
+    let rom = api::b(&t, "rom");
+    let route = format!("/api/v1/audio/{remote}{}{}/file", if rom { "rom/" } else { "" }, u(&t, "id"));
+    t["url"] = json!(api::media_url(&route));
+    if rom {
+        let album = [s(&t, "album"), s(&t, "rom_kind")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+        t["album"] = json!(album);
+    }
+    t
 }

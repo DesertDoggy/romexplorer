@@ -61,3 +61,23 @@
 [submodule "external/beetle-psx-libretro"]
 	path = external/beetle-psx-libretro
 	url = https://github.com/libretro/beetle-psx-libretro
+[submodule "external/vgmstream"]
+	path = external/vgmstream
+	url = https://github.com/vgmstream/vgmstream
+[submodule "external/ffmpeg"]
+	path = external/ffmpeg
+	url = https://github.com/FFmpeg/FFmpeg
+[submodule "external/game-music-emu"]
+	path = external/game-music-emu
+	url = https://github.com/libgme/game-music-emu
+[submodule "external/gme-kode54"]
+	path = external/gme-kode54
+	url = https://github.com/kode54/Game_Music_Emu
+	ignore = dirty
+[submodule "external/agbplay"]
+	path = external/agbplay
+	url = https://github.com/ipatix/agbplay
+[submodule "external/SSEQPlayer"]
+	path = external/SSEQPlayer
+	url = https://github.com/kode54/SSEQPlayer
+	ignore = dirty

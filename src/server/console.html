@@ -2197,7 +2197,8 @@ async function showCopyConfig(keep) {
 // audio: the library list, tagging, and the player on title / release / RA game pages
 // ---------------------------------------------------------------------------
 // A track on the main server (a client's `remote` one) is streamed through this machine.
-function audioUrl(id, remote) { return '/api/v1/audio/' + (remote ? 'remote/' : '') + id + '/file' + (token ? '?token=' + encodeURIComponent(token) : ''); }
+// A ROM track (`rom`) is decoded out of the ROM on its first play.
+function audioUrl(id, remote, rom) { return '/api/v1/audio/' + (remote ? 'remote/' : '') + (rom ? 'rom/' : '') + id + '/file' + (token ? '?token=' + encodeURIComponent(token) : ''); }
 
 // The media strip of a title / release page: one horizontal, scrollable row of everything the
 // media_show setting allows. Images are thumbnails that open full size; videos and audio carry
@@ -2262,7 +2263,7 @@ async function showAudio() {
   const facets = await api('/api/v1/audio/facets').catch(() => ({ tags: [], artists: [], albums: [], years: [] }));
   const opts = (list, any) => `<option value="">${esc(any)}</option>` + list.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
   view.innerHTML = `<div class="card"><p class="muted">${tr('The audio files under the folders set as audio under Config › Storage, with what their tags say. A scan walks every subfolder. Give files a keyword tag and they play on the pages of every title carrying the same tag.')}</p>
-      <div class="toolbar"><button class="btn primary" data-scan="full">${tr('Scan audio (full)')}</button><button class="btn" data-scan="new_only">${tr('Quick scan (new only)')}</button><button class="btn" id="audio-autotag" title="${tr('tag albums with the title they are named after (translations included); your own tags are left alone, and the automatic ones can be filtered and removed under Edit › Keyword tags')}">${tr('auto-tag by title')}</button><button class="btn" id="audio-fetch" title="${tr('Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep.')}">${tr('Fetch from the main server')}</button><span id="audio-scan" class="muted"></span></div></div>
+      <div class="toolbar"><button class="btn primary" data-scan="full">${tr('Scan audio (full)')}</button><button class="btn" data-scan="new_only">${tr('Quick scan (new only)')}</button><button class="btn" id="audio-autotag" title="${tr('tag albums with the title they are named after (translations included); your own tags are left alone, and the automatic ones can be filtered and removed under Edit › Keyword tags')}">${tr('auto-tag by title')}</button><button class="btn" id="audio-fetch" title="${tr('Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep.')}">${tr('Fetch from the main server')}</button><button class="btn" data-romidx="full" title="${tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them")}">${tr('Index ROM audio')}</button><button class="btn" data-romidx="new_only" title="${tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them")}">${tr('Index ROM audio (new only)')}</button><span id="audio-scan" class="muted"></span></div></div>
     <div id="grid"></div>`;
   const reload = () => showAudio();
   const tagAction = (label, path, promptText, scope) => ({ label, run: async (ids, done) => {
@@ -2301,18 +2302,39 @@ async function showAudio() {
   document.getElementById('audio-autotag').onclick = async () => {
     try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'audio_autotag' } }); watchJob(r.id, document.getElementById('audio-scan'), reload); } catch (e) { toast(e.message, true); }
   };
-  queueable(...view.querySelectorAll('[data-scan]'), document.getElementById('audio-fetch'), document.getElementById('audio-autotag'));
+  for (const b of view.querySelectorAll('[data-romidx]')) b.onclick = async () => {
+    try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'rom_audio_index', mode: b.dataset.romidx } }); watchJob(r.id, document.getElementById('audio-scan'), reload); } catch (e) { toast(e.message, true); }
+  };
+  queueable(...view.querySelectorAll('[data-scan]'), document.getElementById('audio-fetch'), document.getElementById('audio-autotag'), ...view.querySelectorAll('[data-romidx]'));
 }
 
-// The player for a page: every playable file sharing a keyword tag with the page's title.
-// Shown (and started) only when there is something to play.
+// The player for a page: every playable file sharing a keyword tag with the page's title,
+// and the music in its ROMs. Shown (and started) only when there is something to play; a
+// title page with nothing stops music kept playing from an earlier one.
 async function pagePlayer(query) {
   if (!window.rxPlayer) return;
-  let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { return; }
-  if (!list.tracks.length) return;
-  const host = el('<div></div>'); view.insertBefore(host, view.firstChild);
-  window.rxPlayer.start(host, list.tracks.map(t => Object.assign({}, t, { url: audioUrl(t.id, t.remote) })),
-    { previous: tr('previous'), next: tr('next'), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down)': tr('normalise: play every track at about the same loudness (loud tracks are turned down)') });
+  let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { window.rxPlayer.stop(); return; }
+  for (const old of view.querySelectorAll('.rx-videos')) old.remove();
+  // A title page whose ROMs have video sound (a title movie): this title's own on / off,
+  // over the audio_rom_videos setting.
+  const tv = list.title_videos;
+  if (tv && (tv.has_video || tv.choice !== 'default')) {
+    const row = el(`<div class="toolbar rx-videos"><label>${tr('Video sound for this title')} <select>${[['default', tr('as in Settings')], ['on', tr('on')], ['off', tr('off')]].map(([v, l]) => `<option value="${v}"${v === tv.choice ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label></div>`);
+    row.querySelector('select').onchange = async e => {
+      try { await api(`/api/v1/audio/rom/title/${tv.title_id}`, { method: 'PUT', body: { videos: e.target.value } }); toast(tr('saved')); for (const h of view.querySelectorAll('.rx-player-host')) h.remove(); pagePlayer(query); } catch (err) { toast(err.message, true); }
+    };
+    view.insertBefore(row, view.firstChild);
+  }
+  if (!list.tracks.length && !(list.hidden || []).length) { window.rxPlayer.stop(); return; }
+  const host = el('<div class="rx-player-host"></div>'); view.insertBefore(host, view.firstChild);
+  const playable = t => Object.assign({}, t, { url: audioUrl(t.id, t.remote, t.rom), album: t.rom ? [t.album, t.rom_kind && tr(t.rom_kind)].filter(Boolean).join(' · ') : t.album });
+  // "Don't play this track" and "restore", recorded for this page's title.
+  const onHide = list.hide_title ? async (t, hidden) => {
+    try { await api('/api/v1/audio/hidden', { method: 'PUT', body: { title_id: list.hide_title, id: t.id, rom: !!t.rom, hidden } }); toast(hidden ? tr('hidden from this page') : tr('restored')); } catch (e) { toast(e.message, true); }
+  } : null;
+  window.rxPlayer.start(host, list.tracks.map(playable),
+    { previous: tr('previous'), next: tr('next'), 'hidden tracks': tr('hidden tracks'), 'click to listen': tr('click to listen'), restore: tr('restore'), undo: tr('undo'), "don't play this track on this page again": tr("don't play this track on this page again"), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)': tr('normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)'), crossfade: tr('crossfade'), 'crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)': tr('crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)') },
+    { keep: !!list.keep_playing, hidden: (list.hidden || []).map(t => Object.assign(playable(t), { album: t.album })), onHide });
 }
 
 // ---------------------------------------------------------------------------
@@ -2368,8 +2390,9 @@ function restoreScroll() { if (pendingScroll) { const y = pendingScroll; pending
 function route() {
   if (consoleRefused) return;
   navSeq++;
-  // The music belongs to the page it started on.
-  if (window.rxPlayer) window.rxPlayer.stop();
+  // The music belongs to the page it started on -- or, with audio_keep_playing, goes on in a
+  // strip at the bottom until another title page starts its own.
+  if (window.rxPlayer) window.rxPlayer.leave();
   clearInterval(jobsTimer);
   stopWatching();
   // "#collection/titles?basegame=12": path, then list filters after "?".
@@ -2444,7 +2467,25 @@ function askLanguage() {
     <div class="langpick">${uiLanguages.map(c => `<button class="btn" data-lang="${esc(c)}"><span class="flag">${langFlag(c)}</span> ${esc(langNative(c))} <span class="muted">${esc(c.toUpperCase())}</span></button>`).join('')}</div>
     <p class="muted">${tr('Change it any time from the language menu at the top right, or under Config › Settings.')}</p>`);
   modalPinned = true;
-  for (const b of box.querySelectorAll('[data-lang]')) b.onclick = async () => { closeModal(); await setUiLanguage(b.dataset.lang); askMediaReuse(); };
+  for (const b of box.querySelectorAll('[data-lang]')) b.onclick = async () => { closeModal(); await setUiLanguage(b.dataset.lang); askAudio(); };
+}
+// First run, after the language: music on title pages, on or off. Asked once, while
+// media_show has no answer for bgm; the answer goes there (Config › Settings › Media, "show
+// in UI"). The app asks the same (screens/mode.rs ask_audio). Then the media question.
+async function askAudio() {
+  if (consoleRefused) { askMediaReuse(); return; }
+  let show; try { const s = await api('/api/v1/settings/media_show'); show = s && typeof s.value === 'object' && s.value ? s.value : {}; } catch (e) { show = {}; }
+  if (typeof show.bgm === 'boolean') { askMediaReuse(); return; }
+  const box = openModal(`<h2>${tr('Play music on title pages?')}</h2>
+    <p>${tr("Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.")}</p>
+    <p class="muted">${tr('Change it any time under Config › Settings (media_show, audio_fallback).')}</p>
+    <div class="toolbar"><span class="grow"></span><button class="btn" data-bgm="false">${tr('Off')}</button><button class="btn primary" data-bgm="true">${tr('On (recommended)')}</button></div>`);
+  modalPinned = true;
+  for (const b of box.querySelectorAll('[data-bgm]')) b.onclick = async () => {
+    closeModal();
+    try { await api('/api/v1/settings/media_show', { method: 'PUT', body: JSON.stringify({ ...show, bgm: b.dataset.bgm === 'true' }), headers: { 'Content-Type': 'application/json' } }); await loadUiSettings(); } catch (e) { toast(e.message, true); }
+    askMediaReuse();
+  };
 }
 // First run, after the language: the media folder already holds art (an earlier install's,
 // under a new database). Asked once; the answer is media_reuse_existing. The app asks the
@@ -3154,12 +3195,15 @@ async function showMergeReview() {
     explain: tr("Suggestions IGDB's grouping cannot give, one at a time: an International or Director's Cut release next to its Japanese original and the foreign versions, a Japanese release filed under another game, names that translate each other, a bundle holding single games, and titles sharing an IGDB game. Take a choice, say no (not offered again), or skip. The filters narrow the queue like the Titles list, a set included. Settings › merge_review_order puts the regional ones or the IGDB ones first."),
     path: '/api/v1/review/merges',
     columns: [
-      { key: 'kind', label: tr('kind'), render: r => badge(kinds[r.kind] || r.kind, 'dim') },
+      { key: 'kind', label: tr('kind'), render: r => badge(kinds[r.kind] || r.kind, 'dim') + (r.status !== 'pending' ? ' ' + reviewStatusBadge(r.status) : '') },
       { key: 'titles', label: tr('titles'), render: r => `<span class="link" data-rv-pos="${r.position}" title="${tr('review this one')}">${esc(r.titles.map(t => t.name).join(' · '))}</span>` },
       { key: 'platforms', label: tr('platforms'), render: r => platformBadges([...new Set(r.titles.flatMap(t => (t.platforms || '').split(', ').filter(Boolean)))].join(', ')) },
     ],
-    extraFilters: [{ key: 'kind', label: tr('kind'), type: 'select', options: () => `<option value="">${tr('every kind')}</option>` + Object.entries(kinds).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('') }],
-    extraParams: st => ({ kind: st.filters.kind }),
+    extraFilters: [
+      { key: 'kind', label: tr('kind'), type: 'select', options: () => `<option value="">${tr('every kind')}</option>` + Object.entries(kinds).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('') },
+      { key: 'state', label: tr('state'), type: 'select', options: () => `<option value="">${tr('to do')}</option><option value="done">${tr('done')}</option><option value="all">${tr('all')}</option>` },
+    ],
+    extraParams: st => ({ kind: st.filters.kind, state: st.filters.state }),
     drawCard: async (host, it, q) => {
       const rel = id => { const r = it.releases[id]; return r ? `${r.name} [${r.region || '—'}]` : '#' + id; };
       const titleCard = t => `<div class="card" style="flex:1 1 280px;margin:0">${t.cover_media_id ? `<img src="${esc(thumbUrl(t.cover_media_id))}" style="max-width:96px;max-height:96px;float:right" alt="">` : ''}
@@ -3168,18 +3212,95 @@ async function showMergeReview() {
         <ul style="margin:4px 0;padding-left:18px;font-size:12px">${t.releases.map(r => `<li>${esc(r.name)} ${regionBadges(r.region)}</li>`).join('')}${t.release_total > t.releases.length ? `<li class="muted">${trf('and {n} more', { n: t.release_total - t.releases.length })}</li>` : ''}</ul></div>`;
       const options = it.options.map((o, i) => `<div><button class="btn${o.recommended ? ' primary' : ''}" data-opt="${i}">${esc(reviewOptionLabel(o, it.variant ? tr(it.variant) : ''))}${o.recommended ? ' ' + tr('(recommended)') : ''}${o.current ? ' ' + tr('(as now)') : ''}</button>
         ${(o.groups || []).map((g, n) => `<div class="muted" style="font-size:12px;margin-left:12px">${trf('title {n}:', { n: n + 1 })} ${esc(g.map(rel).join(', '))}</div>`).join('')}</div>`).join('');
-      host.innerHTML = `<h2>${badge(REVIEW_KINDS()[it.kind] || it.kind, 'warn')} <span class="muted" style="font-weight:normal">${q.position} / ${q.total}</span></h2>
+      const taken = it.status === 'accepted';
+      host.innerHTML = `<h2>${badge(REVIEW_KINDS()[it.kind] || it.kind, 'warn')}${it.status !== 'pending' ? ' ' + reviewStatusBadge(it.status) : ''} <span class="muted" style="font-weight:normal">${q.position} / ${q.total}</span></h2>
         ${it.matched.length ? `<div class="muted">${tr('matched by:')} ${esc(it.matched.join(' ↔ '))}</div>` : ''}
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin:8px 0">${it.titles.map(titleCard).join('')}</div>
         ${it.can_look_up ? `<div class="card" style="margin:8px 0" id="rv-look"><h3>${tr('What differs')}</h3><span class="muted">${tr('asking…')}</span></div>` : ''}
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">${options}</div>`;
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">${options}</div>
+        <div class="card" style="margin:8px 0" id="rv-arrange"></div>`;
+      if (taken) for (const b of host.querySelectorAll('[data-opt]')) b.disabled = true;
+      if (!taken) arrangePanel(host.querySelector('#rv-arrange'), it, q); else host.querySelector('#rv-arrange').remove();
       for (const b of host.querySelectorAll('[data-opt]')) b.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { option: Number(b.dataset.opt) } }); q.done(); } catch (e) { toast(e.message, true); } };
       const no = el(`<button class="btn danger" title="${tr('not offered again')}">${tr('No')}</button>`);
       no.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/dismiss', { method: 'POST', body: {} }); q.done(); } catch (e) { toast(e.message, true); } };
-      q.nav.append(no);
+      if (it.status !== 'dismissed') q.nav.append(no);
       if (it.can_look_up) lookupPanel(host.querySelector('#rv-look'), it.key, {});
     },
   });
+}
+
+function reviewStatusBadge(status) {
+  return status === 'accepted' ? badge(tr('taken'), 'ok') : status === 'dismissed' ? badge(tr('said no'), 'dim') : '';
+}
+
+// The releases on a merge review card as boxes, one per title, to drag between (the app's
+// ArrangePanel): into another title, or onto "+" for a new title named after the first one
+// dropped there. A tap picks a release and a tap on a box puts it there, for touch screens.
+// Starts from the recommended choice's grouping, or from the titles as they are.
+function arrangeStart(it, fromSuggestion) {
+  const names = {};
+  for (const t of it.titles) for (const r of t.releases) names[r.id] = r;
+  for (const [id, r] of Object.entries(it.releases || {})) names[id] = r;
+  const holder = id => (it.releases[id] || {}).title_id ?? it.titles.find(t => t.releases.some(r => r.id === Number(id)))?.id;
+  const live = it.titles.filter(t => !t.deleted);
+  const rec = it.options.find(o => o.recommended && (o.groups || []).length);
+  let boxes;
+  if (fromSuggestion && rec) {
+    const used = new Set();
+    boxes = rec.groups.map(g => {
+      const count = {};
+      for (const id of g) { const t = holder(id); if (t != null) count[t] = (count[t] || 0) + 1; }
+      const pick = Object.entries(count).sort((a, b) => b[1] - a[1]).map(([t]) => Number(t)).find(t => !used.has(t) && live.some(x => x.id === t));
+      if (pick != null) used.add(pick);
+      return { title_id: pick ?? null, releases: g.slice() };
+    });
+    for (const t of live) if (!used.has(t.id)) boxes.push({ title_id: t.id, releases: [] });
+  } else {
+    boxes = live.map(t => ({ title_id: t.id, releases: [] }));
+    const placed = new Set();
+    for (const id of Object.keys(names).map(Number)) {
+      const b = boxes.find(x => x.title_id === holder(id));
+      if (b && !placed.has(id)) { b.releases.push(id); placed.add(id); }
+    }
+  }
+  return { boxes, names };
+}
+function arrangePanel(host, it, q) {
+  let { boxes, names } = arrangeStart(it, true);
+  let picked = null;
+  const titleName = id => (it.titles.find(t => t.id === id) || {}).name || '#' + id;
+  const label = id => { const r = names[id]; return r ? `${esc(r.name)} ${regionBadges(r.region)}` : '#' + id; };
+  const move = (rid, to) => {
+    for (const b of boxes) b.releases = b.releases.filter(x => x !== rid);
+    if (to === 'new') boxes.push({ title_id: null, releases: [rid] }); else boxes[to].releases.push(rid);
+    boxes = boxes.filter(b => b.title_id != null || b.releases.length);
+    picked = null; draw();
+  };
+  const draw = () => {
+    const box = (b, i) => `<div class="card" data-box="${i}" style="flex:1 1 240px;margin:0;min-height:60px">
+      <div><b>${b.title_id != null ? `<a class="link" href="#collection/titles/${b.title_id}">${esc(titleName(b.title_id))}</a>` : `${tr('new title')}: ${b.releases.length ? esc(names[b.releases[0]]?.name || '') : ''}`}</b>${b.title_id != null && !b.releases.length ? ` <span class="muted">${tr('(left empty: removed)')}</span>` : ''}</div>
+      <div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;font-size:12px">${b.releases.map(r => `<span draggable="true" data-rel="${r}" style="cursor:grab;padding:2px 4px;border-radius:4px;${picked === r ? 'outline:2px solid var(--accent, #4a8);' : ''}">⋮⋮ ${label(r)}</span>`).join('')}</div></div>`;
+    host.innerHTML = `<h3>${tr('Arrange yourself')}</h3><p class="muted" style="font-size:12px">${tr('Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.')}</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${boxes.map(box).join('')}<div class="card" data-box="new" style="flex:0 0 120px;margin:0;min-height:60px;display:flex;align-items:center;justify-content:center;font-size:28px;border-style:dashed" title="${tr('a new title')}">+</div></div>
+      <div class="toolbar" style="margin-top:8px"><button class="btn primary" id="arr-go">${tr('apply this grouping')}</button> <button class="btn" id="arr-now">${tr('start from the titles as they are')}</button> <button class="btn" id="arr-rec">${tr('start from the suggestion')}</button></div>`;
+    for (const s of host.querySelectorAll('[data-rel]')) {
+      s.ondragstart = e => { e.dataTransfer.setData('text/plain', s.dataset.rel); };
+      s.onclick = e => { e.stopPropagation(); picked = picked === Number(s.dataset.rel) ? null : Number(s.dataset.rel); draw(); };
+    }
+    for (const b of host.querySelectorAll('[data-box]')) {
+      const to = b.dataset.box === 'new' ? 'new' : Number(b.dataset.box);
+      b.ondragover = e => e.preventDefault();
+      b.ondrop = e => { e.preventDefault(); const rid = Number(e.dataTransfer.getData('text/plain')); if (rid) move(rid, to); };
+      b.onclick = () => { if (picked != null) move(picked, to); };
+    }
+    host.querySelector('#arr-now').onclick = () => { ({ boxes, names } = arrangeStart(it, false)); draw(); };
+    host.querySelector('#arr-rec').onclick = () => { ({ boxes, names } = arrangeStart(it, true)); draw(); };
+    host.querySelector('#arr-go').onclick = async () => {
+      try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { layout: boxes.map(b => ({ title_id: b.title_id, releases: b.releases })) } }); q.done(); } catch (e) { toast(e.message, true); }
+    };
+  };
+  draw();
 }
 
 // Merge review's "What differs" (the app's LookupPanel): the in-app AI's answer, saved per
@@ -3245,16 +3366,16 @@ async function showCombinedTitles() {
     b.onclick = async () => { try { const r = await api('/api/v1/jobs', { method: 'POST', body: { job_type: 'title_merge_audit' } }); toast(trf('merge audit queued #{id}', { id: r.id })); } catch (e) { toast(e.message, true); } };
     card.querySelector('h2').appendChild(document.createTextNode(' ')); card.querySelector('h2').appendChild(b);
   }, 0);
-  view.innerHTML = `<div class="card"><h2>${tr('Combined titles')}${only ? ` <span class="muted">${trf('into title #{id}', { id: esc(only) })}</span> <a class="link" href="#edit/merges">${tr('show all')}</a>` : ''}</h2><p class="muted">${tr("Every merge of one title into another — automatic (shared IGDB game or RetroAchievements hash: <span class=\"mono\">igdb:…</span>, <span class=\"mono\">ra:…</span>), from the suggestions backlog, or yours (<span class=\"mono\">manual</span>). <b>Decouple</b> splits a title back out under its old id and name, with its own releases and metadata; the automatic pass won't join the two again (merging them yourself lifts that). Merges from before titles were archived come back as a new title with the releases whose name matches, without their metadata.")}</p></div><div class="card"><div id="grid"></div></div>`;
+  view.innerHTML = `<div class="card"><h2>${tr('Combined titles')}${only ? ` <span class="muted">${trf('into title #{id}', { id: esc(only) })}</span> <a class="link" href="#edit/merges">${tr('show all')}</a>` : ''}</h2><p class="muted">${tr("Every merge of one title into another — automatic (shared IGDB game or RetroAchievements hash: <span class=\"mono\">igdb:…</span>, <span class=\"mono\">ra:…</span>), from the suggestions backlog, or yours (<span class=\"mono\">manual</span>). <b>Decouple</b> splits a title back out under its old id and name, with its own releases and metadata; the automatic pass won't join the two again (merging them yourself lifts that). Merges from before titles were archived come back as a new title with the releases whose name matches, without their metadata.")} ${tr('Splits are listed here too (why: split): undo split puts the releases back into the title they came out of.')}</p></div><div class="card"><div id="grid"></div></div>`;
   const grid = makeGrid(document.getElementById('grid'), {
     columns: [
       { key: 'merged', label: tr('merged title'), render: r => `${esc(r.merged_name)} <span class="muted">#${r.merged_title_id}</span>` },
-      { key: 'into', label: tr('into'), render: r => r.current_title_id ? `<a class="link" href="#collection/titles/${r.current_title_id}">${esc(r.current_title_name || '#' + r.current_title_id)}</a>${r.current_title_id !== r.survivor_id ? ` <span class="muted">${trf('(via #{id})', { id: r.survivor_id })}</span>` : ''}` : `<span class="muted">${tr('gone')}</span>` },
+      { key: 'into', label: tr('into'), render: r => (r.reason === 'split' ? `<span class="muted">${tr('split out of')}</span> ` : '') + (r.current_title_id ? `<a class="link" href="#collection/titles/${r.current_title_id}">${esc(r.current_title_name || '#' + r.current_title_id)}</a>${r.current_title_id !== r.survivor_id ? ` <span class="muted">${trf('(via #{id})', { id: r.survivor_id })}</span>` : ''}` : `<span class="muted">${tr('gone')}</span>`) },
       { key: 'reason', label: tr('why'), render: r => `<span class="mono">${esc(r.reason)}</span>` },
       { key: 'grade', label: tr('grade'), render: r => badge(tr(r.grade), r.grade === 'name' ? 'warn' : 'dim') },
       { key: 'releases', label: tr('releases'), cls: 'num', render: r => r.release_count ?? `<span class="muted" title="${tr('merged before titles were archived')}">?</span>` },
       { key: 'when', label: tr('merged'), render: r => fmtDate(r.merged_at) },
-      { key: 'act', label: '', render: r => r.undone_at ? `<span class="muted">${trf('decoupled {date} →', { date: fmtDate(r.undone_at) })}</span> <a class="link" href="#collection/titles/${r.restored_title_id}">#${r.restored_title_id}</a>` : `<button class="btn small" data-decouple="${r.id}">${tr('decouple')}</button>` },
+      { key: 'act', label: '', render: r => r.undone_at ? `<span class="muted">${trf(r.reason === 'split' ? 'rejoined {date} →' : 'decoupled {date} →', { date: fmtDate(r.undone_at) })}</span> <a class="link" href="#collection/titles/${r.restored_title_id}">#${r.restored_title_id}</a>` : `<button class="btn small" data-decouple="${r.id}">${tr(r.reason === 'split' ? 'undo split' : 'decouple')}</button>` },
     ],
     filters: [
       { key: 'grade', label: tr('grade'), type: 'select', options: () => `<option value="">${tr('any grade')}</option>` + ['name', 'hash', 'manual'].map(g => `<option value="${g}">${tr(g)}</option>`).join('') },
@@ -3280,8 +3401,9 @@ async function showCombinedTitles() {
   document.getElementById('grid').addEventListener('click', async e => {
     const b = e.target.closest('[data-decouple]'); if (!b) return;
     e.stopPropagation(); const r = (grid.state.items || []).find(x => String(x.id) === b.dataset.decouple);
-    if (!confirm(trf('Split "{merged}" back out of "{into}"?', { merged: r ? r.merged_name : tr('this title'), into: r ? r.current_title_name : '' }))) return;
-    try { const res = await api('/api/v1/catalog/titles/merges/' + b.dataset.decouple + '/decouple', { method: 'POST' }); toast(trf('decoupled: title #{id}', { id: res.title_id })); grid.reload(); } catch (err) { toast(err.message, true); }
+    const split = r && r.reason === 'split';
+    if (!confirm(split ? trf('Put "{merged}" back into "{current}"?', { merged: r.merged_name, current: r.current_title_name || '' }) : trf('Split "{merged}" back out of "{into}"?', { merged: r ? r.merged_name : tr('this title'), into: r ? r.current_title_name : '' }))) return;
+    try { const res = await api('/api/v1/catalog/titles/merges/' + b.dataset.decouple + '/decouple', { method: 'POST' }); toast(trf(split ? 'back in title #{id}' : 'decoupled: title #{id}', { id: res.title_id })); grid.reload(); } catch (err) { toast(err.message, true); }
   });
 }
 
@@ -4763,10 +4885,11 @@ function settingEditor(key, value) {
     case 'cache_ttl_days': { current = value ?? 90; const i = el(`<input type="number" min="1" value="${Number(current)}"> <span class="muted">${tr('days')}</span>`); const inp = el(`<label>`); inp.appendChild(i); box.appendChild(inp); i.oninput = () => { current = Number(i.value) || 1; }; return { el: box, get }; }
     case 'language_display': current = value || 'code'; box.appendChild(radios(key, [['code', tr('code (en, ja)')], ['english', tr('English name (English, Japanese)')], ['native', tr('native name (English, 日本語)')]], current, v => { current = v; })); return { el: box, get };
     case 'grid_media_type': current = value || 'box'; box.appendChild(pulldown(vocab.media_types.map(m => [m, m]), current, v => { current = v; })); return { el: box, get };
-    case 'audio_client_bitrate_kbps': case 'audio_cache_max_mb': case 'media_list_cap': case 'hasheous_parallel_downloads': case 'playmatch_batch_size': case 'media_cache_tier1_max_mb': case 'media_cache_tier2_max_mb': case 'media_thumb_px': case 'media_thumb_quality': case 'media_export_cache_max_mb': case 'definitive_pc_max_age': {
+    case 'audio_client_bitrate_kbps': case 'audio_cache_max_mb': case 'audio_ram_cache_mb': case 'media_list_cap': case 'hasheous_parallel_downloads': case 'playmatch_batch_size': case 'media_cache_tier1_max_mb': case 'media_cache_tier2_max_mb': case 'media_thumb_px': case 'media_thumb_quality': case 'media_export_cache_max_mb': case 'definitive_pc_max_age': case 'audio_rom_loop_min_s': case 'audio_rom_bgm_min_s': case 'audio_rom_jingle_min_s': {
       const spec = {
         audio_client_bitrate_kbps: [128, 48, 320, 'kbps', tr('Client mode: the bitrate a kept copy is converted to. A track already at or below it is copied as it is; DSD, ALAC and AIFF are always converted.')],
         audio_cache_max_mb: [4096, 0, null, 'MiB', tr('Size cap of the converted-audio cache; 0 = no cap. The least recently played conversions are removed first and made again when next needed.')],
+        audio_ram_cache_mb: [256, 0, null, 'MiB', tr('Memory kept for ROM music decoded for playing; 0 = off. When it is full, the least recently played tracks move to the converted-audio cache on disk.')],
         media_list_cap: [6, 1, 50, tr('per game'), tr('How many screenshots / fan art images are taken per game from one provider.')],
         hasheous_parallel_downloads: [4, 1, 16, tr('zips'), tr('Hasheous per-platform dump zips downloaded at once during a full sync.')],
         playmatch_batch_size: [100, -1, null, tr('contents'), tr('Background PlayMatch gap filler (runs only while no other sync job is queued, and only for providers with usable credentials): N = at most N contents per batch; 0 = unlimited (still 100 per request, rate-limited); -1 = off.')],
@@ -4776,6 +4899,9 @@ function settingEditor(key, value) {
         media_thumb_quality: [60, 1, 100, '', tr('Lossy thumbnail quality (1-100).')],
         definitive_pc_max_age: [10, 0, 100, tr('years'), tr('Collection › Definitive: a PC version less than this many years older than the newest version takes the "PC (Definitive tab)" place in the platform priority; an older one ranks by its own year. 0 = PC versions never move up.')],
         media_export_cache_max_mb: [1024, 0, null, 'MiB', tr('Size cap of the cache of pictures converted for emulators; 0 = no cap. The least recently used go first.')],
+        audio_rom_loop_min_s: [3, 0, null, 's', tr('ROM audio: a sound that loops is music from this length.')],
+        audio_rom_bgm_min_s: [60, 0, null, 's', tr('ROM audio: a sound that does not loop is music from this length.')],
+        audio_rom_jingle_min_s: [8, 0, null, 's', tr('ROM audio: a sound that does not loop is a jingle from this length; shorter is a sound effect.')],
       }[key];
       current = value ?? spec[0];
       box.appendChild(el(`<div class="muted">${esc(spec[4])}</div>`));
@@ -4804,7 +4930,10 @@ function settingEditor(key, value) {
     }
     case 'copy_definitive': current = value === 'definitive_only' ? value : 'best_held'; box.appendChild(el(`<div class="muted">${tr("A set's definitive-version entry (added from Collection › Definitive): which release it puts in the set.")}</div>`)); box.appendChild(radios(key, [['best_held', tr("the best version you hold, in the family's order (default)")], ['definitive_only', tr("the definitive version only: nothing of that game when a better version isn't held")]], current, v => { current = v; })); return { el: box, get };
     case 'definitive_fetch_versions': current = ['per_title', 'whole_platform'].includes(value) ? value : 'off'; box.appendChild(el(`<div class="muted">${tr("Collection › Definitive: where a game's other versions (older and newer, the base game too) come from.")}</div>`)); box.appendChild(radios(key, [['off', tr('off: only what is here — the catalogue, and IGDB platforms you synced (default)')], ['per_title', tr('per title: for games held on disk, fetch their versions from IGDB, on any platform')], ['whole_platform', tr('whole platform (deprecated): per title, and sync each platform such a version is on')]], current, v => { current = v; })); return { el: box, get };
-    case 'audio_fallback': current = ['random', 'generic_bgm'].includes(value) ? value : 'none'; box.appendChild(el(`<div class="muted">${tr('What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.')}</div>`)); box.appendChild(radios(key, [['none', tr('nothing: silent (default)')], ['random', tr('random tracks from the audio linked to other titles')], ['generic_bgm', tr('the audio files tagged generic_bgm')]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_fallback': current = ['none', 'generic_bgm'].includes(value) ? value : 'random'; box.appendChild(el(`<div class="muted">${tr('What a title with no audio linked to it plays. generic_bgm is a tag of its own: put it on audio files from the Audio tab; a title cannot carry it.')}</div>`)); box.appendChild(radios(key, [['none', tr('nothing: silent')], ['random', tr("random tracks from the audio linked to other titles, or a random title's ROM music (default)")], ['generic_bgm', tr('the audio files tagged generic_bgm')]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_title_sources': current = ['tagged', 'rom'].includes(value) ? value : 'both'; box.appendChild(el(`<div class="muted">${tr("Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.")}</div>`)); box.appendChild(radios(key, [['both', tr("tagged audio files and the music in the title's ROMs (default)")], ['tagged', tr('tagged audio files only')], ['rom', tr("the music in the title's ROMs only")]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_rom_kinds': current = ['bgm_jingle', 'all'].includes(value) ? value : 'bgm'; box.appendChild(el(`<div class="muted">${tr('Which sounds from a ROM a title page plays. Sounds are sorted by whether they loop and how long they are.')}</div>`)); box.appendChild(radios(key, [['bgm', tr('music only (default)')], ['bgm_jingle', tr('music and jingles')], ['all', tr('everything, sound effects too')]], current, v => { current = v; })); return { el: box, get };
+    case 'audio_rom_not_owned': current = ['random', 'none'].includes(value) ? value : 'related'; box.appendChild(el(`<div class="muted">${tr('ROM music for a title with no ROM here. When this finds nothing, audio_fallback decides.')}</div>`)); box.appendChild(radios(key, [['related', tr('another version you have, such as the original of a remake (default)')], ['random', tr("another title's, picked at random")], ['none', tr('none')]], current, v => { current = v; })); return { el: box, get };
     case 'release_edition_order': {
       // Every edition, in order; the two older values are what they meant.
       const kinds = ['budget', 'original', 'rerelease', 'special', 'aftermarket'];
@@ -4891,7 +5020,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -4904,6 +5033,8 @@ function settingEditor(key, value) {
         media_export_prefer_region: [true, tr("exported art: the release's own region first, whatever the provider order (default)"), tr('exported art follows the provider order')],
         scan_pkg_titles: [false, tr('read the title inside PS3 and PSP .pkg files'), tr('name them from the content id only (default)')],
         media_reuse_existing: [true, tr('take art already in the media folder instead of downloading it again (default)'), tr('always download')],
+        audio_keep_playing: [true, tr("keep a title's music playing on other screens until another title page opens (default)"), tr('stop the music when the page is left')],
+        audio_rom_videos: [false, tr('play the sound of video files in ROMs, such as title movies'), tr('leave video sound out (default)')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));
@@ -5001,6 +5132,19 @@ function settingEditor(key, value) {
         }
       }).catch(err => { t.replaceWith(el(`<div class="muted">${esc(err.message)}</div>`)); });
       return { el: box, get: () => Object.keys(current).length ? current : null };
+    }
+    case 'audio_rip_folders': {
+      let list = Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
+      box.appendChild(el(`<div class="muted">${tr('Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.')}</div>`));
+      const holder = el('<div></div>'); box.appendChild(holder);
+      const draw = () => { holder.innerHTML = ''; holder.appendChild(orderList(list, d => esc(d), o => { list = o; }, true).el); };
+      draw();
+      const add = el(`<div class="toolbar"><input type="text" style="min-width:420px" placeholder="D:\\Emulator\\ripsets"><button class="btn small" type="button">${tr('add folder')}</button></div>`);
+      const input = add.querySelector('input');
+      const push = () => { const v = input.value.trim(); if (v && !list.includes(v)) { list = [...list, v]; draw(); } input.value = ''; };
+      add.querySelector('button').onclick = push; input.onkeydown = e => { if (e.key === 'Enter') push(); };
+      box.appendChild(add);
+      return { el: box, get: () => list.length ? list : null };
     }
     case 'copy_recent_destinations': {
       let list = Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
@@ -6163,7 +6307,7 @@ async function showDbTable(table) {
   await loadUiSettings();
   refreshHeader(); setInterval(refreshHeader, 15000);
   route();
-  if (!uiLanguageChosen && !consoleRefused) askLanguage(); else askMediaReuse();
+  if (!uiLanguageChosen && !consoleRefused) askLanguage(); else askAudio();
 })();
 
 // ---------------------------------------------------------------------------
