@@ -84,3 +84,30 @@
 [submodule "external/lazyusf2"]
 	path = external/lazyusf2
 	url = https://gitlab.com/kode54/lazyusf2
+[submodule "external/highly_experimental"]
+	path = external/highly_experimental
+	url = https://gitlab.com/kode54/highly_experimental
+[submodule "external/highly_theoretical"]
+	path = external/highly_theoretical
+	url = https://gitlab.com/kode54/highly_theoretical
+[submodule "external/psflib"]
+	path = external/psflib
+	url = https://gitlab.com/kode54/psflib
+[submodule "external/mgba"]
+	path = external/mgba
+	url = https://github.com/mgba-emu/mgba
+[submodule "external/vgmtrans"]
+	path = external/vgmtrans
+	url = https://github.com/vgmtrans/vgmtrans
+[submodule "external/TinySoundFont"]
+	path = external/TinySoundFont
+	url = https://github.com/schellingb/TinySoundFont
+[submodule "external/Musashi"]
+	path = external/Musashi
+	url = https://github.com/kstenerud/Musashi
+[submodule "external/beetle-vb-libretro"]
+	path = external/beetle-vb-libretro
+	url = https://github.com/libretro/beetle-vb-libretro
+[submodule "external/libvgm"]
+	path = external/libvgm
+	url = https://github.com/ValleyBell/libvgm
