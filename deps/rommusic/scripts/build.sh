@@ -14,7 +14,8 @@ set -euo pipefail
 #   - lazyusf2 for N64 USF rips (external/lazyusf2, GPL-2.0+);
 #   - Highly Experimental for PS1/PS2 PSF rips (external/highly_experimental, GPL-3.0);
 #   - Highly Theoretical for Saturn/Dreamcast SSF/DSF rips (external/highly_theoretical, GPL-3.0);
-#   - mGBA's GBA core for GSF rips (external/mgba, MPL-2.0).
+#   - mGBA's GBA core for GSF rips (external/mgba, MPL-2.0);
+#   - Beetle WonderSwan for WSR rips (external/beetle-wswan-libretro, GPL-2.0+).
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
@@ -51,6 +52,7 @@ usf_root="$(cd "${USF_SOURCE_DIR:-$main_root/external/lazyusf2}" && pwd)"
 he_root="$(cd "${HE_SOURCE_DIR:-$main_root/external/highly_experimental}" && pwd)"
 ht_root="$(cd "${HT_SOURCE_DIR:-$main_root/external/highly_theoretical}" && pwd)"
 mgba_root="$(cd "${MGBA_SOURCE_DIR:-$main_root/external/mgba}" && pwd)"
+wswan_root="$(cd "${WSWAN_SOURCE_DIR:-$main_root/external/beetle-wswan-libretro}" && pwd)"
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-rommusic-$(date +%Y%m%d-%H%M%S).log"
@@ -125,7 +127,7 @@ apply_patches "$user_dir/patches/sseq" "$sseq_root"
 apply_patches "$user_dir/patches/usf" "$usf_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
-  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root")
+  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
@@ -170,6 +172,7 @@ cp "$repo_root/gme/gme.h" "$out_dir/include/gme.h"
   echo "highly_experimental_commit=$(git -C "$he_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "highly_theoretical_commit=$(git -C "$ht_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "mgba_commit=$(git -C "$mgba_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "beetle_wswan_commit=$(git -C "$wswan_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "compiler=${CXX:-default}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out_dir/build-info.txt"

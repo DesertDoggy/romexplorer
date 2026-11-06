@@ -21,14 +21,17 @@
 #           old Musashi copy it also carries is under MAME's licence and is not built.
 #   rgsf_*  GBA music from GSF rips through mGBA (external/mgba, MPL-2.0), its GBA core
 #           alone as a static library (LIBMGBA_ONLY: no frontends, no optional deps).
+#   rwsr_*  WonderSwan music from WSR rips through Beetle WonderSwan
+#           (external/beetle-wswan-libretro, Mednafen's core, GPL-2.0+), without its
+#           libretro frontend.
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.24)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT and MGBA_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT and WSWAN_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -153,9 +156,22 @@ get_directory_property(MGBA_DIR_DEFINES DIRECTORY ${MGBA_ROOT} COMPILE_DEFINITIO
 target_compile_definitions(rommusic_gsf PRIVATE ${MGBA_DIR_DEFINES} $<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>)
 set_target_properties(rommusic_gsf PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hidden)
 
+# --- Beetle WonderSwan, for WSR rips -----------------------------------------------------
+set(WSW ${WSWAN_ROOT}/mednafen)
+add_library(rommusic_wsr OBJECT wsr/rwsr.c
+  ${WSW}/wswan/sound.c ${WSW}/wswan/interrupt.c ${WSW}/wswan/comm.c ${WSW}/wswan/rtc.c ${WSW}/wswan/tcache.c
+  ${WSW}/wswan/gfx.c ${WSW}/wswan/wswan-memory.c ${WSW}/wswan/v30mz.c ${WSW}/wswan/eeprom.c
+  ${WSW}/mempatcher.c ${WSW}/settings.c ${WSW}/state.c ${WSW}/sound/Blip_Buffer.c
+  ${WSWAN_ROOT}/libretro-common/compat/compat_strl.c)
+target_include_directories(rommusic_wsr PRIVATE ${WSWAN_ROOT} ${WSW} ${WSW}/include ${WSWAN_ROOT}/libretro-common/include)
+set_target_properties(rommusic_wsr PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
+# The defines its own Makefile passes.
+target_compile_definitions(rommusic_wsr PRIVATE SIZEOF_DOUBLE=8 MEDNAFEN_VERSION_NUMERIC=931 MPC_FIXED_POINT STDC_HEADERS __STDC_LIMIT_MACROS __LIBRETRO__ _LOW_ACCURACY_)
+target_compile_options(rommusic_wsr PRIVATE -w -fno-strict-aliasing -fpermissive)
+
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
-  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf>)
+  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr>)
 target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>" mgba)
 set_target_properties(rommusic PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON LINKER_LANGUAGE CXX)
 if(NOT WIN32 AND NOT APPLE)

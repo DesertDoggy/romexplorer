@@ -115,3 +115,6 @@
 [submodule "external/amuse"]
 	path = external/amuse
 	url = https://github.com/derselbst/amuse
+[submodule "external/beetle-wswan-libretro"]
+	path = external/beetle-wswan-libretro
+	url = https://github.com/libretro/beetle-wswan-libretro

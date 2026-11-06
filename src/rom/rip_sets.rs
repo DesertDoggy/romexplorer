@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use super::gme::{self, Emu};
 use super::psf;
+use super::wsr;
 use super::track_timing::{self, Listener, Timing};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
@@ -65,7 +66,7 @@ type Libs = Arc<Vec<(String, Vec<u8>)>>;
 
 /// Whether `name` is a music file a rip-set player here plays.
 pub fn is_music(name: &str) -> bool {
-    gme::known_extension(name) || psf::is_track_file(name)
+    gme::known_extension(name) || psf::is_track_file(name) || wsr::is_track_file(name)
 }
 
 /// A library's key in [`RipFile::libs`].
@@ -354,6 +355,7 @@ fn read_one(folder: &Path, rel: &str) -> Result<RipFile, String> {
 enum Player {
     Gme(Emu),
     Psf(psf::Player),
+    Wsr(wsr::Player),
 }
 
 impl Player {
@@ -361,24 +363,28 @@ impl Player {
         match self {
             Player::Gme(e) => e.sample_rate(),
             Player::Psf(p) => p.sample_rate(),
+            Player::Wsr(_) => wsr::SAMPLE_RATE,
         }
     }
     fn track_count(&self) -> u32 {
         match self {
             Player::Gme(e) => e.track_count(),
             Player::Psf(_) => 1,
+            Player::Wsr(w) => w.track_count(),
         }
     }
     fn track_info(&self, track: u32) -> Result<gme::TrackInfo, String> {
         match self {
             Player::Gme(e) => e.track_info(track),
             Player::Psf(p) => Ok(p.info()),
+            Player::Wsr(w) => w.track_info(track),
         }
     }
     fn start(&mut self, track: u32) -> Result<(), String> {
         match self {
             Player::Gme(e) => e.start(track, None),
             Player::Psf(p) => p.restart(),
+            Player::Wsr(w) => w.start(track),
         }
     }
     /// The plan decides where a track ends, not a quiet passage. PSF players never stop by
@@ -392,12 +398,13 @@ impl Player {
         match self {
             Player::Gme(e) => e.play(out),
             Player::Psf(p) => p.play(out),
+            Player::Wsr(w) => w.play(out),
         }
     }
     fn ended(&self) -> bool {
         match self {
             Player::Gme(e) => e.ended(),
-            Player::Psf(_) => false,
+            Player::Psf(_) | Player::Wsr(_) => false,
         }
     }
     /// The format's name, as the index shows it.
@@ -405,6 +412,7 @@ impl Player {
         match self {
             Player::Gme(_) => gme::identify(&gme::gunzip(&file.data).unwrap_or_else(|| file.data.clone())).unwrap_or_else(|| ext_of(&file.rel).to_ascii_uppercase()),
             Player::Psf(p) => p.system().codec().to_string(),
+            Player::Wsr(_) => "WSR".into(),
         }
     }
 }
@@ -415,6 +423,9 @@ fn load(file: &RipFile) -> Result<Player, String> {
         let mut read_lib = |name: &str| libs.iter().find(|(k, _)| *k == lib_key(name)).map(|(_, d)| d.clone());
         let loaded = psf::load(&file.data, &mut read_lib)?;
         return Ok(Player::Psf(psf::Player::open(loaded, Emu::SAMPLE_RATE)?));
+    }
+    if wsr::is_track_file(&file.rel) {
+        return Ok(Player::Wsr(wsr::Player::open(file.data.clone(), &file.playlist)?));
     }
     let mut emu = Emu::open(file.data.clone(), Emu::SAMPLE_RATE)?;
     if !file.playlist.is_empty() {
@@ -655,7 +666,7 @@ fn titled_jingle(name: &str) -> bool {
 
 /// Whether any rip-set player is in this machine's `rommusic` library.
 pub fn available() -> bool {
-    gme::available() || psf::available()
+    gme::available() || psf::available() || wsr::available()
 }
 
 /// Every track of every rip set under `folder`. `progress` is told which file is being read.
