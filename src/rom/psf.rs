@@ -191,7 +191,7 @@ fn parse(data: &[u8]) -> Result<PsfFile, String> {
 }
 
 /// A time tag (`length`, `fade`): `[[h:]m:]s[.fff]`, also with `,` for the decimal point.
-fn parse_time(text: &str) -> Option<u32> {
+pub(crate) fn parse_time(text: &str) -> Option<u32> {
     let text = text.trim().replace(',', ".");
     if text.is_empty() {
         return None;
