@@ -217,12 +217,55 @@ pub async fn maybe_first_run() {
     if FIRST_RUN_CHECKED.swap(true, Ordering::SeqCst) {
         return;
     }
-    // The language first, so the mode question is asked in it.
+    // The language first, so the later questions are asked in it.
     if super::language::should_ask() {
-        super::language::ask(|| { spawn_forever(ask_mode()); });
+        super::language::ask(|| { spawn_forever(ask_audio()); });
         return;
     }
-    ask_mode().await;
+    ask_audio().await;
+}
+
+/// First run, after the language: music on title pages, on or off. Asked once, while
+/// `media_show` has no answer for bgm; the answer goes there (Config › Settings › Media,
+/// "show in UI"). The console asks the same (`askAudio`). Then the mode question.
+async fn ask_audio() {
+    if !api::is_admin() {
+        ask_mode().await;
+        return;
+    }
+    let show = api::get("/api/v1/settings/media_show").await.ok().and_then(|v| v.get("value").cloned()).filter(Value::is_object).unwrap_or_else(|| serde_json::json!({}));
+    if show.get("bgm").is_some_and(Value::is_boolean) {
+        ask_mode().await;
+        return;
+    }
+    ui::open_pinned_modal(move || rsx! { AudioDialog { show: show.clone() } });
+}
+
+#[component]
+fn AudioDialog(show: Value) -> Element {
+    let answer = std::rc::Rc::new(move |on: bool| {
+        ui::close_modal();
+        let mut value = show.clone();
+        value["bgm"] = serde_json::json!(on);
+        spawn_forever(async move {
+            match api::put("/api/v1/settings/media_show", value).await {
+                Ok(_) => state::reload_settings().await,
+                Err(e) => ui::toast(e.message, true),
+            }
+            ask_mode().await;
+        });
+    });
+    let (off, on) = (answer.clone(), answer);
+    rsx! {
+        h2 { {state::tr("Play music on title pages?")} }
+        p { {state::tr("Title pages can play music while you browse. For supported games it is the game's own soundtrack, played straight from the ROM itself (run Index ROM audio on the Audio tab first). Titles with no tagged audio and no supported ROM play random tracks instead.")} }
+        p { class: "muted", {state::tr("Change it any time under Config › Settings (media_show, audio_fallback).")} }
+        div { class: "fsfoot",
+            span { class: "grow" }
+            button { r#type: "button", class: "btn", onclick: move |_| off(false), {state::tr("Off")} }
+            button { r#type: "button", class: "btn primary", onclick: move |_| on(true), {state::tr("On (recommended)")} }
+        }
+    }
 }
 
 async fn ask_mode() {

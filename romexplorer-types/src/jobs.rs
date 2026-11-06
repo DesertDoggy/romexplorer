@@ -119,10 +119,14 @@ pub enum JobType {
     /// Asks the in-app AI which version to play for many Definitive families at once, one
     /// question per family, as the family page's "Ask the AI" does. Payload: [`AiBatchRateRequest`].
     AiBatchRate,
+    /// Looks inside this machine's ROMs (disc images, dumped folders) for music and sound
+    /// banks and records each track, so a title page can play them like a CD player.
+    /// Payload: [`RomAudioIndexRequest`].
+    RomAudioIndex,
 }
 
 impl JobType {
-    pub const ALL: [JobType; 37] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate];
+    pub const ALL: [JobType; 38] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate, JobType::RomAudioIndex];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -163,6 +167,7 @@ impl JobType {
             Self::DisplayData => "display_data",
             Self::ArtworkExport => "artwork_export",
             Self::AiBatchRate => "ai_batch_rate",
+            Self::RomAudioIndex => "rom_audio_index",
         }
     }
 
@@ -366,6 +371,15 @@ pub struct AudioScanRequest {
     pub mode: FileScanMode,
 }
 
+/// `mode`: `full` reads every ROM again; `new_only` only ROMs with no index yet.
+/// `title_id`: only that title's ROMs (the title page's button).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RomAudioIndexRequest {
+    pub mode: FileScanMode,
+    #[serde(default)]
+    pub title_id: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HashMatchRequest {
     pub directory_id: u64,
@@ -528,6 +542,8 @@ pub enum JobRequest {
     ArtworkExport(ArtworkExportRequest),
     /// Asks the AI about many Definitive families.
     AiBatchRate(AiBatchRateRequest),
+    /// Indexes the music and sound banks inside this machine's ROMs.
+    RomAudioIndex(RomAudioIndexRequest),
 }
 
 /// Which families a batch AI rating asks about: the families of `title_ids` (Definitive
@@ -760,6 +776,7 @@ impl JobRequest {
             Self::DisplayData(_) => JobType::DisplayData,
             Self::ArtworkExport(_) => JobType::ArtworkExport,
             Self::AiBatchRate(_) => JobType::AiBatchRate,
+            Self::RomAudioIndex(_) => JobType::RomAudioIndex,
         }
     }
 

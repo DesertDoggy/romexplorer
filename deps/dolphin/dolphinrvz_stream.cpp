@@ -21,6 +21,7 @@
 #include "Common/IOFile.h"
 
 #include "DiscIO/Blob.h"
+#include "DiscIO/Volume.h"
 
 // ---------------------------------------------------------------------------
 // Compressor thread count
@@ -487,7 +488,53 @@ int dolphinrvz_convert_from_source(const DolphinRvzConvertOptions* options, cons
 struct DolphinRvzReader
 {
     std::unique_ptr<DiscIO::BlobReader> blob;
+    // Set for a reader of a Wii disc's game partition: reads go through the volume, which
+    // decrypts, and `partition_size` is the partition's decrypted size.
+    std::unique_ptr<DiscIO::Volume> volume;
+    DiscIO::Partition partition = DiscIO::PARTITION_NONE;
+    u64 partition_size = 0;
 };
+
+DolphinRvzReader* dolphinrvz_reader_open_wii_game(const char* path, const char* user_dir)
+{
+    if (!path || !*path)
+    {
+        dolphinrvz_internal::SetLastError("path is required");
+        return nullptr;
+    }
+    dolphinrvz_internal::EnsureMinimalInit(user_dir);
+    std::unique_ptr<DiscIO::Volume> volume = DiscIO::CreateVolume(std::string(path));
+    if (!volume)
+    {
+        dolphinrvz_internal::SetLastError("The input file could not be opened as a disc");
+        return nullptr;
+    }
+    if (volume->GetVolumeType() != DiscIO::Platform::WiiDisc)
+    {
+        dolphinrvz_internal::SetLastError("not a Wii disc");
+        return nullptr;
+    }
+    const DiscIO::Partition partition = volume->GetGamePartition();
+    if (partition == DiscIO::PARTITION_NONE)
+    {
+        dolphinrvz_internal::SetLastError("the Wii disc has no game partition");
+        return nullptr;
+    }
+    // The partition header's data size (in 4-byte units) counts the hashed, encrypted
+    // blocks: 0x7C00 bytes of data in each 0x8000.
+    u8 raw[4];
+    if (!volume->Read(partition.offset + 0x2BC, 4, raw, DiscIO::PARTITION_NONE))
+    {
+        dolphinrvz_internal::SetLastError("the Wii partition header could not be read");
+        return nullptr;
+    }
+    const u64 encrypted = (u64(raw[0]) << 24 | u64(raw[1]) << 16 | u64(raw[2]) << 8 | u64(raw[3])) << 2;
+    auto* reader = new DolphinRvzReader{};
+    reader->volume = std::move(volume);
+    reader->partition = partition;
+    reader->partition_size = encrypted / 0x8000 * 0x7C00;
+    return reader;
+}
 
 DolphinRvzReader* dolphinrvz_reader_open(const char* path, const char* user_dir)
 {
@@ -518,6 +565,16 @@ int dolphinrvz_reader_get_info(DolphinRvzReader* reader, DolphinRvzReaderInfo* o
         dolphinrvz_internal::SetLastError("NULL argument");
         return -1;
     }
+    if (reader->volume)
+    {
+        const DiscIO::BlobReader& blob = reader->volume->GetBlobReader();
+        out->data_size = reader->partition_size;
+        out->raw_size = blob.GetRawSize();
+        out->block_size = blob.GetBlockSize();
+        out->blob_type = static_cast<int32_t>(blob.GetBlobType());
+        out->data_size_accurate = 1;
+        return 0;
+    }
     out->data_size = reader->blob->GetDataSize();
     out->raw_size = reader->blob->GetRawSize();
     out->block_size = reader->blob->GetBlockSize();
@@ -533,11 +590,20 @@ int dolphinrvz_reader_read(DolphinRvzReader* reader, uint64_t offset, void* buff
         dolphinrvz_internal::SetLastError("NULL argument");
         return -1;
     }
-    const u64 data_size = reader->blob->GetDataSize();
+    const u64 data_size = reader->volume ? reader->partition_size : reader->blob->GetDataSize();
     if (offset > data_size || size > data_size - offset)
     {
         dolphinrvz_internal::SetLastError("read past end of disc image");
         return -1;
+    }
+    if (reader->volume)
+    {
+        if (size && !reader->volume->Read(offset, size, static_cast<u8*>(buffer), reader->partition))
+        {
+            dolphinrvz_internal::SetLastError("read failed");
+            return -5;
+        }
+        return 0;
     }
     if (size && !reader->blob->Read(offset, size, static_cast<u8*>(buffer)))
     {

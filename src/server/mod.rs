@@ -837,6 +837,23 @@ async fn audio_tag_remove(State(s): State<Shared>, Json(b): Json<api::audio::Aud
     Ok(Json(json!({ "changed": api::audio::remove_tag(&s.app, &b).await? })))
 }
 
+#[derive(Deserialize)]
+struct RomTitleChoice {
+    videos: String,
+}
+
+/// A title's own choice on video sound (`default` | `on` | `off`), for the switch on its page.
+async fn audio_rom_title(State(s): State<Shared>, Path(id): Path<u64>, Json(body): Json<RomTitleChoice>) -> ApiResult<api::audio::TitleVideos> {
+    api::rom_audio::set_title_choice(&s.app, id, &body.videos).await?;
+    Ok(Json(api::rom_audio::title_videos(&s.app, id).await?))
+}
+
+/// The title page player's "don't play this track" button, and bringing a track back.
+async fn audio_hidden(State(s): State<Shared>, Json(body): Json<api::audio::HideRequest>) -> ApiResult<serde_json::Value> {
+    api::audio::set_hidden(&s.app, &body).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn audio_playlist(State(s): State<Shared>, Query(q): Query<api::audio::PlaylistQuery>) -> ApiResult<api::audio::Playlist> {
     Ok(Json(api::audio::playlist(&s.app, &q).await?))
 }
@@ -871,6 +888,69 @@ async fn media_strip(State(s): State<Shared>, Query(q): Query<api::media::StripQ
 /// Media this client does not keep, streamed from its main server.
 async fn media_remote(State(s): State<Shared>, Path(id): Path<u64>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
     relay_from_main(&s.app, &format!("/api/v1/media/{id}"), &headers).await
+}
+
+/// A track inside a ROM, decoded on its first play and then served from the audio cache
+/// (`api::rom_audio::serve`), with `Range` support like any other track.
+/// `?level=1`: the player's "normalise" is on, so the track is brought to its loudness target.
+#[derive(Deserialize, Default)]
+struct LevelQuery {
+    #[serde(default)]
+    level: Option<u8>,
+}
+
+impl LevelQuery {
+    fn on(&self) -> bool {
+        self.level == Some(1)
+    }
+    fn suffix(&self) -> &'static str {
+        if self.on() { "?level=1" } else { "" }
+    }
+}
+
+async fn audio_rom_file(State(s): State<Shared>, Path(id): Path<u64>, Query(q): Query<LevelQuery>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    let served = api::rom_audio::serve(&s.app, id, q.on()).await?;
+    match served.body {
+        Some(body) => Ok(bytes_response(body, served.mime, &headers)),
+        None => stream_file(&served.path, served.mime, Some(&headers)).await,
+    }
+}
+
+/// A body held in memory (the audio RAM cache), with the same `Range` handling as
+/// [`stream_file`].
+fn bytes_response(body: api::audio_ram::Bytes, mime: &str, headers: &HeaderMap) -> Response {
+    let len = body.len() as u64;
+    let cache = "private, max-age=3600";
+    match headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(|v| byte_range(v, len)) {
+        Some(Err(())) => (StatusCode::RANGE_NOT_SATISFIABLE, [(header::CONTENT_RANGE, format!("bytes */{len}")), (header::ACCEPT_RANGES, "bytes".to_string())]).into_response(),
+        Some(Ok((start, end))) => (
+            StatusCode::PARTIAL_CONTENT,
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (header::CACHE_CONTROL, cache.to_string()),
+                (header::ACCEPT_RANGES, "bytes".to_string()),
+                (header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}")),
+                (header::CONTENT_LENGTH, (end - start + 1).to_string()),
+            ],
+            body.slice(start as usize..=end as usize),
+        )
+            .into_response(),
+        None => (
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (header::CACHE_CONTROL, cache.to_string()),
+                (header::ACCEPT_RANGES, "bytes".to_string()),
+                (header::CONTENT_LENGTH, len.to_string()),
+            ],
+            body,
+        )
+            .into_response(),
+    }
+}
+
+/// A ROM track of the main server's, streamed.
+async fn audio_remote_rom(State(s): State<Shared>, Path(id): Path<u64>, Query(q): Query<LevelQuery>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    relay_from_main(&s.app, &format!("/api/v1/audio/rom/{id}/file{}", q.suffix()), &headers).await
 }
 
 /// A track of the main server's audio library, streamed.
@@ -2590,6 +2670,10 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/facets", get(audio_facets))
         .route("/api/v1/audio/{id}/file", get(audio_file))
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
+        .route("/api/v1/audio/rom/{id}/file", get(audio_rom_file))
+        .route("/api/v1/audio/remote/rom/{id}/file", get(audio_remote_rom))
+        .route("/api/v1/audio/rom/title/{id}", axum::routing::put(audio_rom_title))
+        .route("/api/v1/audio/hidden", axum::routing::put(audio_hidden))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/ai", get(ai_overview))

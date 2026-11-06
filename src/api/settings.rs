@@ -54,6 +54,10 @@ pub async fn list(app: &App) -> Result<Vec<SettingEntry>> {
         })
         .collect();
     for (key, value, updated_at) in stored {
+        // Kept by the title page player's "don't play this track" button, not edited here.
+        if key == super::audio::KEY_HIDDEN_FILES {
+            continue;
+        }
         if !db_settings::KNOWN_KEYS.iter().any(|(k, _)| *k == key) {
             let (group, group_label) = group_fields(&key);
             out.push(SettingEntry { key, value: Some(value), description: None, explain: Vec::new(), default: None, updated_at: Some(updated_at), group, group_label });
@@ -94,6 +98,9 @@ pub async fn set(app: &App, key: &str, value: Value) -> Result<()> {
     if key == db_settings::KEY_SCAN_PKG_TITLES {
         db_settings::apply_scan_pkg_titles(&app.pool).await?;
     }
+    if key == db_settings::KEY_AUDIO_RAM_CACHE_MB {
+        shrink_audio_ram(value.as_u64().unwrap_or(0)).await;
+    }
     // Which release of a title comes first: a title combined from several IGDB games
     // follows its first release's game.
     if [db_settings::KEY_REGION_PRIORITY, db_settings::KEY_LANGUAGE_PRIORITY, db_settings::KEY_RELEASE_EDITION_ORDER].contains(&key) {
@@ -121,7 +128,18 @@ pub async fn delete(app: &App, key: &str) -> Result<bool> {
     if [db_settings::KEY_PLATFORM_PRIORITY, crate::database::title_family::KEY_PC_MAX_AGE, crate::database::release_buckets::KEY_UNLICENSED].contains(&key) {
         super::definitive::refresh_all_later(app);
     }
+    if key == db_settings::KEY_AUDIO_RAM_CACHE_MB {
+        shrink_audio_ram(super::audio_ram::DEFAULT_MB).await;
+    }
     Ok(gone)
+}
+
+/// A smaller audio RAM cache takes effect now: what no longer fits moves to the disk cache.
+async fn shrink_audio_ram(mb: u64) {
+    let pushed_out = super::audio_ram::resize(mb.saturating_mul(1 << 20));
+    if !pushed_out.is_empty() {
+        let _ = tokio::task::spawn_blocking(move || super::audio_ram::spill(&pushed_out)).await;
+    }
 }
 
 /// The three keys that are not settings in the ordinary sense, refused on both `set` and
@@ -588,6 +606,34 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid("audio_fallback must be none, random or generic_bgm"));
             }
         }
+        db_settings::KEY_AUDIO_TITLE_SOURCES => {
+            if value.as_str().and_then(super::rom_audio::TitleSources::parse).is_none() {
+                return Err(Error::invalid("audio_title_sources must be tagged, rom or both"));
+            }
+        }
+        db_settings::KEY_AUDIO_ROM_KINDS => {
+            if value.as_str().and_then(super::rom_audio::Kinds::parse).is_none() {
+                return Err(Error::invalid("audio_rom_kinds must be bgm, bgm_jingle or all"));
+            }
+        }
+        db_settings::KEY_AUDIO_ROM_NOT_OWNED => {
+            if value.as_str().and_then(super::rom_audio::NotOwned::parse).is_none() {
+                return Err(Error::invalid("audio_rom_not_owned must be related, random or none"));
+            }
+        }
+        db_settings::KEY_AUDIO_KEEP_PLAYING | db_settings::KEY_AUDIO_ROM_VIDEOS => {
+            if !value.is_boolean() {
+                return Err(Error::invalid(format!("{key} must be true or false")));
+            }
+        }
+        db_settings::KEY_AUDIO_ROM_LOOP_MIN_S | db_settings::KEY_AUDIO_ROM_BGM_MIN_S | db_settings::KEY_AUDIO_ROM_JINGLE_MIN_S => {
+            if !value.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0) {
+                return Err(Error::invalid("the ROM audio lengths are a number of seconds, 0 or more"));
+            }
+        }
+        db_settings::KEY_AUDIO_RIP_FOLDERS => {
+            string_list(value, "audio_rip_folders")?;
+        }
         db_settings::KEY_AUDIO_CLIENT_BITRATE => {
             if !value.as_u64().is_some_and(|n| super::audio_convert::BITRATE_RANGE.contains(&(n as u32))) {
                 return Err(Error::invalid("audio_client_bitrate_kbps must be an integer 48-320"));
@@ -596,6 +642,11 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
         db_settings::KEY_AUDIO_CACHE_MAX_MB => {
             if value.as_u64().is_none() {
                 return Err(Error::invalid("audio_cache_max_mb must be a whole number of MiB (0 = no cap)"));
+            }
+        }
+        db_settings::KEY_AUDIO_RAM_CACHE_MB => {
+            if value.as_u64().is_none() {
+                return Err(Error::invalid("audio_ram_cache_mb must be a whole number of MiB (0 = off)"));
             }
         }
         super::artwork::KEY_EXPORT_CACHE_MB => {

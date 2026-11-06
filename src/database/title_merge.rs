@@ -558,13 +558,150 @@ pub async fn split_releases(pool: &MySqlPool, release_ids: &[u64]) -> Result<u64
         for hash in &hashes {
             sqlx::query("DELETE FROM title_aliases WHERE norm_hash = ? AND title_id = ?").bind(hash).bind(old).execute(&mut *tx).await?;
         }
+        let moved: Vec<u64> = rows.iter().filter(|r| r.2 == Some(*old)).map(|r| r.0).collect();
+        log_split(&mut tx, *old, new_id, &moved, None).await?;
     }
     tx.commit().await?;
     rename_canonical(pool, new_id).await?;
     for old in &olds {
         rename_canonical(pool, *old).await?;
     }
+    // The log names the new title as it ended up.
+    sqlx::query("UPDATE title_merge_log l JOIN title t ON t.id = l.merged_title_id SET l.merged_name = t.name, l.merged_norm_hash = t.norm_hash WHERE l.merged_title_id = ? AND l.reason = ?")
+        .bind(new_id)
+        .bind(SPLIT)
+        .execute(pool)
+        .await?;
     Ok(new_id)
+}
+
+/// `title_merge_log.reason` of a split: `survivor_id` is the title the releases came out of,
+/// `merged_title_id` the title they went to, the archive lists them. Shown in Edit > Combined
+/// titles beside the merges, and undone there ([`decouple`] puts them back).
+pub const SPLIT: &str = "split";
+
+/// Logs that `releases` left `from` for the new title `to`. `at` backdates it (rebuilt logs).
+async fn log_split(tx: &mut sqlx::Transaction<'_, sqlx::MySql>, from: u64, to: u64, releases: &[u64], at: Option<chrono::NaiveDateTime>) -> Result<(), DatabaseError> {
+    if releases.is_empty() {
+        return Ok(());
+    }
+    let log_id = sqlx::query(
+        "INSERT INTO title_merge_log (survivor_id, merged_title_id, merged_name, merged_norm_hash, reason, grade, merged_at) \
+         SELECT ?, id, name, norm_hash, ?, 'manual', COALESCE(?, NOW()) FROM title WHERE id = ?",
+    )
+    .bind(from)
+    .bind(SPLIT)
+    .bind(at)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_id();
+    let json = serde_json::json!({ "title_releases": releases.iter().map(|id| serde_json::json!({ "release_id": id })).collect::<Vec<_>>() }).to_string();
+    sqlx::query(
+        "INSERT INTO title_merge_archive (log_id, title_id, name, norm_name, norm_hash, category, basegame_title_id, rows_json) \
+         SELECT ?, id, name, norm_name, norm_hash, category, basegame_title_id, ? FROM title WHERE id = ?",
+    )
+    .bind(log_id)
+    .bind(json)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Undoes a split ([`SPLIT`]): its releases go back into the title they came out of (or what
+/// that was merged into since), a title they leave empty is dropped, and the two may merge
+/// again. Returns the title they are in now.
+async fn undo_split(pool: &MySqlPool, log_id: u64, survivor: u64) -> Result<u64, DatabaseError> {
+    let Some(target) = live_title(pool, survivor).await? else {
+        return Err(DatabaseError::Config("the title it was split out of no longer exists".to_string()));
+    };
+    let json: Option<String> = sqlx::query_scalar("SELECT rows_json FROM title_merge_archive WHERE log_id = ?").bind(log_id).fetch_optional(pool).await?;
+    let rows: serde_json::Value = json.as_deref().and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default();
+    let ids: Vec<u64> = rows.get("title_releases").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|r| r.get("release_id").and_then(|x| x.as_u64())).collect();
+    if ids.is_empty() {
+        return Err(DatabaseError::Config(format!("split {log_id} lists no releases")));
+    }
+    let away: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT tr.release_id, tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE WHERE tr.release_id IN ({}) AND tr.title_id <> ?",
+        in_list(&ids)
+    )))
+    .bind(target)
+    .fetch_all(pool)
+    .await?;
+    if away.is_empty() {
+        return Err(DatabaseError::Config("those releases are back in that title already".to_string()));
+    }
+    let moving: Vec<u64> = away.iter().map(|(r, _)| *r).collect::<BTreeSet<_>>().into_iter().collect();
+    let left: Vec<u64> = away.iter().map(|(_, t)| *t).collect::<BTreeSet<_>>().into_iter().collect();
+    let mut tx = pool.begin().await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE IGNORE title_releases SET title_id = ? WHERE release_id IN ({}) AND title_id IN ({})", in_list(&moving), in_list(&left)))).bind(target).execute(&mut *tx).await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM title_releases WHERE release_id IN ({}) AND title_id IN ({})", in_list(&moving), in_list(&left)))).execute(&mut *tx).await?;
+    for t in &left {
+        sqlx::query("DELETE FROM title_merge_blocks WHERE title_a = ? AND title_b = ?").bind((*t).min(target)).bind((*t).max(target)).execute(&mut *tx).await?;
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE title t SET t.deleted = TRUE WHERE t.id IN ({}) AND NOT EXISTS (SELECT 1 FROM title_releases tr WHERE tr.title_id = t.id)", in_list(&left)))).execute(&mut *tx).await?;
+    sqlx::query("UPDATE title_merge_log SET undone_at = NOW(), restored_title_id = ? WHERE id = ?").bind(target).bind(log_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    rename_canonical(pool, target).await?;
+    for t in &left {
+        if sqlx::query_scalar::<_, u64>("SELECT id FROM title WHERE id = ? AND deleted = FALSE").bind(t).fetch_optional(pool).await?.is_some() {
+            rename_canonical(pool, *t).await?;
+        }
+    }
+    log::info!("title split {log_id} undone: {} release(s) back in title {target}", moving.len());
+    Ok(target)
+}
+
+/// Rebuilds the log of splits made from Edit › Merge review before splits were logged: each
+/// accepted "another game inside a title" suggestion names the releases it split off, and the
+/// titles they are in now (other than the one they came out of) are what it made. Once; not
+/// on a client, whose log comes from its server.
+pub async fn log_past_splits_once(pool: &MySqlPool) -> Result<u64, DatabaseError> {
+    const NAME: &str = "split_log_backfill";
+    if sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(NAME).fetch_optional(pool).await?.is_some() {
+        return Ok(0);
+    }
+    let mut logged = 0u64;
+    if super::settings::instance_mode(pool).await? != super::settings::InstanceMode::Client {
+        let taken = sqlx::query("SELECT title_ids, CAST(detail AS CHAR) AS detail, updated_at FROM title_merge_suggestions WHERE kind = ? AND status = 'accepted' AND detail IS NOT NULL ORDER BY updated_at")
+            .bind(super::title_review::KIND_SPLIT_NAMES)
+            .fetch_all(pool)
+            .await?;
+        for row in taken {
+            let Some(from) = row.try_get::<String, _>("title_ids")?.split(',').find_map(|x| x.trim().parse::<u64>().ok()) else { continue };
+            let Some(detail) = row.try_get::<Option<String>, _>("detail")?.and_then(|d| serde_json::from_str::<super::title_review::ReviewDetail>(&d).ok()) else { continue };
+            let at: Option<chrono::NaiveDateTime> = row.try_get("updated_at")?;
+            let home = live_title(pool, from).await?;
+            for group in detail.options.first().map(|o| &o.groups[..]).unwrap_or(&[]).iter().skip(1).filter(|g| !g.is_empty()) {
+                let found: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "SELECT tr.title_id, tr.release_id FROM title_releases tr JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE WHERE tr.release_id IN ({})",
+                    in_list(group)
+                )))
+                .fetch_all(pool)
+                .await?;
+                let mut by_title: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+                for (t, r) in found.into_iter().filter(|(t, _)| Some(*t) != home) {
+                    by_title.entry(t).or_default().push(r);
+                }
+                for (to, releases) in by_title {
+                    let have: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_merge_log WHERE reason = ? AND merged_title_id = ? AND survivor_id = ?").bind(SPLIT).bind(to).bind(from).fetch_one(pool).await?;
+                    if have > 0 {
+                        continue;
+                    }
+                    let mut tx = pool.begin().await?;
+                    log_split(&mut tx, from, to, &releases, at).await?;
+                    tx.commit().await?;
+                    logged += 1;
+                }
+            }
+        }
+        if logged > 0 {
+            log::info!("{logged} earlier split(s) added to the merge log");
+        }
+    }
+    sqlx::query("INSERT IGNORE INTO data_migrations (name) VALUES (?)").bind(NAME).execute(pool).await?;
+    Ok(logged)
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -579,6 +716,35 @@ pub struct DedupeSummary {
     pub suggestions: u64,
     /// Merged titles renamed to their (changed) canonical name.
     pub renamed: u64,
+}
+
+/// SQL for `title_review::unlicensed` on `release.name`: No-Intro's "(Unl)", "(Pirate)",
+/// "(Aftermarket)", TOSEC's "(PD)" and "[p]" (MariaDB's REGEXP, case-insensitive by collation).
+pub const UNLICENSED_SQL: &str = r"'\\((Unl|Pirate|Aftermarket|PD)\\)|\\[p[0-9]*\\]'";
+
+/// Those of `titles` whose every game release is pirate, unlicensed or public domain. Such a
+/// title never merges with one holding a retail release, automatically or as a suggestion: no
+/// publisher sold it, so it is no retail game's other name -- a shared IGDB or
+/// RetroAchievements game between the two is a wrong link (a pirate of the same name is under
+/// the retail title from the import already).
+pub async fn unlicensed_only(pool: &MySqlPool, titles: &[u64]) -> Result<HashSet<u64>, DatabaseError> {
+    let mut out = HashSet::new();
+    for chunk in titles.chunks(2000) {
+        let sql = format!(
+            "SELECT tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE AND r.material IS NULL \
+             WHERE tr.title_id IN ({}) GROUP BY tr.title_id HAVING MIN(r.name REGEXP {UNLICENSED_SQL}) = 1",
+            in_list(chunk)
+        );
+        out.extend(sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?);
+    }
+    Ok(out)
+}
+
+/// `group` as the merges it may make: its retail titles together, its unlicensed-only ones
+/// ([`unlicensed_only`]) together, never one with the other.
+pub fn by_licence(group: &[u64], unlicensed: &HashSet<u64>) -> Vec<Vec<u64>> {
+    let (unl, retail): (Vec<u64>, Vec<u64>) = group.iter().partition(|t| unlicensed.contains(t));
+    [retail, unl].into_iter().filter(|g| !g.is_empty()).collect()
 }
 
 /// Groups of titles to merge: titles linked to the same game, connected through a shared
@@ -664,7 +830,7 @@ pub(crate) async fn live_title(pool: &MySqlPool, title_id: u64) -> Result<Option
         if live.is_some() {
             return Ok(Some(id));
         }
-        let next: Option<u64> = sqlx::query_scalar("SELECT survivor_id FROM title_merge_log WHERE merged_title_id = ? AND undone_at IS NULL ORDER BY id DESC LIMIT 1").bind(id).fetch_optional(pool).await?;
+        let next: Option<u64> = sqlx::query_scalar("SELECT survivor_id FROM title_merge_log WHERE merged_title_id = ? AND undone_at IS NULL AND reason <> 'split' ORDER BY id DESC LIMIT 1").bind(id).fetch_optional(pool).await?;
         match next {
             Some(n) if n != id => id = n,
             _ => return Ok(None),
@@ -707,13 +873,14 @@ pub async fn merge_log(pool: &MySqlPool, search: Option<&str>, survivor: Option<
         cond.push_str(&format!(" AND l.grade = '{g}'"));
     }
     if survivor.is_some() {
-        cond.push_str(" AND l.survivor_id = ?");
+        // A title's own splits too: what was split out of it, and what it was split out of.
+        cond.push_str(" AND (l.survivor_id = ? OR (l.reason = 'split' AND l.merged_title_id = ?))");
     }
     let like = search.map(str::trim).filter(|x| !x.is_empty()).map(|x| format!("%{}%", x.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
     if like.is_some() {
         cond.push_str(" AND (l.merged_name LIKE ? OR l.survivor_id IN (SELECT id FROM title WHERE name LIKE ?))");
     }
-    let binds: Vec<String> = survivor.map(|id| id.to_string()).into_iter().chain(like.iter().flat_map(|l| [l.clone(), l.clone()])).collect();
+    let binds: Vec<String> = survivor.into_iter().flat_map(|id| [id.to_string(), id.to_string()]).chain(like.iter().flat_map(|l| [l.clone(), l.clone()])).collect();
     let mut count = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM title_merge_log l{cond}")));
     for b in &binds {
         count = count.bind(b.clone());
@@ -758,9 +925,10 @@ pub async fn merge_log(pool: &MySqlPool, search: Option<&str>, survivor: Option<
 /// companies, media, keywords and provider links (the survivor keeps its copies of the
 /// metadata; only the releases move). Older merges get a new title under the old name with
 /// the releases whose name gives that name. Either way the name stops being an alias of the
-/// survivor and the pair is blocked from automatic re-merging. Returns the title id.
+/// survivor and the pair is blocked from automatic re-merging. Returns the title id. A logged
+/// split ([`SPLIT`]) is undone instead: its releases go back ([`undo_split`]).
 pub async fn decouple(pool: &MySqlPool, log_id: u64) -> Result<u64, DatabaseError> {
-    let row = sqlx::query("SELECT survivor_id, merged_title_id, merged_name, merged_norm_hash, undone_at FROM title_merge_log WHERE id = ?")
+    let row = sqlx::query("SELECT survivor_id, merged_title_id, merged_name, merged_norm_hash, reason, undone_at FROM title_merge_log WHERE id = ?")
         .bind(log_id)
         .fetch_optional(pool)
         .await?
@@ -769,6 +937,9 @@ pub async fn decouple(pool: &MySqlPool, log_id: u64) -> Result<u64, DatabaseErro
         return Err(DatabaseError::Config("that merge was already decoupled".to_string()));
     }
     let survivor: u64 = row.try_get("survivor_id")?;
+    if row.try_get::<String, _>("reason")? == SPLIT {
+        return undo_split(pool, log_id, survivor).await;
+    }
     let merged_title_id: u64 = row.try_get("merged_title_id")?;
     let mut name: String = row.try_get("merged_name")?;
     let norm_hash: String = row.try_get("merged_norm_hash")?;
@@ -882,7 +1053,8 @@ pub async fn decouple_grade(pool: &MySqlPool, grade: &str, limit: u32) -> Result
     if !GRADES.contains(&grade) {
         return Err(DatabaseError::Config(format!("grade {grade:?} must be one of {GRADES:?}")));
     }
-    let ids: Vec<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE grade = ? AND undone_at IS NULL ORDER BY id DESC LIMIT ?").bind(grade).bind(limit).fetch_all(pool).await?;
+    // Splits are not merges: "decouple all" leaves them.
+    let ids: Vec<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE grade = ? AND reason <> ? AND undone_at IS NULL ORDER BY id DESC LIMIT ?").bind(grade).bind(SPLIT).bind(limit).fetch_all(pool).await?;
     let mut s = DecoupleSummary::default();
     for id in ids {
         match decouple(pool, id).await {
@@ -893,7 +1065,7 @@ pub async fn decouple_grade(pool: &MySqlPool, grade: &str, limit: u32) -> Result
             }
         }
     }
-    s.remaining = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM title_merge_log WHERE grade = ? AND undone_at IS NULL").bind(grade).fetch_one(pool).await? as u64;
+    s.remaining = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM title_merge_log WHERE grade = ? AND reason <> ? AND undone_at IS NULL").bind(grade).bind(SPLIT).fetch_one(pool).await? as u64;
     Ok(s)
 }
 
@@ -948,8 +1120,8 @@ async fn merge_shared(pool: &MySqlPool, groups: BTreeMap<String, Vec<u64>>, reas
         for r in sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await? {
             platforms.entry(r.try_get("title_id")?).or_default().insert(merge_platform(r.try_get("app_platform_id")?));
         }
-        for group in merge_groups(&live, &platforms) {
-            let group = without_blocked(&group, &blocks);
+        let unlicensed = unlicensed_only(pool, &live).await?;
+        for group in merge_groups(&live, &platforms).into_iter().flat_map(|g| by_licence(&without_blocked(&g, &blocks), &unlicensed)) {
             if group.len() < 2 {
                 continue;
             }
@@ -1071,6 +1243,8 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
     )
     .fetch_all(pool)
     .await?;
+    let ids: Vec<u64> = candidates.iter().filter_map(|c| c.try_get::<u64, _>("id").ok()).chain(known.values().flat_map(|k| k.values().copied())).collect::<BTreeSet<_>>().into_iter().collect();
+    let unlicensed = unlicensed_only(pool, &ids).await?;
     let mut groups: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     for c in candidates {
         // Only titles touched since the last pass (the others were looked at then).
@@ -1080,7 +1254,11 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
         let platform: u16 = c.try_get("platform")?;
         let name: String = c.try_get("norm_name")?;
         if let Some((_, target)) = known.get(&platform).and_then(|k| suffix_match(&name, k)) {
-            groups.entry(target).or_default().insert(c.try_get("id")?);
+            let id: u64 = c.try_get("id")?;
+            if unlicensed.contains(&id) != unlicensed.contains(&target) {
+                continue;
+            }
+            groups.entry(target).or_default().insert(id);
         }
     }
     for (target, jp) in &groups {
@@ -1143,6 +1321,35 @@ pub async fn merge_side_platforms(pool: &MySqlPool, log_id: u64) -> Result<Optio
     Ok((!merged_side.is_empty() && !survivor_side.is_empty()).then_some((merged_side, survivor_side)))
 }
 
+/// Whether merge `log_id` (still standing) joined a title of nothing but pirate or unlicensed
+/// game releases, as the merge archived them, to a survivor whose other game releases include
+/// a retail one -- what [`unlicensed_only`] keeps apart now.
+pub async fn merge_joined_unlicensed(pool: &MySqlPool, log_id: u64) -> Result<bool, DatabaseError> {
+    let survivor: Option<u64> = sqlx::query_scalar("SELECT survivor_id FROM title_merge_log WHERE id = ? AND undone_at IS NULL").bind(log_id).fetch_optional(pool).await?;
+    let Some(survivor) = survivor else { return Ok(false) };
+    let Some(survivor) = live_title(pool, survivor).await? else { return Ok(false) };
+    let merged: Vec<(u64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT r.id, CAST(r.name REGEXP {UNLICENSED_SQL} AS SIGNED) FROM title_merge_archive a, JSON_TABLE(a.rows_json, '$.title_releases[*]' COLUMNS (release_id BIGINT UNSIGNED PATH '$.release_id')) j \
+         JOIN `release` r ON r.id = j.release_id AND r.deleted = FALSE AND r.material IS NULL WHERE a.log_id = ?"
+    )))
+    .bind(log_id)
+    .fetch_all(pool)
+    .await?;
+    if merged.is_empty() || merged.iter().any(|(_, unl)| *unl == 0) {
+        return Ok(false);
+    }
+    let theirs: Vec<u64> = merged.iter().map(|(id, _)| *id).collect();
+    let retail: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE AND r.material IS NULL \
+         WHERE tr.title_id = ? AND r.id NOT IN ({}) AND NOT (r.name REGEXP {UNLICENSED_SQL})",
+        in_list(&theirs)
+    )))
+    .bind(survivor)
+    .fetch_one(pool)
+    .await?;
+    Ok(retail > 0)
+}
+
 pub(crate) async fn game_platforms(pool: &MySqlPool, titles: &[u64]) -> Result<HashMap<u64, BTreeSet<u16>>, DatabaseError> {
     let mut platforms: HashMap<u64, BTreeSet<u16>> = HashMap::new();
     for chunk in titles.chunks(2000) {
@@ -1191,12 +1398,17 @@ async fn refresh_suggestions(pool: &MySqlPool, only: Option<&str>, progress: &Pr
     let mut live: Vec<String> = Vec::with_capacity(shared.len());
     let (shared, untouched): (Vec<_>, Vec<_>) = shared.into_iter().partition(|(_, titles, _)| scope.touches(titles));
     live.extend(untouched.into_iter().map(|(id, _, _)| id));
-    let platforms = game_platforms(pool, &shared.iter().flat_map(|(_, titles, _)| titles.iter().copied()).collect::<BTreeSet<u64>>().into_iter().collect::<Vec<_>>()).await?;
+    let every: Vec<u64> = shared.iter().flat_map(|(_, titles, _)| titles.iter().copied()).collect::<BTreeSet<u64>>().into_iter().collect();
+    let platforms = game_platforms(pool, &every).await?;
+    let unlicensed = unlicensed_only(pool, &every).await?;
     let total = shared.len() as u64;
     for (i, (igdb_id, titles, all_strong)) in shared.into_iter().enumerate() {
         progress.report(i as u64, Some(total), &format!("suggestions: {} of {total}", i + 1)).await;
-        // Only the titles a merge would actually join: those sharing a platform with another.
-        let mut mergeable: Vec<u64> = merge_groups(&titles, &platforms).into_iter().flatten().collect();
+        // Only the titles a merge would actually join: those sharing a platform with another,
+        // retail with retail (or else unlicensed with unlicensed), never across.
+        let groups: Vec<Vec<u64>> = merge_groups(&titles, &platforms).into_iter().flat_map(|g| by_licence(&g, &unlicensed)).filter(|g| g.len() > 1).collect();
+        let retail: Vec<u64> = groups.iter().filter(|g| !unlicensed.contains(&g[0])).flatten().copied().collect();
+        let mut mergeable: Vec<u64> = if retail.is_empty() { groups.into_iter().flatten().collect() } else { retail };
         if mergeable.is_empty() {
             continue;
         }
@@ -1384,6 +1596,14 @@ mod tests {
         assert_eq!(suffix_match("genso legend of hogehoge", &known).map(|(_, id)| id), Some(8));
         assert_eq!(suffix_match("legend of hogehoge ii", &known), None, "the whole name isn't a suffix match");
         assert_eq!(suffix_match("a b c legend of hogehoge", &known), None, "at most two leading words");
+    }
+
+    #[test]
+    fn unlicensed_titles_merge_only_with_their_own() {
+        let unl: HashSet<u64> = [3, 4].into_iter().collect();
+        assert_eq!(by_licence(&[1, 2, 3, 4], &unl), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(by_licence(&[1, 3], &unl), vec![vec![1], vec![3]]);
+        assert_eq!(by_licence(&[1, 2], &unl), vec![vec![1, 2]]);
     }
 
     #[test]

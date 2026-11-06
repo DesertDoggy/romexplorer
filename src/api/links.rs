@@ -366,7 +366,7 @@ pub async fn link_title(app: &App, title_id: u64, spec: &LinkSpec) -> Result<sup
     let mut title_id = title_id;
     if provider == Provider::Igdb {
         crate::database::title_merge::dedupe_by_igdb(pool, Some(&provider_id), &crate::database::jobs::Progress::none()).await?;
-        let survivor: Option<u64> = sqlx::query_scalar("SELECT survivor_id FROM title_merge_log WHERE merged_title_id = ? ORDER BY id DESC LIMIT 1").bind(title_id).fetch_optional(pool).await?;
+        let survivor: Option<u64> = sqlx::query_scalar("SELECT survivor_id FROM title_merge_log WHERE merged_title_id = ? AND reason <> 'split' ORDER BY id DESC LIMIT 1").bind(title_id).fetch_optional(pool).await?;
         title_id = survivor.unwrap_or(title_id);
     }
     super::catalog::title(app, title_id).await
