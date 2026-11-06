@@ -104,7 +104,7 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 | Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--rips`. | 44.1 kHz |
 
 **Rip sets.** A rip file or zip dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
-HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF and Dreamcast DSF (with the set's library
+HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF, Dreamcast DSF and GBA GSF (with the set's library
 files beside them). Track names and lengths come from the set's playlist (`.m3u`) or the
 file's own tags. PSF and PSF2 need a PS2 BIOS image of your own, given with `--ps2-bios`;
 without it they are skipped.

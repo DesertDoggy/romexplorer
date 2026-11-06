@@ -8,6 +8,7 @@
 //! | PS2 | `psf2`, `minipsf2`, `psf2lib` | the same |
 //! | Saturn | `ssf`, `minissf`, `ssflib` | Highly Theoretical (`rsega_`, `deps/rommusic/sega/rsega.c`) |
 //! | Dreamcast | `dsf`, `minidsf`, `dsflib` | the same |
+//! | GBA | `gsf`, `minigsf`, `gsflib` | mGBA's GBA core (`rgsf_`, `deps/rommusic/gsf/rgsf.c`) |
 //!
 //! Highly Experimental runs on a kernel built from a real PS2 BIOS, which never ships with
 //! romexplorer: [`set_ps2_bios`] takes one from the user's own files. Without it PS1 and PS2
@@ -38,9 +39,11 @@ const TRACK_EXTENSIONS: &[(&str, System)] = &[
     ("minissf", System::Saturn),
     ("dsf", System::Dreamcast),
     ("minidsf", System::Dreamcast),
+    ("gsf", System::Gba),
+    ("minigsf", System::Gba),
 ];
 /// Library files, which are not tracks themselves.
-const LIB_EXTENSIONS: &[&str] = &["usflib", "psflib", "psf2lib", "ssflib", "dsflib"];
+const LIB_EXTENSIONS: &[&str] = &["usflib", "psflib", "psf2lib", "ssflib", "dsflib", "gsflib"];
 /// Nothing in this family is larger.
 const MAX_FILE_BYTES: usize = 32 << 20;
 /// How deep `_lib` files may name further libraries.
@@ -69,6 +72,7 @@ pub enum System {
     Ps2,
     Saturn,
     Dreamcast,
+    Gba,
 }
 
 impl System {
@@ -79,6 +83,7 @@ impl System {
             0x11 => Some(System::Saturn),
             0x12 => Some(System::Dreamcast),
             0x21 => Some(System::N64),
+            0x22 => Some(System::Gba),
             _ => None,
         }
     }
@@ -90,6 +95,7 @@ impl System {
             System::Ps2 => "PlayStation 2",
             System::Saturn => "Saturn",
             System::Dreamcast => "Dreamcast",
+            System::Gba => "Game Boy Advance",
         }
     }
 
@@ -100,6 +106,7 @@ impl System {
             System::Ps2 => "PSF2",
             System::Saturn => "SSF",
             System::Dreamcast => "DSF",
+            System::Gba => "GSF",
         }
     }
 
@@ -110,6 +117,7 @@ impl System {
             System::N64 => usf_api().is_some(),
             System::Ps1 | System::Ps2 => psx_api().is_some_and(|api| unsafe { (api.bios_ready)() } != 0),
             System::Saturn | System::Dreamcast => sega_api().is_some(),
+            System::Gba => gsf_api().is_some(),
         }
     }
 
@@ -117,7 +125,7 @@ impl System {
     fn native_rate(self) -> Option<u32> {
         match self {
             System::N64 => None,
-            System::Ps1 | System::Saturn | System::Dreamcast => Some(44_100),
+            System::Ps1 | System::Saturn | System::Dreamcast | System::Gba => Some(44_100),
             System::Ps2 => Some(48_000),
         }
     }
@@ -129,7 +137,8 @@ struct PsfFile {
     version: u8,
     reserved: Vec<u8>,
     /// The unpacked program area: a PS-X EXE for PS1, a load address and sound RAM bytes
-    /// for Saturn and Dreamcast. USF and PSF2 keep everything in `reserved`.
+    /// for Saturn and Dreamcast, an entry point, offset and size and the cartridge bytes for
+    /// GBA. USF and PSF2 keep everything in `reserved`.
     program: Vec<u8>,
     /// In file order; a name given twice is a value of several lines.
     tags: Vec<(String, String)>,
@@ -250,6 +259,33 @@ fn psf2_files(reserved: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         dir(reserved, 0, "", 0, &mut out)?;
     }
     Ok(out)
+}
+
+/// The cartridge image a GSF's sections make: each program area is an entry point, an
+/// offset into the cartridge, a size and that many bytes, laid in load order so a later one
+/// overwrites an earlier one.
+fn gsf_image(sections: &[PsfFile]) -> Result<Vec<u8>, String> {
+    const DAMAGED: &str = "the rip's data is damaged";
+    let mut image = Vec::new();
+    for section in sections.iter().filter(|s| !s.program.is_empty()) {
+        let p = &section.program;
+        let offset = (u32_at(p, 4).ok_or(DAMAGED)? & 0x01FF_FFFF) as usize;
+        let size = u32_at(p, 8).ok_or(DAMAGED)? as usize;
+        let data = p.get(12..).ok_or(DAMAGED)?;
+        let data = &data[..size.min(data.len())];
+        let end = offset + data.len();
+        if end > 0x0200_0000 {
+            return Err(DAMAGED.into());
+        }
+        if image.len() < end {
+            image.resize(end, 0);
+        }
+        image[offset..end].copy_from_slice(data);
+    }
+    if image.is_empty() {
+        return Err("the rip holds no cartridge data".into());
+    }
+    Ok(image)
 }
 
 /// A file and the libraries it builds on, in load order, with the top file's tags.
@@ -435,6 +471,33 @@ fn sega_api() -> Option<&'static SegaApi> {
     .as_ref()
 }
 
+type GsfNewFn = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
+type GsfRenderFn = unsafe extern "C" fn(*mut c_void, *mut i16, usize) -> i32;
+
+struct GsfApi {
+    _lib: Library,
+    new: GsfNewFn,
+    render: GsfRenderFn,
+    free: FreeFn,
+}
+
+fn gsf_api() -> Option<&'static GsfApi> {
+    static API: OnceLock<Option<GsfApi>> = OnceLock::new();
+    API.get_or_init(|| {
+        let path = native_lib::rommusic_library()?;
+        unsafe {
+            let lib = Library::new(&path).ok()?;
+            Some(GsfApi {
+                new: *lib.get(b"rgsf_new\0").ok()?,
+                render: *lib.get(b"rgsf_render\0").ok()?,
+                free: *lib.get(b"rgsf_free\0").ok()?,
+                _lib: lib,
+            })
+        }
+    })
+    .as_ref()
+}
+
 /// The size of a PS2 BIOS image, the only kind the PS1/PS2 player can build its kernel from.
 pub const PS2_BIOS_BYTES: usize = 0x40_0000;
 
@@ -463,7 +526,7 @@ pub fn psx_installed() -> bool {
 
 /// Whether any player of this family is in this machine's `rommusic` library.
 pub fn available() -> bool {
-    usf_api().is_some() || psx_api().is_some() || sega_api().is_some()
+    usf_api().is_some() || psx_api().is_some() || sega_api().is_some() || gsf_api().is_some()
 }
 
 /// One track, playing.
@@ -560,6 +623,15 @@ impl Player {
                     }
                 }
             }
+            System::Gba => {
+                let api = gsf_api().ok_or("the GBA music player (rommusic) is not installed")?;
+                let image = gsf_image(&self.loaded.sections)?;
+                let state = unsafe { (api.new)(image.as_ptr(), image.len()) };
+                if state.is_null() {
+                    return Err("the GBA player would not start this rip".into());
+                }
+                self.state = state;
+            }
         }
         Ok(())
     }
@@ -588,6 +660,12 @@ impl Player {
                     return Err("the Saturn/Dreamcast player stopped on an error".into());
                 }
             }
+            System::Gba => {
+                let api = gsf_api().ok_or("the GBA music player (rommusic) is not installed")?;
+                if unsafe { (api.render)(self.state, out.as_mut_ptr(), out.len() / 2) } < 0 {
+                    return Err("the music stopped making sound".into());
+                }
+            }
         }
         Ok(())
     }
@@ -609,6 +687,11 @@ impl Player {
             }
             System::Saturn | System::Dreamcast => {
                 if let Some(api) = sega_api() {
+                    unsafe { (api.free)(self.state) };
+                }
+            }
+            System::Gba => {
+                if let Some(api) = gsf_api() {
                     unsafe { (api.free)(self.state) };
                 }
             }
@@ -734,6 +817,20 @@ mod tests {
         let files = psf2_files(&fs).unwrap();
         assert_eq!(files, vec![("PSF2.IRX".to_string(), file.to_vec()), ("sub/a.bin".to_string(), b"A!".to_vec())]);
         assert!(psf2_files(&fs[..fs.len() - 3]).is_err(), "a cut-off block");
+    }
+
+    #[test]
+    fn gsf_sections_overlay_into_one_cartridge() {
+        let section = |offset: u32, data: &[u8]| {
+            let mut p = 0x0800_0000u32.to_le_bytes().to_vec();
+            p.extend_from_slice(&offset.to_le_bytes());
+            p.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            p.extend_from_slice(data);
+            PsfFile { version: 0x22, program: p, ..Default::default() }
+        };
+        let image = gsf_image(&[section(0x0800_0000, b"ABCDEF"), section(0x0800_0002, b"xy")]).unwrap();
+        assert_eq!(image, b"ABxyEF");
+        assert!(gsf_image(&[]).is_err());
     }
 
     #[test]

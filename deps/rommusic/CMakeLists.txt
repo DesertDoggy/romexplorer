@@ -19,14 +19,16 @@
 #   rsega_* Saturn and Dreamcast music from SSF/DSF rips through Highly Theoretical
 #           (external/highly_theoretical, GPL-3.0), with its C68K core (GPL-2.0+); the
 #           old Musashi copy it also carries is under MAME's licence and is not built.
+#   rgsf_*  GBA music from GSF rips through mGBA (external/mgba, MPL-2.0), its GBA core
+#           alone as a static library (LIBMGBA_ONLY: no frontends, no optional deps).
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.24)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT and HT_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT and MGBA_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -137,14 +139,31 @@ target_compile_definitions(rommusic_sega PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN H
 set_target_properties(rommusic_sega PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
 target_compile_options(rommusic_sega PRIVATE -w -fno-strict-aliasing)
 
+# --- mGBA's GBA core, for GSF rips ----------------------------------------------------
+set(LIBMGBA_ONLY ON CACHE BOOL "" FORCE)
+set(M_CORE_GB OFF CACHE BOOL "" FORCE)
+set(M_CORE_GBA ON CACHE BOOL "" FORCE)
+add_subdirectory(${MGBA_ROOT} mgba EXCLUDE_FROM_ALL)
+add_library(rommusic_gsf OBJECT gsf/rgsf.c)
+target_include_directories(rommusic_gsf PRIVATE ${MGBA_ROOT}/include ${CMAKE_CURRENT_BINARY_DIR}/mgba/include)
+# Compiled with the library's own feature defines: they decide the layout of its structs, and
+# its generated flags.h does not carry all of them.
+get_directory_property(MGBA_DIR_DEFINES DIRECTORY ${MGBA_ROOT} COMPILE_DEFINITIONS)
+target_compile_definitions(rommusic_gsf PRIVATE ${MGBA_DIR_DEFINES} $<TARGET_PROPERTY:mgba,COMPILE_DEFINITIONS>)
+set_target_properties(rommusic_gsf PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hidden)
+
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
-  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega>)
-target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>")
+  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf>)
+target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>" mgba)
 set_target_properties(rommusic PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON LINKER_LANGUAGE CXX)
 if(NOT WIN32 AND NOT APPLE)
   # A symbol nothing defines fails the link here, as it does on Windows, not at load time.
   target_link_options(rommusic PRIVATE -Wl,--no-undefined)
+endif()
+if(NOT APPLE)
+  # mGBA's functions are its own business: only the rgsf_ calls are exported.
+  target_link_options(rommusic PRIVATE -Wl,--exclude-libs,libmgba.a)
 endif()
 if(WIN32)
   # The MinGW runtime (libstdc++, libgcc, winpthread) linked in, so the DLL imports only
