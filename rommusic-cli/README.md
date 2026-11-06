@@ -57,6 +57,7 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--seconds N` | SNES: how long the game runs before its music is taken (default 20). |
 | `--start` | SNES: press Start now and then while the game runs, for games whose music starts after the title screen. |
 | `--list` | Only list the tracks; write nothing. A looping track shows one pass and "loop"; its file plays the loop twice and fades. |
+| `--verbose` | Say why a file or track was skipped. |
 | `--no-pause` | Don't wait for Enter at the end. It only waits in the window that opens for a dropped file. |
 | `-h`, `--help` / `-V`, `--version` | Help and version. |
 

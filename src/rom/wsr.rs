@@ -3,7 +3,7 @@
 //! the `rommusic` library as `rwsr_` (`deps/rommusic/wsr/rwsr.c`).
 //!
 //! A WSR gives neither a track count nor names: those come from the set's NEZplug-style
-//! playlist (`file.wsr::WSR,$NN,title,length,loop,fade`). Without one, the song numbers from
+//! playlist (`file.wsr::WSR,$NN,title,length,loop,fade`), whose numbers are the song numbers. Without one, the song numbers from
 //! the header's first song up are tried and the silent ones dropped.
 //!
 //! The core keeps its state in globals, so one WSR plays at a time in the process: opening a
@@ -71,8 +71,8 @@ struct Track {
     fade_ms: Option<u32>,
 }
 
-/// The tracks a NEZplug playlist lists: `$hex` numbers are song numbers as they are, decimal
-/// ones count from 1 (rip_sets has already moved up a playlist that counts from 0).
+/// The tracks a NEZplug playlist lists. Numbers, `$hex` or decimal, are the song numbers the
+/// game is given: WSR sets' playlists start from 0 or 1 as the game's songs do.
 fn playlist_tracks(playlist: &[u8]) -> Vec<Track> {
     let text = String::from_utf8_lossy(playlist);
     let mut out = Vec::new();
@@ -86,7 +86,7 @@ fn playlist_tracks(playlist: &[u8]) -> Vec<Track> {
         let Some(number) = fields.get(1).map(|n| n.trim()) else { continue };
         let song = match number.strip_prefix('$') {
             Some(hex) => u32::from_str_radix(hex, 16).ok(),
-            None => number.parse::<u32>().ok().and_then(|n| n.checked_sub(1)),
+            None => number.parse::<u32>().ok(),
         };
         let Some(song) = song.filter(|&s| s < 256) else { continue };
         let field = |i: usize| fields.get(i).map(|s| s.trim()).unwrap_or("");
@@ -209,6 +209,6 @@ mod tests {
         let tracks = playlist_tracks(list);
         assert_eq!(tracks.len(), 2);
         assert_eq!((tracks[0].song, tracks[0].title.as_str(), tracks[0].length_ms, tracks[0].fade_ms), (0x1A, "Title, One", Some(90_000), Some(5_000)));
-        assert_eq!((tracks[1].song, tracks[1].length_ms), (2, None));
+        assert_eq!((tracks[1].song, tracks[1].length_ms), (3, None));
     }
 }
