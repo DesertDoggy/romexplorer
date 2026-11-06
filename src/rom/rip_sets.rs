@@ -106,7 +106,9 @@ fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
             out.push(b'\n');
         }
     }
-    if from_zero { moved_up(&out) } else { out }
+    // A WSR's playlist numbers are the song numbers the game is given, whichever they
+    // start from: wsr reads them as they are.
+    if from_zero && !ext_of(file).eq("wsr") { moved_up(&out) } else { out }
 }
 
 /// Groups music files with the playlists found next to them (same folder, or same archive).
@@ -208,7 +210,7 @@ fn collect(folder: &Path) -> Vec<RipFile> {
 
 /// Whether `name` is a file a rip set is made of: music played here, a library such music
 /// builds on, or a playlist.
-fn is_rip_member(name: &str) -> bool {
+pub fn is_rip_member(name: &str) -> bool {
     is_music(name) || psf::is_lib_file(name) || ext_of(name) == "m3u"
 }
 
@@ -244,13 +246,25 @@ fn collect_set(set: &Path) -> Vec<RipFile> {
     let mut libs: Vec<(String, Vec<u8>)> = Vec::new();
     let base = set.to_string_lossy().into_owned();
     if let Some(format) = archive_format(&base) {
-        let Ok(archive) = SevenZipArchive::open(set, format, |_, _| true) else { return Vec::new() };
+        let archive = match SevenZipArchive::open(set, format, |_, _| true) {
+            Ok(archive) => archive,
+            Err(e) => {
+                log::warn!("{base}: {e}");
+                return Vec::new();
+            }
+        };
         let wanted: Vec<i32> = (0..archive.entry_count()).filter(|&i| archive.entry(i).is_ok_and(|e| !e.is_dir && e.size <= MAX_FILE_BYTES && is_rip_member(&e.path))).collect();
         if !wanted.iter().any(|&i| archive.entry(i).is_ok_and(|e| is_music(&e.path))) {
             return Vec::new();
         }
         for i in wanted {
-            let (Ok(entry), Ok(data)) = (archive.entry(i), archive.read_entry(i)) else { continue };
+            let (entry, data) = match (archive.entry(i), archive.read_entry(i)) {
+                (Ok(entry), Ok(data)) => (entry, data),
+                (_, Err(e)) | (Err(e), _) => {
+                    log::warn!("{base} #{i}: {e}");
+                    continue;
+                }
+            };
             let rel = format!("{base}|{}", entry.path);
             if ext_of(&entry.path) == "m3u" {
                 m3us.push((String::new(), rel, data));
@@ -842,6 +856,12 @@ mod tests {
         assert_eq!(playlist_for("Game.gbs", &m3us), b"Game.gbs::GBS,1,Prologue,1:00\nGame.gbs::GBS,13,Town\nGame.gbs::GBS,$0C,Hex\n");
         let one = vec![("b.m3u".to_string(), b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field\n".to_vec())];
         assert_eq!(playlist_for("Game.nsf", &one), b"Game.nsf::NSF,1,Title\nGame.nsf::NSF,2,Field\n");
+    }
+
+    #[test]
+    fn a_wsr_playlist_keeps_its_song_numbers() {
+        let zero = vec![("a.m3u".to_string(), b"Game.wsr::WSR,0,Title\nGame.wsr::WSR,1,Field\n".to_vec())];
+        assert_eq!(playlist_for("Game.wsr", &zero), b"Game.wsr::WSR,0,Title\nGame.wsr::WSR,1,Field\n");
     }
 
     #[test]

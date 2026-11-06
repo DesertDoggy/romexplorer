@@ -47,6 +47,7 @@ Options:
   --start           SNES: press Start now and then while it runs, for games whose music
                     begins after the title screen
   --list            only list the tracks
+  --verbose         say why a file or track was skipped
   --no-pause        don't wait for Enter at the end (it only waits in a window opened
                     for a dropped file)
   -h, --help        this text
@@ -85,7 +86,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--all" => a.all = true,
             "--list" => a.list = true,
             "--start" => a.press_start = true,
-            "--no-pause" => {}
+            "--no-pause" | "--verbose" => {}
             "--cd" => a.rate = Some(44_100),
             "--dvd" => (a.rate, a.bits) = (Some(48_000), if a.bits == 0 { 24 } else { a.bits }),
             "--hires" => (a.rate, a.bits) = (Some(96_000), if a.bits == 0 { 24 } else { a.bits }),
@@ -166,9 +167,17 @@ fn main() {
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     NO_PAUSE.store(args.iter().any(|a| a == "--no-pause"), std::sync::atomic::Ordering::Relaxed);
-    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(if args.iter().any(|a| a == "--verbose") { log::LevelFilter::Debug } else { log::LevelFilter::Warn });
+    if args.is_empty() {
+        // Opened with nothing dropped on it: the usage stays up until Enter.
         println!("{}", usage());
         return finish(0);
+    }
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        // Asked for in a shell (or by a script, which has no one to press Enter).
+        println!("{}", usage());
+        return 0;
     }
     if args.iter().any(|a| a == "-V" || a == "--version") {
         println!("rommusic {VERSION}");
@@ -353,6 +362,9 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         if !found.is_empty() {
             plan.jobs.extend(tracks(Path::new(""), found));
             return Ok(plan);
+        }
+        if member.as_deref().is_some_and(rip_sets::is_rip_member) {
+            return Err("a rip set, but none of its tracks could be played (--verbose says why)".into());
         }
     }
     if member.as_deref().is_some_and(|m| rom_audio::may_hold_audio(Path::new(m))) {
@@ -540,6 +552,22 @@ fn clean(name: &str) -> String {
 /// A stored path made safe, keeping its folders.
 fn clean_path(path: &str) -> PathBuf {
     path.split(['/', '\\']).filter(|p| !p.is_empty() && *p != "." && *p != "..").map(clean).collect()
+}
+
+/// romexplorer's own messages on stderr: warnings, and with --verbose why things were skipped.
+struct Logger;
+static LOGGER: Logger = Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.target().starts_with("romexplorer")
+    }
+    fn log(&self, r: &log::Record) {
+        if self.enabled(r.metadata()) {
+            eprintln!("  ({}) {}", r.level().as_str().to_lowercase(), r.args());
+        }
+    }
+    fn flush(&self) {}
 }
 
 /// Dropping files on rommusic opens a console that closes as soon as it ends: keep it open
