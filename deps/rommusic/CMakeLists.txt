@@ -127,7 +127,8 @@ add_library(rommusic_psx OBJECT psx/rpsx.c ${HE_SOURCES})
 target_include_directories(rommusic_psx PRIVATE ${HE_ROOT}/Core)
 target_compile_definitions(rommusic_psx PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN HAVE_STDINT_H)
 set_target_properties(rommusic_psx PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
-target_compile_options(rommusic_psx PRIVATE -w -fno-strict-aliasing)
+# Old C that GCC 14 and later reject by default; -fpermissive keeps it a warning.
+target_compile_options(rommusic_psx PRIVATE -w -fno-strict-aliasing -fpermissive)
 
 # --- Highly Theoretical: the Saturn SCSP and Dreamcast AICA, with their sound CPUs -----
 set(HT ${HT_ROOT}/Core)
@@ -137,7 +138,7 @@ target_include_directories(rommusic_sega PRIVATE ${HT})
 # Its op files are generated as switch cases, so the switch build it is.
 target_compile_definitions(rommusic_sega PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN HAVE_STDINT_H C68K_NO_JUMP_TABLE)
 set_target_properties(rommusic_sega PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
-target_compile_options(rommusic_sega PRIVATE -w -fno-strict-aliasing)
+target_compile_options(rommusic_sega PRIVATE -w -fno-strict-aliasing -fpermissive)
 
 # --- mGBA's GBA core, for GSF rips ----------------------------------------------------
 set(LIBMGBA_ONLY ON CACHE BOOL "" FORCE)
