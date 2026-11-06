@@ -29,6 +29,7 @@ pub mod rom_audio;
 pub mod rom_songs;
 pub mod rip_match;
 pub mod rip_sets;
+pub mod psf;
 pub mod sseq;
 pub mod track_timing;
 pub mod snes_apu;

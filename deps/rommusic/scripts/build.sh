@@ -10,7 +10,8 @@ set -euo pipefail
 #   - the SNES sound chip driven through its ports (rspc_);
 #   - agbplay's playback core for GBA music from the ROM (LGPL-3.0, C++23);
 #   - kode54's SSEQ Player for DS sequenced music (external/SSEQPlayer, WTFPL), with
-#     deps/rommusic/patches/sseq/ applied first.
+#     deps/rommusic/patches/sseq/ applied first;
+#   - lazyusf2 for N64 USF rips (external/lazyusf2, GPL-2.0+).
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
@@ -43,6 +44,7 @@ fork_root="$(cd "${GME_FORK_DIR:-$main_root/external/gme-kode54}" && pwd)"
 agb_root="$(cd "${AGBPLAY_SOURCE_DIR:-$main_root/external/agbplay}" && pwd)"
 fmt_root="$(cd "${FMT_SOURCE_DIR:-$main_root/external/fmt}" && pwd)"
 sseq_root="$(cd "${SSEQ_SOURCE_DIR:-$main_root/external/SSEQPlayer}" && pwd)"
+usf_root="$(cd "${USF_SOURCE_DIR:-$main_root/external/lazyusf2}" && pwd)"
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-rommusic-$(date +%Y%m%d-%H%M%S).log"
@@ -116,7 +118,7 @@ apply_patches "$user_dir/patches" "$fork_root"
 apply_patches "$user_dir/patches/sseq" "$sseq_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
-  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root")
+  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
@@ -157,6 +159,7 @@ cp "$repo_root/gme/gme.h" "$out_dir/include/gme.h"
   echo "fork_commit=$(git -C "$fork_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "agbplay_commit=$(git -C "$agb_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "sseq_commit=$(git -C "$sseq_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "lazyusf2_commit=$(git -C "$usf_root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "compiler=${CXX:-default}"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out_dir/build-info.txt"

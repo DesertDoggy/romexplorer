@@ -81,3 +81,6 @@
 	path = external/SSEQPlayer
 	url = https://github.com/kode54/SSEQPlayer
 	ignore = dirty
+[submodule "external/lazyusf2"]
+	path = external/lazyusf2
+	url = https://gitlab.com/kode54/lazyusf2

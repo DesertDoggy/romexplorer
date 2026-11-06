@@ -11,14 +11,16 @@
 #           core only, fmt header-only from external/fmt.
 #   rsseq_* DS sequenced music (SSEQ in a sound archive) through kode54's SSEQ Player
 #           (external/SSEQPlayer, WTFPL), with deps/rommusic/patches/sseq/ applied.
+#   rusf_*  N64 music from USF rips through lazyusf2 (external/lazyusf2, GPL-2.0+): the
+#           cached interpreter, no recompiler, so it builds the same everywhere.
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.24)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT and SSEQ_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT and USF_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -91,8 +93,26 @@ target_include_directories(rommusic_sseq PRIVATE ${SSEQ_ROOT})
 target_compile_options(rommusic_sseq PRIVATE -Wno-deprecated-declarations)
 set_target_properties(rommusic_sseq PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# --- the N64 player ------------------------------------------------------------------
+set(USF_SOURCES ai/ai_controller api/callbacks debugger/dbg_decoder main/main main/rom main/savestates
+  main/util memory/memory pi/cart_rom pi/pi_controller r4300/cached_interp r4300/cp0 r4300/cp1
+  r4300/exception r4300/interupt r4300/mi_controller r4300/pure_interp r4300/r4300 r4300/r4300_core
+  r4300/recomp r4300/reset r4300/tlb r4300/empty_dynarec rdp/rdp_core ri/rdram ri/rdram_detection_hack
+  ri/ri_controller rsp/rsp_core rsp_hle/alist rsp_hle/alist_audio rsp_hle/alist_naudio rsp_hle/alist_nead
+  rsp_hle/audio rsp_hle/cicx105 rsp_hle/hle rsp_hle/hvqm rsp_hle/jpeg rsp_hle/memory rsp_hle/mp3
+  rsp_hle/musyx rsp_hle/plugin rsp_hle/re2 rsp_lle/rsp si/cic si/game_controller si/n64_cic_nus_6105
+  si/pif si/si_controller usf/usf usf/barray usf/resampler vi/vi_controller)
+list(TRANSFORM USF_SOURCES PREPEND ${USF_ROOT}/)
+list(TRANSFORM USF_SOURCES APPEND .c)
+add_library(rommusic_usf OBJECT usf/rusf.c ${USF_SOURCES})
+target_include_directories(rommusic_usf PRIVATE ${USF_ROOT})
+set_target_properties(rommusic_usf PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
+# Upstream's own build is this lax: old mupen64plus code.
+target_compile_options(rommusic_usf PRIVATE -w -fno-strict-aliasing)
+
 # --- the library ----------------------------------------------------------------------
-add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>)
+add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
+  $<TARGET_OBJECTS:rommusic_usf>)
 target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>")
 set_target_properties(rommusic PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON LINKER_LANGUAGE CXX)
 if(WIN32)

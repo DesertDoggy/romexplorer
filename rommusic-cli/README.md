@@ -52,7 +52,7 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--format flac` | The default: FLAC only. |
 | `--format original` | The music as the game stores it, in an `original` folder, and no FLAC. |
 | `--format both` | FLAC and the original files. |
-| `--rips DIR` | A folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC; loose, in folders, or zipped) to match cartridges against by their content. File names do not matter. Can be given more than once. |
+| `--rips DIR` | A folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC; loose, in folders, or zipped) to use for the cartridges given. File names do not matter. Can be given more than once. |
 | `--seconds N` | SNES: how long the game runs before its music is taken (default 20). |
 | `--start` | SNES: press Start now and then while the game runs, for games whose music starts after the title screen. |
 | `--list` | Only list the tracks; write nothing. A looping track shows one pass and "loop"; its file plays the loop twice and fades. |
@@ -96,24 +96,24 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 | Nintendo DS | Music in the sound archive (SDAT): streams as stored, and sequenced songs played with their instruments as the DS does. | as stored; sequenced 48 kHz |
 | Nintendo 3DS | Music files in images stored decrypted. Encrypted images are not read. | as stored |
 | Game Boy Advance | Straight from the ROM, for games using Nintendo's standard sound engine (about half of all games). | 48 kHz |
-| SNES / Super Famicom | The game runs for a few seconds without a screen, and its sound chip is then played on. This gives one track, usually the title music. SA-1, Super FX and S-DD1 games are not supported. With `--rips`, a matching SPC set gives every song instead. | 32 kHz |
-| NES, Famicom, FDS | Matching NSF set from `--rips`. | 44.1 kHz |
-| Game Boy, Game Boy Color | Matching GBS set from `--rips`. | 44.1 kHz |
-| PC Engine, SuperGrafx | Matching HES set from `--rips`. | 44.1 kHz |
-| Master System, Game Gear, SG-1000, MSX, ColecoVision | Matching SGC or KSS set from `--rips`. | 44.1 kHz |
+| SNES / Super Famicom | The game runs for a few seconds without a screen, and its sound chip is then played on. This gives one track, usually the title music. SA-1, Super FX and S-DD1 games are not supported. With `--rips`, the game's SPC set gives every song instead. | 32 kHz |
+| NES, Famicom, FDS | The game's NSF set from `--rips`. | 44.1 kHz |
+| Game Boy, Game Boy Color | The game's GBS set from `--rips`. | 44.1 kHz |
+| PC Engine, SuperGrafx | The game's HES set from `--rips`. | 44.1 kHz |
+| Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--rips`. | 44.1 kHz |
 
 **Rip sets.** A rip file or zip dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
-HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP. Track names and lengths come from the set's playlist
-(`.m3u`) when it has one.
+HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, and N64 USF (with the set's `.usflib` beside it). Track
+names and lengths come from the set's playlist (`.m3u`) or the file's own tags.
 
-**Zip and 7z.** A zipped cartridge is read for Game Boy Advance and SNES and for matching rip
-sets. A zipped disc image is not read; extract it first.
+**Zip and 7z.** A zipped cartridge is read for Game Boy Advance and SNES, and with `--rips`. A zipped disc image is not read; extract it first.
 
 ### Not supported yet
 
-- Nintendo 64, WonderSwan, Neo Geo Pocket, Virtual Boy.
+- WonderSwan, Neo Geo Pocket, Virtual Boy.
+- Nintendo 64 straight from the ROM. A USF set is played when dropped on its own.
 - Mega Drive / Genesis and 32X straight from the ROM. A VGM set is played when dropped on its
-  own, but it can't be matched to a ROM.
+  own.
 - Game Boy Advance games that use other sound engines.
 - Sequenced music on 3DS.
 - PS3, Vita and downloaded packages.

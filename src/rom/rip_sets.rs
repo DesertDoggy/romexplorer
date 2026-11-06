@@ -12,7 +12,10 @@
 
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
 use super::gme::{self, Emu};
+use super::psf;
 use super::track_timing::{self, Listener, Timing};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
@@ -53,6 +56,21 @@ struct RipFile {
     data: Vec<u8>,
     /// The `.m3u` lines that name this file.
     playlist: Vec<u8>,
+    /// For a PSF-family track, the library files beside it (same folder or archive), by
+    /// lower-case base name: shared by the set's tracks, as one can be megabytes.
+    libs: Libs,
+}
+
+type Libs = Arc<Vec<(String, Vec<u8>)>>;
+
+/// Whether `name` is a music file a rip-set player here plays.
+pub fn is_music(name: &str) -> bool {
+    gme::known_extension(name) || psf::is_track_file(name)
+}
+
+/// A library's key in [`RipFile::libs`].
+fn lib_key(name: &str) -> String {
+    base_name(name).to_ascii_lowercase()
 }
 
 /// A playlist's text as UTF-8. Rip sets' playlists are often not: Shift-JIS for Japanese
@@ -91,14 +109,20 @@ fn playlist_for(file: &str, m3us: &[(String, Vec<u8>)]) -> Vec<u8> {
 }
 
 /// Groups music files with the playlists found next to them (same folder, or same archive).
-fn with_playlists(music: Vec<(String, Vec<u8>)>, m3us: &[(String, String, Vec<u8>)]) -> Vec<RipFile> {
+fn with_playlists(music: Vec<(String, Vec<u8>)>, m3us: &[(String, String, Vec<u8>)], libs: Vec<(String, String, Vec<u8>)>) -> Vec<RipFile> {
+    let mut by_group: std::collections::HashMap<String, Vec<(String, Vec<u8>)>> = std::collections::HashMap::new();
+    for (group, rel, data) in libs {
+        by_group.entry(group).or_default().push((lib_key(&rel), data));
+    }
+    let by_group: std::collections::HashMap<String, Libs> = by_group.into_iter().map(|(g, l)| (g, Arc::new(l))).collect();
     music
         .into_iter()
         .map(|(rel, data)| {
             let group = group_of(&rel);
             let beside: Vec<(String, Vec<u8>)> = m3us.iter().filter(|(g, _, _)| *g == group).map(|(_, n, t)| (n.clone(), t.clone())).collect();
             let playlist = playlist_for(rel.rsplit('|').next().unwrap_or(&rel), &beside);
-            RipFile { rel, data, playlist }
+            let libs = by_group.get(&group).cloned().unwrap_or_default();
+            RipFile { rel, data, playlist, libs }
         })
         .collect()
 }
@@ -139,10 +163,15 @@ fn walk(folder: &Path) -> Vec<(String, PathBuf, u64)> {
 fn collect(folder: &Path) -> Vec<RipFile> {
     let mut music = Vec::new();
     let mut m3us: Vec<(String, String, Vec<u8>)> = Vec::new();
+    let mut libs: Vec<(String, String, Vec<u8>)> = Vec::new();
     for (rel, path, size) in walk(folder) {
-        if gme::known_extension(&rel) && size <= MAX_FILE_BYTES {
+        if is_music(&rel) && size <= MAX_FILE_BYTES {
             if let Ok(data) = std::fs::read(&path) {
                 music.push((rel, data));
+            }
+        } else if psf::is_lib_file(&rel) && size <= MAX_FILE_BYTES {
+            if let Ok(data) = std::fs::read(&path) {
+                libs.push((group_of(&rel), rel, data));
             }
         } else if ext_of(&rel) == "m3u" && size <= 1 << 20 {
             if let Ok(text) = std::fs::read(&path) {
@@ -156,26 +185,30 @@ fn collect(folder: &Path) -> Vec<RipFile> {
                     continue;
                 }
                 let is_m3u = ext_of(&entry.path) == "m3u";
-                if !gme::known_extension(&entry.path) && !is_m3u {
+                let is_lib = psf::is_lib_file(&entry.path);
+                if !is_music(&entry.path) && !is_m3u && !is_lib {
                     continue;
                 }
                 let Ok(data) = archive.read_entry(i) else { continue };
                 if is_m3u {
                     m3us.push((rel.clone(), format!("{rel}|{}", entry.path), data));
+                } else if is_lib {
+                    libs.push((rel.clone(), entry.path, data));
                 } else {
                     music.push((format!("{rel}|{}", entry.path), data));
                 }
             }
         }
     }
-    with_playlists(music, &m3us)
+    with_playlists(music, &m3us, libs)
 }
 
 // --- rip libraries ----------------------------------------------------------------------
 
-/// Whether `name` is a file a rip set is made of: music gme plays, or a playlist.
+/// Whether `name` is a file a rip set is made of: music played here, a library such music
+/// builds on, or a playlist.
 fn is_rip_member(name: &str) -> bool {
-    gme::known_extension(name) || ext_of(name) == "m3u"
+    is_music(name) || psf::is_lib_file(name) || ext_of(name) == "m3u"
 }
 
 /// The sets in a rip library folder: each zip or 7z holding rip files, and each folder
@@ -193,7 +226,7 @@ pub fn sets_in(library: &Path) -> Vec<PathBuf> {
             } else if kind.is_file() {
                 if archive_format(&name).is_some() {
                     sets.insert(entry.path());
-                } else if gme::known_extension(&name) {
+                } else if is_music(&name) {
                     sets.insert(dir.clone());
                 }
             }
@@ -207,11 +240,12 @@ pub fn sets_in(library: &Path) -> Vec<PathBuf> {
 fn collect_set(set: &Path) -> Vec<RipFile> {
     let mut music = Vec::new();
     let mut m3us: Vec<(String, String, Vec<u8>)> = Vec::new();
+    let mut libs: Vec<(String, Vec<u8>)> = Vec::new();
     let base = set.to_string_lossy().into_owned();
     if let Some(format) = archive_format(&base) {
         let Ok(archive) = SevenZipArchive::open(set, format, |_, _| true) else { return Vec::new() };
         let wanted: Vec<i32> = (0..archive.entry_count()).filter(|&i| archive.entry(i).is_ok_and(|e| !e.is_dir && e.size <= MAX_FILE_BYTES && is_rip_member(&e.path))).collect();
-        if !wanted.iter().any(|&i| archive.entry(i).is_ok_and(|e| gme::known_extension(&e.path))) {
+        if !wanted.iter().any(|&i| archive.entry(i).is_ok_and(|e| is_music(&e.path))) {
             return Vec::new();
         }
         for i in wanted {
@@ -219,6 +253,8 @@ fn collect_set(set: &Path) -> Vec<RipFile> {
             let rel = format!("{base}|{}", entry.path);
             if ext_of(&entry.path) == "m3u" {
                 m3us.push((String::new(), rel, data));
+            } else if psf::is_lib_file(&entry.path) {
+                libs.push((lib_key(&entry.path), data));
             } else {
                 music.push((rel, data));
             }
@@ -236,18 +272,21 @@ fn collect_set(set: &Path) -> Vec<RipFile> {
             let Ok(data) = std::fs::read(&path) else { continue };
             if ext_of(&name) == "m3u" {
                 m3us.push((String::new(), name, data));
+            } else if psf::is_lib_file(&name) {
+                libs.push((lib_key(&name), data));
             } else {
                 music.push((name, data));
             }
         }
     }
     // One set is one group: its playlists may name any of its files.
+    let libs: Libs = Arc::new(libs);
     music
         .into_iter()
         .map(|(rel, data)| {
             let beside: Vec<(String, Vec<u8>)> = m3us.iter().map(|(_, n, t)| (n.clone(), t.clone())).collect();
             let playlist = playlist_for(rel.rsplit('|').next().unwrap_or(&rel), &beside);
-            RipFile { rel, data, playlist }
+            RipFile { rel, data, playlist, libs: libs.clone() }
         })
         .collect()
 }
@@ -261,28 +300,34 @@ pub fn set_fingerprint(set: &Path) -> Option<super::rip_match::Fingerprint> {
 
 /// Reads one rip-set file again, by its place, with its playlist.
 fn read_one(folder: &Path, rel: &str) -> Result<RipFile, String> {
-    let (data, m3us) = match rel.split_once('|') {
+    let psf_track = psf::is_track_file(rel);
+    let (data, m3us, libs) = match rel.split_once('|') {
         None => {
             let data = std::fs::read(folder.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
             let dir = folder.join(rel).parent().map(Path::to_path_buf).unwrap_or_else(|| folder.to_path_buf());
-            let m3us = std::fs::read_dir(&dir)
-                .map(|entries| {
-                    let mut list: Vec<(String, Vec<u8>)> = entries
-                        .flatten()
-                        .filter(|e| ext_of(&e.file_name().to_string_lossy()) == "m3u")
-                        .filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?)))
-                        .collect();
-                    list.sort();
-                    list
-                })
-                .unwrap_or_default();
-            (data, m3us)
+            let beside = |want: &dyn Fn(&str) -> bool| -> Vec<(String, Vec<u8>)> {
+                std::fs::read_dir(&dir)
+                    .map(|entries| {
+                        let mut list: Vec<(String, Vec<u8>)> = entries
+                            .flatten()
+                            .filter(|e| want(&e.file_name().to_string_lossy()))
+                            .filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?)))
+                            .collect();
+                        list.sort();
+                        list
+                    })
+                    .unwrap_or_default()
+            };
+            let m3us = beside(&|n| ext_of(n) == "m3u");
+            let libs = if psf_track { beside(&|n| psf::is_lib_file(n)).into_iter().map(|(n, d)| (lib_key(&n), d)).collect() } else { Vec::new() };
+            (data, m3us, libs)
         }
         Some((archive_rel, member)) => {
             let format = archive_format(archive_rel).ok_or_else(|| format!("{archive_rel} is not a zip or 7z"))?;
             let archive = SevenZipArchive::open(&folder.join(archive_rel), format, |_, _| true).map_err(|e| format!("{archive_rel}: {e}"))?;
             let mut data = None;
             let mut m3us = Vec::new();
+            let mut libs = Vec::new();
             for i in 0..archive.entry_count() {
                 let Ok(entry) = archive.entry(i) else { continue };
                 if entry.path == member {
@@ -291,17 +336,86 @@ fn read_one(folder: &Path, rel: &str) -> Result<RipFile, String> {
                     if let Ok(text) = archive.read_entry(i) {
                         m3us.push((entry.path, text));
                     }
+                } else if psf_track && psf::is_lib_file(&entry.path) && !entry.is_dir && entry.size <= MAX_FILE_BYTES {
+                    if let Ok(lib) = archive.read_entry(i) {
+                        libs.push((lib_key(&entry.path), lib));
+                    }
                 }
             }
             m3us.sort();
-            (data.ok_or_else(|| format!("{archive_rel} has no {member}"))?, m3us)
+            (data.ok_or_else(|| format!("{archive_rel} has no {member}"))?, m3us, libs)
         }
     };
     let playlist = playlist_for(rel.rsplit('|').next().unwrap_or(rel), &m3us);
-    Ok(RipFile { rel: rel.to_string(), data, playlist })
+    Ok(RipFile { rel: rel.to_string(), data, playlist, libs: Arc::new(libs) })
 }
 
-fn load(file: &RipFile) -> Result<Emu, String> {
+/// A rip-set file loaded into its player: gme's, or one of the PSF family's.
+enum Player {
+    Gme(Emu),
+    Psf(psf::Player),
+}
+
+impl Player {
+    fn sample_rate(&self) -> u32 {
+        match self {
+            Player::Gme(e) => e.sample_rate(),
+            Player::Psf(p) => p.sample_rate(),
+        }
+    }
+    fn track_count(&self) -> u32 {
+        match self {
+            Player::Gme(e) => e.track_count(),
+            Player::Psf(_) => 1,
+        }
+    }
+    fn track_info(&self, track: u32) -> Result<gme::TrackInfo, String> {
+        match self {
+            Player::Gme(e) => e.track_info(track),
+            Player::Psf(p) => Ok(p.info()),
+        }
+    }
+    fn start(&mut self, track: u32) -> Result<(), String> {
+        match self {
+            Player::Gme(e) => e.start(track, None),
+            Player::Psf(p) => p.restart(),
+        }
+    }
+    /// The plan decides where a track ends, not a quiet passage. PSF players never stop by
+    /// themselves.
+    fn ignore_silence(&mut self, ignore: bool) {
+        if let Player::Gme(e) = self {
+            e.ignore_silence(ignore);
+        }
+    }
+    fn play(&mut self, out: &mut [i16]) -> Result<(), String> {
+        match self {
+            Player::Gme(e) => e.play(out),
+            Player::Psf(p) => p.play(out),
+        }
+    }
+    fn ended(&self) -> bool {
+        match self {
+            Player::Gme(e) => e.ended(),
+            Player::Psf(_) => false,
+        }
+    }
+    /// The format's name, as the index shows it.
+    fn codec(&self, file: &RipFile) -> String {
+        match self {
+            Player::Gme(_) => gme::identify(&gme::gunzip(&file.data).unwrap_or_else(|| file.data.clone())).unwrap_or_else(|| ext_of(&file.rel).to_ascii_uppercase()),
+            Player::Psf(p) => p.system().codec().to_string(),
+        }
+    }
+}
+
+fn load(file: &RipFile) -> Result<Player, String> {
+    if psf::is_track_file(&file.rel) {
+        let libs = file.libs.clone();
+        let mut read_lib = |name: &str| libs.iter().find(|(k, _)| *k == lib_key(name)).map(|(_, d)| d.clone());
+        let loaded = psf::load(&file.data, &mut read_lib)?;
+        return Ok(Player::Psf(psf::Player::open(loaded, Emu::SAMPLE_RATE)?));
+    }
     let mut emu = Emu::open(file.data.clone(), Emu::SAMPLE_RATE)?;
     if !file.playlist.is_empty() {
         // A playlist gme cannot use leaves the file's own tracks, which still play.
@@ -309,7 +423,7 @@ fn load(file: &RipFile) -> Result<Emu, String> {
             log::debug!("{}: playlist not used: {e}", file.rel);
         }
     }
-    Ok(emu)
+    Ok(Player::Gme(emu))
 }
 
 /// The track number field of a playlist line (`file::TYPE,<number>,title,...`): where it is.
@@ -395,7 +509,7 @@ fn or_fade(fade: u32, fallback: u32) -> u32 {
 /// ([`track_timing`]): it stops where it falls silent, and one that repeats plays its loop
 /// twice and fades -- also when a playlist gives a length, which for many sets is a guess
 /// that leaves seconds of silence or a short phrase going round. `None` for a silent track.
-fn plan(emu: &mut Emu, file: &RipFile, track: u32) -> Result<Option<Plan>, String> {
+fn plan(emu: &mut Player, file: &RipFile, track: u32) -> Result<Option<Plan>, String> {
     let info = emu.track_info(track)?;
     let own = own_length(&info);
     if let Some((body, fade, true)) = own {
@@ -470,10 +584,10 @@ fn fingerprint(file: &RipFile) -> u64 {
 
 /// Plays `track` through, unheard, and says what its sound did: up to the first of `limits_ms`,
 /// and on to the next while it runs on.
-fn listen(emu: &mut Emu, track: u32, limits_ms: &[u32]) -> Result<Timing, String> {
+fn listen(emu: &mut Player, track: u32, limits_ms: &[u32]) -> Result<Timing, String> {
     // Silence is judged here, over a longer stretch than the player's own detection.
     emu.ignore_silence(true);
-    emu.start(track, None)?;
+    emu.start(track)?;
     let mut ear = Listener::new(emu.sample_rate());
     let mut buf = vec![0i16; 8192];
     let mut heard = Timing::RunsOn;
@@ -536,9 +650,14 @@ fn titled_jingle(name: &str) -> bool {
     JINGLE_TITLES.iter().any(|t| name.contains(t))
 }
 
+/// Whether any rip-set player is in this machine's `rommusic` library.
+pub fn available() -> bool {
+    gme::available() || psf::available()
+}
+
 /// Every track of every rip set under `folder`. `progress` is told which file is being read.
 pub fn index(folder: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<FoundTrack> {
-    if !gme::available() {
+    if !available() {
         return Vec::new();
     }
     index_files(collect(folder), t, progress)
@@ -546,7 +665,7 @@ pub fn index(folder: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<F
 
 /// Every track of one set of a rip library ([`sets_in`]), placed by absolute path.
 pub fn index_set(set: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<FoundTrack> {
-    if !gme::available() {
+    if !available() {
         return Vec::new();
     }
     index_files(collect_set(set), t, progress)
@@ -564,7 +683,7 @@ fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&st
             }
         };
         let count = emu.track_count().min(MAX_TRACKS);
-        let codec = gme::identify(&gme::gunzip(&file.data).unwrap_or_else(|| file.data.clone())).unwrap_or_else(|| ext_of(&file.rel).to_ascii_uppercase());
+        let codec = emu.codec(&file);
         for track in 0..count {
             let Ok(info) = emu.track_info(track) else { continue };
             let plan = match plan(&mut emu, &file, track) {
@@ -612,7 +731,7 @@ fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&st
 
 /// A rip-set track, rendered as it plays.
 struct GmePcm {
-    emu: Emu,
+    emu: Player,
     /// Samples (both channels) left to give, when the length is known.
     left: Option<u64>,
     /// Before the last `tail` of them, this many fade out ([`track_timing::fade_gain`]).
@@ -659,15 +778,15 @@ impl PcmStream for GmePcm {
 /// (a track that runs on is faded at [`RUN_ON_MS`]).
 /// A library set's `rel` is absolute, and `folder` is then not used.
 pub fn open(folder: &Path, rel: &str, track: u32) -> Result<Box<dyn PcmStream>, String> {
-    if !gme::available() {
-        return Err("the chip music player (gme) is not built for this machine".into());
+    if !available() {
+        return Err("the chip music player (rommusic) is not built for this machine".into());
     }
     let file = read_one(folder, rel)?;
     let mut emu = load(&file)?;
     let Plan { body, fade, .. } = plan(&mut emu, &file, track)?.ok_or("the track is silent")?;
     // The plan says where it ends; a quiet passage before that is not the end.
     emu.ignore_silence(true);
-    emu.start(track, None)?;
+    emu.start(track)?;
     let samples = |ms: u32| u64::from(ms) * u64::from(emu.sample_rate()) / 1000 * 2;
     let tail = if fade > 0 { track_timing::FADE_TAIL_MS as u32 } else { 0 };
     Ok(Box::new(GmePcm { left: Some(samples(body + fade + tail)), fade: samples(fade), tail: samples(tail), emu }))

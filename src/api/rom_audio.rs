@@ -282,7 +282,7 @@ pub fn one_liner(s: &IndexSummary) -> String {
 }
 
 pub async fn validate(_app: &App, _request: &RomAudioIndexRequest) -> Result<()> {
-    if !vgmstream::available() && !gme::available() && !crate::rom::agbplay::available() {
+    if !vgmstream::available() && !rip_sets::available() && !crate::rom::agbplay::available() {
         return Err(Error::unavailable("none of the game audio decoder (rvgmstream), the chip music players (rommusic) is built for this machine"));
     }
     Ok(())
@@ -360,7 +360,7 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
 /// player is not built. Fingerprints are cached beside the media.
 async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
     let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
-    if folders.is_empty() || !gme::available() {
+    if folders.is_empty() || !rip_sets::available() {
         return Ok(rip_match::Library::build(&[], None, |_, _| {}));
     }
     progress.report(0, None, "reading the rip library").await;
@@ -407,7 +407,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             .fetch_all(&app.pool)
             .await?;
         let folder = match game_folder(&main_path) {
-            Some(folder) if gme::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
+            Some(folder) if rip_sets::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
             _ => None,
         };
         let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
