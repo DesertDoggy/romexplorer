@@ -1,0 +1,43 @@
+diff --git a/r4300/interupt.c b/r4300/interupt.c
+index aa027ca..bb8539e 100644
+--- a/r4300/interupt.c
++++ b/r4300/interupt.c
+@@ -538,6 +538,12 @@ void osal_fastcall gen_interupt(usf_state_t * state)
+         case VI_INT:
+             remove_interupt_event(state);
+             vi_vertical_interrupt_event(&state->g_vi);
++            /* A minute of frames and not one sample: the rip is stuck, and would render forever. */
++            if (++state->frames_without_audio > 3600)
++            {
++                state->last_error = "the music stopped making sound";
++                state->stop = 1;
++            }
+             break;
+ 
+         case COMPARE_INT:
+diff --git a/usf/usf.c b/usf/usf.c
+index 5685238..e2fa3ea 100644
+--- a/usf/usf.c
++++ b/usf/usf.c
+@@ -235,6 +235,8 @@ void usf_push_audio_samples(void *opaque, const void * buffer, size_t size)
+ {
+     usf_state_t * state = (usf_state_t *)opaque;
+ 
++    state->frames_without_audio = 0;
++
+     int16_t * samplePtr = (int16_t *)buffer;
+     int16_t * samplesOut;
+     size_t samplesTodo;
+diff --git a/usf/usf_internal.h b/usf/usf_internal.h
+index b5f51b4..9d2dccb 100644
+--- a/usf/usf_internal.h
++++ b/usf/usf_internal.h
+@@ -340,6 +340,8 @@ struct usf_state
+     unsigned int count_per_op/* = COUNT_PER_OP_DEFAULT*/;
+     int llbit, rompause;
+     int stop;
++    /* Video frames since the game last gave audio: a render stops once there are too many. */
++    unsigned int frames_without_audio;
+     long long int reg[32], hi, lo;
+     unsigned int next_interupt;
+     precomp_instr *PC;

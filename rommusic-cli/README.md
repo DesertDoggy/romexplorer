@@ -53,6 +53,7 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--format original` | The music as the game stores it, in an `original` folder, and no FLAC. |
 | `--format both` | FLAC and the original files. |
 | `--rips DIR` | A folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC; loose, in folders, or zipped) to use for the cartridges given. File names do not matter. Can be given more than once. |
+| `--ps2-bios FILE` | A PS2 BIOS image (4 MB) of your own. PS1 and PS2 rips (PSF, PSF2) need it to play; without it they are skipped. None comes with rommusic. |
 | `--seconds N` | SNES: how long the game runs before its music is taken (default 20). |
 | `--start` | SNES: press Start now and then while the game runs, for games whose music starts after the title screen. |
 | `--list` | Only list the tracks; write nothing. A looping track shows one pass and "loop"; its file plays the loop twice and fades. |
@@ -103,8 +104,10 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 | Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--rips`. | 44.1 kHz |
 
 **Rip sets.** A rip file or zip dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
-HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, and N64 USF (with the set's `.usflib` beside it). Track
-names and lengths come from the set's playlist (`.m3u`) or the file's own tags.
+HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF and Dreamcast DSF (with the set's library
+files beside them). Track names and lengths come from the set's playlist (`.m3u`) or the
+file's own tags. PSF and PSF2 need a PS2 BIOS image of your own, given with `--ps2-bios`;
+without it they are skipped.
 
 **Zip and 7z.** A zipped cartridge is read for Game Boy Advance and SNES, and with `--rips`. A zipped disc image is not read; extract it first.
 

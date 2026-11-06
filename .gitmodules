@@ -84,6 +84,7 @@
 [submodule "external/lazyusf2"]
 	path = external/lazyusf2
 	url = https://gitlab.com/kode54/lazyusf2
+	ignore = dirty
 [submodule "external/highly_experimental"]
 	path = external/highly_experimental
 	url = https://gitlab.com/kode54/highly_experimental
@@ -111,3 +112,6 @@
 [submodule "external/libvgm"]
 	path = external/libvgm
 	url = https://github.com/ValleyBell/libvgm
+[submodule "external/amuse"]
+	path = external/amuse
+	url = https://github.com/derselbst/amuse

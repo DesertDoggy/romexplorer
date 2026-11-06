@@ -41,6 +41,8 @@ Options:
                     from a SNES cartridge) into an \"original\" folder
   --rips DIR        a folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC, zipped or not)
                     to match cartridges against by their content; may be given more than once
+  --ps2-bios FILE   a PS2 BIOS image (4 MB) of your own, which PS1 and PS2 rips (PSF, PSF2)
+                    need to play; without it they are skipped
   --seconds N       SNES: how long the game runs before its music is taken (default 20)
   --start           SNES: press Start now and then while it runs, for games whose music
                     begins after the title screen
@@ -68,13 +70,14 @@ struct Args {
     bits: u32,
     format: Format,
     rips: Vec<PathBuf>,
+    ps2_bios: Option<PathBuf>,
     seconds: f32,
     press_start: bool,
     list: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { inputs: Vec::new(), all: false, max: None, out: None, rate: None, bits: 0, format: Format::Flac, rips: Vec::new(), seconds: 20.0, press_start: false, list: false };
+    let mut a = Args { inputs: Vec::new(), all: false, max: None, out: None, rate: None, bits: 0, format: Format::Flac, rips: Vec::new(), ps2_bios: None, seconds: 20.0, press_start: false, list: false };
     let mut it = args.iter();
     let value = |it: &mut std::slice::Iter<String>, flag: &str| it.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
     while let Some(arg) = it.next() {
@@ -89,6 +92,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--max" => a.max = Some(value(&mut it, arg)?.parse().map_err(|_| "--max needs a number")?),
             "--out" => a.out = Some(PathBuf::from(value(&mut it, arg)?)),
             "--rips" => a.rips.push(PathBuf::from(value(&mut it, arg)?)),
+            "--ps2-bios" => a.ps2_bios = Some(PathBuf::from(value(&mut it, arg)?)),
             "--seconds" => a.seconds = value(&mut it, arg)?.parse().ok().filter(|s: &f32| (1.0..=600.0).contains(s)).ok_or("--seconds needs 1-600")?,
             "--bits" => a.bits = value(&mut it, arg)?.parse().ok().filter(|b| [16, 24].contains(b)).ok_or("--bits is 16 or 24")?,
             "--rate" => {
@@ -180,6 +184,16 @@ fn run() -> i32 {
     if !vgmstream::available() && !rip_sets::available() {
         eprintln!("rommusic: the music libraries (rvgmstream, rommusic) were not found in lib/ beside rommusic");
         return finish(1);
+    }
+    if let Some(bios) = &a.ps2_bios {
+        match std::fs::read(bios).map_err(|e| e.to_string()).and_then(|image| romexplorer::rom::psf::set_ps2_bios(&image)) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("rommusic: this build has no PS1/PS2 player; --ps2-bios is ignored"),
+            Err(e) => {
+                eprintln!("rommusic: {}: {e}", bios.display());
+                return finish(2);
+            }
+        }
     }
     let library = (!a.rips.is_empty()).then(|| {
         eprintln!("reading the rip sets in {}", a.rips.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
@@ -323,11 +337,9 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
     }
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if rip_sets::is_music(&name) {
-        // One rip file: its folder is its set, and only its own tracks are wanted.
-        let parent = input.parent().map(Path::to_path_buf).unwrap_or_default();
-        let me = input.to_string_lossy().into_owned();
-        let found: Vec<FoundTrack> = rip_sets::index_set(&parent, t, progress).into_iter().filter(|f| matches!(&f.location, TrackLocation::Rip { path, .. } if *path == me)).collect();
-        plan.jobs.extend(tracks(Path::new(""), found));
+        // One rip file, with the playlist and libraries beside it.
+        let input = std::path::absolute(input).unwrap_or_else(|_| input.to_path_buf());
+        plan.jobs.extend(tracks(Path::new(""), rip_sets::index_file(&input, t, progress)));
         return Ok(plan);
     }
     if rom_audio::may_hold_audio(input) {

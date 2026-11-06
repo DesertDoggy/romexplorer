@@ -515,7 +515,10 @@ fn plan(emu: &mut Player, file: &RipFile, track: u32) -> Result<Option<Plan>, St
     if let Some((body, fade, true)) = own {
         return Ok(Some(Plan { body, fade, looping: true, intro: info.intro_ms, lp: info.loop_ms }));
     }
-    if let Some((body, fade, false)) = own.filter(|o| o.0 < CHECK_LISTED_MIN_MS) {
+    // A PSF-family length is the ripper's own timing of that one song, and listening to an
+    // emulated console is slow: it is taken as it is.
+    let tagged_psf = matches!(emu, Player::Psf(_));
+    if let Some((body, fade, false)) = own.filter(|o| o.0 < CHECK_LISTED_MIN_MS || tagged_psf) {
         return Ok(Some(Plan { body, fade: or_fade(fade, LISTED_FADE_MS), looping: false, intro: None, lp: None }));
     }
     let key = (fingerprint(file), track);
@@ -671,6 +674,21 @@ pub fn index_set(set: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<
     index_files(collect_set(set), t, progress)
 }
 
+/// The tracks of one rip file, read with the playlist and libraries beside it, placed by
+/// its path as given: for a single file dropped on rommusic, without reading its whole set.
+pub fn index_file(path: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Vec<FoundTrack> {
+    if !available() {
+        return Vec::new();
+    }
+    match read_one(Path::new(""), &path.to_string_lossy()) {
+        Ok(file) => index_files(vec![file], t, progress),
+        Err(e) => {
+            log::debug!("{e}");
+            Vec::new()
+        }
+    }
+}
+
 fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&str)) -> Vec<FoundTrack> {
     let mut out = Vec::new();
     for file in files {
@@ -700,7 +718,7 @@ fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&st
             }
             let name = track_name(&file, &info, track, count);
             let shape = Shape { looping, duration_ms: u64::from(duration_ms), channels: Emu::CHANNELS, cd_track: 0, rip: true };
-            let rate = u64::from(Emu::SAMPLE_RATE);
+            let rate = u64::from(emu.sample_rate());
             let (loop_start, loop_end) = match (plan.intro, plan.lp) {
                 (Some(i), Some(l)) if l > 0 => (u64::from(i) * rate / 1000, u64::from(i + l) * rate / 1000),
                 _ => (0, 0),
@@ -713,7 +731,7 @@ fn index_files(files: Vec<RipFile>, t: &Thresholds, mut progress: impl FnMut(&st
                 kind,
                 location: TrackLocation::Rip { path: file.rel.clone(), track },
                 name,
-                sample_rate: Emu::SAMPLE_RATE,
+                sample_rate: emu.sample_rate(),
                 channels: Emu::CHANNELS,
                 duration_ms: u64::from(duration_ms),
                 looping,
