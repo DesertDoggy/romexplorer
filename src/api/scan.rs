@@ -578,14 +578,36 @@ async fn record_wua_source(pool: &MySqlPool, platform: Platform, wua_content: u6
 }
 
 /// No DAT hashes a whole `.nsp`: No-Intro's digital Switch DATs hash each NCA in it. So the
-/// NCAs are hashed one by one and recorded as the package's members, and the package matches
-/// the release they belong to, as a CHD matches through its tracks. An NSP whose content row
+/// NCAs are recorded as the package's members, and the package matches the release they
+/// belong to, as a CHD matches through its tracks. When every NCA's name is a DAT entry the
+/// package is not read at all; otherwise each NCA is hashed. An NSP whose content row
 /// already has its members (the same bytes scanned before) is not read again.
 async fn record_nsp_ncas(pool: &MySqlPool, platform: Platform, nsp_content: u64, path: &Path, summary: &mut ScanSummary) -> Result<()> {
     use crate::rom::hash::HashFlags;
     let known: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_contents WHERE parent_content_id = ?").bind(nsp_content).fetch_one(pool).await?;
     if known > 0 {
         return Ok(());
+    }
+    // An NCA's name is the first half of its SHA-256, and a DAT lists NCAs by that name and
+    // hash: when every NCA is a DAT entry already, the package is linked without reading it.
+    let listed = path.to_path_buf();
+    let entries = tokio::task::spawn_blocking(move || crate::rom::platforms::switch::pfs0_entries(&listed)).await.map_err(|e| Error::internal(e.to_string()))?.unwrap_or_default();
+    let ncas: Vec<_> = entries.into_iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".nca")).collect();
+    if !ncas.is_empty() {
+        let mut known = Vec::with_capacity(ncas.len());
+        for nca in &ncas {
+            match dat_nca(pool, nca).await? {
+                Some(id) => known.push((id, &nca.name)),
+                None => break,
+            }
+        }
+        if known.len() == ncas.len() {
+            for (child, name) in known {
+                crate::database::content::link_member(pool, nsp_content, child, Some(name)).await?;
+                summary.content_reused += 1;
+            }
+            return Ok(());
+        }
     }
     let nsp = path.to_path_buf();
     let flags = HashFlags::CRC32 | HashFlags::MD5 | HashFlags::SHA1 | HashFlags::SHA256;
@@ -601,6 +623,20 @@ async fn record_nsp_ncas(pool: &MySqlPool, platform: Platform, nsp_content: u64,
         summary.members_hashed += 1;
     }
     Ok(())
+}
+
+/// The DAT entry an NCA is, by its name alone: a release content of the same size whose
+/// SHA-256 starts with the name. A DAT without SHA-256 finds nothing here, and the NSP is hashed.
+async fn dat_nca(pool: &MySqlPool, nca: &crate::rom::platforms::switch::Pfs0Entry) -> Result<Option<u64>> {
+    let Some(id) = nca.name.get(..32).filter(|id| id.bytes().all(|b| b.is_ascii_hexdigit())).map(str::to_ascii_lowercase) else { return Ok(None) };
+    Ok(sqlx::query_scalar(
+        "SELECT h.content_id FROM hashes h JOIN content c ON c.id = h.content_id AND c.deleted = FALSE AND c.size = ? \
+         WHERE h.algorithm = 'sha256' AND h.value_hex LIKE CONCAT(?, '%') AND EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = h.content_id) LIMIT 1",
+    )
+    .bind(nca.size)
+    .bind(&id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// The content row for these bytes (`database::content`), counted in the summary.
