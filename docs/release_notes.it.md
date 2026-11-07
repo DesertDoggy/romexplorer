@@ -54,6 +54,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Le pagine dei titoli possono riprodurre la musica contenuta nelle tue ROM (solo piattaforme e
   tipi di supporto compatibili).
 - Nelle impostazioni si sceglie quali tracce riprodurre.
+- La musica NES e Famicom suona direttamente dalla ROM, tramite il codice audio del gioco stesso: non servono file audio originali. Inclusi i chip sonori Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
 - Sono supportati i formati audio originali (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
   del Game Gear, sciolti o in zip).
 - Una libreria audio originale: indica in Impostazioni › Audio le cartelle dove tieni i set, e «Indicizza

@@ -333,10 +333,12 @@ fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thr
     }
     let mut why_none = None;
     match platform {
-        Platform::GameBoyAdvance => {
-            jobs.extend(tracks(input, rom_songs::index(input, platform as u16, t)?));
+        // Played by the game's own sound code or engine, straight from the ROM.
+        p if rom_songs::covers(p as u16) => {
+            let (found, why) = rom_songs::index_explained(input, p as u16, t)?;
+            jobs.extend(tracks(input, found));
             if jobs.is_empty() {
-                why_none = Some("this game does not use the sound engine rommusic plays Game Boy Advance music with".into());
+                why_none = why;
             }
         }
         Platform::Snes | Platform::SuperFamicom => {

@@ -28,6 +28,10 @@ path = "tools/biosdb_gen.rs"
 name = "snes_capture"
 path = "tools/snes_capture.rs"
 
+[[bin]]
+name = "nes_music"
+path = "tools/nes_music.rs"
+
 [[test]]
 name = "test_archiver"
 path = "tests/src/test_archiver.rs"

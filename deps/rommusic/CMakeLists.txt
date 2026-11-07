@@ -7,6 +7,8 @@
 #           Sms_Apu, Gme_File...), so its sources are compiled with sgc/rename.h force-included:
 #           every name it defines gets an rsgc_ prefix and both copies live side by side.
 #   rspc_*  upstream's SNES sound chip (Snes_Spc) driven through its ports, in time.
+#   rnes_*  the NES sound chip and the Famicom cartridge ones (VRC6, Namco 163, Sunsoft 5B,
+#           MMC5) from upstream libgme, fed by the game's own code running on the app's 6502.
 #   ragb_*  GBA music from the ROM through agbplay (external/agbplay, LGPL-3.0): the playback
 #           core only, fmt header-only from external/fmt.
 #   rsseq_* DS sequenced music (SSEQ in a sound archive) through kode54's SSEQ Player
@@ -77,6 +79,12 @@ add_library(rommusic_spc OBJECT spc/rspc.cpp)
 target_include_directories(rommusic_spc PRIVATE ${GME_ROOT}/gme)
 target_compile_definitions(rommusic_spc PRIVATE HAVE_STDINT_H BLARGG_LITTLE_ENDIAN=1 SPC_MORE_ACCURACY=1)
 set_target_properties(rommusic_spc PROPERTIES CXX_STANDARD 11 CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
+# --- the NES sound chips, fed register by register (the chip classes come from gme_static) --
+add_library(rommusic_nes OBJECT nes/rnes.cpp)
+target_include_directories(rommusic_nes PRIVATE ${GME_ROOT}/gme)
+target_compile_definitions(rommusic_nes PRIVATE HAVE_STDINT_H BLARGG_LITTLE_ENDIAN=1)
+set_target_properties(rommusic_nes PROPERTIES CXX_STANDARD 11 CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
 # --- agbplay's playback core ----------------------------------------------------------
 set(AGB ${AGBPLAY_ROOT}/src/agbplay)
@@ -200,7 +208,7 @@ set_target_properties(rommusic_vgm PROPERTIES C_STANDARD 99 CXX_STANDARD 11 C_VI
 target_compile_options(rommusic_vgm PRIVATE -w)
 
 # --- the library ----------------------------------------------------------------------
-add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
+add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_nes> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
   $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>)
 # llvm-mingw's lld (windows/arm64) takes --whole-archive but not the --push-state/--pop-state
 # that CMake wraps WHOLE_ARCHIVE in for MinGW, nor --exclude-libs (below).
