@@ -13,13 +13,16 @@ set -euo pipefail
 #
 # Usage:
 #   deps/ffmpeg/scripts/build.sh                    # auto-detect platform/arch
-#   deps/ffmpeg/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64
+#   deps/ffmpeg/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64, or android arm64
 #
 # Output: deps/ffmpeg/release/<platform>/<arch>/<version>/static/{lib,include}, which
 # deps/vgmstream/scripts/build.sh picks up. CC from the environment is the cross compiler
 # when set (scripts/build_native_deps.sh exports it). On Windows run it from an MSYS2
 # MINGW64 shell like the other native builds. nasm is used when present (x64 SIMD); without
 # it the build falls back to plain C.
+#
+# android/arm64 builds with the NDK's own clang (ANDROID_NDK_HOME), for API level
+# ANDROID_API (default 28, what rommusic's Android app needs; see deps/rommusic/scripts/build.sh).
 
 if [[ $# -ne 0 && $# -ne 2 ]]; then
   echo "[ERROR] Usage: $0  OR  $0 <platform> <arch>" >&2
@@ -56,7 +59,8 @@ case "$platform" in
   windows) target_os="mingw32" ;;
   mac) target_os="darwin" ;;
   linux) target_os="linux" ;;
-  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows)" >&2; exit 2 ;;
+  android) target_os="android" ;;
+  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows | android)" >&2; exit 2 ;;
 esac
 
 decoders="ac3,eac3,wmapro,wmav1,wmav2,xma1,xma2,aac,atrac3,atrac3p,mp2float,mp3float,smackaud,binkaudio_dct,binkaudio_rdft,pcm_s16be,pcm_s16be_planar,pcm_s16le,pcm_s16le_planar,pcm_s8,pcm_s8_planar,pcm_u8,flac,vorbis,mpc7,mpc8,alac,adpcm_ima_qt,adpcm_ima_dk3,adpcm_ima_dk4,tak,ape,adpcm_swf,opus"
@@ -80,10 +84,24 @@ args=(
 )
 # The symbols stay out of rvgmstream's export table: it is built with hidden visibility and
 # links these archives privately, so nothing here can clash with another FFmpeg on the system.
-if [[ -n "${CC:-}" ]]; then
+if [[ "$platform" == "android" ]]; then
+  # The NDK's clang with an explicit target rather than its aarch64-linux-android<api>-clang
+  # wrapper, which on Windows is a .cmd that configure cannot run. clang finds the NDK's
+  # sysroot on its own; the LLVM binutils stand in for a cross prefix the NDK does not have.
+  [[ "$arch" == "arm64" ]] || { echo "[ERROR] android is arm64 only" >&2; exit 2; }
+  [[ -n "${ANDROID_NDK_HOME:-}" ]] || { echo "[ERROR] ANDROID_NDK_HOME is not set" >&2; exit 2; }
+  ndk_bin="$(ls -d "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin 2>/dev/null | head -1)"
+  [[ -n "$ndk_bin" ]] || { echo "[ERROR] no LLVM toolchain under $ANDROID_NDK_HOME/toolchains/llvm/prebuilt" >&2; exit 2; }
+  exe=""; [[ -f "$ndk_bin/clang.exe" ]] && exe=".exe"
+  android_target="--target=aarch64-linux-android${ANDROID_API:-28}"
+  args+=(--enable-cross-compile "--cc=$ndk_bin/clang$exe" "--cxx=$ndk_bin/clang++$exe"
+    "--ar=$ndk_bin/llvm-ar$exe" "--nm=$ndk_bin/llvm-nm$exe" "--ranlib=$ndk_bin/llvm-ranlib$exe" "--strip=$ndk_bin/llvm-strip$exe"
+    "--extra-cflags=$android_target" "--extra-ldflags=$android_target")
+  CC="$ndk_bin/clang$exe"
+elif [[ -n "${CC:-}" ]]; then
   args+=("--cc=$CC")
 fi
-if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
+if [[ "$platform" != "android" ]] && [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
   args+=(--enable-cross-compile)
   if [[ -n "${CC:-}" ]]; then
     prefix="${CC%gcc}"; prefix="${prefix%clang}"

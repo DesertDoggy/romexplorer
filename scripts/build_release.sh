@@ -25,9 +25,13 @@
 #                 release/chdlite/<chdlite version>/dist/ as
 #                 chdlite-<v>-android-arm64[-unsigned].apk and chdlite-cli-<v>-android-arm64.zip.
 #                 Signed with CHDLITE_KEYSTORE / CHDLITE_KEY_ALIAS / CHDLITE_KEYSTORE_PASS set.
+#                 With the rommusic mode, build_rommusic_android.sh --release: the rommusic app
+#                 into release/rommusic/<rommusic version>/dist/ as
+#                 rommusic-<v>-android-arm64[-unsigned].apk, signed with ROMMUSIC_KEYSTORE and
+#                 the rest (or the CHDLITE_ ones).
 #                 On whenever the Android SDK, NDK and JDK are found (see that script's
 #                 --check); skipped with the reason otherwise. Uses the libraries already in
-#                 app_root_ex/lib/android/arm64/ (build_chdlite_android.sh --natives makes them).
+#                 app_root_ex/lib/android/arm64/ (each script's --natives makes them).
 #   6. SHA256SUMS over release/<version>/dist/, checkable with `sha256sum -c`.
 #
 # A combination this host cannot build (another OS; an arch cargo cannot target here) is
@@ -36,8 +40,9 @@
 #
 # Options:
 #   --platform LIST   linux,windows,macos,android   (default: this host). android is the chdlite
-#                     app and CLI with their own natives; `--platform android` alone builds only
-#                     those, into release/chdlite/<chdlite version>/
+#                     app and CLI and the rommusic app, with their own natives; `--platform
+#                     android` alone builds only those (the ones --mode names, else both), into
+#                     release/chdlite/<chdlite version>/ and release/rommusic/<rommusic version>/
 #   --arch LIST       x64,arm64                     (default: this host's)
 #   --mode LIST       server,desktop,chdlite,rommusic, or all (default: server,desktop).
 #                     chdlite goes to release/chdlite/<chdlite version>/ and rommusic to
@@ -129,9 +134,9 @@ done
 
 split() { tr ',' '\n' <<< "$1" | sed '/^$/d'; }
 mapfile -t P_LIST < <(split "$PLATFORMS")
-# `android` is not a (platform, arch) of its own here: it is the chdlite app and CLI (step 5b),
-# with their natives built by build_chdlite_android.sh --natives. `--platform android` alone
-# builds just that -- no host natives, no host packages.
+# `android` is not a (platform, arch) of its own here: it is the chdlite app and CLI and the
+# rommusic app (step 5b), with their natives built by build_*_android.sh --natives.
+# `--platform android` alone builds just those -- no host natives, no host packages.
 ANDROID_PLATFORM=0
 if printf '%s\n' "${P_LIST[@]}" | grep -qx android; then
     ANDROID_PLATFORM=1
@@ -265,7 +270,7 @@ for p in "${P_LIST[@]}"; do
 done
 
 if [[ ${#TARGETS[@]} -eq 0 && "$ANDROID_PLATFORM" -eq 1 && ${#P_LIST[@]} -eq 0 ]]; then
-    echo "release: android only (chdlite $(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1))"
+    echo "release: android only (chdlite $(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1), rommusic $(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/rommusic-cli/Cargo.toml" | head -1))"
 elif [[ ${#TARGETS[@]} -eq 0 ]]; then
     echo "nothing to build: every requested combination was skipped" >&2
     summary
@@ -294,8 +299,8 @@ if [[ "$GUI_WEB" -eq 1 && "$wants_web" -eq 1 && ${#TARGETS[@]} -gt 0 ]]; then
 fi
 
 # --- 4. packages, 5. desktop bundles ---------------------------------------------------------
-# Both GUIs link WebKitGTK -- romexplorer's desktop and chdlite-gui, which the chdlite package
-# carries (dioxus desktop) -- so a linux/arm64 cross build of either needs its arm64
+# The GUIs link WebKitGTK -- romexplorer's desktop, and chdlite-gui and rommusic-gui, which the
+# chdlite and rommusic packages carry (dioxus desktop) -- so a linux/arm64 cross build of any needs its arm64
 # development files. scripts/linux_arm64_sysroot.sh unpacks them into a private sysroot
 # (installing the :arm64 -dev packages would uninstall the x64 ones); package.sh picks it up.
 # Built here on first need, so a fresh machine does not have to know to run it; no root.
@@ -306,8 +311,7 @@ ARM64_GUI_BLOCKER=""
 needs_arm64_webkit=0
 for t in "${TARGETS[@]}"; do
     [[ "$t" == "linux/arm64" ]] || continue
-    # rommusic is a console tool; chdlite ships chdlite-gui.
-    for m in "${M_LIST[@]}"; do [[ "$m" != "server" && "$m" != "rommusic" ]] && needs_arm64_webkit=1; done
+    for m in "${M_LIST[@]}"; do [[ "$m" != "server" ]] && needs_arm64_webkit=1; done
 done
 if [[ "$needs_arm64_webkit" -eq 1 && "$HOST_ARCH" != "arm64" \
       && ! -f "$ARM64_SYSROOT/.complete" \
@@ -330,7 +334,7 @@ fi
 for t in "${TARGETS[@]}"; do
     p="${t%/*}" a="${t#*/}"
     for m in "${M_LIST[@]}"; do
-        if [[ "$t" == "linux/arm64" && "$m" != "server" && "$m" != "rommusic" && -n "$ARM64_GUI_BLOCKER" ]]; then
+        if [[ "$t" == "linux/arm64" && "$m" != "server" && -n "$ARM64_GUI_BLOCKER" ]]; then
             SKIPPED+=("$t $m: $ARM64_GUI_BLOCKER")
             continue
         fi
@@ -368,30 +372,43 @@ for t in "${TARGETS[@]}"; do
     done
 done
 
-# --- 5b. android: the chdlite app and its command-line tools ------------------------------------
+# --- 5b. android: the chdlite app and its command-line tools, the rommusic app ------------------
 # Signed when the environment names a keystore (CHDLITE_KEYSTORE and the rest: see
-# build_chdlite_android.sh), which writes app-release.apk; unsigned otherwise. The file
-# name says which.
-android_release() {
-    local natives=()
+# build_chdlite_android.sh; ROMMUSIC_KEYSTORE, else the same, for rommusic), which writes
+# app-release.apk; unsigned otherwise. The file name says which.
+android_natives() {
     # --platform android builds its own natives, as a host platform does; --skip-native reuses them.
-    [[ "$ANDROID_PLATFORM" -eq 1 && "$SKIP_NATIVE" -eq 0 ]] && natives=(--natives)
-    bash "$SCRIPTS/build_chdlite_android.sh" "${natives[@]}" --release --cli || return 1
-    local cli_version apk_dir apk name cli_dir zip DIST
+    [[ "$ANDROID_PLATFORM" -eq 1 && "$SKIP_NATIVE" -eq 0 ]] && echo --natives
+    return 0
+}
+
+# Copies a release APK into a tool's own dist/, under the name that says whether it is signed.
+# Prints the name.
+android_apk() {
+    local tool="$1" version="$2" apk_dir="$3" dist="$4" apk name
+    if [[ -f "$apk_dir/app-release.apk" ]]; then
+        apk="$apk_dir/app-release.apk"; name="$tool-$version-android-arm64.apk"
+    else
+        apk="$apk_dir/app-release-unsigned.apk"; name="$tool-$version-android-arm64-unsigned.apk"
+    fi
+    [[ -f "$apk" ]] || { echo "error: no release APK in $apk_dir" >&2; return 1; }
+    mkdir -p "$dist"
+    # Only one of the two names: a signed build replaces an earlier unsigned one, and back.
+    rm -f "$dist/$tool-$version-android-arm64.apk"* "$dist/$tool-$version-android-arm64-unsigned.apk"*
+    cp -f "$apk" "$dist/$name"
+    (cd "$dist" && sha256sum "$name" > "$name.sha256")
+    echo "$name"
+}
+
+chdlite_android_release() {
+    local natives
+    natives="$(android_natives)"
+    bash "$SCRIPTS/build_chdlite_android.sh" $natives --release --cli || return 1
+    local cli_version name cli_dir zip DIST
     cli_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1)"
     # chdlite's own dist/, beside its desktop archives, not romexplorer's.
     DIST="$ROOT_DIR/release/chdlite/$cli_version/dist"
-    apk_dir="$ROOT_DIR/target/dx/chdlite-gui/release/android/app/app/build/outputs/apk/release"
-    if [[ -f "$apk_dir/app-release.apk" ]]; then
-        apk="$apk_dir/app-release.apk"; name="chdlite-$cli_version-android-arm64.apk"
-    else
-        apk="$apk_dir/app-release-unsigned.apk"; name="chdlite-$cli_version-android-arm64-unsigned.apk"
-    fi
-    [[ -f "$apk" ]] || { echo "error: no release APK in $apk_dir" >&2; return 1; }
-    mkdir -p "$DIST"
-    # Only one of the two names: a signed build replaces an earlier unsigned one, and back.
-    rm -f "$DIST/chdlite-$cli_version-android-arm64.apk"* "$DIST/chdlite-$cli_version-android-arm64-unsigned.apk"*
-    cp -f "$apk" "$DIST/$name"
+    name="$(android_apk chdlite "$cli_version" "$ROOT_DIR/target/dx/chdlite-gui/release/android/app/app/build/outputs/apk/release" "$DIST")" || return 1
     # chdlite alone, one file with its libraries inside (chdcomp and the rest are the same program
     # under another name, which a phone's terminal has no use for); deflate (what a phone's file
     # manager opens), the executable bit kept for an unzip in a terminal.
@@ -408,32 +425,54 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         with open(os.path.join(src, name), "rb") as f:
             z.writestr(info, f.read())
 PY
-    for f in "$DIST/$name" "$zip"; do
-        (cd "$DIST" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256")
-    done
+    (cd "$DIST" && sha256sum "$(basename "$zip")" > "$(basename "$zip").sha256")
     echo "android: $name, $(basename "$zip")"
 }
-# Part of the chdlite package: on when chdlite is one of the modes (or --android).
-want_android=0
-for m in "${M_LIST[@]}"; do [[ "$m" == chdlite ]] && want_android=1; done
-[[ "$ANDROID" == 1 ]] && want_android=1
-if [[ "$ANDROID" != 0 && "$want_android" -eq 1 && "$NATIVE_ONLY" -eq 0 ]]; then
-    if [[ ! -f "$ROOT_DIR/app_root_ex/lib/android/arm64/libchdman.so" && ! ( "$ANDROID_PLATFORM" -eq 1 && "$SKIP_NATIVE" -eq 0 ) ]]; then
-        reason="no android/arm64 libraries in app_root_ex/lib/android/arm64 (scripts/build_chdlite_android.sh --natives)"
-    elif ! out="$(bash "$SCRIPTS/build_chdlite_android.sh" --check 2>&1)"; then
-        reason="the Android toolchain is incomplete:"$'\n'"$(grep '^  - ' <<< "$out" | sed 's/^/    /')"
-    else
-        reason=""
+
+rommusic_android_release() {
+    local natives version name
+    natives="$(android_natives)"
+    bash "$SCRIPTS/build_rommusic_android.sh" $natives --release || return 1
+    version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/rommusic-cli/Cargo.toml" | head -1)"
+    name="$(android_apk rommusic "$version" "$ROOT_DIR/target/dx/rommusic-gui/release/android/app/app/build/outputs/apk/release" "$ROOT_DIR/release/rommusic/$version/dist")" || return 1
+    echo "android: $name"
+}
+
+# Part of the chdlite and rommusic packages: each on when its mode is asked for. --android or
+# --platform android with neither mode named builds both.
+want_chdlite=0 want_rommusic=0
+for m in "${M_LIST[@]}"; do
+    [[ "$m" == chdlite ]] && want_chdlite=1
+    [[ "$m" == rommusic ]] && want_rommusic=1
+done
+if [[ "$ANDROID" == 1 && "$want_chdlite" -eq 0 && "$want_rommusic" -eq 0 ]]; then
+    want_chdlite=1 want_rommusic=1
+fi
+# Why an Android app cannot be built here, or nothing when it can.
+android_blocker() {
+    local tool="$1" lib="$2" out
+    if [[ ! -f "$ROOT_DIR/app_root_ex/lib/android/arm64/$lib" && ! ( "$ANDROID_PLATFORM" -eq 1 && "$SKIP_NATIVE" -eq 0 ) ]]; then
+        echo "no android/arm64 $lib in app_root_ex/lib/android/arm64 (scripts/build_${tool}_android.sh --natives)"
+    elif ! out="$(bash "$SCRIPTS/build_${tool}_android.sh" --check 2>&1)"; then
+        echo "the Android toolchain is incomplete:"$'\n'"$(grep '^  - ' <<< "$out" | sed 's/^/    /')"
     fi
+}
+for tool in chdlite rommusic; do
+    [[ "$tool" == chdlite && "$want_chdlite" -eq 1 ]] || [[ "$tool" == rommusic && "$want_rommusic" -eq 1 ]] || continue
+    [[ "$ANDROID" != 0 && "$NATIVE_ONLY" -eq 0 ]] || continue
+    case "$tool" in chdlite) lib=libchdman.so ;; rommusic) lib=librommusic.so ;; esac
+    reason="$(android_blocker "$tool" "$lib")"
     if [[ -n "$reason" && "$ANDROID" == 1 ]]; then
         echo "error: --android, but $reason" >&2
-        FAILED+=("android: $reason")
+        FAILED+=("android $tool: $reason")
     elif [[ -n "$reason" ]]; then
-        SKIPPED+=("android/arm64: $reason")
+        SKIPPED+=("android/arm64 $tool: $reason")
+    elif [[ "$tool" == chdlite ]]; then
+        step "android/arm64 chdlite (apk + cli)" chdlite_android_release || true
     else
-        step "android/arm64 chdlite (apk + cli)" android_release || true
+        step "android/arm64 rommusic (apk)" rommusic_android_release || true
     fi
-fi
+done
 
 # --- 6. SHA256SUMS -------------------------------------------------------------------------------
 # One file over everything in dist/, in the format `sha256sum -c` reads; the per-archive

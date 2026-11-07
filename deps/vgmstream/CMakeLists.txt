@@ -54,7 +54,10 @@ if(FFMPEG_ROOT)
   elseif(APPLE)
     target_link_libraries(rvgmstream PRIVATE "-framework CoreFoundation" "-framework Security")
   else()
-    target_link_libraries(rvgmstream PRIVATE pthread)
+    # Android's libc has the threads itself (no libpthread to link).
+    if(NOT ANDROID)
+      target_link_libraries(rvgmstream PRIVATE pthread)
+    endif()
     # FFmpeg's hand-written assembly has no hidden-visibility markers; keep its symbols out
     # of the export table all the same.
     target_link_options(rvgmstream PRIVATE "-Wl,--exclude-libs,ALL")

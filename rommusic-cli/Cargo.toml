@@ -6,13 +6,51 @@ version = "0.1.0"
 edition.workspace = true
 repository.workspace = true
 description = "Drop a ROM, get its music as FLAC: the standalone ROM music tool built on the romexplorer core."
+default-run = "rommusic"
+build = "build.rs"
+
+# The work both front ends share: finding the music and writing it.
+[lib]
+name = "rommusic"
+path = "src/lib.rs"
 
 [[bin]]
 name = "rommusic"
 path = "src/main.rs"
+
+# The window: pick a file or folder, FLAC or original audio, an output folder. The same
+# window is the Android app (`dx build --android`, see Dioxus.toml).
+[[bin]]
+name = "rommusic-gui"
+path = "src/bin/rommusic-gui.rs"
+required-features = ["gui"]
+
+[features]
+gui = ["dep:dioxus", "dep:rfd", "dep:image", "dep:tokio", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 romexplorer = { path = ".." }
 # The FLAC writer romexplorer already uses for converted audio.
 flac-codec = "1.2"
 log = "0.4"
+
+# The window's, all already in the lock file through chdlite. "desktop" on Android too:
+# dioxus' `mobile` feature is the same dioxus-desktop crate (tao + wry).
+dioxus = { version = "0.7", features = ["desktop"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+# rfd has no Android backend; the Android app has its own file browser instead.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
+
+# The Android app's own directories, All files access and the foreground service are Java
+# APIs (src/android.rs).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
