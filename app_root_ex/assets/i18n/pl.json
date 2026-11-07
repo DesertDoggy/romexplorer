@@ -2510,6 +2510,7 @@
   "Earlier audit splits that belong together": "Wcześniejsze rozdzielenia audytu, które należy połączyć",
   "Automatic merges across platforms": "Automatyczne scalenia między platformami",
   "Unlicensed titles merged with retail ones": "Tytuły bez licencji scalone z detalicznymi",
+  "RetroAchievements subsets inside their game's title": "Podzestawy RetroAchievements w tytule swojej gry",
   "Titles whose own files name another game": "Tytuły, których pliki wskazują inną grę",
   "Merges made through an IGDB game": "Scalenia przez grę z IGDB",
   "IGDB links made by hash, name or search": "Powiązania IGDB przez hash, nazwę lub wyszukiwanie",

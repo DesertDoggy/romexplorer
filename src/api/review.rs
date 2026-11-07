@@ -302,8 +302,11 @@ pub async fn apply(app: &App, key: &str, req: &ApplyRequest) -> Result<ApplyResu
     }
     let title_ids: Vec<u64> = row.try_get::<String, _>("title_ids")?.split(',').filter_map(|x| x.parse().ok()).collect();
     let detail: Option<ReviewDetail> = row.try_get::<Option<String>, _>("detail")?.map(|d| serde_json::from_str(&d)).transpose().map_err(|e| Error::internal(format!("suggestion {key}: {e}")))?;
+    // The merges and splits this makes remember the suggestion: undone, it is pending again.
+    let since = title_merge::last_log_id(&app.pool).await?;
     if let Some(layout) = &req.layout {
         let result = ApplyResult { title_ids: apply_layout(app, layout).await? };
+        title_merge::tag_suggestion(&app.pool, key, since).await?;
         sqlx::query("UPDATE title_merge_suggestions SET status = 'accepted', updated_at = NOW() WHERE igdb_id = ?").bind(key).execute(&app.pool).await?;
         return Ok(result);
     }
@@ -331,6 +334,7 @@ pub async fn apply(app: &App, key: &str, req: &ApplyRequest) -> Result<ApplyResu
             }
         }
     };
+    title_merge::tag_suggestion(&app.pool, key, since).await?;
     sqlx::query("UPDATE title_merge_suggestions SET status = 'accepted', updated_at = NOW() WHERE igdb_id = ?").bind(key).execute(&app.pool).await?;
     Ok(result)
 }

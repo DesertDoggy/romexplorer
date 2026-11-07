@@ -38,6 +38,10 @@ pub struct AuditSummary {
     pub platform_splits: u64,
     /// Automatic merges of a pirate / unlicensed-only title into a retail one, split again.
     pub unlicensed_splits: u64,
+    /// RetroAchievements subsets taken out of their game's title into titles of their own.
+    pub subset_splits: u64,
+    /// Automatic merges made through a RetroAchievements subset, split again.
+    pub subset_merges_split: u64,
     /// Titles whose own files name another IGDB game than their link: the merges the wrong
     /// link brought undone, and the title linked to its own game.
     pub relinked: Vec<u64>,
@@ -288,6 +292,22 @@ pub async fn queue_unlicensed_repair_once(pool: &MySqlPool) -> Result<(), Databa
     Ok(())
 }
 
+/// Once: the audit that gives RetroAchievements subsets titles of their own (step 0b''), on
+/// a machine that builds its own catalogue and has a subset inside another title.
+pub async fn queue_subset_repair_once(pool: &MySqlPool) -> Result<(), DatabaseError> {
+    const NAME: &str = "subset_titles_0085";
+    if sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(NAME).fetch_optional(pool).await?.is_some() {
+        return Ok(());
+    }
+    let client = super::settings::instance_mode(pool).await? == super::settings::InstanceMode::Client;
+    if !client && (!super::title_merge::bundled_subsets(pool).await?.is_empty() || !super::title_merge::ra_subset_merges(pool).await?.is_empty()) {
+        let id = super::jobs::enqueue(pool, super::jobs::JobType::TitleMergeAudit, serde_json::json!({})).await?;
+        log::info!("queued merge audit job {id}: RetroAchievements subsets get titles of their own");
+    }
+    sqlx::query("INSERT IGNORE INTO data_migrations (name) VALUES (?)").bind(NAME).execute(pool).await?;
+    Ok(())
+}
+
 pub async fn queue_platform_repair_once(pool: &MySqlPool) -> Result<(), DatabaseError> {
     const NAME: &str = "platform_merges_0059";
     let done: Option<String> = sqlx::query_scalar("SELECT name FROM data_migrations WHERE name = ?").bind(NAME).fetch_optional(pool).await?;
@@ -363,11 +383,12 @@ pub async fn queue_demo_repair_once(pool: &MySqlPool) -> Result<(), DatabaseErro
 
 /// The audit's steps, as `jobs::Steps` lists them (key, English label). Both UIs translate
 /// them by key.
-pub const AUDIT_STEPS: [(&str, &str); 7] = [
+pub const AUDIT_STEPS: [(&str, &str); 8] = [
     ("audit_demo", "Titles linked through a demo of another game"),
     ("audit_remerge", "Earlier audit splits that belong together"),
     ("audit_platforms", "Automatic merges across platforms"),
     ("audit_unlicensed", "Unlicensed titles merged with retail ones"),
+    ("audit_subsets", "RetroAchievements subsets inside their game's title"),
     ("audit_wronglink", "Titles whose own files name another game"),
     ("audit_merges", "Merges made through an IGDB game"),
     ("audit_links", "IGDB links made by hash, name or search"),
@@ -376,8 +397,8 @@ pub const AUDIT_STEPS: [(&str, &str); 7] = [
 pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progress) -> Result<AuditSummary, DatabaseError> {
     let mut s = AuditSummary::default();
     let mut book = IgdbNameBook::default();
-    // Seven steps, each over its own list: the row says which step and which item of how
-    // many, the bar gives each step a seventh, and the step list says how each came out.
+    // Eight steps, each over its own list: the row says which step and which item of how
+    // many, the bar gives each step an eighth, and the step list says how each came out.
     let mut steps = Steps::new(progress, &AUDIT_STEPS, "merge audit");
 
     steps.start(1).await;
@@ -469,11 +490,48 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
     }
     steps.done(format!("{} of {n} split", s.unlicensed_splits)).await;
 
+    // 0b''. RetroAchievements subsets: played on a patched ROM, each is a title of its own
+    //       (`title_merge::subset_only`). An import before that put them under their game's
+    //       title, and an automatic or accepted merge could too. Split out, on the platforms
+    //       RetroAchievements covers; each split is logged and can be undone.
+    steps.start(5).await;
+    // First the merges a subset made: one subset covering two versions of a game joined them.
+    progress.force(0, None, "reading the merges made through a RetroAchievements subset").await;
+    let through_subset = super::title_merge::ra_subset_merges(pool).await?;
+    let m = through_subset.len() as u64;
+    for (i, log_id) in through_subset.into_iter().enumerate() {
+        progress.report(i as u64, Some(m), &format!("merge {} of {m} made through a subset ({} split)", i + 1, s.subset_merges_split)).await;
+        match super::title_merge::decouple(pool, log_id).await {
+            Ok(_) => {
+                sqlx::query("UPDATE title_merge_log SET reason = CONCAT(reason, ' (subset)') WHERE id = ?").bind(log_id).execute(pool).await?;
+                s.subset_merges_split += 1;
+            }
+            Err(e) => {
+                log::warn!("merge audit: splitting merge {log_id} made through a subset: {e}");
+                s.decouple_failed += 1;
+            }
+        }
+    }
+    progress.force(0, None, "reading the RetroAchievements subsets inside other titles").await;
+    let bundled = super::title_merge::bundled_subsets(pool).await?;
+    let n = bundled.len() as u64;
+    for (i, (title, releases)) in bundled.iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("title {} of {n} ({} subset(s) split out)", i + 1, s.subset_splits)).await;
+        match super::title_merge::split_subsets(pool, releases).await {
+            Ok(new) => s.subset_splits += new.len() as u64,
+            Err(e) => {
+                log::warn!("merge audit: splitting the subsets out of title {title}: {e}");
+                s.decouple_failed += 1;
+            }
+        }
+    }
+    steps.done(format!("{} of {m} merge(s) split, {} subset(s) out of {n} title(s)", s.subset_merges_split, s.subset_splits)).await;
+
     // 0c. A title whose own files Hasheous names as another game than its IGDB link: the link
     //     came in through something else (a file it shares with other games, a demo), and
     //     pulled that game's titles in. Those merges are undone, the link replaced by the
     //     title's own game.
-    steps.start(5).await;
+    steps.start(6).await;
     progress.force(0, None, "reading the titles automatic merges went into").await;
     let survivors: Vec<u64> = sqlx::query_scalar("SELECT DISTINCT survivor_id FROM title_merge_log WHERE undone_at IS NULL AND grade <> 'manual' AND (reason LIKE 'igdb:%' OR reason LIKE 'ra:%')")
         .fetch_all(pool)
@@ -517,7 +575,7 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
     steps.done(format!("{} of {n} relinked", s.relinked.len())).await;
 
     // 1. Merges made because of an IGDB id.
-    steps.start(6).await;
+    steps.start(7).await;
     progress.force(0, None, "reading the merges made through an IGDB game").await;
     let merges = sqlx::query("SELECT id, merged_name, reason FROM title_merge_log WHERE undone_at IS NULL AND reason LIKE 'igdb:%' AND reason NOT LIKE '%(audit)%' AND reason NOT LIKE '%(platforms)%' ORDER BY id").fetch_all(pool).await?;
     let merge_ids: Vec<u32> = merges.iter().filter_map(|r| r.try_get::<String, _>("reason").ok()).filter_map(|r| r.trim_start_matches("igdb:").parse().ok()).collect::<HashSet<u32>>().into_iter().collect();
@@ -549,7 +607,7 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
     // 2. Loose IGDB links whose title doesn't answer to the game's names.
     // A fuzzy link (a search result, no exact name) has to name the same game; the others
     // only must not plainly name another one.
-    steps.start(7).await;
+    steps.start(8).await;
     progress.force(0, None, "reading the IGDB links made by hash, name or search").await;
     let links: Vec<(u64, String, String)> = sqlx::query_as(
         "SELECT tpl.title_id, tpl.provider_id, CAST(tpl.confidence AS CHAR) FROM title_provider_links tpl JOIN title t ON t.id = tpl.title_id AND t.deleted = FALSE \

@@ -342,6 +342,9 @@ fn draft_release(game: &ParsedGame, header_name: &str, source: Source, material:
         _ if parsed.base.is_empty() => name.clone(),
         _ => parsed.base.clone(),
     };
+    // A RetroAchievements subset ("Game [Subset - Speedrun]") is a patched ROM: a title of its
+    // own, never one with the game it was made from.
+    let title_name = matching::with_subset_tag(&title_name, &game.name);
     let norm_name = matching::normalize_title(&title_name).to_lowercase();
     let (structured_region, structured_language) = normalize_structured_tags(game.region.as_deref(), game.language.as_deref());
     let region = structured_region.or_else(|| {
