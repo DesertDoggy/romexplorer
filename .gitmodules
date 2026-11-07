@@ -91,6 +91,7 @@
 	url = https://gitlab.com/kode54/highly_experimental
 [submodule "external/highly_theoretical"]
 	path = external/highly_theoretical
+	ignore = dirty
 	url = https://gitlab.com/kode54/highly_theoretical
 [submodule "external/psflib"]
 	path = external/psflib
