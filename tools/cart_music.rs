@@ -4,7 +4,7 @@
 //!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
-//! Mega Drive, PC Engine, MSX or WonderSwan/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
+//! Mega Drive, PC Engine, MSX, WonderSwan/Color or Virtual Boy ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
 //! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
 //! ends the run.
@@ -19,6 +19,7 @@ use romexplorer::rom::nes_music::Nes;
 use romexplorer::rom::msx_music::Msx;
 use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
+use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::rom::{nes_cart, rom_songs};
 
@@ -79,6 +80,7 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "rom"
                 | "ws"
                 | "wsc"
+                | "vb"
                 | "zip"
                 | "7z"
         ) {
@@ -120,6 +122,9 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
         || name.contains("turbografx")
     {
         return Some("PCE");
+    }
+    if name.ends_with(".vb") || name.contains("virtual boy") {
+        return Some("VB");
     }
     if name.ends_with(".wsc") || name.contains("wonderswan color") {
         return Some("WSC");
@@ -330,6 +335,13 @@ fn main() {
                 let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
                 run::<WonderSwan>(&path, &rom, what, &o, tally.entry(what).or_default())
             }
+            Some("VB") => run::<VirtualBoy>(
+                &path,
+                &rom,
+                "Virtual Boy",
+                &o,
+                tally.entry("Virtual Boy").or_default(),
+            ),
             Some("PCE") => run::<PcEngine>(
                 &path,
                 &rom,

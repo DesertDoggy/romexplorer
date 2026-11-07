@@ -1,6 +1,6 @@
 //! Sound chips from libvgm (`deps/rommusic/chip/rchip.cpp`, in the `rommusic` library), fed
 //! one register write at a time by a game's own code: the Master System and Game Gear's PSG
-//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit, the MSX's PSG and Konami's SCC, the WonderSwan's sound unit. Loaded at run time; [`available`] is false when
+//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit, the MSX's PSG and Konami's SCC, the WonderSwan's sound unit, the Virtual Boy's VSU. Loaded at run time; [`available`] is false when
 //! the library has not been built for this machine.
 
 use std::ffi::{c_double, c_int, c_long, c_void};
@@ -70,6 +70,9 @@ pub enum Kind {
     /// The WonderSwan's sound unit. Ports are the console's I/O ports (0x80-0x94); its
     /// waveforms are in the console's RAM, sent with [`Chips::write_ram`].
     WonderSwan,
+    /// The Virtual Boy's VSU. Ports are its registers' byte addresses over 4 (0-0x1FF):
+    /// waveforms, modulation table, then the channels; write with [`Chips::write_wide`].
+    VirtualBoyVsu,
 }
 
 impl Kind {
@@ -83,6 +86,7 @@ impl Kind {
             Kind::Ay8910 => (0x12, 0),
             Kind::Scc => (0x19, 0),
             Kind::WonderSwan => (0x21, 0),
+            Kind::VirtualBoyVsu => (0x22, 0),
         }
     }
 }
@@ -116,6 +120,19 @@ impl Chips {
 
     /// A write to chip `chip` (in the order given to [`Chips::new`]), at `time` into the frame.
     pub fn write(&mut self, time: u32, chip: u8, port: u8, value: u8) {
+        unsafe {
+            (self.api.write)(
+                self.handle,
+                time as c_int,
+                chip as c_int,
+                port as c_int,
+                value as c_int,
+            )
+        }
+    }
+
+    /// A write to a chip whose ports go past 255 (the VSU's).
+    pub fn write_wide(&mut self, time: u32, chip: u8, port: u16, value: u8) {
         unsafe {
             (self.api.write)(
                 self.handle,
