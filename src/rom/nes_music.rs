@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use super::fds;
 use super::m6502::{Bus, Cpu};
 use super::music_search::{Machine, Step, Write};
 use super::nes_apu::{Apu, Target};
@@ -61,6 +62,8 @@ struct Board {
     shadow: HashMap<(Target, u16), u8>,
     n163_addr: u8,
     n163_ram: Vec<u8>,
+    /// A Disk System game: the disk and the BIOS stand-in's state.
+    fds: Option<fds::State>,
     /// RAM accesses, when traced: (address, written, value).
     trace: Option<Vec<(u16, bool, u8)>>,
 }
@@ -91,6 +94,7 @@ impl Board {
             shadow: HashMap::new(),
             n163_addr: 0,
             n163_ram: vec![0; 128],
+            fds: None,
             trace: None,
         })
     }
@@ -160,6 +164,10 @@ impl Board {
             })
             .collect();
         rest.sort_by_key(|((t, a), _)| (format!("{t:?}"), *a));
+        // The Disk System's waveform memory only takes writes while $4089 bit 7 allows them.
+        if rest.iter().any(|((t, _), _)| *t == Target::Fds) {
+            out.push(w(Target::Fds, 0x4089, 0x80));
+        }
         out.extend(rest.into_iter().map(|(&(t, a), &v)| w(t, a, v)));
         if self.n163_ram.iter().any(|&b| b != 0) {
             out.push(w(Target::N163Addr, 0xF800, 0x80));
@@ -329,6 +337,7 @@ fn port(target: Target, addr: u16) -> u32 {
         Target::Fme7Latch => 0x22,
         Target::Fme7Data => 0x23,
         Target::Mmc5 => 0x24,
+        Target::Fds => 0x25,
     };
     code << 16 | addr as u32
 }
@@ -345,6 +354,7 @@ fn target(port: u32) -> (Target, u16) {
         0x21 => Target::N163Data,
         0x22 => Target::Fme7Latch,
         0x23 => Target::Fme7Data,
+        0x25 => Target::Fds,
         _ => Target::Mmc5,
     };
     (t, addr)
@@ -363,6 +373,27 @@ impl Nes {
         self.board.pal
     }
 
+    /// BIOS addresses a Disk System game reached that the stand-in doesn't know.
+    pub fn unknown_bios_calls(&self) -> Vec<u16> {
+        self.board
+            .fds
+            .as_ref()
+            .map(|f| f.unknown.clone())
+            .unwrap_or_default()
+    }
+
+    /// One instruction, or one BIOS routine of a Disk System game.
+    fn exec(&mut self) -> u32 {
+        if self.cpu.pc >= 0xE000 {
+            if let Some(mut st) = self.board.fds.take() {
+                let c = fds::hle(&mut self.cpu, &mut self.board, &mut st);
+                self.board.fds = Some(st);
+                return c;
+            }
+        }
+        self.cpu.step(&mut self.board)
+    }
+
     fn step_once(&mut self) -> u32 {
         let mut cycles = 0;
         if self.board.nmi_due {
@@ -375,7 +406,7 @@ impl Nes {
             t.clear();
         }
         self.board.instr += 1;
-        cycles += self.cpu.step(&mut self.board) + std::mem::take(&mut self.board.stall);
+        cycles += self.exec() + std::mem::take(&mut self.board.stall);
         self.board.cycle += cycles;
         self.board.cart.clock(cycles);
         self.board.clock_apu(cycles);
@@ -406,7 +437,7 @@ impl Nes {
                 return false;
             }
             self.board.instr += 1;
-            let c = self.cpu.step(&mut self.board) + std::mem::take(&mut self.board.stall);
+            let c = self.exec() + std::mem::take(&mut self.board.stall);
             self.board.cycle += c;
             used += c;
         }
@@ -430,6 +461,20 @@ impl Machine for Nes {
     const CHANNELS: u16 = 1;
 
     fn boot(rom: &[u8]) -> Result<Self, String> {
+        if fds::is_disk(rom) {
+            let disk = fds::parse(rom)?;
+            let h = nes_cart::Header {
+                mapper: nes_cart::FDS,
+                submapper: 0,
+                prg: std::sync::Arc::new(fds::bios_image()),
+                pal: false,
+                prg_ram: 0x8000,
+            };
+            let mut board = Board::new(&h)?;
+            board.fds = Some(fds::State::new(std::sync::Arc::new(disk)));
+            let cpu = Cpu::reset(&mut board);
+            return Ok(Self { cpu, board });
+        }
         let h = nes_cart::parse(rom)?;
         if !nes_cart::supported(h.mapper) {
             return Err(format!(
@@ -667,6 +712,42 @@ pub(crate) mod tests {
         rom[4] = 1;
         rom.extend(prg);
         rom
+    }
+
+    /// The tiny game on a Disk System disk: its code loaded to $C000 at boot, its vectors in
+    /// the Disk System's place ($DFF6-$DFFF).
+    fn tiny_disk() -> Vec<u8> {
+        let rom = tiny_game();
+        let code = rom[16..16 + 0x300].to_vec();
+        let mut vectors = Vec::new();
+        for v in [0xC100u16, 0xC100, 0xC100, 0xC000, 0xC100] {
+            vectors.extend_from_slice(&v.to_le_bytes());
+        }
+        // A file past the boot code is never loaded at boot.
+        super::super::fds::tests::image(
+            1,
+            &[
+                (0, 0xC000, 0, code),
+                (1, 0xDFF6, 0, vectors),
+                (2, 0xC000, 0, vec![0; 16]),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_tiny_disk_game_has_its_songs() {
+        if !super::super::nes_apu::available() {
+            return;
+        }
+        let disk = tiny_disk();
+        let found = search::<Nes>(&disk).unwrap();
+        assert_eq!(found.why, None);
+        assert_eq!(found.recipe.play, 0xC200);
+        assert_eq!(found.recipe.trigger, Trigger::Byte(0x0300));
+        let t = measure::<Nes>(&disk, &found.recipe, 3).unwrap();
+        assert_eq!(t.looping.map(|l| l.1), Some(128), "{t:?}");
+        let m = Nes::boot(&disk).unwrap();
+        assert!(m.unknown_bios_calls().is_empty());
     }
 
     #[test]

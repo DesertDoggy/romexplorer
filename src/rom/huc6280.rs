@@ -223,9 +223,9 @@ impl Cpu {
     fn shift(&mut self, kind: u8, v: u8) -> u8 {
         let c = self.p & C;
         let (r, out) = match kind {
-            0 => (v << 1, v >> 7),          // ASL
-            1 => ((v << 1) | c, v >> 7),    // ROL
-            2 => (v >> 1, v & 1),           // LSR
+            0 => (v << 1, v >> 7),             // ASL
+            1 => ((v << 1) | c, v >> 7),       // ROL
+            2 => (v >> 1, v & 1),              // LSR
             _ => ((v >> 1) | (c << 7), v & 1), // ROR
         };
         self.p = (self.p & !C) | out;
@@ -586,9 +586,8 @@ impl Cpu {
                 };
                 let addr = self.address(bus, mode);
                 let v = self.rd(bus, addr);
-                self.p = (self.p & !(N | V | Z))
-                    | (v & (N | V))
-                    | if self.a & v == 0 { Z } else { 0 };
+                self.p =
+                    (self.p & !(N | V | Z)) | (v & (N | V)) | if self.a & v == 0 { Z } else { 0 };
                 cycles
             }
             // TSB / TRB.
@@ -600,10 +599,13 @@ impl Cpu {
                 };
                 let addr = self.address(bus, mode);
                 let v = self.rd(bus, addr);
-                self.p = (self.p & !(N | V | Z))
-                    | (v & (N | V))
-                    | if self.a & v == 0 { Z } else { 0 };
-                let r = if op & 0x10 == 0 { v | self.a } else { v & !self.a };
+                self.p =
+                    (self.p & !(N | V | Z)) | (v & (N | V)) | if self.a & v == 0 { Z } else { 0 };
+                let r = if op & 0x10 == 0 {
+                    v | self.a
+                } else {
+                    v & !self.a
+                };
                 self.wr(bus, addr, r);
                 cycles
             }
@@ -618,9 +620,7 @@ impl Cpu {
                 };
                 let addr = self.address(bus, mode);
                 let v = self.rd(bus, addr);
-                self.p = (self.p & !(N | V | Z))
-                    | (v & (N | V))
-                    | if imm & v == 0 { Z } else { 0 };
+                self.p = (self.p & !(N | V | Z)) | (v & (N | V)) | if imm & v == 0 { Z } else { 0 };
                 cycles
             }
             // The video chip's ports, at the top of the hardware bank.

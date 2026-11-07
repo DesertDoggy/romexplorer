@@ -6,7 +6,12 @@
 
 use std::sync::Arc;
 
-use super::nes_apu::{Target, CHIP_FME7, CHIP_MMC5, CHIP_N163, CHIP_VRC6};
+use super::nes_apu::{Target, CHIP_FDS, CHIP_FME7, CHIP_MMC5, CHIP_N163, CHIP_VRC6};
+
+/// The Famicom Disk System, as a board: 32 KB of RAM at $6000-$DFFF, the BIOS at $E000 (here
+/// the stand-in of [`super::fds`]), a cycle timer and the wavetable sound channel. Never in an
+/// iNES header; [`super::fds`] builds it.
+pub const FDS: u16 = 0xF00D;
 
 /// What the iNES header says.
 #[derive(Debug, Clone)]
@@ -166,7 +171,7 @@ const RAM_WINDOW: usize = usize::MAX;
 
 impl Cart {
     pub fn new(h: &Header) -> Result<Self, String> {
-        if !supported(h.mapper) {
+        if !supported(h.mapper) && h.mapper != FDS {
             return Err(format!("NES board (mapper {}) not supported yet", h.mapper));
         }
         let mut c = Self {
@@ -199,6 +204,7 @@ impl Cart {
             19 => CHIP_N163,
             69 => CHIP_FME7,
             5 => CHIP_MMC5,
+            FDS => CHIP_FDS,
             _ => 0,
         }
     }
@@ -260,6 +266,13 @@ impl Cart {
 
     /// Reads $4020-$FFFF. `None`: nothing answers (open bus).
     pub fn read(&self, addr: u16) -> Option<u8> {
+        if self.mapper == FDS {
+            return match addr {
+                0x6000..=0xDFFF => Some(self.ram[addr as usize - 0x6000]),
+                0xE000..=0xFFFF => Some(self.prg[addr as usize - 0xE000]),
+                _ => None,
+            };
+        }
         match addr {
             0x6000..=0x7FFF => {
                 let w = self.windows[0];
@@ -292,6 +305,9 @@ impl Cart {
     pub fn write(&mut self, addr: u16, v: u8, instr: u64) -> Option<Target> {
         let consecutive = self.last_write == instr;
         self.last_write = instr;
+        if self.mapper == FDS {
+            return self.fds_write(addr, v);
+        }
         if (0x6000..=0x7FFF).contains(&addr) {
             if self.windows[0] == RAM_WINDOW && self.ram_enabled && !self.ram.is_empty() {
                 let n = self.ram.len();
@@ -468,6 +484,19 @@ impl Cart {
     /// Reads that reach the board below $6000 (sound chip registers, IRQ status).
     pub fn read_low(&mut self, addr: u16) -> Option<u8> {
         match self.mapper {
+            FDS => match addr {
+                0x4030 => {
+                    // The timer's interrupt flag; reading acknowledges it.
+                    let v = self.irq as u8;
+                    self.irq = false;
+                    Some(v)
+                }
+                // A disk is in, ready, not write-protected; the battery is good.
+                0x4032 => Some(0x40),
+                0x4033 => Some(0x80),
+                0x4090 | 0x4092 => Some(0x40),
+                _ => None,
+            },
             5 => match addr {
                 0x5204 => {
                     // In-frame and IRQ pending flags.
@@ -481,6 +510,35 @@ impl Cart {
             },
             _ => None,
         }
+    }
+
+    // --- Famicom Disk System ------------------------------------------------------
+
+    fn fds_write(&mut self, addr: u16, v: u8) -> Option<Target> {
+        match addr {
+            0x6000..=0xDFFF => self.ram[addr as usize - 0x6000] = v,
+            0x4020 => self.irq_latch = (self.irq_latch & 0xFF00) | v as u16,
+            0x4021 => self.irq_latch = (self.irq_latch & 0x00FF) | (v as u16) << 8,
+            0x4022 => {
+                self.irq_mode = v & 1;
+                self.irq_enabled = v & 2 != 0 && self.regs[0] & 1 != 0;
+                if self.irq_enabled {
+                    self.irq_counter = self.irq_latch;
+                } else {
+                    self.irq = false;
+                }
+            }
+            0x4023 => {
+                self.regs[0] = v;
+                if v & 1 == 0 {
+                    self.irq_enabled = false;
+                    self.irq = false;
+                }
+            }
+            0x4040..=0x4092 => return Some(Target::Fds),
+            _ => {}
+        }
+        None
     }
 
     // --- MMC1 ---------------------------------------------------------------------
@@ -638,6 +696,25 @@ impl Cart {
     /// `cycles` CPU cycles passed: the cycle-counting IRQ timers.
     pub fn clock(&mut self, cycles: u32) {
         if !self.irq_enabled {
+            return;
+        }
+        if self.mapper == FDS {
+            // Counts down once a cycle; at zero it interrupts and reloads (repeat mode) or
+            // stops.
+            let mut left = cycles;
+            while left > 0 && self.irq_enabled {
+                let n = left.min(self.irq_counter as u32 + 1);
+                left -= n;
+                if n as u16 > self.irq_counter {
+                    self.irq = true;
+                    self.irq_counter = self.irq_latch;
+                    if self.irq_mode & 1 == 0 {
+                        self.irq_enabled = false;
+                    }
+                } else {
+                    self.irq_counter -= n as u16;
+                }
+            }
             return;
         }
         match self.mapper {

@@ -611,7 +611,7 @@ impl Machine for PcEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::super::music_search::{measure, search, Trigger};
+    use super::super::music_search::{Trigger, measure, search};
     use super::*;
 
     /// A tiny game: the vertical blank interrupt calls a sound routine that plays song N (N

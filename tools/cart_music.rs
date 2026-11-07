@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 
 use romexplorer::rom::gb_music::GameBoy;
 use romexplorer::rom::md_music::MegaDrive;
-use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::music_search::{self, Machine, Song};
 use romexplorer::rom::nes_music::Nes;
+use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
 use romexplorer::rom::{nes_cart, rom_songs};
 
@@ -61,7 +61,18 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
             .to_ascii_lowercase();
         if matches!(
             ext.as_str(),
-            "nes" | "gb" | "gbc" | "sms" | "gg" | "md" | "gen" | "smd" | "pce" | "zip" | "7z"
+            "nes"
+                | "fds"
+                | "gb"
+                | "gbc"
+                | "sms"
+                | "gg"
+                | "md"
+                | "gen"
+                | "smd"
+                | "pce"
+                | "zip"
+                | "7z"
         ) {
             out.push(path.to_path_buf());
         }
@@ -72,6 +83,9 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
 fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if nes_cart::parse(rom).is_ok() {
         return Some("NES");
+    }
+    if romexplorer::rom::fds::is_disk(rom) {
+        return Some("FDS");
     }
     // The Nintendo logo every Game Boy cartridge carries.
     if rom.len() >= 0x150 && rom[0x104..0x108] == [0xCE, 0xED, 0x66, 0x66] {
@@ -85,7 +99,11 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if name.ends_with(".md") || name.ends_with(".gen") || name.ends_with(".smd") {
         return Some("MD");
     }
-    if name.ends_with(".pce") || name.contains("pc engine") || name.contains("pcengine") || name.contains("turbografx") {
+    if name.ends_with(".pce")
+        || name.contains("pc engine")
+        || name.contains("pcengine")
+        || name.contains("turbografx")
+    {
         return Some("PCE");
     }
     if name.ends_with(".nes") {
@@ -246,6 +264,28 @@ fn main() {
                 &o,
                 tally.entry("Mega Drive").or_default(),
             ),
+            Some("FDS") => {
+                run::<Nes>(
+                    &path,
+                    &rom,
+                    "Disk System",
+                    &o,
+                    tally.entry("Disk System").or_default(),
+                );
+                // BIOS routines the stand-in doesn't know, met in the first 15 seconds.
+                if let Ok(mut m) = Nes::boot(&rom) {
+                    for _ in 0..900 {
+                        m.run_frame(None, None);
+                        m.take_sound();
+                    }
+                    let unknown = m.unknown_bios_calls();
+                    if !unknown.is_empty() {
+                        let list: Vec<String> =
+                            unknown.iter().map(|a| format!("${a:04X}")).collect();
+                        println!("    BIOS calls not handled: {}", list.join(" "));
+                    }
+                }
+            }
             Some("PCE") => run::<PcEngine>(
                 &path,
                 &rom,
@@ -254,7 +294,10 @@ fn main() {
                 tally.entry("PC Engine").or_default(),
             ),
             Some("NES?") => {
-                println!("{}: no iNES header (headerless dump): skipped", path.display());
+                println!(
+                    "{}: no iNES header (headerless dump): skipped",
+                    path.display()
+                );
                 *tally
                     .entry("NES")
                     .or_default()
