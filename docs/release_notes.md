@@ -79,6 +79,8 @@ replacing a build.
 - The "another game inside" card treated a release with a number in front of its name
   ("0743 - ...") as another game.
 - Jobs like the merge audit showed little of their progress. They now show it in detail.
+- The Windows arm64 and Linux arm64 builds could not convert Wii U, Xbox and Xbox 360 images,
+  read PBP files or play ROM music.
 
 # romexplorer 0.1.8 (alpha)
 

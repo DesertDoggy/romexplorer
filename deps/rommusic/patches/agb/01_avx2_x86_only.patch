@@ -1,0 +1,14 @@
+diff --git a/src/agbplay/ResamplerAVX2.hpp b/src/agbplay/ResamplerAVX2.hpp
+index b9a8a68..41dd845 100644
+--- a/src/agbplay/ResamplerAVX2.hpp
++++ b/src/agbplay/ResamplerAVX2.hpp
+@@ -2,7 +2,8 @@
+ 
+ #include "Resampler.hpp"
+ 
+-#if __has_include(<immintrin.h>)
++// x86 only: clang ships an immintrin.h for every target, which #errors outside x86.
++#if (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && __has_include(<immintrin.h>)
+ 
+ #include <immintrin.h>
+ 

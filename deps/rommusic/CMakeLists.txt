@@ -107,6 +107,13 @@ target_include_directories(rommusic_sseq PRIVATE ${SSEQ_ROOT})
 target_compile_options(rommusic_sseq PRIVATE -Wno-deprecated-declarations)
 set_target_properties(rommusic_sseq PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# Old C in the emulator cores. GCC 14 and later make these errors by default and
+# -fpermissive turns them back into warnings; Clang (llvm-mingw for windows/arm64, Apple
+# clang on macOS) ignores -fpermissive, so its errors are named one by one.
+set(ROMMUSIC_LAX_C -w -fno-strict-aliasing -fpermissive
+  -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion
+  -Wno-error=incompatible-pointer-types -Wno-error=return-type)
+
 # --- the N64 player ------------------------------------------------------------------
 set(USF_SOURCES ai/ai_controller api/callbacks debugger/dbg_decoder main/main main/rom main/savestates
   main/util memory/memory pi/cart_rom pi/pi_controller r4300/cached_interp r4300/cp0 r4300/cp1
@@ -119,11 +126,11 @@ set(USF_SOURCES ai/ai_controller api/callbacks debugger/dbg_decoder main/main ma
 list(TRANSFORM USF_SOURCES PREPEND ${USF_ROOT}/)
 list(TRANSFORM USF_SOURCES APPEND .c)
 add_library(rommusic_usf OBJECT usf/rusf.c usf/adler32.c ${USF_SOURCES})
-target_include_directories(rommusic_usf PRIVATE ${USF_ROOT})
+target_include_directories(rommusic_usf PRIVATE ${USF_ROOT} ${CMAKE_CURRENT_SOURCE_DIR}/usf/compat)
 set_target_properties(rommusic_usf PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
 # Upstream's own build is this lax: old mupen64plus code. GCC 14 and later make a `return 0`
 # in a void function (rsp_hle/plugin.c) an error, which -fpermissive turns back into a warning.
-target_compile_options(rommusic_usf PRIVATE -w -fno-strict-aliasing -fpermissive)
+target_compile_options(rommusic_usf PRIVATE ${ROMMUSIC_LAX_C})
 
 # --- Highly Experimental: the PS1/PS2 sound CPU and SPU -----------------------------
 set(HE_SOURCES psx ioptimer iop bios r3000dis r3000asm r3000 vfs spucore spu mkhebios)
@@ -134,7 +141,7 @@ target_include_directories(rommusic_psx PRIVATE ${HE_ROOT}/Core)
 target_compile_definitions(rommusic_psx PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN HAVE_STDINT_H)
 set_target_properties(rommusic_psx PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
 # Old C that GCC 14 and later reject by default; -fpermissive keeps it a warning.
-target_compile_options(rommusic_psx PRIVATE -w -fno-strict-aliasing -fpermissive)
+target_compile_options(rommusic_psx PRIVATE ${ROMMUSIC_LAX_C})
 
 # --- Highly Theoretical: the Saturn SCSP and Dreamcast AICA, with their sound CPUs -----
 set(HT ${HT_ROOT}/Core)
@@ -144,7 +151,7 @@ target_include_directories(rommusic_sega PRIVATE ${HT})
 # Its op files are generated as switch cases, so the switch build it is.
 target_compile_definitions(rommusic_sega PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN HAVE_STDINT_H C68K_NO_JUMP_TABLE)
 set_target_properties(rommusic_sega PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
-target_compile_options(rommusic_sega PRIVATE -w -fno-strict-aliasing -fpermissive)
+target_compile_options(rommusic_sega PRIVATE ${ROMMUSIC_LAX_C})
 
 # --- mGBA's GBA core, for GSF rips ----------------------------------------------------
 set(LIBMGBA_ONLY ON CACHE BOOL "" FORCE)
@@ -170,7 +177,7 @@ target_include_directories(rommusic_wsr PRIVATE ${WSWAN_ROOT} ${WSW} ${WSW}/incl
 set_target_properties(rommusic_wsr PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
 # The defines its own Makefile passes.
 target_compile_definitions(rommusic_wsr PRIVATE SIZEOF_DOUBLE=8 MEDNAFEN_VERSION_NUMERIC=931 MPC_FIXED_POINT STDC_HEADERS __STDC_LIMIT_MACROS __LIBRETRO__ _LOW_ACCURACY_)
-target_compile_options(rommusic_wsr PRIVATE -w -fno-strict-aliasing -fpermissive)
+target_compile_options(rommusic_wsr PRIVATE ${ROMMUSIC_LAX_C})
 
 # --- libvgm, for VGM logs gme cannot play -------------------------------------------------
 # Its own CMake is not used: it would want zlib for loaders and a player list rommusic does
@@ -195,7 +202,14 @@ target_compile_options(rommusic_vgm PRIVATE -w)
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
   $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>)
-target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>" mgba)
+# llvm-mingw's lld (windows/arm64) takes --whole-archive but not the --push-state/--pop-state
+# that CMake wraps WHOLE_ARCHIVE in for MinGW, nor --exclude-libs (below).
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set(ROMMUSIC_LLD_MINGW ON)
+  target_link_libraries(rommusic PRIVATE -Wl,--whole-archive gme_static -Wl,--no-whole-archive mgba)
+else()
+  target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>" mgba)
+endif()
 if(APPLE)
   target_link_libraries(rommusic PRIVATE iconv)
 endif()
@@ -204,8 +218,9 @@ if(NOT WIN32 AND NOT APPLE)
   # A symbol nothing defines fails the link here, as it does on Windows, not at load time.
   target_link_options(rommusic PRIVATE -Wl,--no-undefined)
 endif()
-if(NOT APPLE)
-  # mGBA's functions are its own business: only the rgsf_ calls are exported.
+if(NOT APPLE AND NOT ROMMUSIC_LLD_MINGW)
+  # mGBA's functions are its own business: only the rgsf_ calls are exported. (On Windows the
+  # __declspec(dllexport) API already keeps everything else out of the export table.)
   target_link_options(rommusic PRIVATE -Wl,--exclude-libs,libmgba.a)
 endif()
 if(WIN32)

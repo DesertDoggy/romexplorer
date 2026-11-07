@@ -1,6 +1,13 @@
-# chdlite 0.3.0
+# chdlite 0.3.1
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
+
+## Bug fixes
+
+- The Windows arm64 and Linux arm64 builds could not convert Wii U, Xbox and Xbox 360 images
+  or read PBP files.
+
+# chdlite 0.3.0
 
 ## Changes
 

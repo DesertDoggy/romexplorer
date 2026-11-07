@@ -20,8 +20,9 @@
 #                 and release/<version>/dist/.
 #   5. bundles    appimage.sh for linux desktop, macos_app.sh for macOS desktop, where the
 #                 host can run them.
-#   5b. android   build_chdlite_android.sh --release --cli: the chdlite app (APK) and its
-#                 command-line tool (chdlite alone) for android/arm64, into release/<version>/dist/ as
+#   5b. android   build_chdlite_android.sh --release --cli, with the chdlite mode: the chdlite
+#                 app (APK) and its command-line tool (chdlite alone) for android/arm64, into
+#                 release/chdlite/<chdlite version>/dist/ as
 #                 chdlite-<v>-android-arm64[-unsigned].apk and chdlite-cli-<v>-android-arm64.zip.
 #                 Signed with CHDLITE_KEYSTORE / CHDLITE_KEY_ALIAS / CHDLITE_KEYSTORE_PASS set.
 #                 On whenever the Android SDK, NDK and JDK are found (see that script's
@@ -36,9 +37,11 @@
 # Options:
 #   --platform LIST   linux,windows,macos           (default: this host)
 #   --arch LIST       x64,arm64                     (default: this host's)
-#   --mode LIST       server,desktop,cli            (default: server,desktop). cli is the
-#                     standalone chdlite tools, into release/cli/<chdlite version>/, and
-#                     rommusic, into release/rommusic/<rommusic version>/
+#   --mode LIST       server,desktop,chdlite,rommusic, or all (default: server,desktop).
+#                     chdlite goes to release/chdlite/<chdlite version>/ and rommusic to
+#                     release/rommusic/<rommusic version>/, each under its own version.
+#                     `cli` is the old name for chdlite,rommusic.
+#   --all             the same as --mode all: server, desktop, chdlite and rommusic
 #   --version V       (default: the workspace version)
 #   --no-clean        pass --no-clean to the native builds
 #   --skip-native     use the libraries already in app_root_ex/lib/
@@ -69,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --platform) PLATFORMS="${2:-}"; shift 2 ;;
         --arch) ARCHES="${2:-}"; shift 2 ;;
         --mode) MODES="${2:-}"; shift 2 ;;
+        --all) MODES="all"; shift ;;
         --version) VERSION="${2:-}"; shift 2 ;;
         --no-clean) CLEAN=0; shift ;;
         --skip-native) SKIP_NATIVE=1; shift ;;
@@ -124,10 +128,12 @@ done
 split() { tr ',' '\n' <<< "$1" | sed '/^$/d'; }
 mapfile -t P_LIST < <(split "$PLATFORMS")
 mapfile -t A_LIST < <(split "$ARCHES")
-mapfile -t M_LIST < <(split "$MODES")
+# `all` is every package; `cli` the old name for the two standalone tools.
+MODES="$(sed -e 's/\ball\b/server,desktop,chdlite,rommusic/g' -e 's/\bcli\b/chdlite,rommusic/g' <<< "$MODES")"
+mapfile -t M_LIST < <(split "$MODES" | awk '!seen[$0]++')
 for p in "${P_LIST[@]}"; do case "$p" in linux|windows|macos) ;; mac) echo "error: say macos, not mac" >&2; exit 2 ;; *) echo "error: unknown platform '$p'" >&2; exit 2 ;; esac; done
 for a in "${A_LIST[@]}"; do case "$a" in x64|arm64) ;; *) echo "error: unknown arch '$a'" >&2; exit 2 ;; esac; done
-for m in "${M_LIST[@]}"; do case "$m" in server|desktop|cli) ;; *) echo "error: unknown mode '$m'" >&2; exit 2 ;; esac; done
+for m in "${M_LIST[@]}"; do case "$m" in server|desktop|chdlite|rommusic) ;; *) echo "error: unknown mode '$m'" >&2; exit 2 ;; esac; done
 
 if [[ -z "$VERSION" ]]; then
     VERSION="$(cargo metadata --no-deps --format-version 1 --manifest-path "$ROOT_DIR/Cargo.toml" 2>/dev/null \
@@ -205,10 +211,12 @@ native_platform() { [[ "$1" == "macos" ]] && echo mac || echo "$1"; }
 native_flags=()
 [[ "$CLEAN" -eq 0 ]] && native_flags+=(--no-clean)
 [[ "$CORE" -eq 1 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,mariadb-connector-c,mariadb-server)
-# The cli tools need only what chdlite and rommusic load (rommusic: the players, the stream
-# decoder and the disc and archive readers); openssl is still needed to build the romexplorer
-# crate they depend on.
-[[ "$MODES" == "cli" && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu,extract-xiso)
+# chdlite and rommusic need only what they load (rommusic: the players, the stream decoder
+# and the disc and archive readers); openssl is still needed to build the romexplorer crate
+# they depend on.
+only_tools=1
+for m in "${M_LIST[@]}"; do [[ "$m" == chdlite || "$m" == rommusic ]] || only_tools=0; done
+[[ "$only_tools" -eq 1 && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu,extract-xiso)
 [[ -n "$JOBS" ]] && native_flags+=(--jobs "$JOBS")
 [[ "$UNVERIFIED" -eq 1 ]] && native_flags+=(--unverified-arm64)
 
@@ -264,7 +272,7 @@ if [[ "$GUI_WEB" -eq 1 && "$wants_web" -eq 1 ]]; then
 fi
 
 # --- 4. packages, 5. desktop bundles ---------------------------------------------------------
-# Both GUIs link WebKitGTK -- romexplorer's desktop and chdlite-gui, which the cli package
+# Both GUIs link WebKitGTK -- romexplorer's desktop and chdlite-gui, which the chdlite package
 # carries (dioxus desktop) -- so a linux/arm64 cross build of either needs its arm64
 # development files. scripts/linux_arm64_sysroot.sh unpacks them into a private sysroot
 # (installing the :arm64 -dev packages would uninstall the x64 ones); package.sh picks it up.
@@ -276,7 +284,8 @@ ARM64_GUI_BLOCKER=""
 needs_arm64_webkit=0
 for t in "${TARGETS[@]}"; do
     [[ "$t" == "linux/arm64" ]] || continue
-    for m in "${M_LIST[@]}"; do [[ "$m" != "server" ]] && needs_arm64_webkit=1; done
+    # rommusic is a console tool; chdlite ships chdlite-gui.
+    for m in "${M_LIST[@]}"; do [[ "$m" != "server" && "$m" != "rommusic" ]] && needs_arm64_webkit=1; done
 done
 if [[ "$needs_arm64_webkit" -eq 1 && "$HOST_ARCH" != "arm64" \
       && ! -f "$ARM64_SYSROOT/.complete" \
@@ -299,26 +308,25 @@ fi
 for t in "${TARGETS[@]}"; do
     p="${t%/*}" a="${t#*/}"
     for m in "${M_LIST[@]}"; do
-        if [[ "$t" == "linux/arm64" && "$m" != "server" && -n "$ARM64_GUI_BLOCKER" ]]; then
+        if [[ "$t" == "linux/arm64" && "$m" != "server" && "$m" != "rommusic" && -n "$ARM64_GUI_BLOCKER" ]]; then
             SKIPPED+=("$t $m: $ARM64_GUI_BLOCKER")
             continue
         fi
-        # --skip-native trusts app_root_ex/lib/, but a --mode cli run fills it with only what
+        # --skip-native trusts app_root_ex/lib/, but a chdlite/rommusic-only run fills it with only what
         # chdlite needs (no MariaDB), and package.sh would then compile for minutes before its
         # gate finds the bundled MariaDB missing. Both server and desktop ship mariadbd.
-        if [[ "$SKIP_NATIVE" -eq 1 && "$m" != "cli" ]]; then
+        if [[ "$SKIP_NATIVE" -eq 1 && "$m" != "chdlite" && "$m" != "rommusic" ]]; then
             md="$ROOT_DIR/app_root_ex/lib/$p/$a/mariadb"
             exe=""; [[ "$p" == "windows" ]] && exe=".exe"
             if [[ ! -f "$md/bin/mariadbd$exe" || ! -f "$md/share/english/errmsg.sys" ]]; then
-                SKIPPED+=("$t $m: --skip-native, but app_root_ex/lib/$p/$a has no complete MariaDB (built by an earlier --mode cli run?) -- run once without --skip-native")
+                SKIPPED+=("$t $m: --skip-native, but app_root_ex/lib/$p/$a has no complete MariaDB (built by an earlier chdlite/rommusic-only run?) -- run once without --skip-native")
                 continue
             fi
         fi
-        if [[ "$m" == "cli" ]]; then
-            # No --version: the cli tools carry their own (chdlite/Cargo.toml), not the workspace's.
-            step "package $t cli" bash "$SCRIPTS/package.sh" --kind cli --os "$p" --arch "$a" || true
-            # rommusic ships beside chdlite, under its own version (rommusic-cli/Cargo.toml).
-            step "package $t rommusic" bash "$SCRIPTS/package.sh" --kind rommusic --os "$p" --arch "$a" || true
+        if [[ "$m" == "chdlite" || "$m" == "rommusic" ]]; then
+            # No --version: each carries its own (chdlite/Cargo.toml, rommusic-cli/Cargo.toml),
+            # not the workspace's.
+            step "package $t $m" bash "$SCRIPTS/package.sh" --kind "$m" --os "$p" --arch "$a" || true
             continue
         fi
         step "package $t $m" bash "$SCRIPTS/package.sh" --kind "$m" --os "$p" --arch "$a" --version "$VERSION" || continue
@@ -344,8 +352,10 @@ done
 # name says which.
 android_release() {
     bash "$SCRIPTS/build_chdlite_android.sh" --release --cli || return 1
-    local cli_version apk_dir apk name cli_dir zip
+    local cli_version apk_dir apk name cli_dir zip DIST
     cli_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1)"
+    # chdlite's own dist/, beside its desktop archives, not romexplorer's.
+    DIST="$ROOT_DIR/release/chdlite/$cli_version/dist"
     apk_dir="$ROOT_DIR/target/dx/chdlite-gui/release/android/app/app/build/outputs/apk/release"
     if [[ -f "$apk_dir/app-release.apk" ]]; then
         apk="$apk_dir/app-release.apk"; name="chdlite-$cli_version-android-arm64.apk"
@@ -360,7 +370,7 @@ android_release() {
     # chdlite alone, one file with its libraries inside (chdcomp and the rest are the same program
     # under another name, which a phone's terminal has no use for); deflate (what a phone's file
     # manager opens), the executable bit kept for an unzip in a terminal.
-    cli_dir="$ROOT_DIR/release/cli/$cli_version/android/arm64"
+    cli_dir="$ROOT_DIR/release/chdlite/$cli_version/android/arm64"
     zip="$DIST/chdlite-cli-$cli_version-android-arm64.zip"
     python3 - "$cli_dir" "$zip" <<'PY' || return 1
 import os, sys, zipfile
@@ -378,7 +388,11 @@ PY
     done
     echo "android: $name, $(basename "$zip")"
 }
-if [[ "$ANDROID" != 0 && "$NATIVE_ONLY" -eq 0 ]]; then
+# Part of the chdlite package: on when chdlite is one of the modes (or --android).
+want_android=0
+for m in "${M_LIST[@]}"; do [[ "$m" == chdlite ]] && want_android=1; done
+[[ "$ANDROID" == 1 ]] && want_android=1
+if [[ "$ANDROID" != 0 && "$want_android" -eq 1 && "$NATIVE_ONLY" -eq 0 ]]; then
     if [[ ! -f "$ROOT_DIR/app_root_ex/lib/android/arm64/libchdman.so" ]]; then
         reason="no android/arm64 libraries in app_root_ex/lib/android/arm64 (scripts/build_chdlite_android.sh --natives)"
     elif ! out="$(bash "$SCRIPTS/build_chdlite_android.sh" --check 2>&1)"; then
@@ -399,7 +413,7 @@ fi
 # --- 6. SHA256SUMS -------------------------------------------------------------------------------
 # One file over everything in dist/, in the format `sha256sum -c` reads; the per-archive
 # .sha256 files package.sh writes stay alongside for single downloads.
-for DIST in "$DIST" "$ROOT_DIR"/release/cli/*/dist "$ROOT_DIR"/release/rommusic/*/dist; do
+for DIST in "$DIST" "$ROOT_DIR"/release/chdlite/*/dist "$ROOT_DIR"/release/rommusic/*/dist; do
 if [[ -d "$DIST" ]]; then
     (
         cd "$DIST"
