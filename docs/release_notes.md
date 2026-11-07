@@ -46,6 +46,7 @@ replacing a build.
 - Title pages can play the music inside your ROMs (supported platforms and media types only).
 - NES and Famicom music plays straight from the ROM, through the game's own sound code: no
   original audio files needed. Famicom sound chips (VRC6, Namco 163, Sunsoft 5B, MMC5) included.
+- Game Boy and Game Boy Color music plays straight from the ROM the same way.
 - Settings adjust which tracks play.
 - Original audio formats (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC,
   loose or zipped) are supported.

@@ -56,6 +56,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   Medientypen).
 - In den Einstellungen wird festgelegt, welche Tracks spielen.
 - NES- und Famicom-Musik spielt direkt aus dem ROM, über den eigenen Soundcode des Spiels: keine Original-Audiodateien nötig. Famicom-Soundchips (VRC6, Namco 163, Sunsoft 5B, MMC5) inklusive.
+- Game-Boy- und Game-Boy-Color-Musik spielt ebenso direkt aus dem ROM.
 - Original-Audioformate (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP und Game-Gear-SGC, einzeln
   oder gezippt) werden unterstützt.
 - Eine Original-Audio-Bibliothek: Tragen Sie unter Einstellungen › Audio die Ordner Ihrer Sets ein, und

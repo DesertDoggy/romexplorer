@@ -43,6 +43,8 @@ pub mod nes_cart;
 pub mod music_search;
 pub mod nes_music;
 pub mod sm83;
+pub mod gb_apu;
+pub mod gb_music;
 pub mod w65816;
 pub mod platforms;
 pub mod ra_disc;
