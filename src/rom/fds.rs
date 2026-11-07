@@ -502,12 +502,18 @@ pub fn hle<B: Bus>(cpu: &mut Cpu, bus: &mut B, st: &mut State) -> u32 {
             rts(cpu, bus, 0);
             return 1790 * y + 5;
         }
-        at::DIS_PF_OBJ => mask(bus, 0x18, 0),
-        at::EN_PF_OBJ => mask(bus, 0, 0x18),
-        at::DIS_OBJ => mask(bus, 0x10, 0),
-        at::EN_OBJ => mask(bus, 0, 0x10),
-        at::DIS_PF => mask(bus, 0x08, 0),
-        at::EN_PF => mask(bus, 0, 0x08),
+        at::DIS_PF_OBJ | at::EN_PF_OBJ | at::DIS_OBJ | at::EN_OBJ | at::DIS_PF | at::EN_PF => {
+            let (clear, set) = match pc {
+                at::DIS_PF_OBJ => (0x18, 0),
+                at::EN_PF_OBJ => (0, 0x18),
+                at::DIS_OBJ => (0x10, 0),
+                at::EN_OBJ => (0, 0x10),
+                at::DIS_PF => (0x08, 0),
+                _ => (0, 0x08),
+            };
+            mask(bus, clear, set);
+            rts(cpu, bus, 0);
+        }
         at::VRAM_STRUCT_WRITE | at::LOAD_TILESET => {
             rts(cpu, bus, 2);
             return 2000;

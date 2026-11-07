@@ -13,6 +13,10 @@ use super::nes_apu::{Target, CHIP_FDS, CHIP_FME7, CHIP_MMC5, CHIP_N163, CHIP_VRC
 /// iNES header; [`super::fds`] builds it.
 pub const FDS: u16 = 0xF00D;
 
+/// Drive status reads after which the disk reads as taken out (and as many again until it
+/// is back in): far more than a game polling for "ready", which it gets at once.
+const DRIVE_POLLS_EJECT: u32 = 20_000;
+
 /// What the iNES header says.
 #[derive(Debug, Clone)]
 pub struct Header {
@@ -156,6 +160,8 @@ pub struct Cart {
     shift_n: u8,
     /// The instruction that last wrote the board (MMC1 ignores a second write in one).
     last_write: u64,
+    /// Reads of the Disk System's drive status (see `read_low`).
+    drive_polls: u32,
     irq_latch: u16,
     irq_counter: u16,
     irq_enabled: bool,
@@ -184,6 +190,7 @@ impl Cart {
             shift: 0,
             shift_n: 0,
             last_write: u64::MAX,
+            drive_polls: 0,
             irq_latch: 0,
             irq_counter: 0,
             irq_enabled: false,
@@ -491,8 +498,16 @@ impl Cart {
                     self.irq = false;
                     Some(v)
                 }
-                // A disk is in, ready, not write-protected; the battery is good.
-                0x4032 => Some(0x40),
+                // A disk is in, ready, not write-protected. A game that keeps polling (one
+                // waiting for the player to turn the disk over) sees it taken out for a
+                // while, then put back in.
+                0x4032 => {
+                    self.drive_polls += 1;
+                    if self.drive_polls >= 2 * DRIVE_POLLS_EJECT {
+                        self.drive_polls = 0;
+                    }
+                    Some(if self.drive_polls >= DRIVE_POLLS_EJECT { 0x47 } else { 0x40 })
+                }
                 0x4033 => Some(0x80),
                 0x4090 | 0x4092 => Some(0x40),
                 _ => None,
