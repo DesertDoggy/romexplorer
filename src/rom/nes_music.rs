@@ -1,25 +1,12 @@
-//! NES music played straight from the ROM, by running the game's own sound code.
-//!
-//! The game boots on a minimal NES ([`super::m6502`] and [`super::nes_cart`]; the picture is
-//! never drawn, only the timing the code waits on is kept). Then the search:
-//!
-//! 1. **The sound routine.** Every write to a sound register is traced back to the routines
-//!    in progress. The routine called once a frame that, run on its own from where the game
-//!    called it, writes the same registers the game did, is the one that plays the music.
-//! 2. **The song number.** A song starts when the game hands its sound code a number: written
-//!    to a byte of RAM the sound routine reads, or passed to a routine the game calls. Each way
-//!    seen during boot is tried with numbers 0-255, the sound routine running alone; the way
-//!    that gives the most different, audible results is the game's, and those numbers are its
-//!    songs.
-//!
-//! Playback does the same: boot to the same moment, hand over the number, run the sound
-//! routine once a frame and send its writes to the sound chip ([`super::nes_apu`]). Nothing is
-//! copied out of the ROM.
+//! The NES as a [`Machine`] for the music search ([`super::music_search`]): a 2A03
+//! ([`super::m6502`]), the cartridge's banking and sound chips ([`super::nes_cart`]), and just
+//! enough of the picture chip for the timing games wait on (vertical blank, sprite 0, the
+//! scanline counters). Nothing is drawn. The sound goes to libgme's chips ([`super::nes_apu`]).
 
-use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 
 use super::m6502::{Bus, Cpu};
+use super::music_search::{Machine, Step, Write};
 use super::nes_apu::{Apu, Target};
 use super::nes_cart::{self, Cart};
 
@@ -326,124 +313,73 @@ pub struct Entry {
     cycle: u32,
 }
 
-/// A machine: CPU and board.
+/// A NES: CPU and board.
 #[derive(Clone)]
 pub struct Nes {
     cpu: Cpu,
     board: Board,
-    /// Frames run since power on.
-    pub frame: u32,
 }
 
-/// What happened during one instruction, for the search.
-struct Step<'a> {
-    cpu: &'a Cpu,
-    /// Routines entered by this instruction (an interrupt and a call can come together).
-    entered: &'a [(u16, u8)],
-    /// Sound writes made by this instruction.
-    sound: &'a [SoundWrite],
-    ram: &'a [(u16, bool, u8)],
+fn port(target: Target, addr: u16) -> u32 {
+    let code = match target {
+        Target::Apu => 0,
+        Target::Vrc6 { osc, reg } => 0x10 | (osc as u32) << 2 | reg as u32,
+        Target::N163Addr => 0x20,
+        Target::N163Data => 0x21,
+        Target::Fme7Latch => 0x22,
+        Target::Fme7Data => 0x23,
+        Target::Mmc5 => 0x24,
+    };
+    code << 16 | addr as u32
+}
+
+fn target(port: u32) -> (Target, u16) {
+    let addr = port as u16;
+    let t = match port >> 16 {
+        0 => Target::Apu,
+        c @ 0x10..=0x1F => Target::Vrc6 {
+            osc: ((c >> 2) & 3) as u8,
+            reg: (c & 3) as u8,
+        },
+        0x20 => Target::N163Addr,
+        0x21 => Target::N163Data,
+        0x22 => Target::Fme7Latch,
+        0x23 => Target::Fme7Data,
+        _ => Target::Mmc5,
+    };
+    (t, addr)
+}
+
+fn generic(w: &SoundWrite) -> Write {
+    Write {
+        at: w.at,
+        port: port(w.target, w.addr),
+        value: w.value as u16,
+    }
 }
 
 impl Nes {
-    pub fn new(rom: &[u8]) -> Result<Self, String> {
-        let h = nes_cart::parse(rom)?;
-        let mut board = Board::new(&h)?;
-        let cpu = Cpu::reset(&mut board);
-        Ok(Self {
-            cpu,
-            board,
-            frame: 0,
-        })
-    }
-
     pub fn pal(&self) -> bool {
         self.board.pal
     }
 
-    pub fn chips(&self) -> u8 {
-        self.board.cart.chips()
-    }
-
-    /// Runs one frame. `watch` sees every instruction when given (slower).
-    fn run_frame(&mut self, mut watch: Option<&mut dyn FnMut(Step)>) {
-        let lines = self.board.lines();
-        let frame_cycles = self.board.frame_cycles();
-        self.board.cart.frame_start();
-        for line in 0..lines {
-            if line == VBLANK_LINE {
-                self.board.vblank = true;
-                if self.board.ppuctrl & 0x80 != 0 {
-                    self.board.nmi_due = true;
-                }
-            }
-            if line == lines - 1 {
-                self.board.vblank = false;
-                self.board.sprite0 = false;
-            }
-            if line < 240 && self.board.rendering() {
-                self.board.cart.scanline();
-                if line > self.board.oam0_y as u32 {
-                    self.board.sprite0 = true;
-                }
-            }
-            let line_end = ((line + 1) as u64 * frame_cycles as u64 / lines as u64) as u32;
-            while self.board.cycle < line_end {
-                let before = self.cpu.calls.len();
-                let sound_at = self.board.sound.len();
-                let mut cycles = 0;
-                if self.board.nmi_due {
-                    self.board.nmi_due = false;
-                    cycles += self.cpu.interrupt(&mut self.board, true);
-                } else if (self.board.cart.irq || self.board.frame_irq) && self.cpu.p & 0x04 == 0 {
-                    cycles += self.cpu.interrupt(&mut self.board, false);
-                }
-                if let Some(t) = self.board.trace.as_mut() {
-                    t.clear();
-                }
-                self.board.instr += 1;
-                cycles += self.cpu.step(&mut self.board) + std::mem::take(&mut self.board.stall);
-                self.board.cycle += cycles;
-                self.board.cart.clock(cycles);
-                self.board.clock_apu(cycles);
-                if let Some(w) = watch.as_deref_mut() {
-                    let entered = self.cpu.calls.get(before..).unwrap_or(&[]);
-                    let ram = self.board.trace.as_deref().unwrap_or(&[]);
-                    w(Step {
-                        cpu: &self.cpu,
-                        entered,
-                        sound: &self.board.sound[sound_at..],
-                        ram,
-                    });
-                }
-            }
+    fn step_once(&mut self) -> u32 {
+        let mut cycles = 0;
+        if self.board.nmi_due {
+            self.board.nmi_due = false;
+            cycles += self.cpu.interrupt(&mut self.board, true);
+        } else if (self.board.cart.irq || self.board.frame_irq) && self.cpu.p & 0x04 == 0 {
+            cycles += self.cpu.interrupt(&mut self.board, false);
         }
-        self.board.cycle -= frame_cycles;
-        self.frame += 1;
-    }
-
-    /// The sound writes of the frames run since the last call.
-    fn take_sound(&mut self) -> Vec<SoundWrite> {
-        std::mem::take(&mut self.board.sound)
-    }
-
-    /// The moment the CPU is in now, as an entry to the routine it just entered.
-    fn entry(&self) -> Entry {
-        let (_, s_before) = *self.cpu.calls.last().expect("inside a routine");
-        let interrupt = s_before.wrapping_sub(self.cpu.s) == 3;
-        let mut stack = [0; 3];
-        for (i, b) in stack.iter_mut().enumerate() {
-            *b = self.board.ram[0x100 + self.cpu.s.wrapping_add(1 + i as u8) as usize];
+        if let Some(t) = self.board.trace.as_mut() {
+            t.clear();
         }
-        let mut cpu = self.cpu.clone();
-        cpu.calls.clear();
-        Entry {
-            cpu,
-            windows: self.board.cart.windows(),
-            stack,
-            interrupt,
-            cycle: self.board.cycle,
-        }
+        self.board.instr += 1;
+        cycles += self.cpu.step(&mut self.board) + std::mem::take(&mut self.board.stall);
+        self.board.cycle += cycles;
+        self.board.cart.clock(cycles);
+        self.board.clock_apu(cycles);
+        cycles
     }
 
     /// Runs the routine of `entry` once, from its own registers and program banks, until it
@@ -476,10 +412,134 @@ impl Nes {
         }
         true
     }
+}
 
-    /// One frame of the sound routine alone: called at its usual moment, then the frame runs
-    /// out. Returns the frame's sound writes; None when the routine didn't return.
-    fn play_frame(&mut self, play: &Entry) -> Option<Vec<SoundWrite>> {
+/// The NES's sound chips, with the cartridge's.
+pub struct Chip(Apu);
+
+extern "C" fn read_dmc(data: *mut std::ffi::c_void, addr: std::ffi::c_uint) -> std::ffi::c_int {
+    // SAFETY: set to a live Cart for the duration of one feed() call.
+    let cart = unsafe { &*(data as *const Cart) };
+    cart.peek(addr as u16) as std::ffi::c_int
+}
+
+impl Machine for Nes {
+    type Entry = Entry;
+    type Chip = Chip;
+    const REGISTERS: u8 = 3;
+    const CHANNELS: u16 = 1;
+
+    fn boot(rom: &[u8]) -> Result<Self, String> {
+        let h = nes_cart::parse(rom)?;
+        if !nes_cart::supported(h.mapper) {
+            return Err(format!(
+                "this NES board (mapper {}) isn't supported yet",
+                h.mapper
+            ));
+        }
+        let mut board = Board::new(&h)?;
+        let cpu = Cpu::reset(&mut board);
+        Ok(Self { cpu, board })
+    }
+
+    fn run_frame(
+        &mut self,
+        mut watch: Option<&mut dyn FnMut(&Step)>,
+        stop_after: Option<u64>,
+    ) -> bool {
+        let lines = self.board.lines();
+        let frame_cycles = self.board.frame_cycles();
+        self.board.cart.frame_start();
+        let mut n = 0u64;
+        let mut calls: Vec<(u32, u32)> = Vec::new();
+        let mut sound: Vec<Write> = Vec::new();
+        let mut ram: Vec<(u32, bool, u8)> = Vec::new();
+        for line in 0..lines {
+            let line_end = ((line + 1) as u64 * frame_cycles as u64 / lines as u64) as u32;
+            if self.board.cycle >= line_end {
+                continue;
+            }
+            if line == VBLANK_LINE {
+                self.board.vblank = true;
+                if self.board.ppuctrl & 0x80 != 0 {
+                    self.board.nmi_due = true;
+                }
+            }
+            if line == lines - 1 {
+                self.board.vblank = false;
+                self.board.sprite0 = false;
+            }
+            if line < 240 && self.board.rendering() {
+                self.board.cart.scanline();
+                if line > self.board.oam0_y as u32 {
+                    self.board.sprite0 = true;
+                }
+            }
+            while self.board.cycle < line_end {
+                let before = self.cpu.calls.len();
+                let sound_at = self.board.sound.len();
+                self.step_once();
+                n += 1;
+                if let Some(w) = watch.as_deref_mut() {
+                    calls.clear();
+                    calls.extend(self.cpu.calls.iter().map(|&(r, s)| (r as u32, s as u32)));
+                    sound.clear();
+                    sound.extend(self.board.sound[sound_at..].iter().map(generic));
+                    ram.clear();
+                    if let Some(t) = self.board.trace.as_ref() {
+                        ram.extend(t.iter().map(|&(a, wr, v)| (a as u32, wr, v)));
+                    }
+                    let entered = calls.get(before.min(calls.len())..).unwrap_or(&[]);
+                    w(&Step {
+                        calls: &calls,
+                        entered,
+                        sound: &sound,
+                        ram: &ram,
+                    });
+                }
+                if stop_after == Some(n) {
+                    return true;
+                }
+            }
+        }
+        self.board.cycle -= frame_cycles;
+        false
+    }
+
+    fn take_sound(&mut self) -> Vec<Write> {
+        std::mem::take(&mut self.board.sound)
+            .iter()
+            .map(generic)
+            .collect()
+    }
+
+    fn set_trace(&mut self, on: bool) {
+        self.board.trace = on.then(Vec::new);
+    }
+
+    fn press_start(&mut self, held: bool) {
+        self.board.buttons = if held { 0x08 } else { 0 };
+    }
+
+    fn entry(&self) -> Entry {
+        let (_, s_before) = *self.cpu.calls.last().expect("inside a routine");
+        let interrupt = s_before.wrapping_sub(self.cpu.s) == 3;
+        let mut stack = [0; 3];
+        for (i, b) in stack.iter_mut().enumerate() {
+            *b = self.board.ram[0x100 + self.cpu.s.wrapping_add(1 + i as u8) as usize];
+        }
+        let mut cpu = self.cpu.clone();
+        cpu.calls.clear();
+        Entry {
+            cpu,
+            windows: self.board.cart.windows(),
+            stack,
+            interrupt,
+            cycle: self.board.cycle,
+        }
+    }
+
+    fn play_frame(&mut self, play: &Entry) -> Option<Vec<Write>> {
         self.board.cycle = play.cycle;
         let ok = self.call(play, None, self.board.frame_cycles() * 4);
         let frame = self.board.frame_cycles();
@@ -493,7 +553,21 @@ impl Nes {
         ok.then_some(writes)
     }
 
-    fn poke(&mut self, addr: u16, v: u8) {
+    fn call_with(&mut self, entry: &Entry, reg: u8, v: u8) -> bool {
+        let cycle = self.board.cycle;
+        let windows = self.board.cart.windows();
+        let cpu = self.cpu.clone();
+        let ok = self.call(entry, Some((reg, v)), 200_000);
+        self.board.cycle = cycle;
+        self.board.cart.set_windows(windows);
+        self.cpu = cpu;
+        for w in self.board.sound.iter_mut() {
+            w.at = cycle;
+        }
+        ok
+    }
+
+    fn poke(&mut self, addr: u32, v: u8) {
         match addr {
             0x0000..=0x07FF => self.board.ram[addr as usize] = v,
             0x6000..=0x7FFF => {
@@ -505,806 +579,53 @@ impl Nes {
             _ => {}
         }
     }
-}
 
-/// How the game is handed a song number.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Trigger {
-    /// Written to this RAM byte.
-    Byte(u16),
-    /// Passed in a register (0 A, 1 X, 2 Y) to the routine at this address, as called the
-    /// `nth` time during boot.
-    Call { addr: u16, reg: u8, nth: u32 },
-}
+    fn incidental(w: &Write) -> bool {
+        w.port == 0x4015 || w.port == 0x4017
+    }
 
-impl Trigger {
-    fn encode(&self) -> String {
-        match self {
-            Trigger::Byte(a) => format!("m{a:04x}"),
-            Trigger::Call { addr, reg, nth } => format!("c{addr:04x}.{reg}.{nth}"),
+    fn is_stack(&self, addr: u32) -> bool {
+        (0x100..0x200).contains(&addr)
+    }
+
+    fn restore_writes(&self) -> Vec<Write> {
+        self.board.restore_writes().iter().map(generic).collect()
+    }
+
+    fn new_chip(&self, rate: u32) -> Result<Chip, String> {
+        Ok(Chip(Apu::new(
+            rate,
+            self.board.pal,
+            self.board.cart.chips(),
+        )?))
+    }
+
+    fn feed(&self, chip: &mut Chip, writes: &[Write], out: &mut Vec<i16>) {
+        let apu = &mut chip.0;
+        apu.set_reader(
+            Some(read_dmc),
+            &self.board.cart as *const Cart as *mut std::ffi::c_void,
+        );
+        for w in writes {
+            let (t, addr) = target(w.port);
+            apu.write(w.at, t, addr, w.value as u8);
         }
+        apu.end_frame(self.board.frame_cycles(), out);
+        apu.set_reader(None, std::ptr::null_mut());
     }
 
-    fn decode(s: &str) -> Option<Self> {
-        if let Some(a) = s.strip_prefix('m') {
-            return u16::from_str_radix(a, 16).ok().map(Trigger::Byte);
-        }
-        let mut p = s.strip_prefix('c')?.split('.');
-        let addr = u16::from_str_radix(p.next()?, 16).ok()?;
-        let reg = p.next()?.parse().ok()?;
-        let nth = p.next()?.parse().ok()?;
-        Some(Trigger::Call { addr, reg, nth })
-    }
-}
-
-/// Where a game's music is: the moment to boot to, the sound routine, how songs are started.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recipe {
-    /// Frames booted before the sound routine's call that playback starts from.
-    pub boot_frames: u32,
-    /// Start was pressed during boot (some games only start their music then).
-    pub press_start: bool,
-    /// The sound routine.
-    pub play: u16,
-    pub trigger: Trigger,
-}
-
-impl Recipe {
-    pub fn encode(&self) -> String {
-        format!(
-            "{}@{}@{:04x}@{}",
-            self.boot_frames,
-            self.press_start as u8,
-            self.play,
-            self.trigger.encode()
-        )
-    }
-
-    pub fn decode(s: &str) -> Option<Self> {
-        let mut p = s.split('@');
-        let boot_frames = p.next()?.parse().ok()?;
-        let press_start = p.next()? == "1";
-        let play = u16::from_str_radix(p.next()?, 16).ok()?;
-        let trigger = Trigger::decode(p.next()?)?;
-        Some(Self {
-            boot_frames,
-            press_start,
-            play,
-            trigger,
-        })
-    }
-}
-
-/// Buttons held on the controller in frame `frame` of boot: nothing, or Start for a few
-/// frames every two seconds after the first three.
-fn input(press_start: bool, frame: u32) -> u8 {
-    if press_start && frame >= 180 && frame % 120 < 6 {
-        0x08
-    } else {
-        0
-    }
-}
-
-/// How long boot runs while the search looks for the sound routine.
-const BOOT_FRAMES: u32 = 900;
-/// Frames the sound routine runs alone and is compared with the game.
-const VERIFY_FRAMES: usize = 240;
-/// Share of those frames that must match.
-const VERIFY_MATCH: f64 = 0.8;
-/// Frames a song number is listened to while the search compares them.
-const TRY_FRAMES: usize = 90;
-/// A song is listened to for at most this long while measuring it.
-const MEASURE_FRAMES: usize = 60 * 300;
-/// Silence this long ends a song.
-const SILENT_END_FRAMES: usize = 180;
-/// A loop must repeat this many frames to count.
-const LOOP_WINDOW: usize = 240;
-/// Shortest loop taken.
-const MIN_LOOP_FRAMES: usize = 60;
-
-fn frame_hash(writes: &[SoundWrite]) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for w in writes {
-        (w.target, w.addr, w.value).hash(&mut h);
-    }
-    h.finish()
-}
-
-/// The boot run's record: per frame, the sound writes; per routine, how it shows up in them.
-struct BootLog {
-    frames: Vec<Vec<SoundWrite>>,
-    /// Sound writes made inside each routine (any depth), and their total.
-    writes_in: HashMap<u16, u32>,
-    total_writes: u32,
-    /// How deep each routine sat when writes happened inside it (sum of depths, for a mean).
-    depth: HashMap<u16, (u64, u32)>,
-    /// Frames each routine was entered in, and how often in all.
-    entered_frames: HashMap<u16, (HashSet<u32>, u32)>,
-}
-
-fn boot_log(rom: &[u8], press_start: bool) -> Result<BootLog, String> {
-    let mut nes = Nes::new(rom)?;
-    let mut log = BootLog {
-        frames: Vec::new(),
-        writes_in: HashMap::new(),
-        total_writes: 0,
-        depth: HashMap::new(),
-        entered_frames: HashMap::new(),
-    };
-    for f in 0..BOOT_FRAMES {
-        nes.board.buttons = input(press_start, f);
-        let mut watch = |s: Step| {
-            for &(r, _) in s.entered {
-                let e = log.entered_frames.entry(r).or_default();
-                e.0.insert(f);
-                e.1 += 1;
-            }
-            for w in s.sound {
-                // The status and frame counter registers are set once and left: they say
-                // nothing about which routine plays the music.
-                if w.addr == 0x4015 || w.addr == 0x4017 {
-                    continue;
-                }
-                log.total_writes += 1;
-                let mut seen = HashSet::new();
-                for (depth, &(r, _)) in s.cpu.calls.iter().enumerate() {
-                    if seen.insert(r) {
-                        *log.writes_in.entry(r).or_default() += 1;
-                        let d = log.depth.entry(r).or_default();
-                        d.0 += depth as u64;
-                        d.1 += 1;
-                    }
-                }
-            }
-        };
-        nes.run_frame(Some(&mut watch));
-        log.frames.push(nes.take_sound());
-    }
-    Ok(log)
-}
-
-/// The machine at the first entry to `routine` in frame `frame` of boot.
-fn entry_at(
-    rom: &[u8],
-    press_start: bool,
-    frame: u32,
-    routine: u16,
-) -> Result<Option<(Nes, Entry)>, String> {
-    let mut nes = Nes::new(rom)?;
-    for f in 0..frame {
-        nes.board.buttons = input(press_start, f);
-        nes.run_frame(None);
-    }
-    nes.take_sound();
-    nes.board.buttons = input(press_start, frame);
-    let mut found: Option<(Nes, Entry)> = None;
-    // Run the frame watching for the entry; the machine is copied at that instruction.
-    let mut probe = nes.clone();
-    let mut hit = None;
-    let mut count = 0u64;
-    {
-        let mut watch = |s: Step| {
-            count += 1;
-            if hit.is_none() && s.entered.iter().any(|e| e.0 == routine) {
-                hit = Some(count);
-            }
-        };
-        probe.run_frame(Some(&mut watch));
-    }
-    let Some(target) = hit else { return Ok(None) };
-    // Run again to that instruction and stop there.
-    let mut n = 0u64;
-    let lines = nes.board.lines();
-    let frame_cycles = nes.board.frame_cycles();
-    nes.board.cart.frame_start();
-    'outer: for line in 0..lines {
-        if line == VBLANK_LINE {
-            nes.board.vblank = true;
-            if nes.board.ppuctrl & 0x80 != 0 {
-                nes.board.nmi_due = true;
-            }
-        }
-        if line == lines - 1 {
-            nes.board.vblank = false;
-            nes.board.sprite0 = false;
-        }
-        if line < 240 && nes.board.rendering() {
-            nes.board.cart.scanline();
-            if line > nes.board.oam0_y as u32 {
-                nes.board.sprite0 = true;
-            }
-        }
-        let line_end = ((line + 1) as u64 * frame_cycles as u64 / lines as u64) as u32;
-        while nes.board.cycle < line_end {
-            let mut cycles = 0;
-            if nes.board.nmi_due {
-                nes.board.nmi_due = false;
-                cycles += nes.cpu.interrupt(&mut nes.board, true);
-            } else if (nes.board.cart.irq || nes.board.frame_irq) && nes.cpu.p & 0x04 == 0 {
-                cycles += nes.cpu.interrupt(&mut nes.board, false);
-            }
-            nes.board.instr += 1;
-            cycles += nes.cpu.step(&mut nes.board) + std::mem::take(&mut nes.board.stall);
-            nes.board.cycle += cycles;
-            nes.board.cart.clock(cycles);
-            nes.board.clock_apu(cycles);
-            n += 1;
-            if n == target {
-                let entry = nes.entry();
-                nes.take_sound();
-                found = Some((nes.clone(), entry));
-                break 'outer;
-            }
-        }
-    }
-    Ok(found)
-}
-
-/// Runs the sound routine alone for `frames` frames from `nes`. The frames' write lists.
-fn run_alone(nes: &mut Nes, play: &Entry, frames: usize) -> Option<Vec<Vec<SoundWrite>>> {
-    let mut out = Vec::with_capacity(frames);
-    // The rest of the entry frame first: the routine's first call is the one that frame made.
-    for _ in 0..frames {
-        out.push(nes.play_frame(play)?);
-    }
-    Some(out)
-}
-
-/// What the search found.
-#[derive(Debug, Clone)]
-pub struct Found {
-    pub recipe: Recipe,
-    /// Song numbers, in order.
-    pub songs: Vec<u8>,
-    /// Why nothing was found, when nothing was.
-    pub why: Option<String>,
-}
-
-/// Finds the sound routine of a game that played music during boot. Returns the frame it was
-/// verified at and the routine.
-fn find_play(rom: &[u8], press_start: bool, log: &BootLog) -> Result<Option<(u32, u16)>, String> {
-    if log.total_writes < 50 {
-        return Ok(None);
-    }
-    // Routines most writes happened inside, innermost first.
-    let mut candidates: Vec<(u16, f64)> = log
-        .writes_in
-        .iter()
-        .filter(|(_, &n)| n as f64 >= 0.6 * log.total_writes as f64)
-        .map(|(&r, _)| {
-            let (sum, n) = log.depth[&r];
-            (r, sum as f64 / n.max(1) as f64)
-        })
-        .collect();
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    // A frame well into the music, where the routine was entered.
-    let first_sound = log
-        .frames
-        .iter()
-        .position(|f| f.iter().any(|w| w.addr != 0x4015 && w.addr != 0x4017))
-        .unwrap_or(0) as u32;
-    for (routine, _) in candidates {
-        let Some((frames, total)) = log.entered_frames.get(&routine) else {
-            continue;
-        };
-        // Called about once a frame from the start of the music on.
-        let span = BOOT_FRAMES.saturating_sub(first_sound).max(1);
-        let per_frame = *total as f64 / frames.len().max(1) as f64;
-        if (frames.len() as f64) < 0.5 * span as f64 || per_frame > 1.5 {
-            continue;
-        }
-        let latest = BOOT_FRAMES - VERIFY_FRAMES as u32 - 1;
-        let mut at = (first_sound + 60).min(latest);
-        while at <= latest && !frames.contains(&at) {
-            at += 1;
-        }
-        if at > latest {
-            continue;
-        }
-        let Some((mut nes, entry)) = entry_at(rom, press_start, at, routine)? else {
-            continue;
-        };
-        let Some(alone) = run_alone(&mut nes, &entry, VERIFY_FRAMES) else {
-            continue;
-        };
-        let reference = &log.frames[at as usize..at as usize + VERIFY_FRAMES];
-        let key = |f: &[SoundWrite]| {
-            f.iter()
-                .filter(|w| w.addr != 0x4017)
-                .map(|w| (w.target, w.addr, w.value))
-                .collect::<Vec<_>>()
-        };
-        let same = alone
-            .iter()
-            .zip(reference)
-            .filter(|(a, b)| key(a) == key(b))
-            .count();
-        if same as f64 >= VERIFY_MATCH * VERIFY_FRAMES as f64 {
-            return Ok(Some((at, routine)));
-        }
-    }
-    Ok(None)
-}
-
-/// Ways the game hands its sound code a number, seen during boot.
-fn trigger_candidates(rom: &[u8], press_start: bool, play: u16) -> Result<Vec<Trigger>, String> {
-    let mut nes = Nes::new(rom)?;
-    nes.board.trace = Some(Vec::new());
-    let mut read_by_play: HashSet<u16> = HashSet::new();
-    // Addresses the sound routine wrote before reading them in the same call are its own
-    // working state, not requests.
-    let mut written_by_play: HashSet<u16> = HashSet::new();
-    let mut written_by_game: HashMap<u16, u32> = HashMap::new();
-    // Routines called outside the sound routine, how often, and the addresses written inside
-    // them.
-    let mut calls: HashMap<u16, u32> = HashMap::new();
-    let mut writes_inside: HashMap<u16, HashSet<u16>> = HashMap::new();
-    let mut handlers: HashSet<u16> = HashSet::new();
-    for f in 0..BOOT_FRAMES {
-        nes.board.buttons = input(press_start, f);
-        let mut watch = |s: Step| {
-            let in_play = s.cpu.calls.iter().any(|c| c.0 == play);
-            for (i, &(r, _)) in s.entered.iter().enumerate() {
-                if !in_play {
-                    *calls.entry(r).or_default() += 1;
-                }
-                // The outermost entries are interrupt handlers (the main program is in none).
-                if s.cpu.calls.len() - s.entered.len() + i == 0 {
-                    handlers.insert(r);
-                }
-            }
-            for &(a, write, _) in s.ram {
-                if (0x100..0x200).contains(&a) {
-                    continue;
-                }
-                if in_play {
-                    if write {
-                        written_by_play.insert(a);
-                    } else if !written_by_play.contains(&a) {
-                        read_by_play.insert(a);
-                    }
-                } else if write {
-                    *written_by_game.entry(a).or_default() += 1;
-                    for &(r, _) in &s.cpu.calls {
-                        writes_inside.entry(r).or_default().insert(a);
-                    }
-                }
-            }
-        };
-        nes.run_frame(Some(&mut watch));
-        nes.take_sound();
-    }
-    let mut out = Vec::new();
-    let mut bytes: Vec<(u16, u32)> = written_by_game
-        .into_iter()
-        .filter(|(a, _)| read_by_play.contains(a))
-        .collect();
-    // Bytes the game writes rarely are requests; ones it writes every frame are game state.
-    bytes.sort_by_key(|&(a, n)| (n, a));
-    out.extend(
-        bytes
-            .into_iter()
-            .filter(|&(_, n)| n < BOOT_FRAMES / 2)
-            .take(24)
-            .map(|(a, _)| Trigger::Byte(a)),
-    );
-    let mut routines: Vec<(u16, u32)> = calls
-        .into_iter()
-        .filter(|(r, n)| {
-            *r != play
-                && !handlers.contains(r)
-                && *n <= 16
-                && writes_inside
-                    .get(r)
-                    .is_some_and(|w| w.iter().any(|a| read_by_play.contains(a)))
-        })
-        .collect();
-    routines.sort_by_key(|&(r, n)| (n, r));
-    for (r, _) in routines.into_iter().take(8) {
-        for reg in 0..3 {
-            out.push(Trigger::Call {
-                addr: r,
-                reg,
-                nth: 0,
-            });
-        }
-    }
-    Ok(out)
-}
-
-/// The entry of the `nth` call to `routine` during boot (input as `press_start` says).
-fn call_entry(
-    rom: &[u8],
-    press_start: bool,
-    routine: u16,
-    nth: u32,
-) -> Result<Option<Entry>, String> {
-    let mut nes = Nes::new(rom)?;
-    let mut seen = 0;
-    for f in 0..BOOT_FRAMES {
-        nes.board.buttons = input(press_start, f);
-        let mut probe = nes.clone();
-        let mut target = None;
-        let mut count = 0u64;
-        let mut watch = |s: Step| {
-            count += 1;
-            if target.is_none() && s.entered.iter().any(|e| e.0 == routine) {
-                if seen == nth {
-                    target = Some(count);
-                }
-                seen += 1;
-            }
-        };
-        probe.run_frame(Some(&mut watch));
-        match target {
-            None => {
-                probe.take_sound();
-                nes = probe;
-            }
-            Some(t) => return Ok(entry_at_instruction(&mut nes, t).map(|(_, e)| e)),
-        }
-    }
-    Ok(None)
-}
-
-/// Runs `nes` through the current frame up to its `target`th instruction and returns the
-/// machine and the entry there.
-fn entry_at_instruction(nes: &mut Nes, target: u64) -> Option<(Nes, Entry)> {
-    let lines = nes.board.lines();
-    let frame_cycles = nes.board.frame_cycles();
-    nes.board.cart.frame_start();
-    let mut n = 0u64;
-    for line in 0..lines {
-        if line == VBLANK_LINE {
-            nes.board.vblank = true;
-            if nes.board.ppuctrl & 0x80 != 0 {
-                nes.board.nmi_due = true;
-            }
-        }
-        if line == lines - 1 {
-            nes.board.vblank = false;
-            nes.board.sprite0 = false;
-        }
-        if line < 240 && nes.board.rendering() {
-            nes.board.cart.scanline();
-            if line > nes.board.oam0_y as u32 {
-                nes.board.sprite0 = true;
-            }
-        }
-        let line_end = ((line + 1) as u64 * frame_cycles as u64 / lines as u64) as u32;
-        while nes.board.cycle < line_end {
-            let mut cycles = 0;
-            if nes.board.nmi_due {
-                nes.board.nmi_due = false;
-                cycles += nes.cpu.interrupt(&mut nes.board, true);
-            } else if (nes.board.cart.irq || nes.board.frame_irq) && nes.cpu.p & 0x04 == 0 {
-                cycles += nes.cpu.interrupt(&mut nes.board, false);
-            }
-            nes.board.instr += 1;
-            cycles += nes.cpu.step(&mut nes.board) + std::mem::take(&mut nes.board.stall);
-            nes.board.cycle += cycles;
-            nes.board.cart.clock(cycles);
-            nes.board.clock_apu(cycles);
-            n += 1;
-            if n == target {
-                let entry = nes.entry();
-                nes.take_sound();
-                return Some((nes.clone(), entry));
-            }
-        }
-    }
-    None
-}
-
-/// Starts song `v` by `trigger` on `nes` (the machine at the sound routine's entry).
-fn apply(nes: &mut Nes, trigger: &Trigger, call: Option<&Entry>, v: u8) -> bool {
-    match trigger {
-        Trigger::Byte(a) => {
-            nes.poke(*a, v);
-            true
-        }
-        Trigger::Call { reg, .. } => {
-            let Some(e) = call else { return false };
-            let cycle = nes.board.cycle;
-            let windows = nes.board.cart.windows();
-            let cpu = nes.cpu.clone();
-            let ok = nes.call(e, Some((*reg, v)), 200_000);
-            // The routine's own writes to the chip belong to the song's first frame.
-            nes.board.cycle = cycle;
-            nes.board.cart.set_windows(windows);
-            nes.cpu = cpu;
-            for w in nes.board.sound.iter_mut() {
-                w.at = cycle;
-            }
-            ok
-        }
-    }
-}
-
-/// A song's first frames as heard: its writes' fingerprint, and whether anything sounded.
-fn listen(
-    base: &Nes,
-    play: &Entry,
-    trigger: &Trigger,
-    call: Option<&Entry>,
-    v: u8,
-    frames: usize,
-) -> Option<(u64, bool)> {
-    let mut nes = base.clone();
-    if !apply(&mut nes, trigger, call, v) {
-        return None;
-    }
-    let mut pre = nes.board.restore_writes();
-    pre.extend(nes.take_sound());
-    let mut apu = Apu::new(8000, nes.pal(), nes.chips()).ok()?;
-    let mut samples = Vec::new();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for w in &pre {
-        apu.write(0, w.target, w.addr, w.value);
-    }
-    for _ in 0..frames {
-        let writes = nes.play_frame(play)?;
-        frame_hash(&writes).hash(&mut h);
-        feed(&mut apu, &nes, &writes, &mut samples);
-    }
-    let loud = samples.iter().filter(|s| s.unsigned_abs() > 300).count();
-    Some((h.finish(), loud > samples.len() / 10))
-}
-
-extern "C" fn read_dmc(data: *mut std::ffi::c_void, addr: std::ffi::c_uint) -> std::ffi::c_int {
-    // SAFETY: set to a live Cart for the duration of one feed() call.
-    let cart = unsafe { &*(data as *const Cart) };
-    cart.peek(addr as u16) as std::ffi::c_int
-}
-
-/// Sends one frame of writes to the chip and appends the frame's samples.
-fn feed(apu: &mut Apu, nes: &Nes, writes: &[SoundWrite], out: &mut Vec<i16>) {
-    apu.set_reader(
-        Some(read_dmc),
-        &nes.board.cart as *const Cart as *mut std::ffi::c_void,
-    );
-    for w in writes {
-        apu.write(w.at, w.target, w.addr, w.value);
-    }
-    apu.end_frame(nes.board.frame_cycles(), out);
-    apu.set_reader(None, std::ptr::null_mut());
-}
-
-/// Searches a NES ROM image for its music.
-pub fn search(rom: &[u8]) -> Result<Found, String> {
-    search_logged(rom, &mut |_| {})
-}
-
-/// [`search`], telling `note` what it tries and finds (for the PC test tool).
-pub fn search_logged(rom: &[u8], note: &mut dyn FnMut(String)) -> Result<Found, String> {
-    let header = nes_cart::parse(rom)?;
-    if !nes_cart::supported(header.mapper) {
-        return Err(format!(
-            "this NES board (mapper {}) isn't supported yet",
-            header.mapper
-        ));
-    }
-    let mut why = "the game played no music in its first 15 seconds".to_string();
-    for press_start in [false, true] {
-        let log = boot_log(rom, press_start)?;
-        let busiest: Vec<String> = {
-            let mut v: Vec<(&u16, &u32)> = log.writes_in.iter().collect();
-            v.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
-            v.iter()
-                .take(4)
-                .map(|(r, n)| format!("{r:04x}:{n}"))
-                .collect()
-        };
-        note(format!(
-            "boot{}: {} sound writes; routines {}",
-            if press_start { " (Start)" } else { "" },
-            log.total_writes,
-            busiest.join(" ")
-        ));
-        let Some((at, play)) = find_play(rom, press_start, &log)? else {
-            if log.total_writes >= 50 {
-                why = "the routine that plays the music wasn't found".into();
-            }
-            continue;
-        };
-        let Some((base, entry)) = entry_at(rom, press_start, at, play)? else {
-            continue;
-        };
-        let mut best: Option<(Trigger, Vec<u8>)> = None;
-        let candidates = trigger_candidates(rom, press_start, play)?;
-        note(format!(
-            "sound routine {play:04x} (frame {at}); {} ways to start a song to try",
-            candidates.len()
-        ));
-        // A quick round with a few numbers each, then all numbers for the best two ways.
-        let baseline =
-            listen(&base, &entry, &Trigger::Byte(0xFFFF), None, 0, TRY_FRAMES).map(|r| r.0);
-        let mut screened: Vec<(usize, Trigger, Option<Entry>)> = Vec::new();
-        for t in candidates {
-            let call = match &t {
-                Trigger::Call { addr, nth, .. } => match call_entry(rom, press_start, *addr, *nth)?
-                {
-                    Some(e) => Some(e),
-                    None => continue,
-                },
-                Trigger::Byte(_) => None,
-            };
-            let mut seen = HashSet::new();
-            for v in 1..=8u8 {
-                if let Some((h, audible)) =
-                    listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES / 2)
-                {
-                    if audible && Some(h) != baseline {
-                        seen.insert(h);
-                    }
-                }
-            }
-            if !seen.is_empty() {
-                note(format!(
-                    "  {:?}: {} of 8 numbers sound different",
-                    t,
-                    seen.len()
-                ));
-                screened.push((seen.len(), t, call));
-            }
-        }
-        screened.sort_by_key(|s| std::cmp::Reverse(s.0));
-        for (_, t, call) in screened.into_iter().take(2) {
-            let mut songs = Vec::new();
-            let mut seen = HashSet::new();
-            for v in 0..=255u8 {
-                if let Some((h, audible)) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES)
-                {
-                    if audible && seen.insert(h) {
-                        songs.push(v);
-                    }
-                }
-            }
-            note(format!("  {:?}: {} songs", t, songs.len()));
-            if best.as_ref().is_none_or(|b| songs.len() > b.1.len()) {
-                best = Some((t, songs));
-            }
-        }
-        if let Some((trigger, songs)) = best.filter(|b| !b.1.is_empty()) {
-            let recipe = Recipe {
-                boot_frames: at,
-                press_start,
-                play,
-                trigger,
-            };
-            return Ok(Found {
-                recipe,
-                songs,
-                why: None,
-            });
-        }
-        why = "the sound routine was found, but not how the game picks a song".into();
-    }
-    Ok(Found {
-        recipe: Recipe {
-            boot_frames: 0,
-            press_start: false,
-            play: 0,
-            trigger: Trigger::Byte(0),
-        },
-        songs: Vec::new(),
-        why: Some(why),
-    })
-}
-
-/// A song, ready to play: the machine at the sound routine, the song started.
-pub struct Song {
-    nes: Nes,
-    play: Entry,
-    apu: Apu,
-    pre: Vec<SoundWrite>,
-}
-
-impl Song {
-    /// Boots `rom` as `recipe` says and starts song `v`, rendering at `rate`.
-    pub fn open(rom: &[u8], recipe: &Recipe, v: u8, rate: u32) -> Result<Self, String> {
-        let (mut nes, play) = entry_at(rom, recipe.press_start, recipe.boot_frames, recipe.play)?
-            .ok_or("the game no longer reaches its sound routine")?;
-        let call = match &recipe.trigger {
-            Trigger::Call { addr, nth, .. } => Some(
-                call_entry(rom, recipe.press_start, *addr, *nth)?
-                    .ok_or("the game no longer calls its song routine")?,
-            ),
-            Trigger::Byte(_) => None,
-        };
-        if !apply(&mut nes, &recipe.trigger, call.as_ref(), v) {
-            return Err("the song didn't start".into());
-        }
-        let mut pre = nes.board.restore_writes();
-        pre.extend(nes.take_sound());
-        let apu = Apu::new(rate, nes.pal(), nes.chips())?;
-        Ok(Self {
-            nes,
-            play,
-            apu,
-            pre,
-        })
-    }
-
-    pub fn frame_rate(&self) -> f64 {
-        if self.nes.pal() {
+    fn frame_rate(&self) -> f64 {
+        if self.board.pal {
             PAL_RATE
         } else {
             NTSC_RATE
         }
     }
-
-    /// One frame: its samples appended to `out`, and the frame's sound writes.
-    pub fn frame(&mut self, out: &mut Vec<i16>) -> Result<Vec<SoundWrite>, String> {
-        let mut writes = std::mem::take(&mut self.pre);
-        writes.extend(
-            self.nes
-                .play_frame(&self.play)
-                .ok_or("the sound routine stopped returning")?,
-        );
-        feed(&mut self.apu, &self.nes, &writes, out);
-        Ok(writes)
-    }
-}
-
-/// How a song plays: its length in frames, and where it loops (start, length) if it does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Timing {
-    pub frames: usize,
-    pub looping: Option<(usize, usize)>,
-}
-
-/// Listens to a song to time it: until it falls silent, repeats itself, or runs five minutes.
-pub fn measure(rom: &[u8], recipe: &Recipe, v: u8) -> Result<Timing, String> {
-    let mut song = Song::open(rom, recipe, v, 8000)?;
-    let mut hashes: Vec<u64> = Vec::new();
-    let mut last_loud = 0usize;
-    let mut samples = Vec::new();
-    // Rolling hash of the last LOOP_WINDOW frames → first frame index it was seen at.
-    let mut windows: HashMap<u64, usize> = HashMap::new();
-    for f in 0..MEASURE_FRAMES {
-        samples.clear();
-        let writes = song.frame(&mut samples)?;
-        hashes.push(frame_hash(&writes));
-        if samples.iter().any(|s| s.unsigned_abs() > 300) {
-            last_loud = f;
-        }
-        if f > last_loud + SILENT_END_FRAMES {
-            return Ok(Timing {
-                frames: last_loud + 1,
-                looping: None,
-            });
-        }
-        if f + 1 >= LOOP_WINDOW {
-            let start = f + 1 - LOOP_WINDOW;
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            hashes[start..=f].hash(&mut h);
-            let key = h.finish();
-            match windows.get(&key) {
-                Some(&first)
-                    if start - first >= MIN_LOOP_FRAMES
-                        && hashes[first..first + LOOP_WINDOW] == hashes[start..=f] =>
-                {
-                    return Ok(Timing {
-                        frames: start,
-                        looping: Some((first, start - first)),
-                    });
-                }
-                Some(_) => {}
-                None => {
-                    windows.insert(key, start);
-                }
-            }
-        }
-    }
-    Ok(Timing {
-        frames: MEASURE_FRAMES,
-        looping: None,
-    })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use super::super::music_search::{measure, search, Trigger};
     use super::*;
 
     /// A tiny game: NMI calls a sound routine that plays song N (N written to $0300 by the
@@ -1349,56 +670,12 @@ mod tests {
     }
 
     #[test]
-    fn the_tiny_game_boots_and_writes_its_sound() {
-        let rom = tiny_game();
-        let log = boot_log(&rom, false).unwrap();
-        assert!(log.total_writes > 100, "{} writes", log.total_writes);
-        assert!(log.writes_in.contains_key(&0xC200));
-    }
-
-    #[test]
-    fn the_search_finds_the_routine_and_the_songs() {
-        let rom = tiny_game();
-        let log = boot_log(&rom, false).unwrap();
-        let (at, play) = find_play(&rom, false, &log)
-            .unwrap()
-            .expect("sound routine");
-        assert_eq!(play, 0xC200);
-        assert!(at > 0);
-        let triggers = trigger_candidates(&rom, false, play).unwrap();
-        assert!(triggers.contains(&Trigger::Byte(0x0300)), "{triggers:?}");
-    }
-
-    #[test]
-    fn recipes_round_trip() {
-        let r = Recipe {
-            boot_frames: 123,
-            press_start: true,
-            play: 0xC200,
-            trigger: Trigger::Call {
-                addr: 0x8123,
-                reg: 1,
-                nth: 2,
-            },
-        };
-        assert_eq!(Recipe::decode(&r.encode()), Some(r));
-        let r = Recipe {
-            boot_frames: 5,
-            press_start: false,
-            play: 0x8000,
-            trigger: Trigger::Byte(0x7F0),
-        };
-        assert_eq!(Recipe::decode(&r.encode()), Some(r));
-    }
-
-    /// The whole search, with the sound chip (needs the rommusic library).
-    #[test]
     fn the_tiny_game_has_its_songs() {
         if !super::super::nes_apu::available() {
             return;
         }
         let rom = tiny_game();
-        let found = search(&rom).unwrap();
+        let found = search::<Nes>(&rom).unwrap();
         assert_eq!(found.why, None);
         assert_eq!(found.recipe.play, 0xC200);
         assert_eq!(found.recipe.trigger, Trigger::Byte(0x0300));
@@ -1410,7 +687,7 @@ mod tests {
             found.songs.len()
         );
         // 16 notes of 8 frames, round and round.
-        let t = measure(&rom, &found.recipe, 3).unwrap();
+        let t = measure::<Nes>(&rom, &found.recipe, 3).unwrap();
         assert_eq!(t.looping.map(|l| l.1), Some(128), "{t:?}");
     }
 }
