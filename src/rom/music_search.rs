@@ -197,6 +197,10 @@ const SONG_TAIL_FRAMES: usize = 60;
 /// Song numbers past a run of this many that play nothing are not taken: games read
 /// numbers past the end of their song table as garbage that often still makes noise.
 const SONG_GAP: usize = 16;
+/// Songs that last a search stops at; with fewer it tries the other routines and boots.
+const GOOD_SONGS: usize = 4;
+/// Ways to start a song that are tried with every number, best screened first.
+const SCREENED_TRIED: usize = 3;
 /// Frames left out of a song's sound fingerprint: where songs that sound alike still differ
 /// as their channels are set up.
 const SOUND_SKIP_FRAMES: usize = 8;
@@ -604,11 +608,9 @@ fn apply<M: Machine>(m: &mut M, trigger: &Trigger, call: Option<&M::Entry>, v: u
 
 /// A song's first frames as heard.
 struct Heard {
-    /// Fingerprint of the writes.
-    hash: u64,
-    /// Fingerprint of the sound after its first few frames: numbers whose writes differ only
-    /// in what can't be heard (a bit-field request with several bits set, a register set
-    /// twice) sound the same.
+    /// Fingerprint of the sound after its first few frames. Not of the writes: numbers whose
+    /// writes differ only in what can't be heard (a byte that only changes which path the
+    /// sound code takes, a bit-field request with several bits set) sound the same.
     sound: u64,
     /// Whether anything sounded.
     audible: bool,
@@ -634,7 +636,6 @@ fn listen<M: Machine>(
     pre.extend(m.take_sound().into_iter().map(|w| Write { at: 0, ..w }));
     let mut chip = m.new_chip(8000).ok()?;
     let mut samples = Vec::new();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut first = true;
     let mut tail_from = 0;
     let mut heard_from = 0;
@@ -646,7 +647,6 @@ fn listen<M: Machine>(
             heard_from = samples.len();
         }
         let mut writes = play_frame(&mut m, play, calls)?;
-        frame_hash(&writes).hash(&mut h);
         if first {
             pre.append(&mut writes);
             writes = std::mem::take(&mut pre);
@@ -661,7 +661,6 @@ fn listen<M: Machine>(
         (s >> 6).hash(&mut sh);
     }
     Some(Heard {
-        hash: h.finish(),
         sound: sh.finish(),
         audible: loud(&samples) > samples.len() / 10,
         lasts: loud(tail) > tail.len() / 10,
@@ -696,7 +695,9 @@ pub fn search_logged<M: Machine>(
     let mut why = (0, "the game played no music in its first 15 seconds");
     let started = std::time::Instant::now();
     let timed_out = || started.elapsed() > SEARCH_TIME_LIMIT;
-    for press_start in [0u8, 1, 2] {
+    // The best result so far, ranked as songs that last first, then by count.
+    let mut found: Option<((bool, usize), Found)> = None;
+    'boots: for press_start in [0u8, 1, 2] {
         if timed_out() {
             note("search took too long; stopped".into());
             why = (why.0.max(3), "the search took too long");
@@ -734,7 +735,7 @@ pub fn search_logged<M: Machine>(
                 "sound routine {play:04x} (frame {at}); {} ways to start a song to try",
                 candidates.len()
             ));
-            // A quick round with a few numbers each, then all numbers for the best two ways.
+            // A quick round with a few numbers each, then all numbers for the best few ways.
             let baseline = listen(
                 &base,
                 &entry,
@@ -744,7 +745,7 @@ pub fn search_logged<M: Machine>(
                 TRY_FRAMES / 2,
                 calls,
             )
-            .map(|r| r.hash);
+            .map(|r| r.sound);
             let mut screened: Vec<(usize, Trigger, Option<M::Entry>)> = Vec::new();
             for t in candidates {
                 if timed_out() {
@@ -762,8 +763,8 @@ pub fn search_logged<M: Machine>(
                 let mut seen = HashSet::new();
                 for v in 1..=8u8 {
                     if let Some(h) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES / 2, calls) {
-                        if h.audible && Some(h.hash) != baseline {
-                            seen.insert(h.hash);
+                        if h.audible && Some(h.sound) != baseline {
+                            seen.insert(h.sound);
                         }
                     }
                 }
@@ -778,7 +779,7 @@ pub fn search_logged<M: Machine>(
             screened.sort_by_key(|s| std::cmp::Reverse(s.0));
             // The way with the most songs, songs that last beating jingles.
             let mut best: Option<((bool, usize), Trigger, Vec<u8>)> = None;
-            for (_, t, call) in screened.into_iter().take(2) {
+            for (_, t, call) in screened.into_iter().take(SCREENED_TRIED) {
                 // A number the game ignores leaves the boot music playing on.
                 let mut seen: HashSet<u64> = listen(
                     &base,
@@ -844,7 +845,7 @@ pub fn search_logged<M: Machine>(
                     best = Some((rank, t, songs));
                 }
             }
-            if let Some((_, trigger, songs)) = best.filter(|b| !b.2.is_empty()) {
+            if let Some((rank, trigger, songs)) = best.filter(|b| !b.2.is_empty()) {
                 let recipe = Recipe {
                     boot_frames: at,
                     press_start,
@@ -852,11 +853,24 @@ pub fn search_logged<M: Machine>(
                     trigger,
                     calls,
                 };
-                return Ok(Found {
-                    recipe,
-                    songs,
-                    why: None,
-                });
+                let good = rank.0 && songs.len() >= GOOD_SONGS;
+                if found.as_ref().is_none_or(|f: &((bool, usize), Found)| rank > f.0) {
+                    found = Some((
+                        rank,
+                        Found {
+                            recipe,
+                            songs,
+                            why: None,
+                        },
+                    ));
+                }
+                // Enough songs that last: no need to look further. Fewer, or jingles only,
+                // and the other routines and boots may do better (a game that only starts its
+                // song code once Start is pressed).
+                if good {
+                    break 'boots;
+                }
+                continue;
             }
             why = if timed_out() {
                 (3, "the search took too long")
@@ -864,6 +878,9 @@ pub fn search_logged<M: Machine>(
                 (2, "the sound routine was found, but not how the game picks a song")
             };
         }
+    }
+    if let Some((_, f)) = found {
+        return Ok(f);
     }
     Ok(Found {
         recipe: Recipe {
