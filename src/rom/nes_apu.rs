@@ -69,6 +69,8 @@ pub enum Target {
     Fme7Data,
     /// $5000-$5015.
     Mmc5,
+    /// The Disk System's sound: $4040-$4092.
+    Fds,
 }
 
 impl Target {
@@ -81,6 +83,7 @@ impl Target {
             Target::Fme7Latch => (4, 0),
             Target::Fme7Data => (5, 0),
             Target::Mmc5 => (6, 0),
+            Target::Fds => (7, 0),
         }
     }
 }
@@ -90,6 +93,7 @@ pub const CHIP_VRC6: u8 = 1;
 pub const CHIP_N163: u8 = 2;
 pub const CHIP_FME7: u8 = 4;
 pub const CHIP_MMC5: u8 = 8;
+pub const CHIP_FDS: u8 = 16;
 
 /// One emulated set of sound chips.
 pub struct Apu {

@@ -50,6 +50,7 @@ pub mod m68k;
 pub mod vgm_chips;
 pub mod sms_music;
 pub mod md_music;
+pub mod fds;
 pub mod gb_apu;
 pub mod gb_music;
 pub mod w65816;

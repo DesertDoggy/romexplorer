@@ -1,5 +1,5 @@
 // rnes: the NES sound chip (2A03 APU) and the cartridge sound chips some Famicom games carry
-// (Konami VRC6, Namco 163, Sunsoft 5B, Nintendo MMC5), from upstream libgme
+// (Konami VRC6, Namco 163, Sunsoft 5B, Nintendo MMC5) and the Famicom Disk System's, from upstream libgme
 // (external/game-music-emu, LGPL-2.1+), behind a flat C API. The app runs the game's own code
 // on its 6502 and hands every write to a sound register here, in time; this turns them into
 // samples. Nothing of an NSF player is used: the game's code is the player.
@@ -11,6 +11,7 @@
 
 #include "Blip_Buffer.h"
 #include "Nes_Apu.h"
+#include "Nes_Fds_Apu.h"
 #include "Nes_Fme7_Apu.h"
 #include "Nes_Mmc5_Apu.h"
 #include "Nes_Namco_Apu.h"
@@ -44,6 +45,7 @@ enum Target {
     FME7_LATCH = 4,   // $C000
     FME7_DATA = 5,    // $E000
     MMC5 = 6,         // $5000-$5015: addr is the register
+    FDS = 7,          // $4040-$4092: addr is the register
 };
 
 struct Handle
@@ -54,7 +56,9 @@ struct Handle
     Nes_Namco_Apu n163;
     Nes_Fme7_Apu fme7;
     Nes_Mmc5_Apu mmc5;
-    // Which cartridge chips the game has: bit per Target group (1 VRC6, 2 N163, 4 FME7, 8 MMC5).
+    Nes_Fds_Apu fds;
+    // Which cartridge chips the game has: bit per Target group (1 VRC6, 2 N163, 4 FME7, 8 MMC5,
+    // 16 FDS).
     int chips = 0;
     int (*reader)(void *, unsigned) = nullptr;
     void *reader_data = nullptr;
@@ -69,7 +73,7 @@ int read_dmc(void *data, nes_addr_t addr)
 }    // namespace
 
 /// A powered-on NES sound chip rendering mono samples at `rate`, with the cartridge chips in
-/// `chips` (bits: 1 VRC6, 2 Namco 163, 4 Sunsoft 5B, 8 MMC5). Null if out of memory.
+/// `chips` (bits: 1 VRC6, 2 Namco 163, 4 Sunsoft 5B, 8 MMC5, 16 Disk System). Null if out of memory.
 RNES_API void *rnes_new(int rate, int pal, int chips)
 {
     auto *h = new (std::nothrow) Handle;
@@ -92,6 +96,8 @@ RNES_API void *rnes_new(int rate, int pal, int chips)
         gain *= 0.75;
     if (chips & 4)
         gain *= 0.75;
+    if (chips & 16)
+        gain *= 0.75;
     h->apu.reset(pal != 0);
     h->apu.output(&h->buf);
     h->apu.volume(gain);
@@ -113,6 +119,10 @@ RNES_API void *rnes_new(int rate, int pal, int chips)
     h->mmc5.output(&h->buf);
     h->mmc5.volume(gain);
     h->mmc5.treble_eq(eq);
+    h->fds.reset();
+    h->fds.osc_output(0, &h->buf);
+    h->fds.volume(gain);
+    h->fds.treble_eq(eq);
     return h;
 }
 
@@ -162,6 +172,10 @@ RNES_API void rnes_write(void *handle, int time, int target, int addr, int data)
         if (h.chips & 8)
             h.mmc5.write_register(time, addr, data);
         break;
+    case FDS:
+        if ((h.chips & 16) && addr >= 0x4040 && addr < 0x4040 + 0x53)
+            h.fds.write(time, addr, data);
+        break;
     default:
         break;
     }
@@ -200,6 +214,8 @@ RNES_API long rnes_end_frame(void *handle, int time)
         h.fme7.end_frame(time);
     if (h.chips & 8)
         h.mmc5.end_frame(time);
+    if (h.chips & 16)
+        h.fds.end_frame(time);
     h.buf.end_frame(time);
     return h.buf.samples_avail();
 }

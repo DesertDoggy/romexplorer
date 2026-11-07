@@ -13,7 +13,7 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
   limit, an output folder, CD, DVD or hi-res rates, and the music in its original format
   (stream files, original-format files, an .spc for SNES).
 - **Cartridges** are matched to your own original-format music files by their content (`--originals`). NES and
-  Famicom (expansion sound chips included), Game Boy, Game Boy Color, Game Boy Advance, Master
+  Famicom (expansion sound chips included), Disk System, Game Boy, Game Boy Color, Game Boy Advance, Master
   System (FM included), Game Gear, Mega Drive and PC Engine music plays straight from the ROM, and SNES games give their title music without an original-format file.
 - **Original-format tracks with no length** (or a guessed one) end where the music does: no silence at
   the end, and a repeating track plays its loop twice and fades.

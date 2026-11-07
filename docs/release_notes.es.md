@@ -54,7 +54,7 @@ Haz una copia de seguridad antes de sustituir una versión.
   tipos de soporte compatibles).
 - En los ajustes se elige qué pistas se reproducen.
 - La música de NES y Famicom suena directamente desde la ROM, con el propio código de sonido del juego: no hacen falta archivos de audio original. Incluye los chips de sonido de Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
-- La música de Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive y PC Engine también suena directamente desde la ROM, con el sonido FM de la Master System japonesa.
+- La música de Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive y PC Engine también suena directamente desde la ROM, con el sonido FM de la Master System japonesa.
 - Se admiten los formatos de audio originales (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP y SGC
   de Game Gear, sueltos o en zip).
 - Una biblioteca de audio original: indica en Ajustes › Audio las carpetas donde guardas los sets, e «Index

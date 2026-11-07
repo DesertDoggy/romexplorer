@@ -80,7 +80,7 @@ fn is_gb(platform: u16) -> bool {
 
 fn is_nes(platform: u16) -> bool {
     use crate::common::models::Platform as P;
-    platform == P::Nes as u16 || platform == P::Famicom as u16
+    platform == P::Nes as u16 || platform == P::Famicom as u16 || platform == P::FamicomDiskSystem as u16
 }
 
 /// How many ROM images [`read_rom`] keeps in memory. A cartridge is at most
