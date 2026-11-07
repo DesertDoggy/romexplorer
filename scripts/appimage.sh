@@ -145,13 +145,20 @@ if [[ -z "$APPIMAGETOOL" ]]; then
     if command -v appimagetool >/dev/null 2>&1; then
         APPIMAGETOOL="$(command -v appimagetool)"
     else
+        # The tool runs here, so it is this host's build; the image's arch is the runtime it
+        # embeds (below). An aarch64 tool on an x64 host fails with "Exec format error".
+        case "$(uname -m)" in
+            x86_64|amd64) TOOL_ARCH="x86_64" ;;
+            aarch64|arm64) TOOL_ARCH="aarch64" ;;
+            *) die "no appimagetool for host $(uname -m); pass --appimagetool PATH" ;;
+        esac
         cache="$ROOT_DIR/release/.tools"
         mkdir -p "$cache"
-        APPIMAGETOOL="$cache/appimagetool-$AI_ARCH.AppImage"
+        APPIMAGETOOL="$cache/appimagetool-$TOOL_ARCH.AppImage"
         if [[ ! -x "$APPIMAGETOOL" ]]; then
-            note "fetching appimagetool for $AI_ARCH"
+            note "fetching appimagetool for $TOOL_ARCH"
             curl -fsSL --retry 4 --retry-delay 2 -o "$APPIMAGETOOL" \
-                "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$AI_ARCH.AppImage" \
+                "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$TOOL_ARCH.AppImage" \
                 || die "could not download appimagetool; pass --appimagetool PATH, or --appdir-only"
             chmod +x "$APPIMAGETOOL"
         fi
@@ -171,7 +178,18 @@ rm -f "$OUT"
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH="$AI_ARCH"   # appimagetool reads this to pick the runtime it embeds
 
-if ! "$APPIMAGETOOL" "$APPDIR" "$OUT"; then
+# The runtime is the image's own arch, not the tool's. Fetched once and handed over, so a
+# cross build does not depend on appimagetool finding the right one by itself.
+runtime="$ROOT_DIR/release/.tools/runtime-$AI_ARCH"
+if [[ ! -s "$runtime" ]]; then
+    mkdir -p "$(dirname "$runtime")"
+    note "fetching the AppImage runtime for $AI_ARCH"
+    curl -fsSL --retry 4 --retry-delay 2 -o "$runtime" \
+        "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$AI_ARCH" \
+        || { rm -f "$runtime"; die "could not download the $AI_ARCH AppImage runtime; try --appdir-only"; }
+fi
+
+if ! "$APPIMAGETOOL" --runtime-file "$runtime" "$APPDIR" "$OUT"; then
     die "appimagetool failed (if it complains about FUSE, this already sets APPIMAGE_EXTRACT_AND_RUN=1; try --appdir-only and build the image on a host with FUSE)"
 fi
 
