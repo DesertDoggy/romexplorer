@@ -1,6 +1,6 @@
 //! Sound chips from libvgm (`deps/rommusic/chip/rchip.cpp`, in the `rommusic` library), fed
 //! one register write at a time by a game's own code: the Master System and Game Gear's PSG
-//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit. Loaded at run time; [`available`] is false when
+//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit, the MSX's PSG and Konami's SCC, the WonderSwan's sound unit. Loaded at run time; [`available`] is false when
 //! the library has not been built for this machine.
 
 use std::ffi::{c_double, c_int, c_long, c_void};
@@ -60,6 +60,13 @@ pub enum Kind {
     Ym2612,
     /// The HuC6280's sound unit (the PC Engine's). Ports 0-9: its registers.
     Huc6280,
+    /// The AY-3-8910 (the MSX's PSG). Port 0 is the address, 1 the data.
+    Ay8910,
+    /// Konami's SCC (in MSX cartridges). Even ports pick a register, odd ones write it: 0/1
+    /// waveforms, 2/3 frequencies, 4/5 volumes, 6/7 key on, 10/11 test.
+    Scc,
+    /// The WonderSwan's sound unit.
+    WonderSwan,
 }
 
 impl Kind {
@@ -70,6 +77,9 @@ impl Kind {
             Kind::Ym2413 => (0x01, 0),
             Kind::Ym2612 => (0x02, 0),
             Kind::Huc6280 => (0x1B, 0),
+            Kind::Ay8910 => (0x12, 0),
+            Kind::Scc => (0x19, 0),
+            Kind::WonderSwan => (0x21, 0),
         }
     }
 }

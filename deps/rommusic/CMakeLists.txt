@@ -205,6 +205,7 @@ set(RVGM_SOURCES vgm/rvgm.cpp chip/rchip.cpp
   ${LV}/emu/SoundEmu.c ${LV}/emu/Resampler.c ${LV}/emu/logging.c ${LV}/emu/panning.c ${LV}/emu/dac_control.c
   ${LV}/emu/cores/sn764intf.c ${LV}/emu/cores/sn76496.c ${LV}/emu/cores/vsu.c
   ${LV}/emu/cores/c6280intf.c ${LV}/emu/cores/c6280_mame.c
+  ${LV}/emu/cores/ayintf.c ${LV}/emu/cores/ay8910.c ${LV}/emu/cores/k051649.c ${LV}/emu/cores/ws_audio.c
   ${LV}/player/playerbase.cpp ${LV}/player/vgmplayer.cpp ${LV}/player/vgmplayer_cmdhandler.cpp ${LV}/player/playera.cpp
   ${LV}/player/dblk_compr.c ${LV}/player/helper.c ${LV}/utils/DataLoader.c)
 if(WIN32)
@@ -214,7 +215,7 @@ else()
 endif()
 add_library(rommusic_vgm OBJECT ${RVGM_SOURCES})
 target_include_directories(rommusic_vgm PRIVATE ${LV} ${LV}/libs/include)
-target_compile_definitions(rommusic_vgm PRIVATE HAVE_STDINT_H SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_YM2413 EC_YM2413_EMU2413 SNDDEV_YM2612 EC_YM2612_NUKED SNDDEV_C6280 EC_C6280_MAME SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
+target_compile_definitions(rommusic_vgm PRIVATE HAVE_STDINT_H SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_YM2413 EC_YM2413_EMU2413 SNDDEV_YM2612 EC_YM2612_NUKED SNDDEV_C6280 EC_C6280_MAME SNDDEV_AY8910 EC_AY8910_MAME SNDDEV_K051649 SNDDEV_WSWAN SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
 set_target_properties(rommusic_vgm PROPERTIES C_STANDARD 99 CXX_STANDARD 11 C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
 target_compile_options(rommusic_vgm PRIVATE -w)
 

@@ -153,7 +153,7 @@ impl Cpu {
         bus.write(a.wrapping_add(1), hi);
     }
 
-    fn push<B: Bus>(&mut self, bus: &mut B, v: u16) {
+    pub fn push<B: Bus>(&mut self, bus: &mut B, v: u16) {
         let [hi, lo] = v.to_be_bytes();
         self.sp = self.sp.wrapping_sub(1);
         bus.write(self.sp, hi);
@@ -161,7 +161,7 @@ impl Cpu {
         bus.write(self.sp, lo);
     }
 
-    fn pop<B: Bus>(&mut self, bus: &mut B) -> u16 {
+    pub fn pop<B: Bus>(&mut self, bus: &mut B) -> u16 {
         let lo = bus.read(self.sp);
         self.sp = self.sp.wrapping_add(1);
         let hi = bus.read(self.sp);
@@ -170,7 +170,7 @@ impl Cpu {
     }
 
     /// A call to `target`: pushes the return address and records the call.
-    fn call<B: Bus>(&mut self, bus: &mut B, target: u16) {
+    pub fn call<B: Bus>(&mut self, bus: &mut B, target: u16) {
         let sp = self.sp;
         let pc = self.pc;
         self.push(bus, pc);
@@ -181,7 +181,7 @@ impl Cpu {
         }
     }
 
-    fn ret<B: Bus>(&mut self, bus: &mut B) {
+    pub fn ret<B: Bus>(&mut self, bus: &mut B) {
         self.pc = self.pop(bus);
         self.wz = self.pc;
         while let Some(&(_, sp)) = self.calls.last() {
