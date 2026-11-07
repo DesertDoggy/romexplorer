@@ -638,6 +638,52 @@ impl Msx {
                 self.board.ram[at::RG0SAV as usize + 1] = self.board.vdp[1];
                 cycles = 20_000;
             }
+            // SETTXT, SETT32, SETGRP, SETMLT: a mode's tables only.
+            0x0078 | 0x007B | 0x007E | 0x0081 => {}
+            // CALPAT / CALATR: a sprite's pattern or attribute address in video memory.
+            // GSPSIZ: the sprite size (carry for 16x16).
+            0x0084 => {
+                let big = self.board.vdp[1] & 0x02 != 0;
+                let base = (self.board.vdp[6] as u16 & 7) << 11;
+                let n = self.cpu.a as u16;
+                self.cpu.set_hl(base.wrapping_add(n * if big { 32 } else { 8 }));
+            }
+            0x0087 => {
+                let base = (self.board.vdp[5] as u16 & 0x7F) << 7;
+                self.cpu.set_hl(base.wrapping_add(self.cpu.a as u16 * 4));
+            }
+            0x008A => {
+                let big = self.board.vdp[1] & 0x02 != 0;
+                self.cpu.a = if big { 32 } else { 8 };
+                self.cpu.f = (self.cpu.f & !CF) | if big { CF } else { 0 };
+            }
+            // FETCHC: the graphics cursor (A mask, HL address).
+            0x0114 => {
+                self.cpu.a = 0x80;
+                self.cpu.set_hl(0);
+            }
+            // NSETRD / NSTWRT / NRDVRM / NWRVRM (the MSX2's wider video addresses, kept to
+            // the 16 KB modelled here) and BIGFIL (FILVRM for them).
+            0x016E => {
+                self.board.vdp_addr = self.cpu.hl() & 0x3FFF;
+                self.board.vdp_buffer = self.board.vram[self.board.vdp_addr as usize];
+                self.board.vdp_addr = (self.board.vdp_addr + 1) & 0x3FFF;
+            }
+            0x0171 => self.board.vdp_addr = self.cpu.hl() & 0x3FFF,
+            0x0174 => self.cpu.a = self.board.vram[(self.cpu.hl() & 0x3FFF) as usize],
+            0x0177 => self.board.vram[(self.cpu.hl() & 0x3FFF) as usize] = self.cpu.a,
+            0x016B => {
+                let (a, n, v) = (self.cpu.hl(), self.cpu.bc(), self.cpu.a);
+                for i in 0..n {
+                    self.board.vram[(a.wrapping_add(i) & 0x3FFF) as usize] = v;
+                }
+                cycles += n as u32 * 10;
+            }
+            // PHYDIO (disk access): fails, as with no drive.
+            0x0144 => {
+                self.cpu.a = 2;
+                self.cpu.f |= CF;
+            }
             // GICINI: the PSG to silence.
             0x0090 => {
                 for (r, v) in [(7u8, 0xB8u8), (8, 0), (9, 0), (10, 0)] {
@@ -699,7 +745,10 @@ impl Msx {
             // Text, function keys, beep, BASIC, the sub-ROM: nothing to do for the music.
             0x0008 | 0x0010 | 0x0018 | 0x0028 | 0x003B | 0x003E | 0x0062 | 0x0069
             | 0x0099 | 0x00A2 | 0x00C0 | 0x00C3 | 0x00C6 | 0x00CC | 0x00CF | 0x00D2
-            | 0x0156 | 0x0159 | 0x015C | 0x015F | 0x0180 => {}
+            | 0x0156 | 0x0159 | 0x015C | 0x015F | 0x0180
+            // GRPPRT, MAPXY, CHGCAP, CHGSND, CHKNEW, EOL: drawing, lamps, the cassette
+            // relay.
+            | 0x008D | 0x0111 | 0x0132 | 0x0135 | 0x0165 | 0x0168 => {}
             _ => {
                 if !self.board.unknown.contains(&pc) && self.board.unknown.len() < 16 {
                     self.board.unknown.push(pc);

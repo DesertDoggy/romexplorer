@@ -115,7 +115,7 @@ impl Cpu {
     fn set_de(&mut self, v: u16) {
         [self.d, self.e] = v.to_be_bytes();
     }
-    fn set_hl(&mut self, v: u16) {
+    pub fn set_hl(&mut self, v: u16) {
         [self.h, self.l] = v.to_be_bytes();
     }
     fn set_af(&mut self, v: u16) {
