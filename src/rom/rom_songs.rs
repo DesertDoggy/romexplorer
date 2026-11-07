@@ -42,6 +42,8 @@ const GG: &str = "gg";
 const MD: &str = "md";
 /// The same, for the PC Engine.
 const PCE: &str = "pce";
+/// The same, for the MSX.
+const MSX: &str = "msx";
 /// How long a looping song from a game's own sound code fades out.
 const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
@@ -69,7 +71,9 @@ pub fn covers(platform: u16) -> bool {
     (platform == P::GameBoyAdvance as u16 && agbplay::available()) || (is_nes(platform) && super::nes_apu::available())
         || (is_gb(platform) && super::gb_apu::available())
         || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::SegaGenesis as u16
-            || platform == P::TurboGrafx16 as u16)
+            || platform == P::TurboGrafx16 as u16
+            || platform == P::Msx as u16
+            || platform == P::Msx2 as u16)
             && super::vgm_chips::available())
 }
 
@@ -194,6 +198,9 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
         }
         if platform == P::TurboGrafx16 as u16 {
             return index_machine::<super::pce_music::PcEngine>(path, t, PCE, "PC Engine");
+        }
+        if platform == P::Msx as u16 || platform == P::Msx2 as u16 {
+            return index_machine::<super::msx_music::Msx>(path, t, MSX, "MSX");
         }
     }
     let rom = read_rom(path)?;
@@ -412,6 +419,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
         Some(MD) => open_machine::<super::md_music::MegaDrive>(path, engine, song),
         Some(PCE) => open_machine::<super::pce_music::PcEngine>(path, engine, song),
+        Some(MSX) => open_machine::<super::msx_music::Msx>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;

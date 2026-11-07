@@ -17,6 +17,7 @@
 #include "emu/SoundEmu.h"
 #include "emu/SoundDevs.h"
 #include "emu/Resampler.h"
+#include "emu/cores/ayintf.h"
 #include "emu/cores/sn764intf.h"
 
 #if defined(_WIN32)
@@ -136,6 +137,16 @@ RCHIP_API int rchip_add(void *handle, int dev, int clock, int variant) {
             cfg.segaPSG = 1;
             cfg.stereo = variant == PSG_GAME_GEAR;
         }
+        err = SndEmu_Start((DEV_ID)dev, (DEV_GEN_CFG *)&cfg, &c->dev);
+    } else if (dev == DEVID_AY8910) {
+        /* The MSX's PSG: a plain AY-3-8910. */
+        AY8910_CFG cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg._genCfg.clock = (UINT32)clock;
+        cfg._genCfg.srMode = DEVRI_SRMODE_NATIVE;
+        cfg._genCfg.smplRate = h.rate;
+        cfg.chipType = AYTYPE_AY8910;
+        cfg.chipFlags = YM2149_PIN26_HIGH;
         err = SndEmu_Start((DEV_ID)dev, (DEV_GEN_CFG *)&cfg, &c->dev);
     } else {
         DEV_GEN_CFG cfg;

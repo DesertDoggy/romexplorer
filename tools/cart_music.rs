@@ -15,6 +15,7 @@ use romexplorer::rom::gb_music::GameBoy;
 use romexplorer::rom::md_music::MegaDrive;
 use romexplorer::rom::music_search::{self, Machine, Song};
 use romexplorer::rom::nes_music::Nes;
+use romexplorer::rom::msx_music::Msx;
 use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
 use romexplorer::rom::{nes_cart, rom_songs};
@@ -71,6 +72,9 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "gen"
                 | "smd"
                 | "pce"
+                | "mx1"
+                | "mx2"
+                | "rom"
                 | "zip"
                 | "7z"
         ) {
@@ -98,6 +102,13 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     let name = path.to_string_lossy().to_ascii_lowercase();
     if name.ends_with(".md") || name.ends_with(".gen") || name.ends_with(".smd") {
         return Some("MD");
+    }
+    if name.ends_with(".mx1")
+        || name.ends_with(".mx2")
+        || (name.contains("msx")
+            && (name.ends_with(".rom") || name.ends_with(".zip") || name.ends_with(".7z")))
+    {
+        return Some("MSX");
     }
     if name.ends_with(".pce")
         || name.contains("pc engine")
@@ -274,6 +285,22 @@ fn main() {
                 );
                 // BIOS routines the stand-in doesn't know, met in the first 15 seconds.
                 if let Ok(mut m) = Nes::boot(&rom) {
+                    for _ in 0..900 {
+                        m.run_frame(None, None);
+                        m.take_sound();
+                    }
+                    let unknown = m.unknown_bios_calls();
+                    if !unknown.is_empty() {
+                        let list: Vec<String> =
+                            unknown.iter().map(|a| format!("${a:04X}")).collect();
+                        println!("    BIOS calls not handled: {}", list.join(" "));
+                    }
+                }
+            }
+            Some("MSX") => {
+                run::<Msx>(&path, &rom, "MSX", &o, tally.entry("MSX").or_default());
+                // Stand-in BIOS routines the game reached that it doesn't know.
+                if let Ok(mut m) = Msx::boot(&rom) {
                     for _ in 0..900 {
                         m.run_frame(None, None);
                         m.take_sound();

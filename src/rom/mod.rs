@@ -47,6 +47,7 @@ pub mod z80;
 pub mod huc6280;
 pub mod pce_music;
 pub mod m68k;
+pub mod msx_music;
 pub mod vgm_chips;
 pub mod sms_music;
 pub mod md_music;
