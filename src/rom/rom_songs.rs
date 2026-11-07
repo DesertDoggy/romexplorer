@@ -50,6 +50,8 @@ const WS: &str = "ws";
 const VB: &str = "vb";
 /// The same, for Game Boy Advance games not on the standard sound engine.
 const GBA: &str = "gba";
+/// The same, for the Neo Geo Pocket and Neo Geo Pocket Color.
+const NGP: &str = "ngp";
 /// How long a looping song from a game's own sound code fades out.
 const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
@@ -82,7 +84,9 @@ pub fn covers(platform: u16) -> bool {
             || platform == P::Msx2 as u16
             || platform == P::WonderSwan as u16
             || platform == P::WonderSwanColor as u16
-            || platform == P::VirtualBoy as u16)
+            || platform == P::VirtualBoy as u16
+            || platform == P::NeoGeoPocket as u16
+            || platform == P::NeoGeoPocketColor as u16)
             && super::vgm_chips::available())
 }
 
@@ -216,6 +220,9 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
         }
         if platform == P::VirtualBoy as u16 {
             return index_machine::<super::vb_music::VirtualBoy>(path, t, VB, "Virtual Boy");
+        }
+        if platform == P::NeoGeoPocket as u16 || platform == P::NeoGeoPocketColor as u16 {
+            return index_machine::<super::ngp_music::NeoGeoPocket>(path, t, NGP, "Neo Geo Pocket");
         }
     }
     let rom = read_rom(path)?;
@@ -438,6 +445,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(MSX) => open_machine::<super::msx_music::Msx>(path, engine, song),
         Some(WS) => open_machine::<super::wswan_music::WonderSwan>(path, engine, song),
         Some(VB) => open_machine::<super::vb_music::VirtualBoy>(path, engine, song),
+        Some(NGP) => open_machine::<super::ngp_music::NeoGeoPocket>(path, engine, song),
         Some(GBA) => open_machine::<super::gba_music::GameBoyAdvance>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
