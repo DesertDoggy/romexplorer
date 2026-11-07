@@ -20,7 +20,7 @@ set -euo pipefail
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
-#   deps/rommusic/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64
+#   deps/rommusic/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64, or android arm64
 #
 # Output: deps/rommusic/release/<platform>/<arch>/<version>/dynamic/<library>, the layout
 # scripts/move_libs_to_app_root.sh and src/rom/native_lib.rs expect.
@@ -84,7 +84,8 @@ case "$platform" in
   windows) lib_name="rommusic.dll"; system_name="Windows"; built_glob="*rommusic.dll" ;;
   mac) lib_name="librommusic.dylib"; system_name="Darwin"; built_glob="librommusic*.dylib" ;;
   linux) lib_name="librommusic.so"; system_name="Linux"; built_glob="librommusic.so*" ;;
-  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows)" >&2; exit 2 ;;
+  android) lib_name="librommusic.so"; system_name="Android"; built_glob="librommusic.so*" ;;
+  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows | android)" >&2; exit 2 ;;
 esac
 
 command -v cmake >/dev/null 2>&1 || { echo "[ERROR] cmake was not found." >&2; exit 2; }
@@ -153,8 +154,25 @@ cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_S
   "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
+# Android: the NDK's own CMake toolchain file, which picks its compilers and sysroot. API level
+# 28 (Android 9) by default: libvgm's text conversion uses iconv, which Android's libc has
+# only from 28 on. ANDROID_API overrides it.
+if [[ "$platform" == "android" ]]; then
+  [[ "$arch" == "arm64" ]] || { echo "[ERROR] android is arm64 only" >&2; exit 2; }
+  [[ -n "${ANDROID_NDK_HOME:-}" ]] || { echo "[ERROR] ANDROID_NDK_HOME is not set" >&2; exit 2; }
+  ndk_toolchain="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+  [[ -f "$ndk_toolchain" ]] || { echo "[ERROR] no NDK toolchain file at $ndk_toolchain" >&2; exit 2; }
+  # The toolchain file brings its own compilers and processor: none from the environment.
+  unset CC CXX
+  kept=()
+  for a in "${cmake_args[@]}"; do
+    case "$a" in -DCMAKE_SYSTEM_PROCESSOR=*|-DCMAKE_C_COMPILER=*|-DCMAKE_CXX_COMPILER=*) ;; *) kept+=("$a") ;; esac
+  done
+  cmake_args=("${kept[@]}")
+  cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$ndk_toolchain" -DANDROID_ABI=arm64-v8a "-DANDROID_PLATFORM=android-${ANDROID_API:-28}" -DANDROID_STL=c++_static)
+fi
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
-if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
+if [[ "$platform" != "android" ]] && [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
   cmake_args+=("-DCMAKE_SYSTEM_NAME=$system_name")
   [[ "$platform" == "mac" ]] && cmake_args+=("-DCMAKE_OSX_ARCHITECTURES=$([[ "$arch" == "arm64" ]] && echo arm64 || echo x86_64)")
 fi

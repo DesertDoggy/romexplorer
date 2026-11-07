@@ -6,6 +6,9 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 
 - **First release.** Drop a ROM, disc image, dumped folder or set of original-format music files on rommusic and
   it writes the game's background music as FLAC, in a folder beside it, with an index.txt.
+- **A window, and an Android app.** `rommusic-gui` (Windows, Linux, macOS) and the Android
+  app take files or a folder, FLAC or the original audio, and an output folder, with the
+  other options behind a button.
 - **Options on the command line:** all sounds instead of background music only, a track
   limit, an output folder, CD, DVD or hi-res rates, and the music in its original format
   (stream files, original-format files, an .spc for SNES).

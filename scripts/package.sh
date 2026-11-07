@@ -342,8 +342,9 @@ if [[ "$BUILD" -eq 1 ]]; then
                 note "cargo build --release -p chdlite --features $gui_features --bin chdlite-gui ${target_args[*]}"
                 (cd "$ROOT_DIR" && CHDLITE_NATIVE_LIB_DIR="$(native_path "$SRC_LIB")"                     cargo build --release -p chdlite --features "$gui_features" --bin chdlite-gui "${target_args[@]}") || die "the build failed" ;;
             rommusic)
-                note "cargo build --release -p rommusic-cli ${target_args[*]}"
-                (cd "$ROOT_DIR" && cargo build --release -p rommusic-cli "${target_args[@]}") || die "the build failed" ;;
+                # The console tool and the window, which share lib/ beside them.
+                note "cargo build --release -p rommusic-cli --features gui --bins ${target_args[*]}"
+                (cd "$ROOT_DIR" && cargo build --release -p rommusic-cli --features gui --bins "${target_args[@]}") || die "the build failed" ;;
         esac
         unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS OPENSSL_INCLUDE_DIR OPENSSL_LIB_DIR ROMEXPLORER_SOURCE_ROOT
     fi
@@ -354,7 +355,7 @@ case "$KIND" in
     server)  BINS=(romexplorer_server romexplorer_worker romexplorer_dbtool) ;;
     desktop)    BINS=(romexplorer-gui) ;;
     chdlite)    BINS=(chdlite chdcomp chdread chdhash chdlite-gui) ;;
-    rommusic)   BINS=(rommusic) ;;
+    rommusic)   BINS=(rommusic rommusic-gui) ;;
 esac
 for b in "${BINS[@]}"; do
     src="$BIN_DIR/$b$EXE"
@@ -409,6 +410,14 @@ elif [[ "$KIND" == "rommusic" ]]; then
         case "$(basename "$f")" in *rommusic*|*rvgmstream*) have_players=$((have_players + 1)) ;; esac
     done
     [[ "$have_players" -ge 2 ]] || die "rommusic and rvgmstream are not both in $SRC_LIB -- build them with scripts/build_native_deps.sh --only ffmpeg,vgmstream,rommusic $OS $ARCH, then scripts/move_libs_to_app_root.sh"
+    # rommusic-gui's window toolkit links libssl/libcrypto off Windows, as chdlite-gui's does.
+    if [[ "$OS" != "windows" && -d "$SRC_LIB/openssl/lib" ]]; then
+        mkdir -p "$APP/lib/$OS/$ARCH/openssl/lib"
+        for f in "$SRC_LIB"/openssl/lib/libssl* "$SRC_LIB"/openssl/lib/libcrypto*; do
+            case "$f" in *.so|*.so.*|*.dylib) cp -a "$f" "$APP/lib/$OS/$ARCH/openssl/lib/" ;; esac
+        done
+        note "lib/$OS/$ARCH/openssl/lib (for rommusic-gui)"
+    fi
     mkdir -p "$APP/lib/LICENSES"
     for l in gme gme-kode54 agbplay SSEQPlayer lazyusf2 highly_experimental highly_theoretical mgba beetle-wswan libvgm fmt vgmstream ffmpeg chdman-simd mame libchdr dolphin cemu ZArchive zstd extract-xiso 7-Zip-zstd zlib-ng; do
         [[ -f "$LIB_ROOT/LICENSES/$l.LICENSE" ]] && cp -a "$LIB_ROOT/LICENSES/$l.LICENSE" "$APP/lib/LICENSES/"
