@@ -39,6 +39,9 @@ struct Chip {
     DEV_INFO dev;
     RESMPL_STATE rs;
     DEVFUNC_WRITE_A8D8 write;
+    /* For chips whose registers take a 16-bit address (the Virtual Boy's VSU); NULL when
+     * `write` is set. */
+    DEVFUNC_WRITE_A16D8 write16;
     /* The chip's own memory, for the chips that have some (the WonderSwan's sound unit
      * reads its waveforms from the console's RAM); NULL for the rest. */
     DEVFUNC_WRITE_A16D8 write_ram;
@@ -165,9 +168,12 @@ RCHIP_API int rchip_add(void *handle, int dev, int clock, int variant) {
     }
     SndEmu_FreeDevLinkData(&c->dev);
     if (SndEmu_GetDeviceFunc(c->dev.devDef, RWF_REGISTER | RWF_WRITE, DEVRW_A8D8, 0, (void **)&c->write)) {
-        SndEmu_Stop(&c->dev);
-        delete c;
-        return -1;
+        c->write = NULL;
+        if (SndEmu_GetDeviceFunc(c->dev.devDef, RWF_REGISTER | RWF_WRITE, DEVRW_A16D8, 0, (void **)&c->write16)) {
+            SndEmu_Stop(&c->dev);
+            delete c;
+            return -1;
+        }
     }
     if (SndEmu_GetDeviceFunc(c->dev.devDef, RWF_MEMORY | RWF_WRITE, DEVRW_A16D8, 0, (void **)&c->write_ram))
         c->write_ram = NULL;
@@ -181,14 +187,17 @@ RCHIP_API int rchip_add(void *handle, int dev, int clock, int variant) {
 
 /* A write to chip `chip` at `time` into the frame: `port` is the chip's own register port
  * (the SN76496's 0 for data, 1 for the Game Gear stereo register; the YM2413's 0 for the
- * address, 1 for data). */
+ * address, 1 for data; the VSU's register number, its byte address over 4, up to 0x1FF). */
 RCHIP_API void rchip_write(void *handle, int time, int chip, int port, int value) {
     Host &h = *(Host *)handle;
     if (chip < 0 || (size_t)chip >= h.chips.size())
         return;
     render_to(h, sample_at(h, time));
     Chip *c = h.chips[chip];
-    c->write(c->dev.dataPtr, (UINT8)port, (UINT8)value);
+    if (c->write)
+        c->write(c->dev.dataPtr, (UINT8)port, (UINT8)value);
+    else
+        c->write16(c->dev.dataPtr, (UINT16)port, (UINT8)value);
 }
 
 /* A write to chip `chip`'s own memory at `addr`, at `time` into the frame. Ignored by chips

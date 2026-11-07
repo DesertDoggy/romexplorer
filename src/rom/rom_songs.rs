@@ -46,6 +46,8 @@ const PCE: &str = "pce";
 const MSX: &str = "msx";
 /// The same, for the WonderSwan and WonderSwan Color.
 const WS: &str = "ws";
+/// The same, for the Virtual Boy.
+const VB: &str = "vb";
 /// How long a looping song from a game's own sound code fades out.
 const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
@@ -77,7 +79,8 @@ pub fn covers(platform: u16) -> bool {
             || platform == P::Msx as u16
             || platform == P::Msx2 as u16
             || platform == P::WonderSwan as u16
-            || platform == P::WonderSwanColor as u16)
+            || platform == P::WonderSwanColor as u16
+            || platform == P::VirtualBoy as u16)
             && super::vgm_chips::available())
 }
 
@@ -208,6 +211,9 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
         }
         if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
             return index_machine::<super::wswan_music::WonderSwan>(path, t, WS, "WonderSwan");
+        }
+        if platform == P::VirtualBoy as u16 {
+            return index_machine::<super::vb_music::VirtualBoy>(path, t, VB, "Virtual Boy");
         }
     }
     let rom = read_rom(path)?;
@@ -428,6 +434,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(PCE) => open_machine::<super::pce_music::PcEngine>(path, engine, song),
         Some(MSX) => open_machine::<super::msx_music::Msx>(path, engine, song),
         Some(WS) => open_machine::<super::wswan_music::WonderSwan>(path, engine, song),
+        Some(VB) => open_machine::<super::vb_music::VirtualBoy>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;
