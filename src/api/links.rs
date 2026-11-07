@@ -311,6 +311,10 @@ pub async fn refresh_title(app: &App, title_id: u64) -> Result<RefreshSummary> {
         summary.jobs.push(db_jobs::enqueue_with_priority(pool, request.job_type(), request.payload(), super::jobs::PRIORITY_INTERACTIVE).await?);
     }
     for provider in Provider::ALL.into_iter().filter(|p| searchable(*p) && app.clients().is_available(*p) && !linked.contains(p)) {
+        // The user removed this provider's link: not looked up by name again.
+        if cache::unlinked_by_user(pool, title_id, provider).await? {
+            continue;
+        }
         let request = JobRequest::ProviderQuery(ProviderQueryRequest { provider: provider.name().to_string(), name: None, content_id: None, provider_id: None, provider_ids: None, title_ids: Some(vec![title_id]), platform: None });
         if already_queued(pool, &request).await? {
             summary.already_queued.push(provider.name().to_string());
@@ -345,7 +349,9 @@ pub async fn link_title(app: &App, title_id: u64, spec: &LinkSpec) -> Result<sup
     let pool = &app.pool;
     sqlx::query("SELECT 1 FROM title WHERE id = ? AND deleted = FALSE").bind(title_id).fetch_optional(pool).await?.ok_or_else(|| Error::not_found(format!("no title {title_id}")))?;
     match provider.tier() {
-        Tier::Title | Tier::Content => cache::link_title(pool, title_id, provider, &provider_id, Confidence::Manual).await?,
+        Tier::Title | Tier::Content => {
+            cache::link_title(pool, title_id, provider, &provider_id, Confidence::Manual).await?;
+        }
         Tier::Release => {
             let rows = sqlx::query("SELECT tr.release_id, r.app_platform_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id WHERE tr.title_id = ? AND r.deleted = FALSE").bind(title_id).fetch_all(pool).await?;
             if rows.is_empty() {
@@ -406,16 +412,32 @@ async fn detach_stale_for(app: &App, titles: &[u64]) -> Result<()> {
     Ok(())
 }
 
+/// Removes a provider's link from a title, and remembers that the user did: the row stays,
+/// `deleted` with confidence `manual`, and only another manual link replaces it
+/// (`cache::LINK_UPSERT_KEEP_STRONGER`) -- a metadata update or a scan no longer links the
+/// same game again by name or hash.
+///
+/// What IGDB wrote onto the title goes with its link (as `merge_audit::drop_igdb_link`
+/// does): its alternative and localized names, genres, companies, ... stayed behind before,
+/// with no way to remove them.
 pub async fn unlink_title(app: &App, title_id: u64, provider: &str) -> Result<super::catalog::TitleDetail> {
     let provider = provider_of(provider)?;
-    sqlx::query("UPDATE title_provider_links SET deleted = TRUE WHERE title_id = ? AND provider = ?").bind(title_id).bind(provider.name()).execute(&app.pool).await?;
+    let mut tx = app.pool.begin().await?;
+    sqlx::query("UPDATE title_provider_links SET deleted = TRUE, confidence = 'manual', linked_at = NOW() WHERE title_id = ? AND provider = ?").bind(title_id).bind(provider.name()).execute(&mut *tx).await?;
+    if provider == Provider::Igdb {
+        for table in crate::database::providers::metadata::IGDB_TITLE_TABLES {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table} WHERE title_id = ? AND source = 'igdb'"))).bind(title_id).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
     detach_stale_for(app, &[title_id]).await?;
     super::catalog::title(app, title_id).await
 }
 
+/// Removes a provider's link from a release; remembered as for a title (`unlink_title`).
 pub async fn unlink_release(app: &App, release_id: u64, provider: &str) -> Result<super::catalog::ReleaseDetail> {
     let provider = provider_of(provider)?;
-    sqlx::query("UPDATE release_provider_links SET deleted = TRUE WHERE release_id = ? AND provider = ?").bind(release_id).bind(provider.name()).execute(&app.pool).await?;
+    sqlx::query("UPDATE release_provider_links SET deleted = TRUE, confidence = 'manual', linked_at = NOW() WHERE release_id = ? AND provider = ?").bind(release_id).bind(provider.name()).execute(&app.pool).await?;
     detach_stale_for(app, &titles_of_release(app, release_id).await?).await?;
     super::catalog::release(app, release_id).await
 }

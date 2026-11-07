@@ -536,7 +536,21 @@ fn TitlePage(id: u64) -> Element {
                         for a in alts {
                             {
                                 let c = s(&a, "comment");
-                                rsx! { div { "{s(&a, \"name\")} " span { class: "muted", if !c.is_empty() { "· {c} " } "· {s(&a, \"source\")}" } } }
+                                let an = s(&a, "name");
+                                rsx! { div { "{an} " span { class: "muted", if !c.is_empty() { "· {c} " } "· {s(&a, \"source\")} " }
+                                    span { class: "link", title: state::tr("remove this alternative title"),
+                                        onclick: move |_| {
+                                            let an = an.clone();
+                                            spawn(async move {
+                                                match api::delete(&format!("/api/v1/catalog/titles/{id}/alt-names/{}", api::encode(&an))).await {
+                                                    Ok(_) => { ui::toast(state::trf("removed alternative title {name}", &[("name", &an)]), false); *gen.write() += 1; }
+                                                    Err(e) => ui::toast(e.message, true),
+                                                }
+                                            });
+                                        },
+                                        "✕"
+                                    }
+                                } }
                             }
                         }
                     }
