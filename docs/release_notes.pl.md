@@ -79,6 +79,8 @@ zapasową przed podmianą wersji.
 
 ## Poprawki błędów
 
+- Tytuł zachowywał alternatywne tytuły z IGDB po usunięciu powiązania z IGDB i nie dało się ich usunąć. Teraz znikają razem z powiązaniem, a każdy alternatywny tytuł można usunąć przyciskiem ✕.
+- „Aktualizuj metadane” ponownie wiązało z IGDB tytuł, którego powiązanie usunięto ręcznie. Teraz pozostaje bez powiązania, dopóki nie powiążesz go samodzielnie.
 - Podzestawy RetroAchievements (wyzwania, speedrun itp.) trafiały do tytułu swojej gry i mogły połączyć dwie wersje gry w jeden tytuł. Każdy podzestaw jest teraz osobnym tytułem; audyt scaleń wydziela te już istniejące.
 - Cofnięcie scalenia przyjętego w przeglądzie scaleń nie przywracało propozycji. Teraz wraca do przeglądu.
 - Gry pirackie i nielicencjonowane były scalane z tytułami gier komercyjnych.

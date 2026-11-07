@@ -1207,6 +1207,8 @@
   "remove": "remover",
   "remove keyword tag": "remover etiqueta",
   "remove this tag": "remover esta etiqueta",
+  "remove this alternative title": "remover este título alternativo",
+  "removed alternative title {name}": "título alternativo {name} removido",
   "removed": "removido",
   "removed \"{name}\" from {n} title(s)": "\"{name}\" removida de {n} título(s)",
   "removed 1 directory configuration": "1 configuração de diretório removida",

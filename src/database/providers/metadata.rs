@@ -329,16 +329,23 @@ pub async fn set_igdb_locales(pool: &MySqlPool, names: &IgdbNames, title_id: u64
             rows.push((lang, reg, name.clone()));
         }
         // Every alternative name, whatever it stands for (acronym, alternative spelling,
-        // romanization, ...): shown on the title page and matched by the title search.
+        // romanization, ...): shown on the title page and matched by the title search --
+        // unless the user removed it from this title (`title_alt_names_hidden`).
         let trimmed = name.trim();
         if !trimmed.is_empty() {
-            sqlx::query("INSERT IGNORE INTO title_alt_names (title_id, name, name_hash, source, comment) VALUES (?, ?, ?, 'igdb', ?)")
-                .bind(title_id)
-                .bind(trimmed.chars().take(512).collect::<String>())
-                .bind(super::super::import::sha1_hex(trimmed))
-                .bind(comment.as_deref().map(|c| c.chars().take(128).collect::<String>()))
-                .execute(pool)
-                .await?;
+            let hash = super::super::import::sha1_hex(trimmed);
+            sqlx::query(
+                "INSERT IGNORE INTO title_alt_names (title_id, name, name_hash, source, comment) SELECT ?, ?, ?, 'igdb', ? FROM DUAL \
+                 WHERE NOT EXISTS (SELECT 1 FROM title_alt_names_hidden h WHERE h.title_id = ? AND h.name_hash = ?)",
+            )
+            .bind(title_id)
+            .bind(trimmed.chars().take(512).collect::<String>())
+            .bind(&hash)
+            .bind(comment.as_deref().map(|c| c.chars().take(128).collect::<String>()))
+            .bind(title_id)
+            .bind(&hash)
+            .execute(pool)
+            .await?;
         }
     }
     for (lang, region, name) in rows.into_iter().filter(|_| locales) {

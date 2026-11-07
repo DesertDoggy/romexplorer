@@ -1182,6 +1182,10 @@ impl Worker {
         let total = title_ids.len() as u64;
         for (i, title_id) in title_ids.iter().enumerate() {
             progress.report(i as u64, Some(total), &format!("{}: title {} of {total} ({linked} linked)", provider.name(), i + 1)).await;
+            // The user removed this provider's link from the title: no search links it again.
+            if cache::unlinked_by_user(pool, *title_id, provider).await? {
+                continue;
+            }
             let Some(row) = sqlx::query("SELECT t.name, (SELECT MIN(r.app_platform_id) FROM title_releases tr JOIN `release` r ON r.id = tr.release_id WHERE tr.title_id = t.id AND r.deleted = FALSE) AS platform_id FROM title t WHERE t.id = ? AND t.deleted = FALSE").bind(title_id).fetch_optional(pool).await? else { continue };
             let name: String = row.try_get("name")?;
             let platform = row.try_get::<Option<u16>, _>("platform_id")?.and_then(Platform::from_igdb_id);
@@ -1240,7 +1244,9 @@ impl Worker {
             };
             match provider.tier() {
                 crate::database::providers::Tier::Title | crate::database::providers::Tier::Content => {
-                    cache::link_title(pool, *title_id, provider, &best.provider_id, confidence).await?;
+                    if !cache::link_title(pool, *title_id, provider, &best.provider_id, confidence).await? {
+                        continue;
+                    }
                 }
                 crate::database::providers::Tier::Release => {
                     let rows = sqlx::query("SELECT tr.release_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id WHERE tr.title_id = ? AND r.deleted = FALSE AND (? IS NULL OR r.app_platform_id = ?)").bind(title_id).bind(platform.map(|p| p.igdb_id())).bind(platform.map(|p| p.igdb_id())).fetch_all(pool).await?;

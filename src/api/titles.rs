@@ -112,6 +112,10 @@ pub async fn sync_lead_igdb(app: &App, only: Option<&[u64]>) -> Result<Vec<u64>>
     let mut changed = Vec::new();
     for title_id in titles {
         let Some(lead): Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(lead_sql.clone())).bind(title_id).fetch_optional(&app.pool).await? else { continue };
+        // The user removed the title's IGDB link: its releases' games do not put one back.
+        if crate::database::providers::cache::unlinked_by_user(&app.pool, title_id, crate::database::providers::Provider::Igdb).await? {
+            continue;
+        }
         let current: Option<(String, String)> = sqlx::query("SELECT provider_id, CAST(confidence AS CHAR) AS confidence FROM title_provider_links WHERE title_id = ? AND provider = 'igdb' AND deleted = FALSE")
             .bind(title_id)
             .fetch_optional(&app.pool)
@@ -481,6 +485,23 @@ pub async fn remove_keyword(app: &App, title_id: u64, name: &str) -> Result<()> 
     if removed == 0 {
         return Err(Error::not_found(format!("title {title_id} has no user keyword {name:?}")));
     }
+    Ok(())
+}
+
+/// Removes an alternative title from a title, whatever gave it. A provider's name is
+/// remembered as removed (`title_alt_names_hidden`), so re-applying the provider's game does
+/// not bring it back.
+pub async fn remove_alt_name(app: &App, title_id: u64, name: &str) -> Result<()> {
+    let mut tx = app.pool.begin().await?;
+    let hashes: Vec<String> = sqlx::query_scalar("SELECT name_hash FROM title_alt_names WHERE title_id = ? AND name = ?").bind(title_id).bind(name).fetch_all(&mut *tx).await?;
+    if hashes.is_empty() {
+        return Err(Error::not_found(format!("title {title_id} has no alternative title {name:?}")));
+    }
+    for hash in &hashes {
+        sqlx::query("INSERT IGNORE INTO title_alt_names_hidden (title_id, name_hash) VALUES (?, ?)").bind(title_id).bind(hash).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM title_alt_names WHERE title_id = ? AND name_hash = ?").bind(title_id).bind(hash).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
