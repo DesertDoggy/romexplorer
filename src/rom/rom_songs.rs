@@ -35,6 +35,9 @@ const GBA_M4A: &str = "gba-m4a";
 const NES: &str = "nes";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
+/// The same, for the Master System and the Game Gear.
+const SMS: &str = "sms";
+const GG: &str = "gg";
 /// How long a looping song from a game's own sound code fades out.
 const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
@@ -61,6 +64,7 @@ pub fn covers(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     (platform == P::GameBoyAdvance as u16 && agbplay::available()) || (is_nes(platform) && super::nes_apu::available())
         || (is_gb(platform) && super::gb_apu::available())
+        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16) && super::vgm_chips::available())
 }
 
 fn is_gb(platform: u16) -> bool {
@@ -170,6 +174,15 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
     }
     if is_gb(platform) {
         return index_machine::<super::gb_music::GameBoy>(path, t, GB, "Game Boy");
+    }
+    {
+        use crate::common::models::Platform as P;
+        if platform == P::SegaMasterSystem as u16 {
+            return index_machine::<super::sms_music::MasterSystem>(path, t, SMS, "Master System");
+        }
+        if platform == P::SegaGameGear as u16 {
+            return index_machine::<super::sms_music::GameGear>(path, t, GG, "Game Gear");
+        }
     }
     let rom = read_rom(path)?;
     let mut player = match agbplay::Player::open(&rom, MEASURE_RATE) {
@@ -383,6 +396,8 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(NDS_SSEQ) => open_sseq(path, engine, song),
         Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
+        Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
+        Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;

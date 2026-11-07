@@ -3,7 +3,7 @@
 //!
 //!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
 //!
-//! For each NES/Famicom or Game Boy/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
+//! For each NES/Famicom, Game Boy/Color, Master System or Game Gear ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
 //! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
 //! ends the run.
@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use romexplorer::rom::gb_music::GameBoy;
 use romexplorer::rom::music_search::{self, Machine, Song};
 use romexplorer::rom::nes_music::Nes;
+use romexplorer::rom::sms_music::{GameGear, MasterSystem};
 use romexplorer::rom::{nes_cart, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
@@ -56,20 +57,30 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if matches!(ext.as_str(), "nes" | "gb" | "gbc" | "zip" | "7z") {
+        if matches!(
+            ext.as_str(),
+            "nes" | "gb" | "gbc" | "sms" | "gg" | "zip" | "7z"
+        ) {
             out.push(path.to_path_buf());
         }
     }
 }
 
-/// Which console a ROM is for, from its header.
-fn console(rom: &[u8]) -> Option<&'static str> {
+/// Which console a ROM is for, from its header (or, for a Sega 8-bit ROM, the file name).
+fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if nes_cart::parse(rom).is_ok() {
         return Some("NES");
     }
     // The Nintendo logo every Game Boy cartridge carries.
     if rom.len() >= 0x150 && rom[0x104..0x108] == [0xCE, 0xED, 0x66, 0x66] {
         return Some(if rom[0x143] & 0x80 != 0 { "GBC" } else { "GB" });
+    }
+    let name = path.to_string_lossy().to_ascii_lowercase();
+    if name.ends_with(".gg") || name.contains("game gear") || name.contains("gamegear") {
+        return Some("GG");
+    }
+    if name.ends_with(".sms") || name.contains("master system") || name.contains("mastersystem") {
+        return Some("SMS");
     }
     None
 }
@@ -178,7 +189,10 @@ fn main() {
         );
         std::process::exit(2);
     }
-    if !romexplorer::rom::nes_apu::available() || !romexplorer::rom::gb_apu::available() {
+    if !romexplorer::rom::nes_apu::available()
+        || !romexplorer::rom::gb_apu::available()
+        || !romexplorer::rom::vgm_chips::available()
+    {
         eprintln!("the rommusic library (sound chips) was not found: set ROMEXPLORER_EXE_ROOT or put it in lib/ beside this tool");
         std::process::exit(1);
     }
@@ -195,7 +209,7 @@ fn main() {
                 continue;
             }
         };
-        match console(&rom) {
+        match console(&rom, &path) {
             Some("NES") => {
                 let what = format!(
                     "mapper {}",
@@ -203,6 +217,20 @@ fn main() {
                 );
                 run::<Nes>(&path, &rom, &what, &o, tally.entry("NES").or_default());
             }
+            Some("SMS") => run::<MasterSystem>(
+                &path,
+                &rom,
+                "Master System",
+                &o,
+                tally.entry("Master System").or_default(),
+            ),
+            Some("GG") => run::<GameGear>(
+                &path,
+                &rom,
+                "Game Gear",
+                &o,
+                tally.entry("Game Gear").or_default(),
+            ),
             Some(c) => {
                 let what = format!("{c}, cartridge ${:02X}", rom[0x147]);
                 run::<GameBoy>(&path, &rom, &what, &o, tally.entry("Game Boy").or_default());
