@@ -112,7 +112,7 @@ Kommandozeilenparameter (`--help`). chdlite erscheint als eigenes Release: siehe
 
 ### Kommandozeilenwerkzeug (rommusic)
 
-Ziehen Sie ein ROM, ein Disc-Image, einen gedumpten Ordner oder ein Musik-Rip-Set auf `rommusic`,
+Ziehen Sie ein ROM, ein Disc-Image, einen gedumpten Ordner oder ein Set von Musikdateien im Original-Audioformat auf `rommusic`,
 und es schreibt die Hintergrundmusik des Spiels als FLAC in einen Ordner daneben. Jede Option gibt
 es auch als Flag (`--help`). Die unterstützten Systeme stehen unter [ROM-Audio](#rom-audio).
 rommusic wird separat veröffentlicht: siehe
@@ -282,15 +282,14 @@ oder kopiert. Führen Sie zuerst „ROM-Audio indizieren“ im Audio-Tab aus. `r
 | | PS3, PS Vita | entschlüsselte Ordner-Dumps |
 | Das Soundarchiv | Nintendo DS (gestreamte und sequenzierte Musik), Nintendo 3DS (nur entschlüsselte Images) | .nds, .3ds/.cci |
 | Die Sound-Engine des Spiels | Game Boy Advance: Spiele mit Nintendos Standard-Engine (etwa die Hälfte) | .gba |
-| Musik-Rips | NES und Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System und Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum und Amstrad CPC (AY), Atari 8-Bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket und Virtual Boy (VGM) | im Ordner des Spiels oder in der Rip-Bibliothek, einzeln oder gezippt |
+| Original-Audioformate | NES und Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System und Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum und Amstrad CPC (AY), Atari 8-Bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket und Virtual Boy (VGM) | im Ordner des Spiels oder in der Original-Audio-Bibliothek, einzeln oder gezippt |
 
-- Die Rip-Bibliothek (Einstellungen › Audio) ordnet NSF-, NSFE-, GBS-, SPC-, HES-, KSS- und
+- Die Original-Audio-Bibliothek (Einstellungen › Audio) ordnet NSF-, NSFE-, GBS-, SPC-, HES-, KSS- und
   SGC-Sets anhand des Inhalts Ihren ROMs zu: Ein Set spielt für jede Region eines Spiels, egal wie
   es heißt.
-- PlayStation- und PlayStation-2-Rips brauchen ein PS2-BIOS in Ihrer Sammlung; ohne werden sie
+- PlayStation- und PlayStation-2-Dateien brauchen ein PS2-BIOS in Ihrer Sammlung; ohne werden sie
   übersprungen.
 - Disc-Images in zip oder 7z werden noch nicht gelesen. Verschlüsselte Images werden nicht gelesen.
-- `rommusic` erzeugt außerdem die Titelmusik eines Super-Nintendo-Spiels ohne Rip.
 
 ## Tab RetroAchievements
 

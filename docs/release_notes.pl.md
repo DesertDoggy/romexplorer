@@ -52,9 +52,9 @@ zapasową przed podmianą wersji.
 - Strony tytułów mogą odtwarzać muzykę zapisaną w twoich ROM-ach (tylko obsługiwane platformy i
   rodzaje nośników).
 - W ustawieniach wybiera się, które utwory są odtwarzane.
-- Obsługiwane są ripy muzyki w oryginalnym formacie (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP i SGC z
+- Obsługiwane są oryginalne formaty audio (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP i SGC z
   Game Gear, luzem lub w zip).
-- Biblioteka ripów: wskaż w Ustawienia › Audio foldery z zestawami, a „Indeksuj dźwięk z ROM-ów” dopasuje
+- Biblioteka oryginalnego audio: wskaż w Ustawienia › Audio foldery z zestawami, a „Indeksuj dźwięk z ROM-ów” dopasuje
   każdy zestaw do twoich ROM-ów po zawartości. Jeden zestaw gra dla każdego regionu gry, niezależnie
   od nazwy.
 - Odtwarzacz na stronach tytułów ma przycisk „nie odtwarzaj tego utworu”. Ukryte utwory są pod
@@ -68,7 +68,7 @@ zapasową przed podmianą wersji.
   mierzy, gdzie kończy się dźwięk (uruchom go ponownie dla plików zeskanowanych wcześniej).
 - Muzyka na stronach tytułów jest domyślnie włączona, a pierwsze uruchomienie pyta o nią zaraz po
   wyborze języka. Tytuł bez własnego dźwięku domyślnie odtwarza losowe utwory.
-- Ripy PSF i PSF2 używają BIOS-u PS2 z twojej kolekcji i są pomijane, gdy go brak.
+- Pliki PSF i PSF2 używają BIOS-u PS2 z twojej kolekcji i są pomijane, gdy go brak.
 
 **Przegląd scaleń i Połączone tytuły**
 - Wydania z karty można przeciągnąć do tytułu, do którego należą, albo na „+”, aby utworzyć nowy

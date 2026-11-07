@@ -1,6 +1,6 @@
 # rommusic
 
-Drop a ROM, disc image or music rip set on `rommusic` and it writes the game's music as FLAC.
+Drop a ROM, disc image or set of music files in an original audio format on `rommusic` and it writes the game's music as FLAC.
 It uses the same readers and players the romexplorer app plays ROM music with, and is
 released on its own (version 0.1.0).
 
@@ -23,7 +23,7 @@ Dropping always gives FLAC with the defaults below. Everything else needs the co
 **Command line.**
 
 ```
-rommusic [options] <ROM, disc image, folder or rip set>...
+rommusic [options] <ROM, disc image, folder or original-format music set>...
 ```
 
 Examples:
@@ -31,7 +31,7 @@ Examples:
 ```
 rommusic "Hoge Quest (Japan).chd"
 rommusic --all --max 20 "Hoge Quest (Japan).chd"
-rommusic --rips D:\rips --out D:\music "Hoge Quest (Japan).nes"
+rommusic --originals D:\original-audio --out D:\music "Hoge Quest (Japan).nes"
 rommusic --hires "Hoge Quest (Japan).cue"
 rommusic --format both "Hoge Quest (Japan).sfc"
 ```
@@ -52,8 +52,8 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--format flac` | The default: FLAC only. |
 | `--format original` | The music as the game stores it, in an `original` folder, and no FLAC. |
 | `--format both` | FLAC and the original files. |
-| `--rips DIR` | A folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC; loose, in folders, or zipped) to use for the cartridges given. File names do not matter. Can be given more than once. |
-| `--ps2-bios FILE` | A PS2 BIOS image (4 MB) of your own. PS1 and PS2 rips (PSF, PSF2) need it to play; without it they are skipped. None comes with rommusic. |
+| `--originals DIR` | A folder of music in original audio formats (NSF, SPC, GBS, HES, KSS, SGC; loose, in folders, or zipped) to use for the cartridges given. File names do not matter. Can be given more than once. |
+| `--ps2-bios FILE` | A PS2 BIOS image (4 MB) of your own. PS1 and PS2 music files (PSF, PSF2) need it to play; without it they are skipped. None comes with rommusic. |
 | `--seconds N` | SNES: how long the game runs before its music is taken (default 20). |
 | `--start` | SNES: press Start now and then while the game runs, for games whose music starts after the title screen. |
 | `--list` | Only list the tracks; write nothing. A looping track shows one pass and "loop"; its file plays the loop twice and fades. |
@@ -69,7 +69,7 @@ What `--format original` writes:
 
 - Disc and folder games: the stream files as they are stored on the disc (ADX, XA, AT3,
   BCSTM...). When a stream is inside an archive on the disc, the whole archive is copied.
-- Rip sets: the set's files (the NSF, SPC, GBS... and its playlist; a zipped set is copied
+- Original-format music sets: the set's files (the NSF, SPC, GBS... and its playlist; a zipped set is copied
   as it is).
 - SNES cartridges: an `.spc` of the sound chip after the game has run.
 - CD audio and music sequenced in a cartridge (Game Boy Advance) have no original file. Use
@@ -98,19 +98,19 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 | Nintendo DS | Music in the sound archive (SDAT): streams as stored, and sequenced songs played with their instruments as the DS does. | as stored; sequenced 48 kHz |
 | Nintendo 3DS | Music files in images stored decrypted. Encrypted images are not read. | as stored |
 | Game Boy Advance | Straight from the ROM, for games using Nintendo's standard sound engine (about half of all games). | 48 kHz |
-| SNES / Super Famicom | The game runs for a few seconds without a screen, and its sound chip is then played on. This gives one track, usually the title music. SA-1, Super FX and S-DD1 games are not supported. With `--rips`, the game's SPC set gives every song instead. | 32 kHz |
-| NES, Famicom, FDS | The game's NSF set from `--rips`. | 44.1 kHz |
-| Game Boy, Game Boy Color | The game's GBS set from `--rips`. | 44.1 kHz |
-| PC Engine, SuperGrafx | The game's HES set from `--rips`. | 44.1 kHz |
-| Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--rips`. | 44.1 kHz |
+| SNES / Super Famicom | The game runs for a few seconds without a screen, and its sound chip is then played on. This gives one track, usually the title music. SA-1, Super FX and S-DD1 games are not supported. With `--originals`, the game's SPC set gives every song instead. | 32 kHz |
+| NES, Famicom, FDS | The game's NSF set from `--originals`. | 44.1 kHz |
+| Game Boy, Game Boy Color | The game's GBS set from `--originals`. | 44.1 kHz |
+| PC Engine, SuperGrafx | The game's HES set from `--originals`. | 44.1 kHz |
+| Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--originals`. | 44.1 kHz |
 
-**Rip sets.** A rip file or zip dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
+**Original audio formats.** A file in an original audio format, or a zip of them, dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
 HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF, Dreamcast DSF, GBA GSF and WonderSwan WSR, and Neo Geo Pocket and Virtual Boy VGM (with the set's library
 files beside them). Track names and lengths come from the set's playlist (`.m3u`) or the
 file's own tags. PSF and PSF2 need a PS2 BIOS image of your own, given with `--ps2-bios`;
 without it they are skipped.
 
-**Zip and 7z.** A zipped cartridge is read for Game Boy Advance and SNES, and with `--rips`. A zipped disc image is not read; extract it first.
+**Zip and 7z.** A zipped cartridge is read for Game Boy Advance and SNES, and with `--originals`. A zipped disc image is not read; extract it first.
 
 ### Not supported yet
 
