@@ -676,8 +676,9 @@ async fn add_version(pool: &MySqlPool, source_id: u8, platform: Platform, game: 
         let title: Option<u64> = r.try_get("title_id")?;
         if r.try_get::<u8, _>("source_id")? != source_id {
             if let Some(t) = title {
-                cache::link_title(pool, t, Provider::Igdb, &game.to_string(), Confidence::Name).await?;
-                return Ok(Added::Linked);
+                if cache::link_title(pool, t, Provider::Igdb, &game.to_string(), Confidence::Name).await? {
+                    return Ok(Added::Linked);
+                }
             }
         }
         return Ok(Added::Nothing);

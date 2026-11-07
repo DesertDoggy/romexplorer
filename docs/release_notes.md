@@ -73,6 +73,10 @@ replacing a build.
 
 ## Bug fixes
 
+- A title kept IGDB's alternative titles after its IGDB link was removed, and they could not be
+  deleted. Unlinking now removes them, and any alternative title can be removed with ✕.
+- "Refresh metadata" linked IGDB again to a title whose link you had removed. It now stays
+  unlinked until you link it yourself.
 - RetroAchievements subsets (challenge, speedrun and the like) went into their game's title,
   and could put two versions of a game in one title. Each subset is now a title of its own;
   the merge audit splits out the ones already there.

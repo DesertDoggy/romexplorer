@@ -442,7 +442,7 @@ const MEDIA_JUNCTIONS: [&str; 2] = ["title_media", "release_media"];
 /// or a release moved to another title there would stay under both here. Only those
 /// without a `deleted` column are (checked when pulled); the large tables -- `hashes`,
 /// `content*`, provider caches -- are not in this list and are upserted as before.
-const CATALOG_JUNCTIONS: [&str; 23] = [
+const CATALOG_JUNCTIONS: [&str; 24] = [
     "title_releases",
     "release_sources",
     "release_contents",
@@ -453,6 +453,7 @@ const CATALOG_JUNCTIONS: [&str; 23] = [
     "release_ratings",
     "title_aliases",
     "title_alt_names",
+    "title_alt_names_hidden",
     "title_locales",
     "title_companies",
     "title_franchises",

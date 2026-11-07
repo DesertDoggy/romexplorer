@@ -1207,6 +1207,8 @@
   "remove": "削除",
   "remove keyword tag": "キーワードタグを削除",
   "remove this tag": "このタグを削除",
+  "remove this alternative title": "この別名を削除",
+  "removed alternative title {name}": "別名 {name} を削除しました",
   "removed": "削除しました",
   "removed \"{name}\" from {n} title(s)": "{n} 件のタイトルから「{name}」を削除しました",
   "removed 1 directory configuration": "ディレクトリ設定を 1 件削除しました",

@@ -43,10 +43,12 @@ const MERGE_CONFIDENCES: &str = "'exact', 'hash', 'name', 'manual'";
 pub const GRADES: [&str; 3] = ["manual", "hash", "name"];
 
 /// Title-keyed tables and their other columns.
-const JUNCTIONS: [(&str, &str); 9] = [
+const JUNCTIONS: [(&str, &str); 10] = [
     // With the user's manual order (weights), which travels with the release.
     ("title_releases", "release_id, sort_weight, sort_set_at"),
     ("title_alt_names", "name, name_hash, source, comment"),
+    // The alternative names the user removed, so a merged title's stay removed.
+    ("title_alt_names_hidden", "name_hash"),
     ("title_locales", "language, region, source, name"),
     ("title_genres", "genre_id, source"),
     ("title_perspectives", "perspective_id, source"),
@@ -473,11 +475,12 @@ pub async fn merge_titles(pool: &MySqlPool, ids: &[u64], reason: &str, grade: &s
         sqlx::query("UPDATE title SET locales_locked = TRUE WHERE id = ?").bind(keep).execute(&mut *tx).await?;
     }
     let t = "title_provider_links";
-    let cond = format!("NOT VALUES(deleted) AND ({t}.deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD({t}.confidence,'fuzzy','name','hash','exact','manual'))");
+    // A link the user removed is only replaced by a manual one (`cache::LINK_UPSERT_KEEP_STRONGER`).
+    let cond = format!("NOT VALUES(deleted) AND (({t}.deleted AND ({t}.confidence <> 'manual' OR VALUES(confidence) = 'manual')) OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD({t}.confidence,'fuzzy','name','hash','exact','manual'))");
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO {t} (title_id, provider, provider_id, confidence, linked_at, deleted) SELECT {keep}, provider, provider_id, confidence, linked_at, deleted FROM {t} src WHERE src.title_id IN ({list}) \
          ON DUPLICATE KEY UPDATE provider_id = IF({cond}, VALUES(provider_id), {t}.provider_id), linked_at = IF({cond}, VALUES(linked_at), {t}.linked_at), \
-         confidence = IF({cond}, VALUES(confidence), {t}.confidence), deleted = ({t}.deleted AND VALUES(deleted))"
+         confidence = IF({cond}, VALUES(confidence), {t}.confidence), deleted = ({t}.deleted AND (VALUES(deleted) OR ({t}.confidence = 'manual' AND VALUES(confidence) <> 'manual')))"
     )))
     .execute(&mut *tx)
     .await?;

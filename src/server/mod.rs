@@ -1729,6 +1729,11 @@ async fn titles_decouple(State(s): State<Shared>, Path(id): Path<u64>) -> ApiRes
     Ok(Json(json!({ "title_id": title_id })))
 }
 
+async fn titles_remove_alt_name(State(s): State<Shared>, Path((id, name)): Path<(u64, String)>) -> ApiResult<Value> {
+    api::titles::remove_alt_name(&s.app, id, &name).await?;
+    Ok(Json(json!({ "removed": true })))
+}
+
 async fn titles_remove_keyword(State(s): State<Shared>, Path((id, name)): Path<(u64, String)>) -> ApiResult<Value> {
     api::titles::remove_keyword(&s.app, id, &name).await?;
     Ok(Json(json!({ "removed": true })))
@@ -2849,6 +2854,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/catalog/titles/merges/decouple", post(titles_decouple_grade))
         .route("/api/v1/catalog/titles/merges/{id}/decouple", post(titles_decouple))
         .route("/api/v1/catalog/titles/{id}/keywords/{name}", delete(titles_remove_keyword))
+        .route("/api/v1/catalog/titles/{id}/alt-names/{name}", delete(titles_remove_alt_name))
         .route("/api/v1/catalog/titles/merge-suggestions", get(titles_suggestions))
         .route("/api/v1/catalog/titles/merge-suggestions/bulk", post(titles_suggestions_bulk))
         .route("/api/v1/catalog/titles/merge-suggestions/{igdb_id}/{action}", post(titles_suggestion_resolve))

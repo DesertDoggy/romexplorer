@@ -521,8 +521,9 @@ pub async fn sync_igdb_platform(clients: &ProviderClients, pool: &MySqlPool, sto
             titles.sort_unstable();
             titles.dedup();
             for title_id in titles {
-                cache::link_title(pool, title_id, Provider::Igdb, &game.id.to_string(), Confidence::Name).await?;
-                linked.push((title_id, game));
+                if cache::link_title(pool, title_id, Provider::Igdb, &game.id.to_string(), Confidence::Name).await? {
+                    linked.push((title_id, game));
+                }
             }
             if linked.last().is_some_and(|(_, g)| g.id == game.id) {
                 summary.linked += 1;

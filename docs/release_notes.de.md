@@ -83,6 +83,8 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Fehlerbehebungen
 
+- Ein Titel behielt die alternativen Titel von IGDB, nachdem seine IGDB-Verknüpfung entfernt wurde, und sie ließen sich nicht löschen. Sie werden jetzt mit der Verknüpfung entfernt, und jeder alternative Titel lässt sich mit ✕ löschen.
+- „Metadaten aktualisieren“ verknüpfte einen Titel wieder mit IGDB, obwohl die Verknüpfung von Hand entfernt worden war. Sie bleibt jetzt entfernt, bis Sie selbst verknüpfen.
 - RetroAchievements-Subsets (Challenge, Speedrun usw.) landeten im Titel ihres Spiels und konnten zwei Versionen eines Spiels in einem Titel vereinen. Jedes Subset ist jetzt ein eigener Titel; die Zusammenführungsprüfung trennt die vorhandenen ab.
 - Wurde eine Zusammenführung aus der Zusammenführungsprüfung rückgängig gemacht, kam der Vorschlag nicht zurück. Er steht jetzt wieder zur Prüfung an.
 - Raubkopien und unlizenzierte Spiele wurden mit den Titeln kommerzieller Spiele zusammengeführt.
