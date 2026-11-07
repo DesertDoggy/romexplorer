@@ -267,7 +267,6 @@ copied. Run Index ROM audio on the Audio tab first. `rommusic` reads the same.
 - PlayStation and PlayStation 2 rips need a PS2 BIOS in your collection; without one they are
   skipped.
 - Disc images inside zip or 7z are not read yet. Encrypted images are not read.
-- `rommusic` also renders a SNES game's title music without a rip.
 
 ## RetroAchievements tab
 

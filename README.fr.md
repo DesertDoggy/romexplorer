@@ -292,7 +292,6 @@ les mêmes.
   ils sont sautés.
 - Les images disque dans un zip ou un 7z ne sont pas encore lues. Les images chiffrées ne sont pas
   lues.
-- `rommusic` produit aussi la musique de titre d'un jeu Super Nintendo sans rip.
 
 ## Onglet RetroAchievements
 

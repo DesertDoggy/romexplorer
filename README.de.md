@@ -290,7 +290,6 @@ oder kopiert. Führen Sie zuerst „ROM-Audio indizieren“ im Audio-Tab aus. `r
 - PlayStation- und PlayStation-2-Rips brauchen ein PS2-BIOS in Ihrer Sammlung; ohne werden sie
   übersprungen.
 - Disc-Images in zip oder 7z werden noch nicht gelesen. Verschlüsselte Images werden nicht gelesen.
-- `rommusic` erzeugt außerdem die Titelmusik eines Super-Nintendo-Spiels ohne Rip.
 
 ## Tab RetroAchievements
 

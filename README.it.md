@@ -286,7 +286,6 @@ legge le stesse cose.
 - I rip PlayStation e PlayStation 2 richiedono un BIOS PS2 nella tua collezione; senza, vengono
   saltati.
 - Le immagini disco dentro zip o 7z non vengono ancora lette. Le immagini cifrate non vengono lette.
-- `rommusic` genera anche la musica del titolo di un gioco Super Nintendo senza rip.
 
 ## Scheda RetroAchievements
 

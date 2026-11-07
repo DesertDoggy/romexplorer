@@ -291,7 +291,6 @@ o mesmo.
   saltados.
 - As imagens de disco dentro de zip ou 7z ainda não são lidas. As imagens encriptadas não são
   lidas.
-- O `rommusic` também gera a música de título de um jogo da Super Nintendo sem rip.
 
 ## Separador RetroAchievements
 
