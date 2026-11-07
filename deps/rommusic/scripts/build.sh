@@ -105,6 +105,26 @@ apply_patches() {
   local dir="$1" root="$2" p i done_upto=-1
   local series=()
   for p in "$dir"/*.patch; do [[ -e "$p" ]] && series+=("$p"); done
+  # Match each hunk's line endings to the file it patches. GNU patch refuses an LF hunk
+  # against CRLF lines ("different line endings"), and which files are CRLF depends on the
+  # checkout: lazyusf2's usf.c is CRLF upstream, and core.autocrlf on Windows makes the rest
+  # CRLF too. The patches themselves are stored with LF (or as made); copies go to build_dir.
+  local eol_dir="$build_dir/patches/$(basename "$dir")"
+  mkdir -p "$eol_dir"
+  for ((i = 0; i < ${#series[@]}; i++)); do
+    p="${series[$i]}"
+    local crlf_files="" f
+    for f in $(tr -d '\r' <"$p" | sed -n 's|^+++ b/||p'); do
+      grep -q $'\r$' "$root/$f" 2>/dev/null && crlf_files+=" $f"
+    done
+    tr -d '\r' <"$p" | awk -v crlf="$crlf_files " '
+      /^diff --git / { body = 0; print; next }
+      /^\+\+\+ b\// { f = substr($0, 7); cr = index(crlf, " " f " ") > 0; print; next }
+      /^@@ / { body = 1; print; next }
+      body && cr && /^[ +-]/ { print $0 "\r"; next }
+      { print }' >"$eol_dir/$(basename "$p")"
+    series[$i]="$eol_dir/$(basename "$p")"
+  done
   for ((i = ${#series[@]} - 1; i >= 0; i--)); do
     if (cd "$root" && patch -p1 -R -f --dry-run <"${series[$i]}") >/dev/null 2>&1; then
       done_upto=$i
