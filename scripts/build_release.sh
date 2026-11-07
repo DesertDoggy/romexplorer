@@ -140,8 +140,17 @@ if printf '%s\n' "${P_LIST[@]}" | grep -qx android; then
 fi
 mapfile -t A_LIST < <(split "$ARCHES")
 # `all` is every package; `cli` the old name for the two standalone tools.
-MODES="$(sed -e 's/\ball\b/server,desktop,chdlite,rommusic/g' -e 's/\bcli\b/chdlite,rommusic/g' <<< "$MODES")"
-mapfile -t M_LIST < <(split "$MODES" | awk '!seen[$0]++')
+# Expanded per word in bash: macOS's BSD sed has no \b, so a sed version left `all` as is
+# and the mode check below refused it.
+expanded=()
+while IFS= read -r m; do
+    case "$m" in
+        all) expanded+=(server desktop chdlite rommusic) ;;
+        cli) expanded+=(chdlite rommusic) ;;
+        *) expanded+=("$m") ;;
+    esac
+done < <(split "$MODES")
+mapfile -t M_LIST < <(printf '%s\n' "${expanded[@]}" | awk '!seen[$0]++')
 for p in "${P_LIST[@]}"; do case "$p" in linux|windows|macos) ;; mac) echo "error: say macos, not mac" >&2; exit 2 ;; *) echo "error: unknown platform '$p'" >&2; exit 2 ;; esac; done
 for a in "${A_LIST[@]}"; do case "$a" in x64|arm64) ;; *) echo "error: unknown arch '$a'" >&2; exit 2 ;; esac; done
 for m in "${M_LIST[@]}"; do case "$m" in server|desktop|chdlite|rommusic) ;; *) echo "error: unknown mode '$m'" >&2; exit 2 ;; esac; done
