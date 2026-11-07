@@ -48,6 +48,8 @@ const MSX: &str = "msx";
 const WS: &str = "ws";
 /// The same, for the Virtual Boy.
 const VB: &str = "vb";
+/// The same, for Game Boy Advance games not on the standard sound engine.
+const GBA: &str = "gba";
 /// How long a looping song from a game's own sound code fades out.
 const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
@@ -72,7 +74,7 @@ pub const MAX_SDAT_BYTES: u64 = 128 << 20;
 /// Which engines can read ROMs of `platform` (`platforms.id`) on this machine.
 pub fn covers(platform: u16) -> bool {
     use crate::common::models::Platform as P;
-    (platform == P::GameBoyAdvance as u16 && agbplay::available()) || (is_nes(platform) && super::nes_apu::available())
+    (platform == P::GameBoyAdvance as u16 && (agbplay::available() || super::gb_apu::available())) || (is_nes(platform) && super::nes_apu::available())
         || (is_gb(platform) && super::gb_apu::available())
         || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::SegaGenesis as u16
             || platform == P::TurboGrafx16 as u16
@@ -219,7 +221,8 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
     let rom = read_rom(path)?;
     let mut player = match agbplay::Player::open(&rom, MEASURE_RATE) {
         Ok(p) => p,
-        // No standard engine: the game's music is made another way.
+        // No standard engine: the game's own sound code is run instead.
+        Err(_) if super::gb_apu::available() => return index_machine::<super::gba_music::GameBoyAdvance>(path, t, GBA, "Game Boy Advance"),
         Err(_) => return Ok((Vec::new(), Some("this game does not use the sound engine rommusic plays Game Boy Advance music with".into()))),
     };
     let songs = player.songs();
@@ -435,6 +438,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(MSX) => open_machine::<super::msx_music::Msx>(path, engine, song),
         Some(WS) => open_machine::<super::wswan_music::WonderSwan>(path, engine, song),
         Some(VB) => open_machine::<super::vb_music::VirtualBoy>(path, engine, song),
+        Some(GBA) => open_machine::<super::gba_music::GameBoyAdvance>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;

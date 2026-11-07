@@ -4,7 +4,7 @@
 //!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
-//! Mega Drive, PC Engine, MSX, WonderSwan/Color or Virtual Boy ROM (loose, or the first one in a `.zip`/`.7z`): the
+//! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy or Game Boy Advance ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
 //! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
 //! ends the run.
@@ -19,6 +19,7 @@ use romexplorer::rom::nes_music::Nes;
 use romexplorer::rom::msx_music::Msx;
 use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
+use romexplorer::rom::gba_music::GameBoyAdvance;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::rom::{nes_cart, rom_songs};
@@ -81,6 +82,7 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "ws"
                 | "wsc"
                 | "vb"
+                | "gba"
                 | "zip"
                 | "7z"
         ) {
@@ -91,6 +93,10 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
 
 /// Which console a ROM is for, from its header (or, for a Sega 8-bit ROM, the file name).
 fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    if lower.ends_with(".gba") || lower.contains("game boy advance") {
+        return Some("GBA");
+    }
     if nes_cart::parse(rom).is_ok() {
         return Some("NES");
     }
@@ -335,6 +341,13 @@ fn main() {
                 let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
                 run::<WonderSwan>(&path, &rom, what, &o, tally.entry(what).or_default())
             }
+            Some("GBA") => run::<GameBoyAdvance>(
+                &path,
+                &rom,
+                "Game Boy Advance",
+                &o,
+                tally.entry("Game Boy Advance").or_default(),
+            ),
             Some("VB") => run::<VirtualBoy>(
                 &path,
                 &rom,
