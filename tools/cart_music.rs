@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use romexplorer::rom::gb_music::GameBoy;
 use romexplorer::rom::md_music::MegaDrive;
+use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::music_search::{self, Machine, Song};
 use romexplorer::rom::nes_music::Nes;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
@@ -60,7 +61,7 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
             .to_ascii_lowercase();
         if matches!(
             ext.as_str(),
-            "nes" | "gb" | "gbc" | "sms" | "gg" | "md" | "gen" | "smd" | "zip" | "7z"
+            "nes" | "gb" | "gbc" | "sms" | "gg" | "md" | "gen" | "smd" | "pce" | "zip" | "7z"
         ) {
             out.push(path.to_path_buf());
         }
@@ -83,6 +84,12 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     let name = path.to_string_lossy().to_ascii_lowercase();
     if name.ends_with(".md") || name.ends_with(".gen") || name.ends_with(".smd") {
         return Some("MD");
+    }
+    if name.ends_with(".pce") || name.contains("pc engine") || name.contains("pcengine") || name.contains("turbografx") {
+        return Some("PCE");
+    }
+    if name.ends_with(".nes") {
+        return Some("NES?");
     }
     if name.ends_with(".gg") || name.contains("game gear") || name.contains("gamegear") {
         return Some("GG");
@@ -239,6 +246,23 @@ fn main() {
                 &o,
                 tally.entry("Mega Drive").or_default(),
             ),
+            Some("PCE") => run::<PcEngine>(
+                &path,
+                &rom,
+                "PC Engine",
+                &o,
+                tally.entry("PC Engine").or_default(),
+            ),
+            Some("NES?") => {
+                println!("{}: no iNES header (headerless dump): skipped", path.display());
+                *tally
+                    .entry("NES")
+                    .or_default()
+                    .reasons
+                    .entry("no iNES header (headerless dump)".into())
+                    .or_default() += 1;
+                tally.entry("NES").or_default().games += 1;
+            }
             Some("GG") => run::<GameGear>(
                 &path,
                 &rom,
