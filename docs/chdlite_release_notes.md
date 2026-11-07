@@ -25,7 +25,8 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
   Cancel in the window now stops a CHD creation part-way.
 - **Android.** The same four modes as an Android app (arm64), for touch or a controller: tap
   a mode, then choose files or a folder. A run keeps going in the background and shows its
-  progress in a notification.
+  progress in a notification. A command-line `chdlite` for Android (arm64) is a separate
+  download, for a terminal app or `adb shell`.
 - Builds for Windows x64 / arm64, Linux x64 / arm64, macOS arm64 and Android arm64. On
   Windows the GUI is a single file.
 
