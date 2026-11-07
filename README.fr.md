@@ -113,7 +113,7 @@ de ligne de commande (`--help`). chdlite est publié séparément : voir
 
 ### Outil en ligne de commande (rommusic)
 
-Déposez une ROM, une image disque, un dossier extrait ou un set de rips musicaux sur `rommusic` : il
+Déposez une ROM, une image disque, un dossier extrait ou un set de fichiers musicaux au format audio d'origine sur `rommusic` : il
 écrit la musique de fond du jeu en FLAC dans un dossier à côté. Chaque réglage existe aussi sous
 forme d'option (`--help`). Les systèmes pris en charge sont listés dans
 [Audio des ROM](#audio-des-rom). rommusic est publié séparément : voir
@@ -283,16 +283,15 @@ les mêmes.
 | | PS3, PS Vita | dossiers extraits et déchiffrés |
 | L'archive sonore | Nintendo DS (musique en flux et séquencée), Nintendo 3DS (images déchiffrées uniquement) | .nds, .3ds/.cci |
 | Le moteur sonore du jeu | Game Boy Advance : jeux faits avec le moteur standard de Nintendo (environ la moitié) | .gba |
-| Rips musicaux | NES et Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System et Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum et Amstrad CPC (AY), Atari 8 bits (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket et Virtual Boy (VGM) | dans le dossier du jeu ou la bibliothèque de rips, seuls ou en zip |
+| Formats audio d'origine | NES et Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System et Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum et Amstrad CPC (AY), Atari 8 bits (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket et Virtual Boy (VGM) | dans le dossier du jeu ou la bibliothèque audio d'origine, seuls ou en zip |
 
-- La bibliothèque de rips (Paramètres › Audio) associe les sets NSF, NSFE, GBS, SPC, HES, KSS et
+- La bibliothèque audio d'origine (Paramètres › Audio) associe les sets NSF, NSFE, GBS, SPC, HES, KSS et
   SGC à vos ROM par leur contenu : un même set joue pour toutes les régions d'un jeu, quel que soit
   son nom.
-- Les rips PlayStation et PlayStation 2 ont besoin d'un BIOS PS2 dans votre collection ; sans lui,
+- Les fichiers PlayStation et PlayStation 2 ont besoin d'un BIOS PS2 dans votre collection ; sans lui,
   ils sont sautés.
 - Les images disque dans un zip ou un 7z ne sont pas encore lues. Les images chiffrées ne sont pas
   lues.
-- `rommusic` produit aussi la musique de titre d'un jeu Super Nintendo sans rip.
 
 ## Onglet RetroAchievements
 

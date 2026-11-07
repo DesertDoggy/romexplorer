@@ -45,9 +45,9 @@ replacing a build.
 **ROM audio**
 - Title pages can play the music inside your ROMs (supported platforms and media types only).
 - Settings adjust which tracks play.
-- Music rips in their original formats (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC,
+- Original audio formats (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC,
   loose or zipped) are supported.
-- A rip library: list the folders where you keep rip sets in Settings › Audio, and Index ROM
+- An original audio library: list the folders where you keep these files in Settings › Audio, and Index ROM
   audio matches each set to your ROMs by their content, so one set plays for every region of
   the game whatever its name.
 - The player on title pages has a "don't play this track" button. Hidden tracks are listed under
@@ -61,7 +61,7 @@ replacing a build.
   scan measures where the sound ends (run it again to measure files scanned before).
 - Music on title pages is on by default, and the first start asks whether you want it, right
   after the language. A title with no audio of its own plays random tracks by default.
-- PSF and PSF2 rips use a PS2 BIOS from your collection and are skipped without one.
+- PSF and PSF2 files use a PS2 BIOS from your collection and are skipped without one.
 
 **Merge review and combined titles**
 - Releases on a card can be dragged to the title they belong to, or onto "+" for a new title

@@ -620,7 +620,7 @@ fn ParallelEditor(name: String, cur: Signal<Value>) -> Element {
 
 /// `dat_sync_platforms`: which platforms a DAT sync downloads and imports -- all, the
 /// scanned ones (as the scan placed them, or strictly the hash-matched ones), or ticked here.
-/// Folders of music rip sets: a list to reorder or remove from, and a box to add one.
+/// Folders of music in original audio formats: a list to reorder or remove from, and a box to add one.
 #[component]
 fn RipFoldersEditor(cur: Signal<Value>) -> Element {
     let mut cur = cur;
@@ -637,10 +637,10 @@ fn RipFoldersEditor(cur: Signal<Value>) -> Element {
         draft.set(String::new());
     };
     rsx! {
-        div { class: "muted", {state::tr("Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.")} }
+        div { class: "muted", {state::tr("Folders of music in original audio formats (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region.")} }
         OrderList { items, labels, removable: true, on_change: move |o: Vec<String>| cur.set(json!(o)) }
         div { class: "toolbar",
-            input { r#type: "text", style: "min-width:420px", placeholder: "D:\\Emulator\\ripsets", value: "{draft}", oninput: move |e| draft.set(e.value()), onkeydown: move |e| if e.key() == Key::Enter { add() } }
+            input { r#type: "text", style: "min-width:420px", placeholder: "D:\\Music\\original-audio", value: "{draft}", oninput: move |e| draft.set(e.value()), onkeydown: move |e| if e.key() == Key::Enter { add() } }
             button { class: "btn small", r#type: "button", onclick: move |_| add(), {state::tr("add folder")} }
         }
     }

@@ -169,7 +169,7 @@ pub const KEY_AUDIO_ROM_VIDEOS: &str = "audio_rom_videos";
 pub const KEY_AUDIO_ROM_LOOP_MIN_S: &str = "audio_rom_loop_min_s";
 pub const KEY_AUDIO_ROM_BGM_MIN_S: &str = "audio_rom_bgm_min_s";
 pub const KEY_AUDIO_ROM_JINGLE_MIN_S: &str = "audio_rom_jingle_min_s";
-/// Folders of music rip sets, matched to the ROMs by content when ROM audio is indexed.
+/// Folders of music in original audio formats, matched to the ROMs by content when ROM audio is indexed.
 pub const KEY_AUDIO_RIP_FOLDERS: &str = "audio_rip_folders";
 /// This installation's own identity, created on first use and never changed.
 ///
@@ -454,7 +454,7 @@ pub const KNOWN_KEYS: [(&str, &str); 106] = [
     (KEY_AUDIO_ROM_LOOP_MIN_S, "A ROM sound that loops is music from this many seconds (default 3)."),
     (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 60)."),
     (KEY_AUDIO_ROM_JINGLE_MIN_S, "A ROM sound that does not loop is a jingle from this many seconds (default 8); shorter is a sound effect."),
-    (KEY_AUDIO_RIP_FOLDERS, "Folders of music rip sets (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region. Default: none."),
+    (KEY_AUDIO_RIP_FOLDERS, "Folders of music in original audio formats (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region. Default: none."),
     (KEY_INSTANCE_ID, "This installation's own id, generated once. Stamped into exports so an import can tell your own data from another machine's."),
     (KEY_BACKUP_DIR, "Where backup zips are written. Empty = <data root>/backups."),
     (KEY_BACKUP_KEEP, "How many backups of each kind to keep (0 = all). Counted per kind, so a database backup never prunes a catalogue one."),

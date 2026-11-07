@@ -53,9 +53,9 @@ Haz una copia de seguridad antes de sustituir una versión.
 - Las páginas de título pueden reproducir la música que hay dentro de tus ROM (solo plataformas y
   tipos de soporte compatibles).
 - En los ajustes se elige qué pistas se reproducen.
-- Se admiten los rips de música en su formato original (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP y SGC
+- Se admiten los formatos de audio originales (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP y SGC
   de Game Gear, sueltos o en zip).
-- Una biblioteca de rips: indica en Ajustes › Audio las carpetas donde guardas los sets, e «Index
+- Una biblioteca de audio original: indica en Ajustes › Audio las carpetas donde guardas los sets, e «Index
   ROM audio» empareja cada set con tus ROM por su contenido. Un mismo set suena en todas las
   regiones del juego, se llame como se llame.
 - El reproductor de las páginas de título tiene un botón «no reproducir esta pista». Las pistas
@@ -71,7 +71,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 - La música de las páginas de título está activada por defecto, y el primer inicio pregunta si la
   quieres, justo después del idioma. Un título sin audio propio reproduce pistas al azar por
   defecto.
-- Los rips PSF y PSF2 usan una BIOS de PS2 de tu colección, y se saltan si no hay ninguna.
+- Los archivos PSF y PSF2 usan una BIOS de PS2 de tu colección, y se saltan si no hay ninguna.
 
 **Revisión de fusiones y Títulos combinados**
 - Los lanzamientos de una tarjeta se pueden arrastrar al título al que pertenecen, o a «+» para un

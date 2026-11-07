@@ -54,9 +54,9 @@ Faites une sauvegarde avant de remplacer une version.
 - Les pages de titre peuvent jouer la musique contenue dans vos ROM (plateformes et types de
   support pris en charge uniquement).
 - Les réglages permettent de choisir quelles pistes sont jouées.
-- Les rips musicaux dans leur format d'origine (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP et SGC de la
+- Les formats audio d'origine (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP et SGC de la
   Game Gear, seuls ou en zip) sont pris en charge.
-- Une bibliothèque de rips : indiquez dans Paramètres › Audio les dossiers où vous gardez vos sets,
+- Une bibliothèque audio d'origine : indiquez dans Paramètres › Audio les dossiers où vous gardez vos sets,
   et « Indexer l'audio des ROM » associe chaque set à vos ROM par leur contenu. Un même set joue pour toutes
   les régions du jeu, quel que soit son nom.
 - Le lecteur des pages de titre a un bouton « ne pas jouer cette piste ». Les pistes masquées sont
@@ -71,7 +71,7 @@ Faites une sauvegarde avant de remplacer une version.
   scannés).
 - La musique des pages de titre est activée par défaut, et le premier démarrage demande si vous la
   voulez, juste après la langue. Un titre sans audio propre joue des pistes au hasard par défaut.
-- Les rips PSF et PSF2 utilisent un BIOS PS2 de votre collection, et sont sautés sans lui.
+- Les fichiers PSF et PSF2 utilisent un BIOS PS2 de votre collection, et sont sautés sans lui.
 
 **Revue des fusions et Titres fusionnés**
 - Les sorties d'une carte peuvent être glissées vers le titre auquel elles appartiennent, ou sur

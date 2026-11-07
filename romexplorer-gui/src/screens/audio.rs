@@ -235,9 +235,9 @@ pub fn Audio() -> Element {
                 crate::ui::QueueButton {}
                 button { class: "btn", r#type: "button", title: state::tr("Client mode: fetches a copy of every tagged track the main server has, in the format the settings name. Needs bgm ticked under media_client_keep."), onclick: fetch, {state::tr("Fetch from the main server")} }
                 crate::ui::QueueButton {}
-                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("full"), {state::tr("Index ROM audio")} }
+                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music files in original audio formats kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("full"), {state::tr("Index ROM audio")} }
                 crate::ui::QueueButton {}
-                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music rips kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("new_only"), {state::tr("Index ROM audio (new only)")} }
+                button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music files in original audio formats kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("new_only"), {state::tr("Index ROM audio (new only)")} }
                 crate::ui::QueueButton {}
             }
             if let Some(id) = job() {
