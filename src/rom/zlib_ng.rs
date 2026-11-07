@@ -138,6 +138,45 @@ pub fn raw_inflate(src: &[u8], dest_len: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// Inflates a zlib stream (with its header, `windowBits = 15`) of unknown inflated size, up to
+/// `max_len` bytes. `None` if the library could not be loaded, the data is not a whole zlib
+/// stream, or it inflates past `max_len`.
+pub fn zlib_inflate(src: &[u8], max_len: usize) -> Option<Vec<u8>> {
+    let lib = library()?;
+    unsafe {
+        let inflate_init2: Symbol<InflateInit2Fn> = lib.get(b"inflateInit2_").ok()?;
+        let inflate: Symbol<InflateFn> = lib.get(b"inflate").ok()?;
+        let inflate_end: Symbol<InflateEndFn> = lib.get(b"inflateEnd").ok()?;
+
+        let mut stream = ZStream::zeroed();
+        if inflate_init2(&mut stream, MAX_WBITS, ZLIB_VERSION.as_ptr() as *const c_char, std::mem::size_of::<ZStream>() as c_int) != Z_OK {
+            return None;
+        }
+        let mut dest = vec![0u8; (src.len() * 4).clamp(4096, max_len.max(1))];
+        stream.next_in = src.as_ptr();
+        stream.avail_in = src.len() as u32;
+        let rc = loop {
+            let done = stream.total_out as usize;
+            stream.next_out = dest.as_mut_ptr().add(done);
+            stream.avail_out = (dest.len() - done) as u32;
+            let rc = inflate(&mut stream, Z_FINISH);
+            if rc == Z_STREAM_END || stream.avail_out != 0 || dest.len() >= max_len {
+                break rc;
+            }
+            // Out of room: grow and go on.
+            let grown = (dest.len() * 2).min(max_len);
+            dest.resize(grown, 0);
+        };
+        let total = stream.total_out as usize;
+        inflate_end(&mut stream);
+        if rc != Z_STREAM_END {
+            return None;
+        }
+        dest.truncate(total);
+        Some(dest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +189,27 @@ mod tests {
         ];
         let out = raw_inflate(&compressed, b"hello world".len()).expect("inflate should succeed");
         assert_eq!(out, b"hello world");
+    }
+
+    #[test]
+    fn zlib_inflate_reads_a_stream_of_unknown_size() {
+        // A zlib stream built by hand (header, raw deflate, Adler-32) that inflates past the first buffer.
+        let Some(packed) = raw_deflate(&b"hello world".repeat(1000), 6) else { return };
+        let mut stream = vec![0x78, 0x9C];
+        stream.extend_from_slice(&packed);
+        let sum = adler32(&b"hello world".repeat(1000));
+        stream.extend_from_slice(&sum.to_be_bytes());
+        assert_eq!(zlib_inflate(&stream, 1 << 20).unwrap(), b"hello world".repeat(1000));
+        assert!(zlib_inflate(&stream, 100).is_none());
+    }
+
+    fn adler32(data: &[u8]) -> u32 {
+        let (mut a, mut b) = (1u32, 0u32);
+        for &x in data {
+            a = (a + u32::from(x)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        (b << 16) | a
     }
 }
 

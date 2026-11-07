@@ -15,3 +15,4 @@ path = "src/main.rs"
 romexplorer = { path = ".." }
 # The FLAC writer romexplorer already uses for converted audio.
 flac-codec = "1.2"
+log = "0.4"

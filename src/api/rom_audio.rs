@@ -282,7 +282,7 @@ pub fn one_liner(s: &IndexSummary) -> String {
 }
 
 pub async fn validate(_app: &App, _request: &RomAudioIndexRequest) -> Result<()> {
-    if !vgmstream::available() && !gme::available() && !crate::rom::agbplay::available() {
+    if !vgmstream::available() && !rip_sets::available() && !crate::rom::agbplay::available() {
         return Err(Error::unavailable("none of the game audio decoder (rvgmstream), the chip music players (rommusic) is built for this machine"));
     }
     Ok(())
@@ -360,7 +360,7 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
 /// player is not built. Fingerprints are cached beside the media.
 async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
     let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
-    if folders.is_empty() || !gme::available() {
+    if folders.is_empty() || !rip_sets::available() {
         return Ok(rip_match::Library::build(&[], None, |_, _| {}));
     }
     progress.report(0, None, "reading the rip library").await;
@@ -368,7 +368,79 @@ async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Librar
     tokio::task::spawn_blocking(move || rip_match::Library::build(&folders, Some(&cache), |_, _| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))
 }
 
+/// PS1 and PS2 rips play on a kernel built from a PS2 BIOS, and none ships with romexplorer:
+/// this hands the player the first 4 MB PS2 BIOS in the collection that works, loose or in
+/// a zip/7z, whether a DAT lists it or a scan identified it. Without one those rips are
+/// skipped. Looked for again at most every few minutes while none is found.
+pub async fn provide_ps2_bios(app: &App) -> Result<()> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use crate::rom::psf;
+    static LAST_TRY: Mutex<Option<Instant>> = Mutex::new(None);
+    if !psf::psx_installed() || psf::has_ps2_bios() {
+        return Ok(());
+    }
+    {
+        let mut last = LAST_TRY.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(300)) {
+            return Ok(());
+        }
+        *last = Some(Instant::now());
+    }
+    let platforms = super::catalog::platform_filter_ids(crate::common::models::Platform::PlayStation2 as u16).iter().map(u16::to_string).collect::<Vec<_>>().join(",");
+    let size = psf::PS2_BIOS_BYTES;
+    let dat_bios = format!(
+        "SELECT rc.content_id FROM release_contents rc JOIN `release` r ON r.id = rc.release_id \
+         WHERE r.material = 'bios' AND r.deleted = FALSE AND r.app_platform_id IN ({platforms})"
+    );
+    let sql = format!(
+        "SELECT lf.path, NULL AS member FROM local_files lf \
+         WHERE lf.deleted = FALSE AND lf.size = {size} \
+           AND ((lf.system_type = 'bios' AND lf.system_platform IN ({platforms})) OR lf.content_id IN ({dat_bios})) \
+         UNION ALL \
+         SELECT lf.path, cc.member_path AS member FROM content_contents cc \
+         JOIN content c ON c.id = cc.child_content_id AND c.size = {size} \
+         JOIN local_files lf ON lf.content_id = cc.parent_content_id AND lf.deleted = FALSE \
+         WHERE cc.member_path IS NOT NULL AND cc.member_path <> '' AND cc.child_content_id IN ({dat_bios}) \
+         LIMIT 50"
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&app.pool).await?;
+    let candidates: Vec<(String, Option<String>)> = rows.iter().map(|r| Ok((r.try_get("path")?, r.try_get("member")?))).collect::<Result<_>>()?;
+    tokio::task::spawn_blocking(move || {
+        for (path, member) in candidates {
+            let image = match member {
+                None => std::fs::read(&path).ok(),
+                Some(member) => read_member(Path::new(&path), &member),
+            };
+            if let Some(image) = image {
+                if psf::set_ps2_bios(&image).unwrap_or(false) {
+                    log::info!("PS1/PS2 music: using the PS2 BIOS {path}");
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+    Ok(())
+}
+
+/// One member of a zip or 7z, by the path the scan recorded for it.
+fn read_member(archive: &Path, member: &str) -> Option<Vec<u8>> {
+    use crate::rom::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
+    let format = match archive.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "zip" => ArchiveFormat::Zip,
+        "7z" => ArchiveFormat::SevenZ,
+        _ => return None,
+    };
+    let norm = |p: &str| p.replace('\\', "/").trim_start_matches('/').to_string();
+    let want = norm(member);
+    let opened = SevenZipArchive::open(archive, format, |_, _| true).ok()?;
+    (0..opened.entry_count()).find(|&i| opened.entry(i).is_ok_and(|e| !e.is_dir && norm(&e.path) == want)).and_then(|i| opened.read_entry(i).ok())
+}
+
 pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Progress) -> Result<IndexSummary> {
+    provide_ps2_bios(app).await?;
     let quick = request.mode == FileScanMode::NewOnly;
     let mut summary = IndexSummary { mode: if quick { "new_only" } else { "full" }.to_string(), ..Default::default() };
     let thresholds = Settings::load(app).await?.thresholds;
@@ -407,7 +479,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             .fetch_all(&app.pool)
             .await?;
         let folder = match game_folder(&main_path) {
-            Some(folder) if gme::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
+            Some(folder) if rip_sets::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
             _ => None,
         };
         let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
@@ -938,6 +1010,7 @@ fn target_for(lossless: bool, sample_rate: u32, channels: u16) -> Target {
 /// `level` is the player's "normalise": the track is measured as it is decoded and brought
 /// to the player's loudness target, up as well as down ([`level_gain`]), and cached apart.
 pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
+    provide_ps2_bios(app).await?;
     let row = sqlx::query(
         "SELECT t.location, t.cd_track, t.data_track, t.inner_path, t.subsong, t.sample_rate, t.channels, t.looping, t.loop_start, t.loop_end, r.main_path, i.indexed_at \
          FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE LEFT JOIN rom_audio_index i ON i.rom_id = t.rom_id WHERE t.id = ?",
