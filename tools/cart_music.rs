@@ -3,7 +3,8 @@
 //!
 //!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
 //!
-//! For each NES/Famicom, Game Boy/Color, Master System, Game Gear or Mega Drive ROM (loose, or the first one in a `.zip`/`.7z`): the
+//! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
+//! Mega Drive, PC Engine, MSX or WonderSwan/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
 //! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
 //! ends the run.
@@ -18,6 +19,7 @@ use romexplorer::rom::nes_music::Nes;
 use romexplorer::rom::msx_music::Msx;
 use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
+use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::rom::{nes_cart, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
@@ -75,6 +77,8 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "mx1"
                 | "mx2"
                 | "rom"
+                | "ws"
+                | "wsc"
                 | "zip"
                 | "7z"
         ) {
@@ -116,6 +120,12 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
         || name.contains("turbografx")
     {
         return Some("PCE");
+    }
+    if name.ends_with(".wsc") || name.contains("wonderswan color") {
+        return Some("WSC");
+    }
+    if name.ends_with(".ws") || name.contains("wonderswan") {
+        return Some("WS");
     }
     if name.ends_with(".nes") {
         return Some("NES?");
@@ -250,6 +260,9 @@ fn main() {
             Ok(r) => r,
             Err(e) => {
                 println!("{}: unreadable: {e}", path.display());
+                let t = tally.entry("Not recognised").or_default();
+                t.games += 1;
+                *t.reasons.entry("unreadable (no ROM inside, or a broken archive)".into()).or_default() += 1;
                 continue;
             }
         };
@@ -313,6 +326,10 @@ fn main() {
                     }
                 }
             }
+            Some(c @ ("WS" | "WSC")) => {
+                let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
+                run::<WonderSwan>(&path, &rom, what, &o, tally.entry(what).or_default())
+            }
             Some("PCE") => run::<PcEngine>(
                 &path,
                 &rom,
@@ -342,9 +359,19 @@ fn main() {
             ),
             Some(c) => {
                 let what = format!("{c}, cartridge ${:02X}", rom[0x147]);
-                run::<GameBoy>(&path, &rom, &what, &o, tally.entry("Game Boy").or_default());
+                let console = if c == "GBC" { "Game Boy Color" } else { "Game Boy" };
+                run::<GameBoy>(&path, &rom, &what, &o, tally.entry(console).or_default());
             }
-            None => {}
+            None => {
+                println!("{}: console not recognised: skipped", path.display());
+                *tally
+                    .entry("Not recognised")
+                    .or_default()
+                    .reasons
+                    .entry("console not recognised from the header or file name".into())
+                    .or_default() += 1;
+                tally.entry("Not recognised").or_default().games += 1;
+            }
         }
     }
     for (console, t) in tally {
