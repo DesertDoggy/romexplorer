@@ -19,7 +19,7 @@ pub mod resolve;
 pub mod scoring;
 pub mod util;
 
-pub use name_parse::{parse_name, Lang, ParsedName, RegionTag, Variant};
+pub use name_parse::{parse_name, subset_tag, with_subset_tag, Lang, ParsedName, RegionTag, Variant};
 pub use resolve::{resolve, MatchOutcome, ResolveRequest};
 pub use scoring::{gate_and_score, pick_best, CandidateGate, CandidateScore, Selection};
 pub use util::{clean_name, names_close, names_related, normalize_title};

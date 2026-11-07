@@ -83,6 +83,8 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Correcciones
 
+- Los subsets de RetroAchievements (desafío, speedrun y similares) entraban en el título de su juego y podían unir dos versiones de un juego en un título. Cada subset es ahora un título propio; la auditoría de fusiones separa los que ya estaban.
+- Al deshacer una fusión aceptada en la revisión de fusiones, la sugerencia no volvía. Ahora vuelve a quedar pendiente.
 - Juegos piratas y sin licencia se fusionaban en los títulos de juegos comerciales.
 - La tarjeta «otro juego dentro» dejaba en el título juegos piratas y sin licencia de otras
   regiones.

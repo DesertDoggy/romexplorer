@@ -23,7 +23,7 @@ use super::jobs::Progress;
 use super::matching::util::norm_key;
 use super::matching::names_close;
 use super::providers::cache::APART_SQL;
-use super::title_merge::{base_title, game_platforms, merge_platform, unlicensed_only, PassScope, UNLICENSED_SQL};
+use super::title_merge::{base_title, game_platforms, merge_platform, Apart, PassScope, UNLICENSED_SQL};
 
 pub const KIND_INTERNATIONAL: &str = "international";
 pub const KIND_DIRECTORS_CUT: &str = "directors_cut";
@@ -526,11 +526,16 @@ async fn write_pairs(pool: &MySqlPool, kind: &str, prefix: &str, pairs: BTreeMap
     let blocked = blocked_pairs(pool).await?;
     let ids: Vec<u64> = pairs.keys().flat_map(|(a, b)| [*a, *b]).collect::<BTreeSet<_>>().into_iter().collect();
     let platforms = game_platforms(pool, &ids).await?;
-    let unlicensed = unlicensed_only(pool, &ids).await?;
+    let apart = Apart::load(pool, &ids, &super::title_merge::set_versions(pool).await?).await?;
+    // A pair kept apart by undoing its merge is still a suggestion while the undo left it
+    // pending (`reopen_suggestions`): the block only stops the automatic pass.
+    let reopened: HashSet<String> = sqlx::query_scalar("SELECT igdb_id FROM title_merge_suggestions WHERE status = 'pending' AND kind = ?").bind(kind).fetch_all(pool).await?.into_iter().collect();
     let mut written = Vec::new();
     for ((a, b), matched) in pairs {
-        // A pirate or unlicensed game is not a retail game's other name.
-        if blocked.contains(&(a, b)) || !scope.touches(&[a, b]) || unlicensed.contains(&a) != unlicensed.contains(&b) {
+        let id = format!("{prefix}:{a}-{b}");
+        // A pirate or unlicensed game is not a retail game's other name, and a
+        // RetroAchievements subset is no other game's at all.
+        if (blocked.contains(&(a, b)) && !reopened.contains(&id)) || !scope.touches(&[a, b]) || !apart.may_join(a, b) {
             continue;
         }
         let shared = matches!((platforms.get(&a), platforms.get(&b)), (Some(x), Some(y)) if !x.is_disjoint(y));
@@ -538,7 +543,6 @@ async fn write_pairs(pool: &MySqlPool, kind: &str, prefix: &str, pairs: BTreeMap
             continue;
         }
         let detail = ReviewDetail { options: vec![ReviewOption { label: "merge".into(), recommended: kind == KIND_TRANSLATED_NAME, merge: vec![a, b], ..Default::default() }], variant: None, matched };
-        let id = format!("{prefix}:{a}-{b}");
         upsert(pool, &id, kind, &[a, b], &detail).await?;
         written.push(id);
     }

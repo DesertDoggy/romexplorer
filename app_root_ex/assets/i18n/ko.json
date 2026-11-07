@@ -2510,6 +2510,7 @@
   "Earlier audit splits that belong together": "다시 합쳐야 할 이전 감사의 분리",
   "Automatic merges across platforms": "플랫폼을 넘나든 자동 통합",
   "Unlicensed titles merged with retail ones": "정품과 통합된 비라이선스 타이틀",
+  "RetroAchievements subsets inside their game's title": "게임 타이틀에 들어간 RetroAchievements 서브셋",
   "Titles whose own files name another game": "자체 파일이 다른 게임을 가리키는 타이틀",
   "Merges made through an IGDB game": "IGDB 게임을 통한 통합",
   "IGDB links made by hash, name or search": "해시·이름·검색으로 만든 IGDB 링크",

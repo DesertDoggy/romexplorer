@@ -297,6 +297,25 @@ impl Lang {
     }
 }
 
+/// RetroAchievements' subset tag in a name, as written: "[Subset - Speedrun]" of
+/// "Game [Subset - Speedrun] (Japan)". A subset is played on a patched ROM, so it is a game
+/// of its own: the tag stays in its title's name ([`with_subset_tag`]), where [`parse_name`]
+/// would drop it with the other bracketed tags.
+pub fn subset_tag(name: &str) -> Option<&str> {
+    lazy_static! {
+        static ref RE_SUBSET: Regex = Regex::new(r"(?i)[\[(]\s*subset\b[^\])]*[\])]").unwrap();
+    }
+    RE_SUBSET.find(name).map(|m| m.as_str())
+}
+
+/// `base` with `name`'s subset tag ([`subset_tag`]) after it, when it has one.
+pub fn with_subset_tag(base: &str, name: &str) -> String {
+    match subset_tag(name) {
+        Some(tag) if !base.contains(tag) => format!("{} {tag}", base.trim_end()),
+        _ => base.to_string(),
+    }
+}
+
 pub fn parse_name(input: &str) -> ParsedName {
     let mut parsed = ParsedName::default();
     let mut base = String::with_capacity(input.len());
