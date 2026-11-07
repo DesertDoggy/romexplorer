@@ -87,6 +87,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 - «Actualizar metadatos» volvía a vincular con IGDB un título cuyo vínculo se había quitado a mano. Ahora sigue sin vincular hasta que lo vincules tú.
 - Los subsets de RetroAchievements (desafío, speedrun y similares) entraban en el título de su juego y podían unir dos versiones de un juego en un título. Cada subset es ahora un título propio; la auditoría de fusiones separa los que ya estaban.
 - Al deshacer una fusión aceptada en la revisión de fusiones, la sugerencia no volvía. Ahora vuelve a quedar pendiente.
+- Una sugerencia de fusión seguía en la revisión de fusiones después de fusionar sus títulos a mano.
 - Juegos piratas y sin licencia se fusionaban en los títulos de juegos comerciales.
 - La tarjeta «otro juego dentro» dejaba en el título juegos piratas y sin licencia de otras
   regiones.

@@ -1338,6 +1338,8 @@ pub async fn dedupe_by_igdb_in(pool: &MySqlPool, only: Option<&str>, progress: &
         s.renamed = recanonicalize_merged(pool, progress, scope).await?;
     }
     step(85, 10);
+    // Suggestions whose titles are one by now (merged by hand, or by this pass) are done.
+    settle_merged_suggestions(pool, None).await?;
     s.suggestions = refresh_suggestions(pool, only, progress, scope).await?;
     if only.is_none() {
         step(95, 5);
@@ -1664,6 +1666,64 @@ pub async fn resolve_suggestion(pool: &MySqlPool, igdb_id: &str, accept: bool) -
     }
     sqlx::query("UPDATE title_merge_suggestions SET status = ?, updated_at = NOW() WHERE igdb_id = ?").bind(if accept { "accepted" } else { "dismissed" }).bind(igdb_id).execute(pool).await?;
     Ok(survivor)
+}
+
+/// Pending merge suggestions whose titles are one title already -- merged by hand, or by
+/// another suggestion -- are marked taken (`accepted`), and the merges that did it remember
+/// the suggestion (`suggestion_key`), so undoing them puts it back. Only suggestions that
+/// merge whole titles: one that moves releases about still has work to do. `touched`: only
+/// suggestions naming one of these titles (`None`: every pending one). Returns how many.
+pub async fn settle_merged_suggestions(pool: &MySqlPool, touched: Option<&[u64]>) -> Result<u64, DatabaseError> {
+    let rows = sqlx::query("SELECT igdb_id, title_ids, CAST(detail AS CHAR) AS detail FROM title_merge_suggestions WHERE status = 'pending'").fetch_all(pool).await?;
+    let mut settled = 0;
+    for r in rows {
+        let key: String = r.try_get("igdb_id")?;
+        let ids: Vec<u64> = r.try_get::<String, _>("title_ids")?.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if ids.len() < 2 || touched.is_some_and(|t| !ids.iter().any(|id| t.contains(id))) {
+            continue;
+        }
+        let merges_only = match r.try_get::<Option<String>, _>("detail")? {
+            None => true,
+            Some(d) => serde_json::from_str::<super::title_review::ReviewDetail>(&d).is_ok_and(|d| !d.options.is_empty() && d.options.iter().all(|o| !o.merge.is_empty() && o.groups.is_empty())),
+        };
+        if !merges_only {
+            continue;
+        }
+        let mut live = BTreeSet::new();
+        for id in &ids {
+            match live_title(pool, *id).await? {
+                Some(t) => live.insert(t),
+                None => live.insert(0),
+            };
+        }
+        let Some(&into) = live.first().filter(|t| live.len() == 1 && **t != 0) else { continue };
+        // The merges that joined them: every standing one into the title, of one of its titles.
+        let list = in_list(&ids);
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE title_merge_log SET suggestion_key = ? WHERE undone_at IS NULL AND reason <> '{SPLIT}' AND suggestion_key IS NULL AND merged_title_id IN ({list})"
+        )))
+        .bind(&key)
+        .execute(pool)
+        .await?;
+        sqlx::query("UPDATE title_merge_suggestions SET status = 'accepted', updated_at = NOW() WHERE igdb_id = ? AND status = 'pending'").bind(&key).execute(pool).await?;
+        log::info!("merge suggestion {key}: its titles are one already (title {into}), marked taken");
+        settled += 1;
+    }
+    Ok(settled)
+}
+
+/// Once: the suggestions left pending for titles merged before [`settle_merged_suggestions`].
+pub async fn settle_merged_suggestions_once(pool: &MySqlPool) -> Result<u64, DatabaseError> {
+    const NAME: &str = "settle_merged_suggestions_0085";
+    if sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(NAME).fetch_optional(pool).await?.is_some() {
+        return Ok(0);
+    }
+    let n = settle_merged_suggestions(pool, None).await?;
+    if n > 0 {
+        log::info!("{n} merge suggestion(s) for titles merged already marked taken");
+    }
+    sqlx::query("INSERT IGNORE INTO data_migrations (name) VALUES (?)").bind(NAME).execute(pool).await?;
+    Ok(n)
 }
 
 /// The newest merge log row's id (0: none): what [`tag_suggestion`] counts from.
