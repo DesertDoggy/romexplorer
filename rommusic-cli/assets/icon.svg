@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- rommusic's icon (concept F): a cartridge turned into a waveform, with the ROM-MUSIC badge. -->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="f-shell" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d9dde3"/><stop offset="0.5" stop-color="#9aa1ab"/><stop offset="1" stop-color="#5d636c"/></linearGradient>
+    <linearGradient id="f-wave" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffc21a"/><stop offset="1" stop-color="#ff5a1f"/></linearGradient>
+    <linearGradient id="f-badge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3f47"/><stop offset="1" stop-color="#121418"/></linearGradient>
+    <linearGradient id="f-rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="0.5" stop-color="#8d949e"/><stop offset="1" stop-color="#e6e9ee"/></linearGradient>
+  </defs>
+  <g transform="rotate(-10 330 420)">
+    <path d="M190 170 H470 a24 24 0 0 1 24 24 V660 a24 24 0 0 1 -24 24 H190 a24 24 0 0 1 -24 -24 V194 a24 24 0 0 1 24 -24 Z" fill="url(#f-shell)" stroke="#2b2f35" stroke-width="14"/>
+    <rect x="200" y="240" width="260" height="250" rx="16" fill="#e2531c" stroke="#2b2f35" stroke-width="8"/>
+    <g fill="#c9a227" stroke="#2b2f35" stroke-width="4">
+      <rect x="205" y="610" width="22" height="60"/><rect x="237" y="610" width="22" height="60"/><rect x="269" y="610" width="22" height="60"/><rect x="301" y="610" width="22" height="60"/><rect x="333" y="610" width="22" height="60"/><rect x="365" y="610" width="22" height="60"/><rect x="397" y="610" width="22" height="60"/><rect x="429" y="610" width="22" height="60"/>
+    </g>
+    <path d="M300 300 V420 a30 24 0 1 1 -16 -20 V300 L380 290 V400 a30 24 0 1 1 -16 -20 V316 Z" fill="#ffffff" stroke="#2b2f35" stroke-width="6"/>
+  </g>
+  <g fill="url(#f-wave)" stroke="#2b2f35" stroke-width="6">
+    <rect x="540" y="380" width="34" height="80" rx="10"/><rect x="590" y="320" width="34" height="200" rx="10"/><rect x="640" y="250" width="34" height="340" rx="10"/>
+    <rect x="690" y="300" width="34" height="240" rx="10"/><rect x="740" y="210" width="34" height="420" rx="10"/><rect x="790" y="330" width="34" height="180" rx="10"/><rect x="840" y="390" width="34" height="60" rx="10"/>
+  </g>
+  <rect x="112" y="790" width="800" height="170" rx="36" fill="url(#f-badge)" stroke="url(#f-rim)" stroke-width="12"/>
+  <text x="512" y="905" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="104" stroke="#000" stroke-width="6" paint-order="stroke"><tspan fill="#ffffff">ROM-</tspan><tspan fill="#ffc21a">MUSIC</tspan></text>
+</svg>

@@ -11,6 +11,7 @@ android_main_activity = "android/MainActivity.kt"
 # Also hard-coded in android/MainActivity.kt (`typealias BuildConfig`).
 identifier = "com.desertdoggy.rommusic"
 publisher = "DesertDoggy"
+icon = ["assets/icon.png"]
 
 [android]
 # Android 9: the music libraries use iconv, which Android's libc has from API 28 on

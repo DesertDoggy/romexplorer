@@ -7,6 +7,7 @@ edition.workspace = true
 repository.workspace = true
 description = "Drop a ROM, get its music as FLAC: the standalone ROM music tool built on the romexplorer core."
 default-run = "rommusic"
+build = "build.rs"
 
 # The work both front ends share: finding the music and writing it.
 [lib]
@@ -50,3 +51,6 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], o
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
