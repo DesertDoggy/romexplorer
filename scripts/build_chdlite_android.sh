@@ -15,7 +15,7 @@
 #               (below), otherwise unsigned (app-release-unsigned.apk, which Android will
 #               not install).
 #   --cli       also the command-line tool for android/arm64 (cargo, the NDK's clang as
-#               linker, `bundled-natives`), into release/cli/<chdlite version>/android/arm64/
+#               linker, `bundled-natives`), into release/chdlite/<chdlite version>/android/arm64/
 #               -- run them from a terminal app on the device (Termux) or `adb shell`.
 #               Release builds with --release, debug otherwise.
 #   --cli-only  the command-line tool alone, no APK.
@@ -37,7 +37,7 @@
 #     (`env:`), never on a command line. Every update must be signed with the same key.
 #
 # The APK ends up under target/dx/chdlite-gui/<debug|release>/android/app/app/build/outputs/.
-# The command-line tool (--cli) under release/cli/<chdlite version>/android/arm64/.
+# The command-line tool (--cli) under release/chdlite/<chdlite version>/android/arm64/.
 # Sideload it (`adb install -r <apk>`). On first start chdlite asks for All files access.
 #
 
@@ -146,7 +146,7 @@ if [[ "$CLI" -eq 1 ]]; then
     if [[ "$RELEASE" -eq 1 ]]; then CLI_PROFILE=release CARGO_PROFILE=(--release); fi
     (cd "$ROOT_DIR" && cargo build -p chdlite --target "$TARGET" "${CARGO_PROFILE[@]}" --features bundled-natives --bin chdlite)
     CLI_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$CRATE_DIR/Cargo.toml" | head -1)"
-    CLI_OUT="$ROOT_DIR/release/cli/$CLI_VERSION/android/arm64"
+    CLI_OUT="$ROOT_DIR/release/chdlite/$CLI_VERSION/android/arm64"
     mkdir -p "$CLI_OUT"
     rm -f "$CLI_OUT"/chdcomp "$CLI_OUT"/chdread "$CLI_OUT"/chdhash
     cp -f "$ROOT_DIR/target/$TARGET/$CLI_PROFILE/chdlite" "$CLI_OUT/chdlite"
