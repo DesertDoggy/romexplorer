@@ -429,10 +429,12 @@ fi
 # --- 6. SHA256SUMS -------------------------------------------------------------------------------
 # One file over everything in dist/, in the format `sha256sum -c` reads; the per-archive
 # .sha256 files package.sh writes stay alongside for single downloads.
-for DIST in "$DIST" "$ROOT_DIR"/release/chdlite/*/dist "$ROOT_DIR"/release/rommusic/*/dist; do
-if [[ -d "$DIST" ]]; then
+# Not `for DIST in`: that left DIST on the last tree, and the summary then listed rommusic's
+# dist/ as the run's.
+for sums_dir in "$DIST" "$ROOT_DIR"/release/chdlite/*/dist "$ROOT_DIR"/release/rommusic/*/dist; do
+if [[ -d "$sums_dir" ]]; then
     (
-        cd "$DIST"
+        cd "$sums_dir"
         # A glob, not find -printf: that is GNU-only, and macOS builds run this too.
         files=()
         for f in *; do
@@ -440,7 +442,7 @@ if [[ -d "$DIST" ]]; then
         done
         [[ ${#files[@]} -gt 0 ]] && sha256sum "${files[@]}" > SHA256SUMS
         sha256sum -c --quiet SHA256SUMS
-    ) && echo "SHA256SUMS: $(wc -l < "$DIST/SHA256SUMS") files, verified ($DIST)"
+    ) && echo "SHA256SUMS: $(wc -l < "$sums_dir/SHA256SUMS") files, verified ($sums_dir)"
 fi
 done
 
