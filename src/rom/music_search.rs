@@ -82,6 +82,8 @@ pub trait Machine: Clone + Sized {
     /// Channels in the samples (1 or 2).
     const CHANNELS: u16;
     fn frame_rate(&self) -> f64;
+    /// A frame's length in the units of [`Write::at`].
+    fn frame_length(&self) -> u32;
 }
 
 /// How the game is handed a song number.
@@ -124,17 +126,24 @@ pub struct Recipe {
     /// The sound routine.
     pub play: u32,
     pub trigger: Trigger,
+    /// Times the sound routine runs a frame (games that tick their music from a timer
+    /// faster than the screen); 1 for most.
+    pub calls: u8,
 }
 
 impl Recipe {
     pub fn encode(&self) -> String {
-        format!(
+        let mut s = format!(
             "{}@{}@{:04x}@{}",
             self.boot_frames,
             self.press_start as u8,
             self.play,
             self.trigger.encode()
-        )
+        );
+        if self.calls > 1 {
+            s += &format!("@{}", self.calls);
+        }
+        s
     }
 
     pub fn decode(s: &str) -> Option<Self> {
@@ -143,11 +152,16 @@ impl Recipe {
         let press_start = p.next()? == "1";
         let play = u32::from_str_radix(p.next()?, 16).ok()?;
         let trigger = Trigger::decode(p.next()?)?;
+        let calls = match p.next() {
+            Some(n) => n.parse().ok().filter(|&n| n >= 1)?,
+            None => 1,
+        };
         Some(Self {
             boot_frames,
             press_start,
             play,
             trigger,
+            calls,
         })
     }
 }
@@ -301,10 +315,37 @@ fn enter_in_frame<M: Machine>(
     Some((m.clone(), entry))
 }
 
-/// Runs the sound routine alone for `frames` frames from `m`.
-fn run_alone<M: Machine>(m: &mut M, play: &M::Entry, frames: usize) -> Option<Vec<Vec<Write>>> {
-    (0..frames).map(|_| m.play_frame(play)).collect()
+/// One frame of the sound routine, run `calls` times spread over the frame.
+fn play_frame<M: Machine>(m: &mut M, play: &M::Entry, calls: u8) -> Option<Vec<Write>> {
+    if calls <= 1 {
+        return m.play_frame(play);
+    }
+    let len = m.frame_length();
+    let mut out = Vec::new();
+    for i in 0..calls as u32 {
+        let shift = (i as u64 * len as u64 / calls as u64) as u32;
+        out.extend(
+            m.play_frame(play)?
+                .into_iter()
+                .map(|w| Write { at: (w.at + shift) % len, ..w }),
+        );
+    }
+    out.sort_by_key(|w| w.at);
+    Some(out)
 }
+
+/// Runs the sound routine alone for `frames` frames from `m`.
+fn run_alone<M: Machine>(
+    m: &mut M,
+    play: &M::Entry,
+    frames: usize,
+    calls: u8,
+) -> Option<Vec<Vec<Write>>> {
+    (0..frames).map(|_| play_frame(m, play, calls)).collect()
+}
+
+/// Most times a frame a sound routine is taken to run.
+const MAX_CALLS: f64 = 16.0;
 
 /// What the search found.
 #[derive(Debug, Clone)]
@@ -323,7 +364,7 @@ fn find_play<M: Machine>(
     press_start: bool,
     log: &BootLog,
     note: &mut dyn FnMut(String),
-) -> Result<Option<(u32, u32)>, String> {
+) -> Result<Option<(u32, u32, u8)>, String> {
     if log.total_writes < 50 {
         return Ok(None);
     }
@@ -350,7 +391,12 @@ fn find_play<M: Machine>(
         // Called about once a frame from the start of the music on.
         let span = BOOT_FRAMES.saturating_sub(first_sound).max(1);
         let per_frame = *total as f64 / frames.len().max(1) as f64;
-        if (frames.len() as f64) < 0.5 * span as f64 || per_frame > 1.5 {
+        // Run a steady number of times a frame: once, or a timer's few times.
+        let calls = per_frame.round();
+        if (frames.len() as f64) < 0.5 * span as f64
+            || calls > MAX_CALLS
+            || (calls > 1.0 && (per_frame - calls).abs() > 0.25)
+        {
             note(format!(
                 "  routine {routine:04x}: entered in {} of {span} frames, {per_frame:.1} times a frame",
                 frames.len()
@@ -370,7 +416,8 @@ fn find_play<M: Machine>(
             note(format!("  routine {routine:04x}: not entered again in frame {at}"));
             continue;
         };
-        let Some(alone) = run_alone(&mut m, &entry, VERIFY_FRAMES) else {
+        let calls = calls.max(1.0) as u8;
+        let Some(alone) = run_alone(&mut m, &entry, VERIFY_FRAMES, calls) else {
             note(format!("  routine {routine:04x}: crashed when run alone"));
             continue;
         };
@@ -387,10 +434,10 @@ fn find_play<M: Machine>(
             .filter(|(a, b)| key(a) == key(b))
             .count();
         if same as f64 >= VERIFY_MATCH * VERIFY_FRAMES as f64 {
-            return Ok(Some((at, routine)));
+            return Ok(Some((at, routine, calls)));
         }
         note(format!(
-            "  routine {routine:04x}: run alone from frame {at}, {same} of {VERIFY_FRAMES} frames match"
+            "  routine {routine:04x}: run alone ({calls} a frame) from frame {at}, {same} of {VERIFY_FRAMES} frames match"
         ));
     }
     Ok(None)
@@ -547,6 +594,7 @@ fn listen<M: Machine>(
     call: Option<&M::Entry>,
     v: u8,
     frames: usize,
+    calls: u8,
 ) -> Option<Heard> {
     let mut m = base.clone();
     if !apply(&mut m, trigger, call, v) {
@@ -563,7 +611,7 @@ fn listen<M: Machine>(
         if f + SONG_TAIL_FRAMES == frames {
             tail_from = samples.len();
         }
-        let mut writes = m.play_frame(play)?;
+        let mut writes = play_frame(&mut m, play, calls)?;
         frame_hash(&writes).hash(&mut h);
         if first {
             pre.append(&mut writes);
@@ -623,7 +671,7 @@ pub fn search_logged<M: Machine>(
             log.total_writes,
             busiest.join(" ")
         ));
-        let Some((at, play)) = find_play::<M>(rom, press_start, &log, note)? else {
+        let Some((at, play, calls)) = find_play::<M>(rom, press_start, &log, note)? else {
             if log.total_writes >= 50 && why.0 < 1 {
                 why = (1, "the routine that plays the music wasn't found");
             }
@@ -645,6 +693,7 @@ pub fn search_logged<M: Machine>(
             None,
             0,
             TRY_FRAMES / 2,
+            calls,
         )
         .map(|r| r.hash);
         let mut screened: Vec<(usize, Trigger, Option<M::Entry>)> = Vec::new();
@@ -660,7 +709,7 @@ pub fn search_logged<M: Machine>(
             };
             let mut seen = HashSet::new();
             for v in 1..=8u8 {
-                if let Some(h) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES / 2) {
+                if let Some(h) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES / 2, calls) {
                     if h.audible && Some(h.hash) != baseline {
                         seen.insert(h.hash);
                     }
@@ -685,20 +734,21 @@ pub fn search_logged<M: Machine>(
                 None,
                 0,
                 TRY_FRAMES,
+                calls,
             )
             .map(|h| h.hash)
             .into_iter()
             .collect();
             let mut played = Vec::new();
             for v in 0..=255u8 {
-                let Some(quick) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES) else {
+                let Some(quick) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES, calls) else {
                     continue;
                 };
                 if !quick.audible || !seen.insert(quick.hash) {
                     continue;
                 }
                 // Music still sounds seconds later; a sound effect has stopped.
-                if listen(&base, &entry, &t, call.as_ref(), v, SONG_FRAMES)
+                if listen(&base, &entry, &t, call.as_ref(), v, SONG_FRAMES, calls)
                     .is_some_and(|h| h.audible && h.lasts)
                 {
                     played.push(v);
@@ -720,6 +770,7 @@ pub fn search_logged<M: Machine>(
                 press_start,
                 play,
                 trigger,
+                calls,
             };
             return Ok(Found {
                 recipe,
@@ -735,6 +786,7 @@ pub fn search_logged<M: Machine>(
             press_start: false,
             play: 0,
             trigger: Trigger::Byte(0),
+            calls: 1,
         },
         songs: Vec::new(),
         why: Some(why.1.to_string()),
@@ -747,6 +799,7 @@ pub struct Song<M: Machine> {
     play: M::Entry,
     chip: M::Chip,
     pre: Vec<Write>,
+    calls: u8,
 }
 
 impl<M: Machine> Song<M> {
@@ -768,7 +821,13 @@ impl<M: Machine> Song<M> {
         let mut pre = m.restore_writes();
         pre.extend(m.take_sound().into_iter().map(|w| Write { at: 0, ..w }));
         let chip = m.new_chip(rate)?;
-        Ok(Self { m, play, chip, pre })
+        Ok(Self {
+            m,
+            play,
+            chip,
+            pre,
+            calls: recipe.calls,
+        })
     }
 
     pub fn frame_rate(&self) -> f64 {
@@ -778,9 +837,7 @@ impl<M: Machine> Song<M> {
     /// One frame: its samples appended to `out` (interleaved when stereo), and the frame's
     /// sound writes.
     pub fn frame(&mut self, out: &mut Vec<i16>) -> Result<Vec<Write>, String> {
-        let own = self
-            .m
-            .play_frame(&self.play)
+        let own = play_frame(&mut self.m, &self.play, self.calls)
             .ok_or("the sound routine stopped returning")?;
         let mut writes = std::mem::take(&mut self.pre);
         writes.extend_from_slice(&own);
@@ -860,6 +917,7 @@ mod tests {
                 reg: 1,
                 nth: 2,
             },
+            calls: 1,
         };
         assert_eq!(Recipe::decode(&r.encode()), Some(r));
         let r = Recipe {
@@ -867,7 +925,9 @@ mod tests {
             press_start: false,
             play: 0x8000,
             trigger: Trigger::Byte(0x7F0),
+            calls: 6,
         };
+        assert_eq!(r.encode(), "5@0@8000@m07f0@6");
         assert_eq!(Recipe::decode(&r.encode()), Some(r));
     }
 }
