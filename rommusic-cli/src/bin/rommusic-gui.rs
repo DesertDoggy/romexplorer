@@ -33,6 +33,9 @@ const ANDROID: bool = cfg!(target_os = "android");
 // Compiled in rather than shipped beside the executable: `asset!()` needs `dx build`, and the
 // desktop window is built with plain cargo.
 const APP_CSS: &str = include_str!("../../assets/app.css");
+// The window's icon (assets/icon.svg, rendered). Android draws the launcher icon itself.
+#[cfg_attr(target_os = "android", allow(dead_code))]
+const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
 // --- settings -----------------------------------------------------------------------------
 
@@ -221,7 +224,16 @@ fn main() {
     log::set_max_level(log::LevelFilter::Warn);
     *STARTUP.lock().unwrap() = args.iter().map(PathBuf::from).filter(|path| path.exists()).collect();
 
-    let window = WindowBuilder::new().with_title("rommusic").with_inner_size(LogicalSize::new(560.0, 700.0)).with_min_inner_size(LogicalSize::new(420.0, 480.0));
+    #[allow(unused_mut)]
+    let mut window = WindowBuilder::new().with_title("rommusic").with_inner_size(LogicalSize::new(560.0, 700.0)).with_min_inner_size(LogicalSize::new(420.0, 480.0));
+    #[cfg(not(target_os = "android"))]
+    if let Ok(decoded) = image::load_from_memory(ICON_PNG) {
+        let rgba = decoded.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        if let Ok(icon) = dioxus::desktop::tao::window::Icon::from_rgba(rgba.into_raw(), width, height) {
+            window = window.with_window_icon(Some(icon));
+        }
+    }
     let cfg = Config::new().with_menu(None).with_window(window).with_background_color((0x14, 0x16, 0x1b, 0xff));
     // The webview's own data (cache, local storage) beside the settings, not wherever the
     // platform's default would put it.
