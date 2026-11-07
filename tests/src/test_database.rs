@@ -1860,6 +1860,14 @@ async fn phase_review_layout(env: &Env, report: &mut Report) {
         sqlx::query("DELETE FROM data_migrations WHERE name = 'split_log_backfill'").execute(pool).await.map_err(e)?;
         romexplorer::database::title_merge::log_past_splits_once(pool).await.map_err(de)?;
         let rebuilt: Vec<(u64, i64)> = sqlx::query_as("SELECT l.merged_title_id, CAST(JSON_LENGTH(a.rows_json, '$.title_releases') AS SIGNED) FROM title_merge_log l JOIN title_merge_archive a ON a.log_id = l.id WHERE l.reason = 'split' AND l.survivor_id = ? ORDER BY l.merged_title_id").bind(a).fetch_all(pool).await.map_err(e)?;
+        // A card made before running numbers counted as the same game is dropped once.
+        let n = title("Layout Numbered Hoge").await.map_err(e)?;
+        release(n, "Layout Numbered Hoge (China)").await.map_err(e)?;
+        let numbered = release(n, "0743 - Layout Numbered Hoge (China)").await.map_err(e)?;
+        let stale = format!("split:{n}:{numbered}");
+        sqlx::query("INSERT INTO title_merge_suggestions (igdb_id, title_ids, reason, kind, priority, detail) VALUES (?, ?, 'split_names', 'split_names', 25, '{\"options\":[]}')").bind(&stale).bind(n.to_string()).execute(pool).await.map_err(e)?;
+        let dropped = romexplorer::database::title_review::recheck_split_names_once(pool, "test_recheck").await.map_err(de)?;
+        let stale_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_merge_suggestions WHERE igdb_id = ?").bind(&stale).fetch_one(pool).await.map_err(e)?;
         let todo_after = review::merge_queue(&app, &q, &p("todo")).await.map_err(ae)?.items.iter().any(|i| i.key == key);
         let done = review::merge_queue(&app, &q, &p("done")).await.map_err(ae)?.items.iter().find(|i| i.key == key).map(|i| i.status.clone());
         let checks = [
@@ -1867,6 +1875,7 @@ async fn phase_review_layout(env: &Env, report: &mut Report) {
             (h_own == a && h_fuga == b && h_piyo == h_piyo2 && h_piyo != a && h_piyo != b && out.title_ids.len() == 3, format!("each where it was put: {h_own} {h_fuga} {h_piyo} {h_piyo2}, titles {:?}", out.title_ids)),
             (new_name.contains("Piyo") && logged == 1, format!("the new title is named after the first and logged: {new_name:?}, {logged}")),
             (rebuilt.iter().any(|(t, n)| *t == h_piyo && *n == 2) && rebuilt.iter().any(|(t, n)| *t == b && *n == 1), format!("the log is rebuilt from the card: {rebuilt:?}")),
+            (dropped >= 1 && stale_left == 0, format!("a card for a running number is dropped: {dropped} dropped, left {stale_left}")),
             (!todo_after && done.as_deref() == Some("accepted"), format!("then it is done: to do {todo_after}, done {done:?}")),
         ];
         if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {

@@ -136,6 +136,8 @@ async fn data_migrations(pool: &MySqlPool) -> Result<(), DatabaseError> {
     super::merge_audit::queue_unlicensed_repair_once(pool).await?;
     super::release_merge::move_color_releases_once(pool).await?;
     super::title_merge::log_past_splits_once(pool).await?;
+    // A collection's running number in front of a name ("0743 - ...") is no other game.
+    super::title_review::recheck_split_names_once(pool, "split_names_release_numbers").await?;
     // Cheap (roms still on no platform only), and it catches what any path linked.
     let placed = super::import::confirm_rom_platforms(pool).await?;
     if placed > 0 {

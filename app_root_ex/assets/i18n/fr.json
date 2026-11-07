@@ -2716,7 +2716,8 @@
   "new title": "nouveau titre",
   "(left empty: removed)": "(vide : supprimé)",
   "a new title": "un nouveau titre",
-  "apply this grouping": "appliquer cette répartition",
-  "start from the titles as they are": "partir des titres actuels",
-  "start from the suggestion": "partir de la suggestion"
+  "Apply grouping": "Appliquer la répartition",
+  "back to the titles as they are": "revenir aux titres actuels",
+  "arrange as suggested": "répartir comme suggéré",
+  "Leave as it is": "Laisser tel quel"
 }
