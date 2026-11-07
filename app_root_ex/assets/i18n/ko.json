@@ -1207,6 +1207,8 @@
   "remove": "제거",
   "remove keyword tag": "키워드 태그 제거",
   "remove this tag": "이 태그 제거",
+  "remove this alternative title": "이 다른 이름 제거",
+  "removed alternative title {name}": "다른 이름 {name}을(를) 제거했습니다",
   "removed": "제거됨",
   "removed \"{name}\" from {n} title(s)": "타이틀 {n}개에서 \"{name}\"을(를) 제거했습니다",
   "removed 1 directory configuration": "디렉터리 설정 1개를 제거했습니다",

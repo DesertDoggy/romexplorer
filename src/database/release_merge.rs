@@ -97,15 +97,16 @@ async fn fold_mapped(conn: &mut sqlx::MySqlConnection) -> Result<(), DatabaseErr
     sqlx::query("UPDATE IGNORE collection_set_entries e JOIN release_merge m ON m.old_id = e.release_id SET e.release_id = m.new_id").execute(&mut *tx).await?;
     sqlx::query("DELETE e FROM collection_set_entries e JOIN release_merge m ON m.old_id = e.release_id").execute(&mut *tx).await?;
     // Provider links: the stronger one wins (manual > exact > hash > name > fuzzy), a live
-    // link beats a removed one.
+    // link beats a removed one -- except one the user removed, which only a manual link
+    // replaces (`cache::LINK_UPSERT_KEEP_STRONGER`).
     sqlx::query(
         "INSERT INTO release_provider_links (release_id, provider, provider_id, confidence, linked_at, deleted) \
          SELECT m.new_id, t.provider, t.provider_id, t.confidence, t.linked_at, t.deleted FROM release_provider_links t JOIN release_merge m ON m.old_id = t.release_id \
          ON DUPLICATE KEY UPDATE \
-           provider_id = IF(NOT VALUES(deleted) AND (release_provider_links.deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD(release_provider_links.confidence,'fuzzy','name','hash','exact','manual')), VALUES(provider_id), release_provider_links.provider_id), \
-           linked_at = IF(NOT VALUES(deleted) AND (release_provider_links.deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD(release_provider_links.confidence,'fuzzy','name','hash','exact','manual')), VALUES(linked_at), release_provider_links.linked_at), \
-           confidence = IF(NOT VALUES(deleted) AND (release_provider_links.deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD(release_provider_links.confidence,'fuzzy','name','hash','exact','manual')), VALUES(confidence), release_provider_links.confidence), \
-           deleted = (release_provider_links.deleted AND VALUES(deleted))",
+           provider_id = IF(NOT VALUES(deleted) AND ((release_provider_links.deleted AND (release_provider_links.confidence <> 'manual' OR VALUES(confidence) = 'manual')) OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD(release_provider_links.confidence,'fuzzy','name','hash','exact','manual')), VALUES(provider_id), release_provider_links.provider_id), \
+           linked_at = IF(NOT VALUES(deleted) AND ((release_provider_links.deleted AND (release_provider_links.confidence <> 'manual' OR VALUES(confidence) = 'manual')) OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD(release_provider_links.confidence,'fuzzy','name','hash','exact','manual')), VALUES(linked_at), release_provider_links.linked_at), \
+           confidence = IF(NOT VALUES(deleted) AND ((release_provider_links.deleted AND (release_provider_links.confidence <> 'manual' OR VALUES(confidence) = 'manual')) OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') > FIELD(release_provider_links.confidence,'fuzzy','name','hash','exact','manual')), VALUES(confidence), release_provider_links.confidence), \
+           deleted = (release_provider_links.deleted AND (VALUES(deleted) OR (release_provider_links.confidence = 'manual' AND VALUES(confidence) <> 'manual')))",
     )
     .execute(&mut *tx)
     .await?;
