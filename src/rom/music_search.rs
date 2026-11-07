@@ -197,6 +197,9 @@ const SONG_TAIL_FRAMES: usize = 60;
 /// Song numbers past a run of this many that play nothing are not taken: games read
 /// numbers past the end of their song table as garbage that often still makes noise.
 const SONG_GAP: usize = 16;
+/// Frames left out of a song's sound fingerprint: where songs that sound alike still differ
+/// as their channels are set up.
+const SOUND_SKIP_FRAMES: usize = 8;
 /// A song is listened to for at most this long while measuring it (frames at 60 Hz).
 const MEASURE_FRAMES: usize = 60 * 300;
 /// Silence this long ends a song.
@@ -603,6 +606,10 @@ fn apply<M: Machine>(m: &mut M, trigger: &Trigger, call: Option<&M::Entry>, v: u
 struct Heard {
     /// Fingerprint of the writes.
     hash: u64,
+    /// Fingerprint of the sound after its first few frames: numbers whose writes differ only
+    /// in what can't be heard (a bit-field request with several bits set, a register set
+    /// twice) sound the same.
+    sound: u64,
     /// Whether anything sounded.
     audible: bool,
     /// Whether it still sounded in the last [`SONG_TAIL_FRAMES`] frames.
@@ -630,9 +637,13 @@ fn listen<M: Machine>(
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut first = true;
     let mut tail_from = 0;
+    let mut heard_from = 0;
     for f in 0..frames {
         if f + SONG_TAIL_FRAMES == frames {
             tail_from = samples.len();
+        }
+        if f == SOUND_SKIP_FRAMES.min(frames / 2) {
+            heard_from = samples.len();
         }
         let mut writes = play_frame(&mut m, play, calls)?;
         frame_hash(&writes).hash(&mut h);
@@ -645,8 +656,13 @@ fn listen<M: Machine>(
     }
     let loud = |s: &[i16]| s.iter().filter(|s| s.unsigned_abs() > AUDIBLE).count();
     let tail = &samples[tail_from..];
+    let mut sh = std::collections::hash_map::DefaultHasher::new();
+    for s in &samples[heard_from..] {
+        (s >> 6).hash(&mut sh);
+    }
     Some(Heard {
         hash: h.finish(),
+        sound: sh.finish(),
         audible: loud(&samples) > samples.len() / 10,
         lasts: loud(tail) > tail.len() / 10,
     })
@@ -773,7 +789,7 @@ pub fn search_logged<M: Machine>(
                     TRY_FRAMES,
                     calls,
                 )
-                .map(|h| h.hash)
+                .map(|h| h.sound)
                 .into_iter()
                 .collect();
                 let mut played = Vec::new();
@@ -794,7 +810,7 @@ pub fn search_logged<M: Machine>(
                         dropped[1] += 1;
                         continue;
                     }
-                    if !seen.insert(quick.hash) {
+                    if !seen.insert(quick.sound) {
                         dropped[2] += 1;
                         continue;
                     }
