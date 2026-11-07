@@ -41,10 +41,13 @@ Options:
                     from a SNES cartridge) into an \"original\" folder
   --rips DIR        a folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC, zipped or not)
                     to match cartridges against by their content; may be given more than once
+  --ps2-bios FILE   a PS2 BIOS image (4 MB) of your own, which PS1 and PS2 rips (PSF, PSF2)
+                    need to play; without it they are skipped
   --seconds N       SNES: how long the game runs before its music is taken (default 20)
   --start           SNES: press Start now and then while it runs, for games whose music
                     begins after the title screen
   --list            only list the tracks
+  --verbose         say why a file or track was skipped
   --no-pause        don't wait for Enter at the end (it only waits in a window opened
                     for a dropped file)
   -h, --help        this text
@@ -68,13 +71,14 @@ struct Args {
     bits: u32,
     format: Format,
     rips: Vec<PathBuf>,
+    ps2_bios: Option<PathBuf>,
     seconds: f32,
     press_start: bool,
     list: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { inputs: Vec::new(), all: false, max: None, out: None, rate: None, bits: 0, format: Format::Flac, rips: Vec::new(), seconds: 20.0, press_start: false, list: false };
+    let mut a = Args { inputs: Vec::new(), all: false, max: None, out: None, rate: None, bits: 0, format: Format::Flac, rips: Vec::new(), ps2_bios: None, seconds: 20.0, press_start: false, list: false };
     let mut it = args.iter();
     let value = |it: &mut std::slice::Iter<String>, flag: &str| it.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
     while let Some(arg) = it.next() {
@@ -82,13 +86,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--all" => a.all = true,
             "--list" => a.list = true,
             "--start" => a.press_start = true,
-            "--no-pause" => {}
+            "--no-pause" | "--verbose" => {}
             "--cd" => a.rate = Some(44_100),
             "--dvd" => (a.rate, a.bits) = (Some(48_000), if a.bits == 0 { 24 } else { a.bits }),
             "--hires" => (a.rate, a.bits) = (Some(96_000), if a.bits == 0 { 24 } else { a.bits }),
             "--max" => a.max = Some(value(&mut it, arg)?.parse().map_err(|_| "--max needs a number")?),
             "--out" => a.out = Some(PathBuf::from(value(&mut it, arg)?)),
             "--rips" => a.rips.push(PathBuf::from(value(&mut it, arg)?)),
+            "--ps2-bios" => a.ps2_bios = Some(PathBuf::from(value(&mut it, arg)?)),
             "--seconds" => a.seconds = value(&mut it, arg)?.parse().ok().filter(|s: &f32| (1.0..=600.0).contains(s)).ok_or("--seconds needs 1-600")?,
             "--bits" => a.bits = value(&mut it, arg)?.parse().ok().filter(|b| [16, 24].contains(b)).ok_or("--bits is 16 or 24")?,
             "--rate" => {
@@ -162,9 +167,17 @@ fn main() {
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     NO_PAUSE.store(args.iter().any(|a| a == "--no-pause"), std::sync::atomic::Ordering::Relaxed);
-    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(if args.iter().any(|a| a == "--verbose") { log::LevelFilter::Debug } else { log::LevelFilter::Warn });
+    if args.is_empty() {
+        // Opened with nothing dropped on it: the usage stays up until Enter.
         println!("{}", usage());
         return finish(0);
+    }
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        // Asked for in a shell (or by a script, which has no one to press Enter).
+        println!("{}", usage());
+        return 0;
     }
     if args.iter().any(|a| a == "-V" || a == "--version") {
         println!("rommusic {VERSION}");
@@ -177,9 +190,19 @@ fn run() -> i32 {
             return finish(2);
         }
     };
-    if !vgmstream::available() && !gme::available() {
+    if !vgmstream::available() && !rip_sets::available() {
         eprintln!("rommusic: the music libraries (rvgmstream, rommusic) were not found in lib/ beside rommusic");
         return finish(1);
+    }
+    if let Some(bios) = &a.ps2_bios {
+        match std::fs::read(bios).map_err(|e| e.to_string()).and_then(|image| romexplorer::rom::psf::set_ps2_bios(&image)) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("rommusic: this build has no PS1/PS2 player; --ps2-bios is ignored"),
+            Err(e) => {
+                eprintln!("rommusic: {}: {e}", bios.display());
+                return finish(2);
+            }
+        }
     }
     let library = (!a.rips.is_empty()).then(|| {
         eprintln!("reading the rip sets in {}", a.rips.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
@@ -322,12 +345,10 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         return Ok(plan);
     }
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if gme::known_extension(&name) {
-        // One rip file: its folder is its set, and only its own tracks are wanted.
-        let parent = input.parent().map(Path::to_path_buf).unwrap_or_default();
-        let me = input.to_string_lossy().into_owned();
-        let found: Vec<FoundTrack> = rip_sets::index_set(&parent, t, progress).into_iter().filter(|f| matches!(&f.location, TrackLocation::Rip { path, .. } if *path == me)).collect();
-        plan.jobs.extend(tracks(Path::new(""), found));
+    if rip_sets::is_music(&name) {
+        // One rip file, with the playlist and libraries beside it.
+        let input = std::path::absolute(input).unwrap_or_else(|_| input.to_path_buf());
+        plan.jobs.extend(tracks(Path::new(""), rip_sets::index_file(&input, t, progress)));
         return Ok(plan);
     }
     if rom_audio::may_hold_audio(input) {
@@ -341,6 +362,9 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         if !found.is_empty() {
             plan.jobs.extend(tracks(Path::new(""), found));
             return Ok(plan);
+        }
+        if member.as_deref().is_some_and(rip_sets::is_rip_member) {
+            return Err("a rip set, but none of its tracks could be played (--verbose says why)".into());
         }
     }
     if member.as_deref().is_some_and(|m| rom_audio::may_hold_audio(Path::new(m))) {
@@ -528,6 +552,22 @@ fn clean(name: &str) -> String {
 /// A stored path made safe, keeping its folders.
 fn clean_path(path: &str) -> PathBuf {
     path.split(['/', '\\']).filter(|p| !p.is_empty() && *p != "." && *p != "..").map(clean).collect()
+}
+
+/// romexplorer's own messages on stderr: warnings, and with --verbose why things were skipped.
+struct Logger;
+static LOGGER: Logger = Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.target().starts_with("romexplorer")
+    }
+    fn log(&self, r: &log::Record) {
+        if self.enabled(r.metadata()) {
+            eprintln!("  ({}) {}", r.level().as_str().to_lowercase(), r.args());
+        }
+    }
+    fn flush(&self) {}
 }
 
 /// Dropping files on rommusic opens a console that closes as soon as it ends: keep it open
