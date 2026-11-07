@@ -52,6 +52,8 @@ pub mod msx_music;
 pub mod wswan_music;
 pub mod v810;
 pub mod vb_music;
+pub mod arm7;
+pub mod gba_music;
 pub mod vgm_chips;
 pub mod sms_music;
 pub mod md_music;
