@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Usage:
 #   deps/vgmstream/scripts/build.sh                    # auto-detect platform/arch
-#   deps/vgmstream/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64
+#   deps/vgmstream/scripts/build.sh <platform> <arch>  # linux|mac|windows  x64|arm64, or android arm64
 #
 # Output: deps/vgmstream/release/<platform>/<arch>/<version>/dynamic/<library>, the layout
 # scripts/move_libs_to_app_root.sh and src/rom/native_lib.rs expect.
@@ -56,7 +56,8 @@ case "$platform" in
   windows) lib_name="rvgmstream.dll"; system_name="Windows" ;;
   mac) lib_name="librvgmstream.dylib"; system_name="Darwin" ;;
   linux) lib_name="librvgmstream.so"; system_name="Linux" ;;
-  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows)" >&2; exit 2 ;;
+  android) lib_name="librvgmstream.so"; system_name="Android" ;;
+  *) echo "[ERROR] Unsupported platform: $platform (linux | mac | windows | android)" >&2; exit 2 ;;
 esac
 
 command -v cmake >/dev/null 2>&1 || { echo "[ERROR] cmake was not found." >&2; exit 2; }
@@ -84,8 +85,25 @@ fi
 if [[ -n "${CC:-}" ]]; then
   cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 fi
+# Android: the NDK's own CMake toolchain file, which picks its compilers and sysroot. API level
+# 28 (Android 9) by default: libvgm's text conversion uses iconv, which Android's libc has
+# only from 28 on. ANDROID_API overrides it.
+if [[ "$platform" == "android" ]]; then
+  [[ "$arch" == "arm64" ]] || { echo "[ERROR] android is arm64 only" >&2; exit 2; }
+  [[ -n "${ANDROID_NDK_HOME:-}" ]] || { echo "[ERROR] ANDROID_NDK_HOME is not set" >&2; exit 2; }
+  ndk_toolchain="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+  [[ -f "$ndk_toolchain" ]] || { echo "[ERROR] no NDK toolchain file at $ndk_toolchain" >&2; exit 2; }
+  # The toolchain file brings its own compilers and processor: none from the environment.
+  unset CC CXX
+  kept=()
+  for a in "${cmake_args[@]}"; do
+    case "$a" in -DCMAKE_SYSTEM_PROCESSOR=*|-DCMAKE_C_COMPILER=*|-DCMAKE_CXX_COMPILER=*) ;; *) kept+=("$a") ;; esac
+  done
+  cmake_args=("${kept[@]}")
+  cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$ndk_toolchain" -DANDROID_ABI=arm64-v8a "-DANDROID_PLATFORM=android-${ANDROID_API:-28}" -DANDROID_STL=c++_static)
+fi
 # Cross builds: tell cmake the target system so it does not try to run what it compiles.
-if [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
+if [[ "$platform" != "android" ]] && [[ "$platform" != "$host_platform" || "$arch" != "$host_arch" ]]; then
   cmake_args+=("-DCMAKE_SYSTEM_NAME=$system_name")
   [[ "$platform" == "mac" ]] && cmake_args+=("-DCMAKE_OSX_ARCHITECTURES=$([[ "$arch" == "arm64" ]] && echo arm64 || echo x86_64)")
 fi

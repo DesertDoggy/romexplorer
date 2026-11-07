@@ -18,7 +18,18 @@ Linux and macOS). For each one it makes a folder named `<name> (music)` next to 
 
 A file already there from an earlier run is replaced.
 
-Dropping always gives FLAC with the defaults below. Everything else needs the command line.
+Dropping always gives FLAC with the defaults below. For the other settings, use the window
+or the command line.
+
+**The window.** `rommusic-gui` does the same with buttons: choose files or a folder (or drop
+them on the window), pick **FLAC**, **Original audio** or **Both**, and an output folder (empty:
+beside each input), then **Start**. **Options** holds the rest: jingles and sound effects,
+the sample rate, a folder of original-format music for cartridges, a PS2 BIOS, and the SNES
+run. The window remembers them.
+
+**Android.** The rommusic app (Android 9 or later) is the same window. It asks for All files
+access on first start, so it can read your ROMs and write the music; files and folders are
+chosen in its own browser, and a run keeps going with the screen off.
 
 **Command line.**
 
@@ -128,7 +139,7 @@ without it they are skipped.
 
 ## Files beside it
 
-`rommusic` loads its decoders from `lib/<os>/<arch>/` next to it: `rommusic` (the chip
+`rommusic` and `rommusic-gui` load their decoders from `lib/<os>/<arch>/` next to them: `rommusic` (the chip
 players), `rvgmstream` (streams; FFmpeg is inside it), and the disc and archive readers
 (`chdman`, `dolphinrvz`, `cemuwua`, `exiso`, 7-Zip). Keep the folder together. Licences are
 in `lib/LICENSES/`.

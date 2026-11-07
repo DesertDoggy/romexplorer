@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rommusic's manifest, in place of the one dx generates (Dioxus.toml: `android_manifest`). It is
+  dx's own template with three additions: All files access, so internal storage and SD cards
+  are plain paths; the foreground service (android/MainActivity.kt) with its wake lock and
+  notification; and a landscape-friendly activity that also takes controller input.
+  The library name "main" is the one dx gives the Rust library.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Android 11+: All files access, granted by the user in system settings. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Android 10 and older: the storage permission does the same. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+    <!-- A run in the background: the service, its notification, the CPU kept awake. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Usable with a controller or a touch screen; neither is required. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+
+    <application android:hasCode="true" android:icon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true"
+        android:allowNativeHeapPointerTagging="false"
+        android:label="rommusic"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:requestLegacyExternalStorage="true"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:configChanges="orientation|screenLayout|screenSize|keyboardHidden|keyboard|navigation"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:label="rommusic" android:name="dev.dioxus.main.MainActivity">
+            <meta-data android:name="android.app.lib_name" android:value="main" />
+            <meta-data android:name="android.app.func_name" android:value="ANativeActivity_onCreate" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name="dev.dioxus.main.RommusicService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+    </application>
+</manifest>
