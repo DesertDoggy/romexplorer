@@ -111,7 +111,7 @@ jest wydawany osobno: zobacz [docs/chdlite_release_notes.md](docs/chdlite_releas
 
 ### Narzędzie wiersza poleceń (rommusic)
 
-Upuść na `rommusic` ROM, obraz płyty, zrzucony folder lub zestaw ripów muzyki, a zapisze muzykę w
+Upuść na `rommusic` ROM, obraz płyty, zrzucony folder lub zestaw plików muzycznych w oryginalnym formacie audio, a zapisze muzykę w
 tle gry jako FLAC w folderze obok. Każda opcja jest też dostępna jako flaga (`--help`). Obsługiwane
 systemy są wymienione w [Dźwięk z ROM-ów](#dźwięk-z-rom-ów). rommusic jest wydawany osobno: zobacz
 [docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
@@ -278,11 +278,11 @@ to samo.
 | | PS3, PS Vita | odszyfrowane zrzuty folderów |
 | Archiwum dźwięku | Nintendo DS (muzyka strumieniowa i sekwencyjna), Nintendo 3DS (tylko odszyfrowane obrazy) | .nds, .3ds/.cci |
 | Silnik dźwięku gry | Game Boy Advance: gry zrobione na standardowym silniku Nintendo (około połowy) | .gba |
-| Ripy muzyki | NES i Famicom Disk System (NSF, NSFE), SNES (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System i Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum i Amstrad CPC (AY), Atari 8-bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket i Virtual Boy (VGM) | w folderze gry lub w bibliotece ripów, luzem lub w zip |
+| Oryginalne formaty audio | NES i Famicom Disk System (NSF, NSFE), SNES (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System i Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum i Amstrad CPC (AY), Atari 8-bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket i Virtual Boy (VGM) | w folderze gry lub w bibliotece oryginalnego audio, luzem lub w zip |
 
-- Biblioteka ripów (Ustawienia › Audio) dopasowuje zestawy NSF, NSFE, GBS, SPC, HES, KSS i SGC do
+- Biblioteka oryginalnego audio (Ustawienia › Audio) dopasowuje zestawy NSF, NSFE, GBS, SPC, HES, KSS i SGC do
   twoich ROM-ów po zawartości: jeden zestaw gra dla każdego regionu gry, niezależnie od nazwy.
-- Ripy z PlayStation i PlayStation 2 wymagają BIOS-u PS2 w twojej kolekcji; bez niego są
+- Pliki z PlayStation i PlayStation 2 wymagają BIOS-u PS2 w twojej kolekcji; bez niego są
   pomijane.
 - Obrazy płyt w zip lub 7z nie są jeszcze czytane. Zaszyfrowane obrazy nie są czytane.
 

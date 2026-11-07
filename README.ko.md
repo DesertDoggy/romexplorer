@@ -104,7 +104,7 @@ ROM 컬렉션 관리 도구입니다. 폴더를 스캔하고, 모든 파일을 �
 
 ### 명령줄 도구(rommusic)
 
-ROM, 디스크 이미지, 덤프한 폴더, 음악 립 세트를 `rommusic`에 끌어다 놓으면 게임의 배경 음악을 FLAC으로
+ROM, 디스크 이미지, 덤프한 폴더, 원음 형식 음악 파일 세트를 `rommusic`에 끌어다 놓으면 게임의 배경 음악을 FLAC으로
 옆 폴더에 저장합니다. 모든 옵션은 플래그로도 지정할 수 있습니다(`--help`). 지원 기종은
 [ROM 오디오](#rom-오디오)를 참고하십시오. rommusic은 별도로 릴리스됩니다.
 [docs/rommusic_release_notes.md](docs/rommusic_release_notes.md)를 참고하십시오.
@@ -262,11 +262,11 @@ Hoge Quest (GBA)에 있던 추가 던전이 없음). 이럴 때는 버전을 끌
 | | PS3, PS Vita | 복호화된 폴더 덤프 |
 | 사운드 아카이브 | 닌텐도 DS(스트림과 시퀀스 음악), 닌텐도 3DS(복호화된 이미지만) | .nds, .3ds/.cci |
 | 게임의 사운드 엔진 | 게임보이 어드밴스: 닌텐도 표준 엔진을 쓰는 게임(약 절반) | .gba |
-| 음악 립 | 패미컴·디스크 시스템(NSF, NSFE), 슈퍼 패미컴(SPC), 게임보이(GBS), PC 엔진(HES), MSX(KSS), 마스터 시스템·게임기어(SGC, VGM), 메가 드라이브(VGM, GYM), ZX Spectrum·Amstrad CPC(AY), Atari 8비트(SAP), 닌텐도 64(USF), 플레이스테이션(PSF), 플레이스테이션 2(PSF2), 세가 새턴(SSF), 드림캐스트(DSF), 게임보이 어드밴스(GSF), 원더스완(WSR), 네오지오 포켓·버추얼 보이(VGM) | 게임 폴더나 립 라이브러리. zip 그대로도 가능 |
+| 원음 형식 | 패미컴·디스크 시스템(NSF, NSFE), 슈퍼 패미컴(SPC), 게임보이(GBS), PC 엔진(HES), MSX(KSS), 마스터 시스템·게임기어(SGC, VGM), 메가 드라이브(VGM, GYM), ZX Spectrum·Amstrad CPC(AY), Atari 8비트(SAP), 닌텐도 64(USF), 플레이스테이션(PSF), 플레이스테이션 2(PSF2), 세가 새턴(SSF), 드림캐스트(DSF), 게임보이 어드밴스(GSF), 원더스완(WSR), 네오지오 포켓·버추얼 보이(VGM) | 게임 폴더나 원음 라이브러리. zip 그대로도 가능 |
 
-- 립 라이브러리(설정 › 오디오)는 NSF, NSFE, GBS, SPC, HES, KSS, SGC 세트를 내용으로 ROM과
+- 원음 라이브러리(설정 › 오디오)는 NSF, NSFE, GBS, SPC, HES, KSS, SGC 세트를 내용으로 ROM과
   대조합니다. 이름이 달라도 지역별 ROM 모두에서 재생됩니다.
-- 플레이스테이션과 플레이스테이션 2 립에는 컬렉션에 있는 PS2 BIOS를 사용합니다. BIOS가 없으면
+- 플레이스테이션과 플레이스테이션 2 원음 파일에는 컬렉션에 있는 PS2 BIOS를 사용합니다. BIOS가 없으면
   건너뜁니다.
 - zip, 7z 안의 디스크 이미지는 아직 읽지 못합니다. 암호화된 이미지도 읽지 못합니다.
 
