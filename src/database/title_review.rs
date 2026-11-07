@@ -248,6 +248,15 @@ pub fn plan_variant(kind: Variant, variant: &[Rel], others: &[Rel]) -> Option<Re
     })
 }
 
+/// The name after a collection's running number ("0743 - Hoge (USA)" -> "Hoge (USA)"), when
+/// it starts with one: three to five digits, then " - ".
+pub fn without_release_number(release_name: &str) -> Option<&str> {
+    lazy_static::lazy_static! {
+        static ref NUMBER: regex::Regex = regex::Regex::new(r"^\s*\d{3,5}\s+-\s+(\S.*)$").unwrap();
+    }
+    NUMBER.captures(release_name).and_then(|c| c.get(1)).map(|m| m.as_str())
+}
+
 /// Whether a release name says no publisher sold it: No-Intro's "(Unl)", "(Pirate)",
 /// "(Aftermarket)", TOSEC's "(PD)" and "[p]".
 pub fn unlicensed(release_name: &str) -> bool {
@@ -270,9 +279,22 @@ pub fn unlicensed(release_name: &str) -> bool {
 /// foreign one of another colour belongs with it, and a Japanese release never sold abroad is
 /// split off however the title's names read. Each game split off gets a title of its own.
 pub fn plan_split(names: &[String], releases: &[Rel], table: &RegionalNames) -> Option<ReviewDetail> {
+    // A release's name as a comparison key. A collection's running number in front ("0743 -
+    // Hoge (USA)") is dropped when the rest is a name the title has anyway -- a release of
+    // its own or one of its names -- and kept otherwise: "1943 - The Battle of Hoge" is a name.
+    let plain: HashSet<String> = releases.iter().filter(|r| without_release_number(&r.name).is_none()).map(|r| norm_key(&r.name)).collect();
+    let key_of = |r: &Rel| -> String {
+        if let Some(rest) = without_release_number(&r.name) {
+            let k = norm_key(rest);
+            if plain.contains(&k) || names.iter().any(|n| names_close(&norm_key(n), &k)) {
+                return k;
+            }
+        }
+        norm_key(&r.name)
+    };
     // A release's game: the table's when it lists the name (`true`), else its own name.
     let game = |r: &Rel| -> (String, bool) {
-        let key = norm_key(&r.name);
+        let key = key_of(r);
         match table.game(r.platform, &key, r.japanese()) {
             Some(g) => (g.to_string(), true),
             None => (key, false),
@@ -288,7 +310,7 @@ pub fn plan_split(names: &[String], releases: &[Rel], table: &RegionalNames) -> 
             }
         })
     };
-    let alone = |r: &Rel| r.japanese() && table.alone(r.platform, &norm_key(&r.name));
+    let alone = |r: &Rel| r.japanese() && table.alone(r.platform, &key_of(r));
     let mut buckets: BTreeMap<(u16, String), Vec<&Rel>> = BTreeMap::new();
     // An International or Director's Cut is the variants' finder's to ask about.
     for r in releases.iter().filter(|r| variant_of(&r.name).is_none() && !alone(r)) {
@@ -298,7 +320,7 @@ pub fn plan_split(names: &[String], releases: &[Rel], table: &RegionalNames) -> 
     // A Japanese release never sold abroad is no other release's game.
     if releases.iter().any(|r| !alone(r)) {
         for r in releases.iter().filter(|r| alone(r)) {
-            odd.entry(norm_key(&r.name)).or_default().push(r.id);
+            odd.entry(key_of(r)).or_default().push(r.id);
         }
     }
     // Each bucket's games, joined when close ("Hoge" and "Hoge - Special Edition"); a name
@@ -737,6 +759,30 @@ async fn split_names(pool: &MySqlPool, scope: &PassScope) -> Result<Vec<String>,
     Ok(written)
 }
 
+/// Once after a change to [`plan_split`]: every pending "another game inside" suggestion is
+/// worked out again, and those it no longer makes are dropped -- rather than waiting for the
+/// next full merge pass. Returns how many were dropped.
+pub async fn recheck_split_names_once(pool: &MySqlPool, name: &str) -> Result<u64, DatabaseError> {
+    if sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(name).fetch_optional(pool).await?.is_some() {
+        return Ok(0);
+    }
+    // A client's catalogue (and its suggestions) come from its server.
+    let client = super::settings::instance_mode(pool).await? == super::settings::InstanceMode::Client;
+    let pending: Vec<(String, String)> = if client { Vec::new() } else { sqlx::query_as("SELECT igdb_id, title_ids FROM title_merge_suggestions WHERE status = 'pending' AND kind = ?").bind(KIND_SPLIT_NAMES).fetch_all(pool).await? };
+    let titles: HashSet<u64> = pending.iter().flat_map(|(_, t)| t.split(',').filter_map(|x| x.trim().parse::<u64>().ok())).collect();
+    let mut dropped = 0u64;
+    if !titles.is_empty() {
+        let scope = PassScope { dirty: Some(titles), since: None };
+        let keep: HashSet<String> = split_names(pool, &scope).await?.into_iter().collect();
+        for (key, _) in pending.iter().filter(|(k, _)| !keep.contains(k)) {
+            dropped += sqlx::query("DELETE FROM title_merge_suggestions WHERE igdb_id = ? AND status = 'pending'").bind(key).execute(pool).await?.rows_affected();
+        }
+        log::info!("merge review: {dropped} of {} \"another game inside\" suggestion(s) no longer apply", pending.len());
+    }
+    sqlx::query("INSERT IGNORE INTO data_migrations (name) VALUES (?)").bind(name).execute(pool).await?;
+    Ok(dropped)
+}
+
 /// Every finder, over what `scope` covers. A full pass also drops pending suggestions of these
 /// kinds that no longer apply. Returns how many suggestions were written.
 pub async fn suggest(pool: &MySqlPool, scope: &PassScope, progress: &Progress) -> Result<u64, DatabaseError> {
@@ -819,6 +865,25 @@ mod tests {
         // A Director's Cut beside its original is the variant finder's question, not this one's.
         let dc = [rel(1, 9, "Fuga Saga (Japan)", "JP"), rel(2, 9, "Fuga Saga - Director's Cut (Japan)", "JP")];
         assert!(plan_split(&["Fuga Saga".to_string()], &dc, &RegionalNames::default()).is_none());
+    }
+
+    /// A collection's running number in front of a name is the same game; a name that only
+    /// starts with a number ("1943 - ...") is still its own.
+    #[test]
+    fn release_numbers_are_not_other_games() {
+        let rels = [
+            rel(1, 9, "Hoge Age Express - Math (USA)", "US"),
+            rel(2, 9, "Hoge Age Express - Math (USA) (Rev 1)", "US"),
+            rel(3, 9, "0743 - Hoge Age Express - Math (USA)", "US"),
+            rel(4, 9, "0744 - Hoge Age Express - Math (USA) (Rev 1)", "US"),
+            rel(5, 9, "1042 - Hoge Age Express - Math (USA) (En,Fr,Es)", "US"),
+        ];
+        assert!(plan_split(&["Hoge Age Express - Math".to_string()], &rels, &RegionalNames::default()).is_none());
+        let other = [rel(1, 9, "Fuga (USA)", "US"), rel(2, 9, "1943 - The Battle of Piyo (USA)", "US")];
+        let plan = plan_split(&["Fuga".to_string()], &other, &RegionalNames::default()).expect("split");
+        assert_eq!(plan.options[0].groups, vec![vec![1], vec![2]]);
+        assert_eq!(without_release_number("0743 - Hoge (USA)"), Some("Hoge (USA)"));
+        assert_eq!(without_release_number("Hoge 2 - Fuga"), None);
     }
 
     /// Pirate and unlicensed games of other names under a title, each in a region where the

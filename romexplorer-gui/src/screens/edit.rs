@@ -713,7 +713,7 @@ fn MergeCard(params: Signal<Vec<(&'static str, String)>>, at: Signal<u64>, reloa
             }
             div { class: "toolbar", style: "margin-top:8px",
                 if status != "dismissed" {
-                    button { class: "btn danger", title: state::tr("not offered again"), onclick: move |_| decide(k_no.clone(), None), {state::tr("No")} }
+                    button { class: "btn danger", title: state::tr("not offered again"), onclick: move |_| decide(k_no.clone(), None), {state::tr("Leave as it is")} }
                 }
                 " "
                 button { class: "btn", onclick: move |_| at.set(at() + 1), {state::tr("Skip")} " ›" }
