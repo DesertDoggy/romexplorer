@@ -62,6 +62,7 @@ fn step_label(step: &Value) -> String {
         "audit_remerge" => state::tr("Earlier audit splits that belong together"),
         "audit_platforms" => state::tr("Automatic merges across platforms"),
         "audit_unlicensed" => state::tr("Unlicensed titles merged with retail ones"),
+        "audit_subsets" => state::tr("RetroAchievements subsets inside their game's title"),
         "audit_wronglink" => state::tr("Titles whose own files name another game"),
         "audit_merges" => state::tr("Merges made through an IGDB game"),
         "audit_links" => state::tr("IGDB links made by hash, name or search"),

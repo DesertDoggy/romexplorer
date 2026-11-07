@@ -73,6 +73,11 @@ replacing a build.
 
 ## Bug fixes
 
+- RetroAchievements subsets (challenge, speedrun and the like) went into their game's title,
+  and could put two versions of a game in one title. Each subset is now a title of its own;
+  the merge audit splits out the ones already there.
+- Undoing a merge taken from Merge review did not put the suggestion back. It is up for review
+  again.
 - Pirate and unlicensed games were merged into retail games' titles.
 - The "another game inside" card left pirate and unlicensed games from other regions in the
   title.
