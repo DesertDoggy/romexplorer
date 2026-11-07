@@ -7,97 +7,61 @@ replacing a build.
 
 **AI in Merge review**
 - "Ask Google" is now an Ask menu: Google AI Mode, Claude, ChatGPT and Perplexity open in the
-  browser with the question filled in, signed in with your own account. Config › AI picks
-  which comes first.
+  browser with the question filled in.
 - The answer in the app can come from Gemini, Claude, OpenAI or Perplexity, each with its own
-  API key and model. Sources are shown when the service returns them.
-- Answers are saved, so a card opened again shows the saved answer with its date and model.
-  Ask again replaces it, and a pinned answer is kept. When only another language's answer
-  is saved, it is shown with an "Ask in <language>" button instead of a new paid request.
+  API key and model.
+- Answers are saved. Ask again fetches a new one; pinned answers are not fetched again.
 - Saved answers are in the database backup.
 
 **Config › AI**
-- A new tab for the AI: provider and model, the Ask menu's first link, the API keys with a
-  Test button (moved here from Data › Providers), and an editable price table.
-- Shows how many answers are saved and their approximate cost this month and in all. They
-  can be cleared (all or one feature, pinned ones kept if you like), exported and imported
-  as JSON.
+- A new tab for the AI settings.
+- Shows how many answers are saved and their approximate cost this month and in all. Answers
+  can be exported and imported as JSON.
 
 **AI on the Definitive tab**
 - Each game's page can ask the AI which version has the most content and the best graphics, sound
-  and quality of life. The answer comes with a rank like the reviewed notes, shown as an AI rank.
-- An answer from a browser link can be pasted in, or saved from the clipboard in one click, and is
-  kept like an API answer, marked with the site it came from. Config › AI sets
-  which answer is shown first, the reviewed note included, and clears saved answers by source.
+  and quality of life. The answer comes with a rank like the reviewed notes.
+- An answer from a browser link can be pasted in, or saved from the clipboard in one click.
 - The first question shows a cost warning. Config › AI links to each provider's spending limits.
-- "Batch rate with AI" asks about many games as one job: the selected games on the Definitive tab,
-  or a set's selected rows or the whole set. It shows the number of questions and an approximate
-  cost first, skips games already answered, and can be scheduled for a set.
-- AI ratings now ship with the app ("bundled AI"). The rank filter on the Definitive tab and a
-  set's page can include them, or your own answers too; the reviewed notes still come first.
+- "Batch rate with AI" asks about several games as one job: the selected games on the Definitive
+  tab, or a set's selected rows or the whole set. It shows the number of questions and an
+  approximate cost first, skips games already answered, and can be scheduled for a set.
 - A rank made before a newer version of the game came out is marked "New version since rating",
   and the filter can skip such ranks.
 
 **Titles: minor versions and version sets**
 - "Hide minor versions" leaves out a game where a fuller edition covers it on the same platform
-  and region (International, Director's Cut, Final Mix, Royal and the like; an Easy Type loses to
-  the regular game). On Titles, Releases and a title's releases.
-- "One of each version group" lists one version of games sold side by side (Pokémon, Yo-kai Watch,
-  Battle Network and others): the one you hold, else your pick, else a random one, with 🎲 to
-  show another. Versions of a set no longer share a family on the Definitive tab.
+  and region (International, Director's Cut, Final Mix and the like; an Easy Type loses to the
+  regular game). On Titles, Releases and a title's releases.
+- "One of each version group" lists one version of games sold side by side (Pokémon, Yo-kai Watch
+  and others): the one you hold, else your pick, else a random one, with 🎲 to show another.
+  Versions of a set no longer share a family on the Definitive tab.
 - A title page's new Versions card shows both, and lets you correct them.
 
 **Config › Advanced**
-- A new tab for operations that can damage the database or lose files, behind a clear warning.
-  DB optimize moved here from Jobs and Data › DB.
+- A new tab for operations that can damage the database or lose files. DB optimize moved here
+  from Jobs and Data › DB.
 
 **ROM audio**
-- Title pages can play the music inside your ROMs, straight from the disc image like a CD
-  player: CD audio tracks and the music files on the disc (PlayStation, Saturn, Dreamcast,
-  GameCube, Xbox, Xbox 360, PSP and more, and dumped folders), including WMA, XMA and ATRAC3
-  music. Run Index ROM audio on the Audio tab first. Zip and 7z archives are not read yet.
-- Settings choose tagged audio, ROM music or both, whether jingles and sound effects play
-  too, and what a title you don't own plays (another version, such as the original of a
-  remake, or a random one).
-- The music can keep playing on other screens until you open another title page.
-- The sound of title movies and other videos in a ROM can play too. It is off by default, and
-  each title page can turn it on or off for that title.
-- DS and 3DS cartridges are read too: DS music, streamed or sequenced, plays straight from the
-  sound archive, and 3DS music files from images stored decrypted.
-- Music packed inside common game archives is found: CRI CPK, AFS, and GameCube .arc/.szs.
-- The sound of PSP movies (.pmf) can play too, like other title movies.
-- Voice files no longer count as BGM, however long they are. A track that doesn't loop now counts as BGM from 1 minute (CD audio tracks from 20 s). Files named as fanfares or music effects ("me") count as jingles. A short first audio track (the spoken "this is a game disc" warning) counts as a sound effect.
-- Music rips kept in a game's folder (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC, loose or zipped)
-  play on its title page too, with the track names and lengths from their playlists.
+- Title pages can play the music inside your ROMs (supported platforms and media types only).
+- Settings adjust which tracks play.
+- Music rips in their original formats (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC,
+  loose or zipped) are supported.
 - A rip library: list the folders where you keep rip sets in Settings › Audio, and Index ROM
   audio matches each set to your ROMs by their content, so one set plays for every region of
   the game whatever its name.
-- Game Boy Advance music plays straight from the ROM, with no rip, for games made with
-  Nintendo's standard sound engine (about half of them).
 - The player on title pages has a "don't play this track" button. Hidden tracks are listed under
   the playlist, where a click plays one and Restore brings it back.
-- ROM music decoded for playing is kept in memory (Settings › Audio, 256 MiB by default).
-  When that is full, tracks move to the audio cache on disk, which now uses the tier 1 cache
+- ROM music decoded for playing is cached in memory (Settings › Audio, 256 MiB by default).
+  When that is full, tracks move to the audio cache on disk, which uses the tier 1 cache
   folder when one is set.
-- Wii discs are read too (ISO, RVZ, WIA, GCZ and WBFS), and Wii U titles: .wua, and
-  .wud/.wux or downloaded title folders when their key is beside them.
-- Tracks in rip sets whose playlists count from 0 (many Game Boy sets) played the track before
-  the one named, and the first one was silent.
-- Music rips whose tracks have no length, or only a guessed one, now end where the music
-  does: silence at the end is cut, and a track that repeats plays its loop twice and fades.
-  A track cut at its playlist length fades out instead of stopping dead.
-- Normalise in the player now also turns quiet ROM tracks up, as far as they go without
-  clipping.
-- The player can crossfade: the next track fades in while the current one fades out. The
-  overlap is set in ms next to Normalise (2000 to begin with, 0 for off).
-- Silence at the end of a track is skipped: ROM tracks are trimmed, and for audio files the
-  audio scan measures where the sound ends (run it again to measure files scanned before).
+- Normalise in the player has been tuned.
+- The player can crossfade (2000 ms by default, 0 for off).
+- Silence at the end of a track is cut: ROM tracks are trimmed, and for audio files the audio
+  scan measures where the sound ends (run it again to measure files scanned before).
 - Music on title pages is on by default, and the first start asks whether you want it, right
-  after the language. A title with no audio of its own now plays random tracks by default.
-- Nintendo 64, PlayStation, PlayStation 2, Saturn, Dreamcast, Game Boy Advance and WonderSwan
-  music rips (USF, PSF, PSF2, SSF, DSF, GSF, WSR, with their library files) play like the other rip sets, in a game's folder or the rip library, and in rommusic.
-  PlayStation rips use a PS2 BIOS from your collection and are skipped without one.
-- Neo Geo Pocket and Virtual Boy VGM rips play too.
+  after the language. A title with no audio of its own plays random tracks by default.
+- PSF and PSF2 rips use a PS2 BIOS from your collection and are skipped without one.
 
 **Merge review and combined titles**
 - Releases on a card can be dragged to the title they belong to, or onto "+" for a new title
@@ -109,15 +73,12 @@ replacing a build.
 
 ## Bug fixes
 
-- Pirate and unlicensed games were merged into retail games' titles. They are now kept
-  apart, and those already merged are split out once after the update.
+- Pirate and unlicensed games were merged into retail games' titles.
 - The "another game inside" card left pirate and unlicensed games from other regions in the
   title.
 - The "another game inside" card treated a release with a number in front of its name
-  ("0743 - ...") as another game. Such cards are cleared once after the update.
-- Some jobs, like the merge audit, sat at 0 for a while with nothing said. Every job now says
-  what it is doing and how far it is from the start, and the merge audit lists its steps
-  like the title merge pass.
+  ("0743 - ...") as another game.
+- Jobs like the merge audit showed little of their progress. They now show it in detail.
 
 # romexplorer 0.1.8 (alpha)
 
@@ -127,12 +88,11 @@ replacing a build.
 ## Changes
 
 **Media**
-- After starting over with a new database, provider syncs take the art already in the media
-  folder instead of downloading it again. Only what is missing downloads. The first start
-  asks whether to do this; Settings › media_reuse_existing changes it later.
+- After starting over with a new database, the art already in the media folder is used
+  instead of downloading it again.
 
 **Jobs**
-- The jobs list starts with a No. column, then the type and the ID.
+- The jobs list's detail columns were adjusted.
 - A waiting job has a Run next button, also for a selection: it starts as soon as the job
   running in its lane is done. Other lanes are not affected.
 
@@ -143,7 +103,7 @@ replacing a build.
   platform left as it is follows the file name box.
 
 **Merge review**
-- The Gemini answer, and Ask Google, come back in the UI language.
+- The Gemini answer and Ask Google come back in the UI language.
 - When the lookup fails, the message says why: a certificate or a timeout, the model, and
   the quota that ran out. A key with no free quota for the model says so.
 - If the model list can't be read, Gemini is still asked; on a quota error the next Flash
