@@ -770,7 +770,8 @@ pub async fn decouple_grade(app: &App, req: &DecoupleGradeRequest) -> Result<tit
 }
 
 /// Splits one merge back out (`title_merge::decouple`); returns the title it became. Both
-/// sides then take their IGDB game again (`sync_lead_igdb`).
+/// sides then take their IGDB game again (`sync_lead_igdb`), and the suggestion the merge
+/// came from is pending in the review again (`title_merge::reopen_suggestion`).
 pub async fn decouple(app: &App, log_id: u64) -> Result<u64> {
     let survivor: Option<u64> = sqlx::query_scalar("SELECT survivor_id FROM title_merge_log WHERE id = ?").bind(log_id).fetch_optional(&app.pool).await?;
     let heads = family::heads_of(&app.pool, &survivor.into_iter().collect::<Vec<_>>()).await?;
@@ -778,6 +779,8 @@ pub async fn decouple(app: &App, log_id: u64) -> Result<u64> {
     let both: Vec<u64> = survivor.into_iter().chain([revived]).collect();
     sync_lead_igdb(app, Some(&both)).await?;
     family::after_edit(&app.pool, &both, &heads).await?;
+    // Undone by the user: a merge the review suggested is up for review again.
+    title_merge::reopen_suggestion(&app.pool, log_id).await?;
     Ok(revived)
 }
 

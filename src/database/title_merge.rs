@@ -87,7 +87,8 @@ pub fn base_title(release_name: &str) -> String {
     if parsed.base.trim().is_empty() {
         release_name.trim().to_string()
     } else {
-        parsed.base.trim().to_string()
+        // A RetroAchievements subset keeps its tag: it is a title of its own.
+        matching::with_subset_tag(parsed.base.trim(), release_name)
     }
 }
 
@@ -740,11 +741,149 @@ pub async fn unlicensed_only(pool: &MySqlPool, titles: &[u64]) -> Result<HashSet
     Ok(out)
 }
 
+/// SQL: the RetroAchievements game of link `rpl` is a subset ("Game [Subset - Bonus]"), by the
+/// cached RA catalogue's name.
+pub const RA_SUBSET_GAME_SQL: &str =
+    "EXISTS (SELECT 1 FROM retroachievements_games rg WHERE rg.provider_id = CAST(rpl.provider_id AS UNSIGNED) AND rg.title LIKE '%[Subset%')";
+
+/// Automatic merges still standing that were made through a RetroAchievements subset: the
+/// game is a subset in the RA catalogue, or every release linked to it is named one. A subset
+/// covering two versions of a game joined the two.
+pub async fn ra_subset_merges(pool: &MySqlPool) -> Result<Vec<u64>, DatabaseError> {
+    let rows: Vec<(u64, String)> = sqlx::query_as("SELECT id, reason FROM title_merge_log WHERE undone_at IS NULL AND reason LIKE 'ra:%' ORDER BY id DESC").fetch_all(pool).await?;
+    let mut out = Vec::new();
+    for (log_id, reason) in rows {
+        let Some(game) = reason.strip_prefix("ra:").and_then(|r| r.split(' ').next()).filter(|g| !g.is_empty()) else { continue };
+        let subset: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT CAST(EXISTS (SELECT 1 FROM retroachievements_games rg WHERE rg.provider_id = CAST(? AS UNSIGNED) AND rg.title LIKE '%[Subset%') \
+             OR (EXISTS (SELECT 1 FROM release_provider_links rpl WHERE rpl.provider = 'retroachievements' AND rpl.provider_id = ? AND rpl.deleted = FALSE) \
+                 AND NOT EXISTS (SELECT 1 FROM release_provider_links rpl JOIN `release` r ON r.id = rpl.release_id \
+                                 WHERE rpl.provider = 'retroachievements' AND rpl.provider_id = ? AND rpl.deleted = FALSE AND NOT (r.name REGEXP {SUBSET_SQL}))) AS SIGNED)"
+        )))
+        .bind(game)
+        .bind(game)
+        .bind(game)
+        .fetch_one(pool)
+        .await?;
+        if subset != 0 {
+            out.push(log_id);
+        }
+    }
+    Ok(out)
+}
+
+/// Titles holding a RetroAchievements subset beside other game releases, on a platform
+/// RetroAchievements covers: (title, its subset releases). An import before subsets got titles
+/// of their own put "Game [Subset - Speedrun]" under "Game".
+pub async fn bundled_subsets(pool: &MySqlPool) -> Result<BTreeMap<u64, Vec<(u64, String)>>, DatabaseError> {
+    let rows: Vec<(u64, u64, String, u16)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT tr.title_id, r.id, r.name, r.app_platform_id FROM title_releases tr JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE \
+         JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE AND r.material IS NULL WHERE r.name REGEXP {SUBSET_SQL} \
+         AND EXISTS (SELECT 1 FROM title_releases o JOIN `release` x ON x.id = o.release_id AND x.deleted = FALSE AND x.material IS NULL \
+                     WHERE o.title_id = tr.title_id AND NOT (x.name REGEXP {SUBSET_SQL})) ORDER BY tr.title_id, r.id"
+    )))
+    .fetch_all(pool)
+    .await?;
+    let mut out: BTreeMap<u64, Vec<(u64, String)>> = BTreeMap::new();
+    for (title, release, name, platform) in rows {
+        // A platform RetroAchievements has no console for has no subsets to speak of.
+        let covered = crate::common::models::Platform::from_igdb_id(platform).and_then(crate::rom::hash::ra_console_id).is_some();
+        if covered {
+            out.entry(title).or_default().push((release, name));
+        }
+    }
+    Ok(out)
+}
+
+/// Gives each RetroAchievements subset in `title` a title of its own, one per subset
+/// ("[Subset - Speedrun]" and "[Subset - Bonus]" apart, each with every region of it). Splits
+/// are logged ([`SPLIT`]), so each can be undone under Combined titles. Returns the new titles.
+pub async fn split_subsets(pool: &MySqlPool, releases: &[(u64, String)]) -> Result<Vec<u64>, DatabaseError> {
+    let mut groups: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for (id, name) in releases {
+        groups.entry(matching::normalize_title(&base_title(name)).to_lowercase()).or_default().push(*id);
+    }
+    let mut out = Vec::with_capacity(groups.len());
+    for ids in groups.values() {
+        out.push(split_releases(pool, ids).await?);
+    }
+    Ok(out)
+}
+
+/// SQL for a RetroAchievements subset on `release.name` ("[Subset - Speedrun]"), as
+/// `release_buckets::bucket_sql` has it.
+pub const SUBSET_SQL: &str = "'[[(]Subset'";
+
+/// Those of `titles` whose every game release is a RetroAchievements subset. A subset is
+/// played on a patched ROM: its title merges with no other, automatically or as a
+/// suggestion -- not with the game it was made from, and not with another subset of it.
+pub async fn subset_only(pool: &MySqlPool, titles: &[u64]) -> Result<HashSet<u64>, DatabaseError> {
+    let mut out = HashSet::new();
+    for chunk in titles.chunks(2000) {
+        let sql = format!(
+            "SELECT tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE AND r.material IS NULL \
+             WHERE tr.title_id IN ({}) GROUP BY tr.title_id HAVING MIN(r.name REGEXP {SUBSET_SQL}) = 1",
+            in_list(chunk)
+        );
+        out.extend(sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?);
+    }
+    Ok(out)
+}
+
+/// Each title of a version set as (set, version) (`versions::set_versions`): read once a pass.
+pub type SetVersions = std::sync::Arc<HashMap<u64, (String, String)>>;
+
+/// The version sets, for [`Apart::load`].
+pub async fn set_versions(pool: &MySqlPool) -> Result<SetVersions, DatabaseError> {
+    Ok(std::sync::Arc::new(super::versions::set_versions(pool).await?))
+}
+
+/// The titles a pass keeps apart from others: unlicensed-only ones ([`unlicensed_only`]),
+/// RetroAchievements subsets ([`subset_only`]) and the versions of a version set (red and
+/// blue of a game sold in two versions).
+#[derive(Debug, Clone, Default)]
+pub struct Apart {
+    pub unlicensed: HashSet<u64>,
+    pub subsets: HashSet<u64>,
+    pub versions: SetVersions,
+}
+
+impl Apart {
+    pub async fn load(pool: &MySqlPool, titles: &[u64], versions: &SetVersions) -> Result<Self, DatabaseError> {
+        Ok(Self { unlicensed: unlicensed_only(pool, titles).await?, subsets: subset_only(pool, titles).await?, versions: versions.clone() })
+    }
+
+    /// Whether `a` and `b` are two versions of one version set.
+    fn other_versions(&self, a: u64, b: u64) -> bool {
+        matches!((self.versions.get(&a), self.versions.get(&b)), (Some((sa, va)), Some((sb, vb))) if sa == sb && va != vb)
+    }
+
+    /// Whether `a` and `b` may be merged or suggested together.
+    pub fn may_join(&self, a: u64, b: u64) -> bool {
+        !self.subsets.contains(&a) && !self.subsets.contains(&b) && self.unlicensed.contains(&a) == self.unlicensed.contains(&b) && !self.other_versions(a, b)
+    }
+
+    /// `group` cut where it holds two versions of one set: a group per version, the titles of
+    /// no version with the first.
+    fn by_version(&self, group: Vec<u64>) -> Vec<Vec<u64>> {
+        let mut out: Vec<Vec<u64>> = Vec::new();
+        for t in group {
+            match out.iter_mut().find(|g| g.iter().all(|o| !self.other_versions(t, *o))) {
+                Some(g) => g.push(t),
+                None => out.push(vec![t]),
+            }
+        }
+        out
+    }
+}
+
 /// `group` as the merges it may make: its retail titles together, its unlicensed-only ones
-/// ([`unlicensed_only`]) together, never one with the other.
-pub fn by_licence(group: &[u64], unlicensed: &HashSet<u64>) -> Vec<Vec<u64>> {
-    let (unl, retail): (Vec<u64>, Vec<u64>) = group.iter().partition(|t| unlicensed.contains(t));
-    [retail, unl].into_iter().filter(|g| !g.is_empty()).collect()
+/// ([`unlicensed_only`]) together, never one with the other; each subset ([`subset_only`])
+/// alone; two versions of a version set never together.
+pub fn by_licence(group: &[u64], apart: &Apart) -> Vec<Vec<u64>> {
+    let (subsets, rest): (Vec<u64>, Vec<u64>) = group.iter().partition(|t| apart.subsets.contains(t));
+    let (unl, retail): (Vec<u64>, Vec<u64>) = rest.iter().partition(|t| apart.unlicensed.contains(t));
+    [retail, unl].into_iter().flat_map(|g| apart.by_version(g)).chain(subsets.into_iter().map(|t| vec![t])).filter(|g| !g.is_empty()).collect()
 }
 
 /// Groups of titles to merge: titles linked to the same game, connected through a shared
@@ -1107,6 +1246,7 @@ async fn shared_groups(pool: &MySqlPool, sql: &str, only: Option<&str>) -> Resul
 /// log, `what` names the groups in the progress message.
 async fn merge_shared(pool: &MySqlPool, groups: BTreeMap<String, Vec<u64>>, reason: &str, what: &str, s: &mut DedupeSummary, progress: &Progress) -> Result<(), DatabaseError> {
     let blocks = merge_blocks(pool).await?;
+    let versions = set_versions(pool).await?;
     let total = groups.len() as u64;
     for (i, (key, titles)) in groups.into_iter().enumerate() {
         progress.report(i as u64, Some(total), &format!("{what}: {} of {total} ({} merged)", i + 1, s.titles_merged)).await;
@@ -1120,8 +1260,8 @@ async fn merge_shared(pool: &MySqlPool, groups: BTreeMap<String, Vec<u64>>, reas
         for r in sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await? {
             platforms.entry(r.try_get("title_id")?).or_default().insert(merge_platform(r.try_get("app_platform_id")?));
         }
-        let unlicensed = unlicensed_only(pool, &live).await?;
-        for group in merge_groups(&live, &platforms).into_iter().flat_map(|g| by_licence(&without_blocked(&g, &blocks), &unlicensed)) {
+        let apart = Apart::load(pool, &live, &versions).await?;
+        for group in merge_groups(&live, &platforms).into_iter().flat_map(|g| by_licence(&without_blocked(&g, &blocks), &apart)) {
             if group.len() < 2 {
                 continue;
             }
@@ -1174,11 +1314,16 @@ pub async fn dedupe_by_igdb_in(pool: &MySqlPool, only: Option<&str>, progress: &
     if only.is_none() {
         step(45, 20);
         progress.force(0, None, "finding titles that share a RetroAchievements game").await;
+        // Never through a subset: one subset can cover several games (a set for two
+        // versions of one game), and it is a patched ROM besides.
         let ra = shared_groups(
             pool,
-            "SELECT DISTINCT rpl.provider_id AS k, tr.title_id FROM release_provider_links rpl JOIN `release` r ON r.id = rpl.release_id AND r.deleted = FALSE \
-             JOIN title_releases tr ON tr.release_id = r.id JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE \
-             WHERE rpl.provider = 'retroachievements' AND rpl.deleted = FALSE AND rpl.confidence IN ('exact', 'manual')",
+            &format!(
+                "SELECT DISTINCT rpl.provider_id AS k, tr.title_id FROM release_provider_links rpl JOIN `release` r ON r.id = rpl.release_id AND r.deleted = FALSE \
+                 JOIN title_releases tr ON tr.release_id = r.id JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE \
+                 WHERE rpl.provider = 'retroachievements' AND rpl.deleted = FALSE AND rpl.confidence IN ('exact', 'manual') \
+                 AND NOT (r.name REGEXP {SUBSET_SQL}) AND NOT {RA_SUBSET_GAME_SQL}"
+            ),
             None,
         )
         .await?
@@ -1244,7 +1389,7 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
     .fetch_all(pool)
     .await?;
     let ids: Vec<u64> = candidates.iter().filter_map(|c| c.try_get::<u64, _>("id").ok()).chain(known.values().flat_map(|k| k.values().copied())).collect::<BTreeSet<_>>().into_iter().collect();
-    let unlicensed = unlicensed_only(pool, &ids).await?;
+    let apart = Apart::load(pool, &ids, &set_versions(pool).await?).await?;
     let mut groups: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     for c in candidates {
         // Only titles touched since the last pass (the others were looked at then).
@@ -1255,7 +1400,7 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
         let name: String = c.try_get("norm_name")?;
         if let Some((_, target)) = known.get(&platform).and_then(|k| suffix_match(&name, k)) {
             let id: u64 = c.try_get("id")?;
-            if unlicensed.contains(&id) != unlicensed.contains(&target) {
+            if !apart.may_join(id, target) {
                 continue;
             }
             groups.entry(target).or_default().insert(id);
@@ -1400,14 +1545,15 @@ async fn refresh_suggestions(pool: &MySqlPool, only: Option<&str>, progress: &Pr
     live.extend(untouched.into_iter().map(|(id, _, _)| id));
     let every: Vec<u64> = shared.iter().flat_map(|(_, titles, _)| titles.iter().copied()).collect::<BTreeSet<u64>>().into_iter().collect();
     let platforms = game_platforms(pool, &every).await?;
-    let unlicensed = unlicensed_only(pool, &every).await?;
+    let apart = Apart::load(pool, &every, &set_versions(pool).await?).await?;
     let total = shared.len() as u64;
     for (i, (igdb_id, titles, all_strong)) in shared.into_iter().enumerate() {
         progress.report(i as u64, Some(total), &format!("suggestions: {} of {total}", i + 1)).await;
         // Only the titles a merge would actually join: those sharing a platform with another,
-        // retail with retail (or else unlicensed with unlicensed), never across.
-        let groups: Vec<Vec<u64>> = merge_groups(&titles, &platforms).into_iter().flat_map(|g| by_licence(&g, &unlicensed)).filter(|g| g.len() > 1).collect();
-        let retail: Vec<u64> = groups.iter().filter(|g| !unlicensed.contains(&g[0])).flatten().copied().collect();
+        // retail with retail (or else unlicensed with unlicensed), never across; a subset with
+        // nothing.
+        let groups: Vec<Vec<u64>> = merge_groups(&titles, &platforms).into_iter().flat_map(|g| by_licence(&g, &apart)).filter(|g| g.len() > 1).collect();
+        let retail: Vec<u64> = groups.iter().filter(|g| !apart.unlicensed.contains(&g[0])).flatten().copied().collect();
         let mut mergeable: Vec<u64> = if retail.is_empty() { groups.into_iter().flatten().collect() } else { retail };
         if mergeable.is_empty() {
             continue;
@@ -1494,6 +1640,7 @@ pub async fn suggestions(pool: &MySqlPool, status: &str, limit: u32, offset: u32
 /// Accept (merge the suggestion's titles) or dismiss one backlog entry.
 pub async fn resolve_suggestion(pool: &MySqlPool, igdb_id: &str, accept: bool) -> Result<Option<u64>, DatabaseError> {
     let row = sqlx::query("SELECT title_ids FROM title_merge_suggestions WHERE igdb_id = ?").bind(igdb_id).fetch_optional(pool).await?.ok_or_else(|| DatabaseError::Config(format!("no suggestion for IGDB game {igdb_id}")))?;
+    let since = last_log_id(pool).await?;
     let survivor = if accept {
         let ids: Vec<u64> = row.try_get::<String, _>("title_ids")?.split(',').filter_map(|x| x.parse().ok()).collect();
         let live: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM title WHERE id IN ({}) AND deleted = FALSE ORDER BY id", in_list(&ids)))).fetch_all(pool).await?;
@@ -1509,8 +1656,46 @@ pub async fn resolve_suggestion(pool: &MySqlPool, igdb_id: &str, accept: bool) -
     } else {
         None
     };
+    if accept {
+        tag_suggestion(pool, igdb_id, since).await?;
+    }
     sqlx::query("UPDATE title_merge_suggestions SET status = ?, updated_at = NOW() WHERE igdb_id = ?").bind(if accept { "accepted" } else { "dismissed" }).bind(igdb_id).execute(pool).await?;
     Ok(survivor)
+}
+
+/// The newest merge log row's id (0: none): what [`tag_suggestion`] counts from.
+pub async fn last_log_id(pool: &MySqlPool) -> Result<u64, DatabaseError> {
+    Ok(sqlx::query_scalar::<_, u64>("SELECT CAST(COALESCE(MAX(id), 0) AS UNSIGNED) FROM title_merge_log").fetch_one(pool).await?)
+}
+
+/// Marks the merges and splits logged after `since` as made by taking suggestion `key`.
+pub async fn tag_suggestion(pool: &MySqlPool, key: &str, since: u64) -> Result<(), DatabaseError> {
+    sqlx::query("UPDATE title_merge_log SET suggestion_key = ? WHERE id > ? AND suggestion_key IS NULL").bind(key).bind(since).execute(pool).await?;
+    Ok(())
+}
+
+/// After merge or split `log_id` was undone: the suggestion it was taken from goes back to
+/// the review, pending. An automatic merge through an IGDB game comes back as a suggestion of
+/// its own when the titles still share that game. Returns the suggestion's key, if any.
+pub async fn reopen_suggestion(pool: &MySqlPool, log_id: u64) -> Result<Option<String>, DatabaseError> {
+    let Some(row) = sqlx::query("SELECT reason, suggestion_key FROM title_merge_log WHERE id = ?").bind(log_id).fetch_optional(pool).await? else { return Ok(None) };
+    let reason: String = row.try_get("reason")?;
+    let key: Option<String> = row.try_get::<Option<String>, _>("suggestion_key")?.or_else(|| reason.strip_prefix("suggestion:igdb:").map(str::to_string));
+    if let Some(key) = key {
+        let reopened = sqlx::query("UPDATE title_merge_suggestions SET status = 'pending', updated_at = NOW() WHERE igdb_id = ? AND status = 'accepted'").bind(&key).execute(pool).await?.rows_affected();
+        if reopened > 0 {
+            log::info!("merge {log_id} undone: suggestion {key} is pending again");
+            return Ok(Some(key));
+        }
+    }
+    // "igdb:123", maybe with an audit's note after it.
+    let igdb = reason.strip_prefix("igdb:").and_then(|r| r.split(' ').next()).filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
+    if let Some(id) = igdb {
+        refresh_suggestions(pool, Some(id), &Progress::none(), &PassScope::full()).await?;
+        let pending: Option<String> = sqlx::query_scalar("SELECT igdb_id FROM title_merge_suggestions WHERE igdb_id = ? AND status = 'pending'").bind(id).fetch_optional(pool).await?;
+        return Ok(pending);
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -1600,10 +1785,37 @@ mod tests {
 
     #[test]
     fn unlicensed_titles_merge_only_with_their_own() {
-        let unl: HashSet<u64> = [3, 4].into_iter().collect();
-        assert_eq!(by_licence(&[1, 2, 3, 4], &unl), vec![vec![1, 2], vec![3, 4]]);
-        assert_eq!(by_licence(&[1, 3], &unl), vec![vec![1], vec![3]]);
-        assert_eq!(by_licence(&[1, 2], &unl), vec![vec![1, 2]]);
+        let apart = Apart { unlicensed: [3, 4].into_iter().collect(), ..Default::default() };
+        assert_eq!(by_licence(&[1, 2, 3, 4], &apart), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(by_licence(&[1, 3], &apart), vec![vec![1], vec![3]]);
+        assert_eq!(by_licence(&[1, 2], &apart), vec![vec![1, 2]]);
+    }
+
+    /// A RetroAchievements subset is a patched ROM: its title joins neither the game nor
+    /// another subset of it.
+    #[test]
+    fn subset_titles_merge_with_nothing() {
+        let apart = Apart { unlicensed: [4].into_iter().collect(), subsets: [5, 6].into_iter().collect(), ..Default::default() };
+        assert_eq!(by_licence(&[1, 2, 5, 6], &apart), vec![vec![1, 2], vec![5], vec![6]]);
+        assert!(apart.may_join(1, 2) && !apart.may_join(1, 5) && !apart.may_join(5, 6) && !apart.may_join(1, 4));
+    }
+
+    /// Two versions of a game sold side by side stay two titles; a title of either version,
+    /// or of none, still joins.
+    #[test]
+    fn versions_of_a_set_stay_apart() {
+        let v = |set: &str, version: &str| (set.to_string(), version.to_string());
+        let versions: HashMap<u64, (String, String)> = [(1, v("s", "red")), (2, v("s", "blue")), (3, v("s", "red"))].into_iter().collect();
+        let apart = Apart { versions: std::sync::Arc::new(versions), ..Default::default() };
+        assert_eq!(by_licence(&[1, 2, 3, 4], &apart), vec![vec![1, 3, 4], vec![2]]);
+        assert!(!apart.may_join(1, 2) && apart.may_join(1, 3) && apart.may_join(2, 4));
+    }
+
+    #[test]
+    fn a_subset_keeps_its_tag_in_the_title_name() {
+        assert_eq!(base_title("Hoge Monsters Blue [Subset - Speedrun] (Japan)"), "Hoge Monsters Blue [Subset - Speedrun]");
+        assert_eq!(base_title("Hoge Monsters Blue (Japan) (SGB Enhanced)"), "Hoge Monsters Blue");
+        assert_ne!(matching::normalize_title(&base_title("Hoge Monsters Blue [Subset - Speedrun] (Japan)")), matching::normalize_title(&base_title("Hoge Monsters Blue (Japan)")));
     }
 
     #[test]

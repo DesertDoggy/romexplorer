@@ -83,6 +83,8 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Correzioni
 
+- I subset di RetroAchievements (sfida, speedrun e simili) finivano nel titolo del loro gioco e potevano unire due versioni di un gioco in un solo titolo. Ogni subset è ora un titolo a sé; la verifica delle unioni separa quelli già presenti.
+- Annullando un'unione accettata nella revisione delle unioni, il suggerimento non tornava. Ora torna da rivedere.
 - Giochi pirata e senza licenza venivano uniti ai titoli dei giochi commerciali.
 - La scheda «un altro gioco all'interno» lasciava nel titolo giochi pirata e senza licenza di altre
   regioni.

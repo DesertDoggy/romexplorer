@@ -1936,6 +1936,112 @@ async fn phase_unlicensed_apart(env: &Env, report: &mut Report) {
     .await;
 }
 
+/// A RetroAchievements subset is a patched ROM: an import gives it a title of its own, a
+/// subset shared by two versions of a game does not merge them, and the audit's step takes
+/// subsets out of their game's title and splits a merge one made.
+async fn phase_ra_subsets_apart(env: &Env, report: &mut Report) {
+    let pool = &env.pool;
+    step(report, "titles: RetroAchievements subsets stay titles of their own", async {
+        use romexplorer::database::title_merge;
+        let e = |e: sqlx::Error| e.to_string();
+        let de = |e: database::DatabaseError| e.to_string();
+        let dat = "<datafile><header><name>Nintendo - Game Boy</name></header>\
+            <game name=\"Subhoge Blue (Japan)\"><rom name=\"Subhoge Blue (Japan).gb\" size=\"8\" sha1=\"0000000000000000000000000000000000005b01\"/></game>\
+            <game name=\"Subhoge Blue [Subset - Speedrun] (Japan)\"><rom name=\"Subhoge Blue [Subset - Speedrun] (Japan).gb\" size=\"8\" sha1=\"0000000000000000000000000000000000005b02\"/></game>\
+            <game name=\"Subhoge Red (Japan)\"><rom name=\"Subhoge Red (Japan).gb\" size=\"8\" sha1=\"0000000000000000000000000000000000005b03\"/></game></datafile>";
+        import::import_dat(pool, Source::RetroAchievements, "subset-test.dat", &dat_parse::parse_dat_xml(dat).map_err(de)?, &ImportOptions::default()).await.map_err(de)?;
+        let home = |name: &'static str| async move {
+            sqlx::query_as::<_, (u64, String)>("SELECT t.id, t.name FROM `release` r JOIN title_releases tr ON tr.release_id = r.id JOIN title t ON t.id = tr.title_id WHERE r.name = ?").bind(name).fetch_one(pool).await
+        };
+        let (blue, _) = home("Subhoge Blue (Japan)").await.map_err(e)?;
+        let (sub, sub_name) = home("Subhoge Blue [Subset - Speedrun] (Japan)").await.map_err(e)?;
+        let (red, _) = home("Subhoge Red (Japan)").await.map_err(e)?;
+
+        // One subset for both versions, linked to both: the RA pass leaves them apart.
+        let sub_release: u64 = sqlx::query_scalar("SELECT id FROM `release` WHERE name = 'Subhoge Blue [Subset - Speedrun] (Japan)'").fetch_one(pool).await.map_err(e)?;
+        let src = import::ensure_source(pool, "retroachievements").await.map_err(de)?;
+        let gb = Platform::GameBoy.igdb_id();
+        let red_sub = "Subhoge Red [Subset - Speedrun] (Japan)";
+        let red_sub_release = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region, source_id) VALUES (?, ?, ?, ?, ?, 'JP', ?)")
+            .bind(gb).bind(red_sub).bind(import::sha1_hex(red_sub)).bind(red_sub.to_lowercase()).bind(import::sha1_hex(&red_sub.to_lowercase())).bind(src)
+            .execute(pool).await.map_err(e)?.last_insert_id();
+        // As an import before this change had it: inside the game's title.
+        sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(red).bind(red_sub_release).execute(pool).await.map_err(e)?;
+        for r in [sub_release, red_sub_release] {
+            sqlx::query("INSERT INTO release_provider_links (release_id, provider, provider_id, confidence, linked_at, deleted) VALUES (?, 'retroachievements', '990088', 'exact', NOW(), FALSE)").bind(r).execute(pool).await.map_err(e)?;
+        }
+        title_merge::dedupe_by_igdb(pool, None, &database::jobs::Progress::none()).await.map_err(de)?;
+        let live = |t: u64| async move { sqlx::query_scalar::<_, bool>("SELECT NOT deleted FROM title WHERE id = ?").bind(t).fetch_one(pool).await };
+        let (blue_live, red_live, sub_live) = (live(blue).await.map_err(e)?, live(red).await.map_err(e)?, live(sub).await.map_err(e)?);
+
+        // A merge made through the subset before this rule: found by the audit.
+        title_merge::merge_titles(pool, &[red, blue], "ra:990088", "hash").await.map_err(de)?;
+        let found = title_merge::ra_subset_merges(pool).await.map_err(de)?;
+        let log: Option<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE reason = 'ra:990088' AND undone_at IS NULL").fetch_optional(pool).await.map_err(e)?;
+        let flagged = log.is_some_and(|l| found.contains(&l));
+        if let Some(l) = log {
+            title_merge::decouple(pool, l).await.map_err(de)?;
+        }
+        let bundled = title_merge::bundled_subsets(pool).await.map_err(de)?;
+        let in_red = bundled.get(&red).cloned().unwrap_or_default();
+        let split = title_merge::split_subsets(pool, &in_red).await.map_err(de)?;
+        let (red_sub_home, red_sub_title) = home("Subhoge Red [Subset - Speedrun] (Japan)").await.map_err(e)?;
+        let checks = [
+            (sub != blue && sub_name.contains("[Subset - Speedrun]"), format!("the import gives the subset its own title: #{sub} {sub_name:?}, the game #{blue}")),
+            (blue_live && red_live && sub_live, format!("a subset shared by two versions does not merge them: {blue_live} {red_live} {sub_live}")),
+            (flagged, format!("an earlier merge through the subset is found: {found:?}")),
+            (in_red.len() == 1 && split.len() == 1 && red_sub_home != red && red_sub_title.contains("[Subset - Speedrun]"), format!("the subset inside the game's title is split out: {in_red:?} -> #{red_sub_home} {red_sub_title:?}")),
+        ];
+        if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
+            return Err(why.clone());
+        }
+        Ok(((), format!("{} checks", checks.len())))
+    })
+    .await;
+}
+
+/// Undoing a merge taken from a suggestion puts the suggestion back in the review, pending.
+async fn phase_undo_reopens_suggestion(env: &Env, report: &mut Report) {
+    let pool = &env.pool;
+    step(report, "merge review: undoing a taken suggestion puts it back", async {
+        use romexplorer::database::title_merge;
+        let e = |e: sqlx::Error| e.to_string();
+        let de = |e: database::DatabaseError| e.to_string();
+        let ae = |e: romexplorer::api::Error| e.message;
+        let app = romexplorer::api::App::with_pool(pool.clone(), env.paths.clone(), DatabaseConfig::default()).map_err(ae)?;
+        let src = import::ensure_source(pool, "no-intro").await.map_err(de)?;
+        let nes = Platform::Nes.igdb_id();
+        let title = |name: &'static str, release: &'static str| async move {
+            let t = sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, ?)").bind(name).bind(name.to_lowercase()).bind(import::sha1_hex(&format!("reopen/{name}"))).execute(pool).await?.last_insert_id();
+            let norm = release.to_lowercase();
+            let r = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region, source_id) VALUES (?, ?, ?, ?, ?, 'JP', ?)")
+                .bind(nes).bind(release).bind(import::sha1_hex(release)).bind(&norm).bind(import::sha1_hex(&norm)).bind(src)
+                .execute(pool).await?.last_insert_id();
+            sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(t).bind(r).execute(pool).await?;
+            Ok::<u64, sqlx::Error>(t)
+        };
+        let a = title("Reopen Hoge", "Reopen Hoge (Japan)").await.map_err(e)?;
+        let b = title("Reopen Hoge Gaiden", "Reopen Hoge Gaiden (Japan)").await.map_err(e)?;
+        let key = "name:reopen-test";
+        sqlx::query("INSERT INTO title_merge_suggestions (igdb_id, title_ids, reason) VALUES (?, ?, 'name_suffix')").bind(key).bind(format!("{a},{b}")).execute(pool).await.map_err(e)?;
+        title_merge::resolve_suggestion(pool, key, true).await.map_err(de)?;
+        let taken: String = sqlx::query_scalar("SELECT CAST(status AS CHAR) FROM title_merge_suggestions WHERE igdb_id = ?").bind(key).fetch_one(pool).await.map_err(e)?;
+        let log: u64 = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE suggestion_key = ? AND undone_at IS NULL").bind(key).fetch_one(pool).await.map_err(e)?;
+        romexplorer::api::titles::decouple(&app, log).await.map_err(ae)?;
+        let back: String = sqlx::query_scalar("SELECT CAST(status AS CHAR) FROM title_merge_suggestions WHERE igdb_id = ?").bind(key).fetch_one(pool).await.map_err(e)?;
+        let both_live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title WHERE id IN (?, ?) AND deleted = FALSE").bind(a).bind(b).fetch_one(pool).await.map_err(e)?;
+        let checks = [
+            (taken == "accepted", format!("taking it marks it accepted: {taken}")),
+            (back == "pending" && both_live == 2, format!("undone, it is pending again: {back}, {both_live} titles live")),
+        ];
+        if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
+            return Err(why.clone());
+        }
+        Ok(((), format!("{} checks", checks.len())))
+    })
+    .await;
+}
+
 /// A split is logged under Edit › Combined titles, the title page of either side lists it,
 /// "decouple all" leaves it, and undoing it puts the releases back and drops the empty title.
 async fn phase_split_log(env: &Env, report: &mut Report) {
@@ -4210,6 +4316,8 @@ fn database_end_to_end() {
         Box::pin(phase_bulk_release_moves(&env, &mut report)).await;
         Box::pin(phase_split_log(&env, &mut report)).await;
         Box::pin(phase_unlicensed_apart(&env, &mut report)).await;
+        Box::pin(phase_ra_subsets_apart(&env, &mut report)).await;
+        Box::pin(phase_undo_reopens_suggestion(&env, &mut report)).await;
         Box::pin(phase_review_layout(&env, &mut report)).await;
         Box::pin(phase_locale_edit(&env, &mut report)).await;
         Box::pin(phase_document_backfill(&env, &mut report)).await;
