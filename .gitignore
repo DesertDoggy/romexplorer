@@ -58,3 +58,6 @@ target/
 # Android signing keys: never in the repo (keep them under C:\Android\keys or the like).
 *.jks
 *.keystore
+
+# Local test runs on real files (kept inside the repo so antivirus leaves them alone)
+/.music-test/
