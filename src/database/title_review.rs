@@ -741,13 +741,13 @@ async fn split_names(pool: &MySqlPool, scope: &PassScope) -> Result<Vec<String>,
 /// kinds that no longer apply. Returns how many suggestions were written.
 pub async fn suggest(pool: &MySqlPool, scope: &PassScope, progress: &Progress) -> Result<u64, DatabaseError> {
     let mut live: Vec<String> = Vec::new();
-    progress.force(0, None, "review: International and Director's Cut releases").await;
+    progress.force(0, Some(4), &format!("review 1 of 4: International and Director's Cut releases ({} suggestion(s) so far)", live.len())).await;
     live.extend(variants(pool, scope).await?);
-    progress.force(0, None, "review: releases of another game inside a title").await;
+    progress.force(1, Some(4), &format!("review 2 of 4: releases of another game inside a title ({} suggestion(s) so far)", live.len())).await;
     live.extend(split_names(pool, scope).await?);
-    progress.force(0, None, "review: names that translate each other").await;
+    progress.force(2, Some(4), &format!("review 3 of 4: names that translate each other ({} suggestion(s) so far)", live.len())).await;
     live.extend(translated_names(pool, scope).await?);
-    progress.force(0, None, "review: bundles beside their game").await;
+    progress.force(3, Some(4), &format!("review 4 of 4: bundles beside their game ({} suggestion(s) so far)", live.len())).await;
     live.extend(bundles(pool, scope).await?);
     if scope.dirty.is_none() {
         let keep: HashSet<&str> = live.iter().map(String::as_str).collect();

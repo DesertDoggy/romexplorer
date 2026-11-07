@@ -5882,6 +5882,14 @@ function stepLabel(st) {
     versions: tr("Find each game's official versions"),
     basegames: tr('Link ports, remakes and add-ons to their base game'),
     families: tr('Collections, families and definitive versions'),
+    // The merge audit's steps (`merge_audit::AUDIT_STEPS`).
+    audit_demo: tr('Titles linked through a demo of another game'),
+    audit_remerge: tr('Earlier audit splits that belong together'),
+    audit_platforms: tr('Automatic merges across platforms'),
+    audit_unlicensed: tr('Unlicensed titles merged with retail ones'),
+    audit_wronglink: tr('Titles whose own files name another game'),
+    audit_merges: tr('Merges made through an IGDB game'),
+    audit_links: tr('IGDB links made by hash, name or search'),
   })[st.key] || st.label || '';
 }
 function fmtSecs(secs) { return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'); }
@@ -5916,7 +5924,7 @@ function progressBar(j, full) {
   if (j.progress_done == null && !j.progress_message) return '';
   // Rounded down: 100% only once it is all done, never while the last bit is still going.
   const pct = j.progress_total ? Math.min(100, Math.floor(100 * j.progress_done / j.progress_total)) : null;
-  const bar = pct !== null ? `<div class="pbar"><div style="width:${pct}%"></div></div><span class="num">${pct}%</span>` : (j.progress_done != null ? `<span class="num">${j.progress_done}</span>` : '');
+  const bar = pct !== null ? `<div class="pbar"><div style="width:${pct}%"></div></div><span class="num">${pct}%</span>` : (j.progress_done ? `<span class="num">${j.progress_done}</span>` : ''); // a bare 0 beside the message only reads as stuck
   const msg = j.progress_message || '';
   return `<div class="prog${full ? ' full' : ''}" title="${esc(msg)}">${bar}${full ? '' : stepsHtml(j, false)}<span class="muted">${esc(full ? msg : msg.slice(0, 90))}</span></div>`;
 }

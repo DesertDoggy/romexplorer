@@ -360,6 +360,9 @@ impl Worker {
     /// logged; `jobs::release_orphans` puts the row right on the next tick if it was left
     /// claimed.
     async fn run(&self, job: Job) {
+        // Something to show from the first moment: a job's own first report can be seconds
+        // away (a big query, a download starting), and an empty row reads as stuck.
+        Progress::new(&self.app.pool, job.id).force(0, None, &format!("{}: starting", job.job_type.name())).await;
         let outcome = self.dispatch(&job).await;
         // Ran to its end, with or without items that failed: what follows a finished job
         // follows this one too.
@@ -459,7 +462,7 @@ impl Worker {
             JobType::ProviderQuery => self.provider_query(job).await,
             JobType::ProviderBulkSync => self.provider_bulk_sync(job).await,
             JobType::MediaDownload => self.media_download(job).await,
-            JobType::DbOptimize => self.db_optimize().await,
+            JobType::DbOptimize => self.db_optimize(&Progress::new(&self.app.pool, job.id)).await,
             JobType::PlaymatchFill => self.playmatch_fill(job).await,
             JobType::RaAccountSync => {
                 let summary = crate::database::providers::ra_account::sync(&self.app.clients(), &self.app.pool, &Progress::new(&self.app.pool, job.id)).await?;
@@ -1754,6 +1757,7 @@ impl Worker {
         // allowed; a server that is up but cannot supply it fails the job rather than being
         // worked around.
         use api::media_sync::ServerCopy;
+        Progress::new(&self.app.pool, job.id).force(0, Some(1), &format!("downloading the {media_type} from {}: {url}", provider.name())).await;
         let prefetched = match api::media_sync::via_main(&self.app, url, provider, payload_str(job, "provider_id"), media_type, payload_str(job, "sub_category"), target).await? {
             ServerCopy::Bytes(f) => Some((f.bytes, f.content_type)),
             ServerCopy::NoMainServer | ServerCopy::NotServed => None,
@@ -1771,17 +1775,24 @@ impl Worker {
 
     /// The deletion-policy hard-delete pass, bottom-up: only rows flagged `deleted` with
     /// nothing live still pointing at them.
-    async fn db_optimize(&self) -> Result<(), DatabaseError> {
+    async fn db_optimize(&self, progress: &Progress) -> Result<(), DatabaseError> {
+        const STATEMENTS: [(&str, &str); 9] = [
+            ("finished jobs older than 30 days", "DELETE FROM jobs WHERE status IN ('done','failed') AND updated_at < NOW() - INTERVAL 30 DAY"),
+            ("links to deleted files", "DELETE rf FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id WHERE f.deleted = TRUE"),
+            ("deleted files", "DELETE FROM local_files WHERE deleted = TRUE"),
+            ("game links of deleted ROMs", "DELETE gr FROM local_game_roms gr JOIN local_rom r ON r.id = gr.rom_id WHERE r.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = r.id)"),
+            ("deleted ROMs", "DELETE FROM local_rom WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = local_rom.id)"),
+            ("release links of deleted games", "DELETE rg FROM local_release_games rg JOIN local_game g ON g.id = rg.game_id WHERE g.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = g.id)"),
+            ("deleted games", "DELETE FROM local_game WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = local_game.id)"),
+            ("hashes of deleted content", "DELETE h FROM hashes h JOIN content c ON c.id = h.content_id WHERE c.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = c.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = c.id)"),
+            ("deleted content", "DELETE FROM content WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM hashes h WHERE h.content_id = content.id)"),
+        ];
+        let n = STATEMENTS.len() as u64;
         let mut tx = self.app.pool.begin().await?;
-        sqlx::query("DELETE FROM jobs WHERE status IN ('done','failed') AND updated_at < NOW() - INTERVAL 30 DAY").execute(&mut *tx).await?;
-        sqlx::query("DELETE rf FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id WHERE f.deleted = TRUE").execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM local_files WHERE deleted = TRUE").execute(&mut *tx).await?;
-        sqlx::query("DELETE gr FROM local_game_roms gr JOIN local_rom r ON r.id = gr.rom_id WHERE r.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = r.id)").execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM local_rom WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = local_rom.id)").execute(&mut *tx).await?;
-        sqlx::query("DELETE rg FROM local_release_games rg JOIN local_game g ON g.id = rg.game_id WHERE g.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = g.id)").execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM local_game WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = local_game.id)").execute(&mut *tx).await?;
-        sqlx::query("DELETE h FROM hashes h JOIN content c ON c.id = h.content_id WHERE c.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = c.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = c.id)").execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM content WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM hashes h WHERE h.content_id = content.id)").execute(&mut *tx).await?;
+        for (i, (what, sql)) in STATEMENTS.iter().enumerate() {
+            progress.force(i as u64, Some(n), &format!("removing {what} ({} of {n})", i + 1)).await;
+            sqlx::query(*sql).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         Ok(())
     }

@@ -432,7 +432,7 @@ pub async fn create(app: &App, kind: Kind, progress: &crate::database::jobs::Pro
     // from 10% to 90% and sit there. Counted exactly (see `rows::exact_rows` for why the
     // optimizer's estimate was not good enough), except for a seed: its tables are filtered,
     // and counting through the filter is the export's own work done twice.
-    progress.force(0, None, "counting rows").await;
+    progress.force(0, None, &format!("counting the rows of {} table(s)", wanted.len())).await;
     let estimate = match kind {
         Kind::DatSeed => super::rows::estimated_rows(app, wanted).await,
         _ => super::rows::exact_rows(app, wanted).await,

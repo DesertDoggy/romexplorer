@@ -113,6 +113,9 @@ replacing a build.
   apart, and those already merged are split out once after the update.
 - The "another game inside" card left pirate and unlicensed games from other regions in the
   title.
+- Some jobs, like the merge audit, sat at 0 for a while with nothing said. Every job now says
+  what it is doing and how far it is from the start, and the merge audit lists its steps
+  like the title merge pass.
 
 # romexplorer 0.1.8 (alpha)
 

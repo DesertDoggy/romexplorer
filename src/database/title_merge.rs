@@ -334,7 +334,9 @@ pub async fn bundle_addons_in(pool: &MySqlPool, progress: &Progress, scope: &Pas
     // that have a game release, with the platforms of those.
     let wanted: Vec<&String> = addons.iter().flat_map(|(_, _, h)| h).collect::<BTreeSet<_>>().into_iter().collect();
     let mut games: HashMap<String, Vec<(u64, BTreeSet<u16>)>> = HashMap::new();
-    for chunk in wanted.chunks(1000) {
+    let names = wanted.len() as u64;
+    for (i, chunk) in wanted.chunks(1000).enumerate() {
+        progress.force((i * 1000) as u64, Some(names), &format!("{} DLC / update title(s): looking up their game's name, {} of {names}", addons.len(), (i * 1000).min(wanted.len()))).await;
         let marks = vec!["?"; chunk.len()].join(",");
         let sql = format!(
             "SELECT x.norm_hash, t.id, CAST(GROUP_CONCAT(DISTINCT r.app_platform_id) AS CHAR) AS platforms \
@@ -383,9 +385,7 @@ pub async fn bundle_addons_in(pool: &MySqlPool, progress: &Progress, scope: &Pas
             summary.games += 1;
             summary.bundled += group.len() as u64 - 1;
         }
-        if n % 50 == 0 {
-            progress.force(n as u64, Some(total), &format!("bundling DLC and updates with their games: {} of {total} game(s)", n + 1)).await;
-        }
+        progress.report(n as u64, Some(total), &format!("bundling DLC and updates with their games: {} of {total} game(s) ({} bundled)", n + 1, summary.bundled)).await;
     }
     Ok(summary)
 }
