@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use super::agbplay;
+use super::music_search::{self, Machine};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 
 /// The data view a ROM song is stored under: no disc has this many data tracks, and it is one
@@ -32,8 +33,8 @@ const PLAY_LOOPS: u8 = 2;
 const GBA_M4A: &str = "gba-m4a";
 /// `nes@<recipe>@<body ms>@<fade ms>`: the game's own sound code (see [`super::nes_music`]).
 const NES: &str = "nes";
-/// How long a looping NES song fades out.
-const NES_FADE_MS: u64 = 8_000;
+/// How long a looping song from a game's own sound code fades out.
+const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
 const NDS_SSEQ: &str = "nds-sseq";
 /// DS songs are listened to at this rate to time them: enough to hear the drums' level.
@@ -369,7 +370,7 @@ fn sdat_bytes(path: &Path, view: u32, inner: &str) -> Result<std::sync::Arc<Vec<
 pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
     match engine.split('@').next() {
         Some(NDS_SSEQ) => open_sseq(path, engine, song),
-        Some(NES) => open_nes(path, engine, song),
+        Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;
@@ -380,43 +381,46 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     }
 }
 
-// --- NES -----------------------------------------------------------------------------------
+// --- Consoles whose own sound code plays the music (super::music_search) -----------------
 
 fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
-    use super::nes_music;
+    index_machine::<super::nes_music::Nes>(path, t, NES, "NES")
+}
+
+fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
-    let found = nes_music::search(&rom)?;
+    let found = music_search::search::<M>(&rom)?;
     if found.songs.is_empty() {
         return Ok((Vec::new(), found.why));
     }
-    let rate = if nes_music::Nes::new(&rom)?.pal() { nes_music::PAL_RATE } else { nes_music::NTSC_RATE };
+    let rate = M::boot(&rom)?.frame_rate();
     let ms = |frames: usize| (frames as f64 * 1000.0 / rate) as u64;
     let recipe = found.recipe.encode();
     let mut out = Vec::with_capacity(found.songs.len());
     for (i, &v) in found.songs.iter().enumerate() {
-        let timing = nes_music::measure(&rom, &found.recipe, v)?;
+        let timing = music_search::measure::<M>(&rom, &found.recipe, v)?;
         let (looping, intro, lp) = match timing.looping {
             Some((start, len)) => (true, ms(start), ms(len)),
             None => (false, ms(timing.frames), 0),
         };
         let duration_ms = if looping { intro + lp } else { intro };
         // Played: the intro and the loop twice, then a fade; a song that ends plays to its end.
-        let (body, fade) = if looping { (intro + lp * u64::from(PLAY_LOOPS), NES_FADE_MS) } else { (duration_ms, 0) };
+        let (body, fade) = if looping { (intro + lp * u64::from(PLAY_LOOPS), SONG_FADE_MS) } else { (duration_ms, 0) };
         let name = format!("Track {}", i + 1);
-        let shape = Shape { looping, duration_ms, channels: 1, cd_track: 0, rip: true };
+        let shape = Shape { looping, duration_ms, channels: M::CHANNELS, cd_track: 0, rip: true };
         let kind = classify(&shape, &name, t);
         let r = u64::from(PLAY_RATE);
         out.push(FoundTrack {
-            location: TrackLocation::RomSong { engine: format!("{NES}@{recipe}@{body}@{fade}"), song: u32::from(v) },
+            location: TrackLocation::RomSong { engine: format!("{engine}@{recipe}@{body}@{fade}"), song: u32::from(v) },
             name,
             kind,
             sample_rate: PLAY_RATE,
-            channels: 1,
+            channels: M::CHANNELS,
             duration_ms,
             looping,
             loop_start: intro * r / 1000,
             loop_end: (intro + lp) * r / 1000,
-            codec: "NES".into(),
+            codec: codec.into(),
             format: format!("song {v}"),
             bytes: 0,
             video: false,
@@ -425,22 +429,26 @@ fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<Str
     Ok((out, None))
 }
 
-/// A NES song from the game's own code, played for `left` more samples, the last `fade` of
+/// A song from the game's own code, played for `left` more sample frames, the last `fade` of
 /// them fading out.
-struct NesPcm {
-    song: super::nes_music::Song,
+struct MachinePcm<M: Machine> {
+    song: music_search::Song<M>,
     left: u64,
     fade: u64,
     tail: u64,
     pending: Vec<i16>,
 }
 
-impl PcmStream for NesPcm {
+impl<M: Machine + Send> PcmStream for MachinePcm<M>
+where
+    M::Entry: Send,
+    M::Chip: Send,
+{
     fn sample_rate(&self) -> u32 {
         PLAY_RATE
     }
     fn channels(&self) -> u16 {
-        1
+        M::CHANNELS
     }
     fn total_samples(&self) -> Option<u64> {
         Some(self.left)
@@ -449,16 +457,19 @@ impl PcmStream for NesPcm {
         if self.left == 0 {
             return Ok(None);
         }
-        while self.pending.len() < 4096 {
+        let ch = M::CHANNELS as usize;
+        while self.pending.len() < 4096 * ch {
             self.song.frame(&mut self.pending)?;
         }
-        let n = (self.left as usize).min(self.pending.len());
-        let mut buf: Vec<i16> = self.pending.drain(..n).collect();
+        let n = (self.left as usize).min(self.pending.len() / ch);
+        let mut buf: Vec<i16> = self.pending.drain(..n * ch).collect();
         if self.fade > 0 {
-            for (i, s) in buf.iter_mut().enumerate() {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
                 let g = super::track_timing::fade_gain(self.left - i as u64, self.fade, self.tail);
                 if g < 1.0 {
-                    *s = (f32::from(*s) * g) as i16;
+                    for s in frame {
+                        *s = (f32::from(*s) * g) as i16;
+                    }
                 }
             }
         }
@@ -467,21 +478,24 @@ impl PcmStream for NesPcm {
     }
 }
 
-fn open_nes(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
-    let bad = || format!("a damaged NES song record: {engine}");
-    let rest = engine.strip_prefix("nes@").ok_or_else(bad)?;
-    // The recipe has four fields, then body and fade.
-    let parts: Vec<&str> = rest.split('@').collect();
-    if parts.len() != 6 {
+fn open_machine<M: Machine + Send + 'static>(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String>
+where
+    M::Entry: Send,
+    M::Chip: Send,
+{
+    let bad = || format!("a damaged ROM song record: {engine}");
+    // The engine's name, the recipe's four fields, then body and fade.
+    let parts: Vec<&str> = engine.split('@').collect();
+    if parts.len() != 7 {
         return Err(bad());
     }
-    let recipe = super::nes_music::Recipe::decode(&parts[..4].join("@")).ok_or_else(bad)?;
-    let body: u64 = parts[4].parse().map_err(|_| bad())?;
-    let fade: u64 = parts[5].parse().map_err(|_| bad())?;
+    let recipe = music_search::Recipe::decode(&parts[1..5].join("@")).ok_or_else(bad)?;
+    let body: u64 = parts[5].parse().map_err(|_| bad())?;
+    let fade: u64 = parts[6].parse().map_err(|_| bad())?;
     let rom = read_rom(path)?;
     let v = u8::try_from(song).map_err(|_| bad())?;
-    let player = super::nes_music::Song::open(&rom, &recipe, v, PLAY_RATE)?;
+    let player = music_search::Song::<M>::open(&rom, &recipe, v, PLAY_RATE)?;
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
-    Ok(Box::new(NesPcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+    Ok(Box::new(MachinePcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }

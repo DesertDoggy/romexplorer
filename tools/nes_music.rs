@@ -1,4 +1,4 @@
-//! Developer tool: the NES music search (`rom::nes_music`) over ROMs on this PC, to see how
+//! Developer tool: the NES music search (`rom::music_search` on `rom::nes_music`) over ROMs on this PC, to see how
 //! many games it finds music in and why not in the rest.
 //!
 //!   nes_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
@@ -10,7 +10,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use romexplorer::rom::{nes_cart, nes_music, rom_songs};
+use romexplorer::rom::music_search::{self, Song};
+use romexplorer::rom::nes_music::Nes;
+use romexplorer::rom::{nes_cart, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -101,7 +103,7 @@ fn main() {
         let board = nes_cart::parse(&rom).map(|h| h.mapper).unwrap_or(0);
         let started = std::time::Instant::now();
         let mut notes = Vec::new();
-        let found = nes_music::search_logged(&rom, &mut |n| notes.push(n));
+        let found = music_search::search_logged::<Nes>(&rom, &mut |n| notes.push(n));
         let took = started.elapsed().as_secs_f32();
         match found {
             Ok(f) if !f.songs.is_empty() => {
@@ -118,8 +120,8 @@ fn main() {
                     let dir = dir.join(&stem);
                     let _ = std::fs::create_dir_all(&dir);
                     for (i, &v) in f.songs.iter().enumerate() {
-                        let timing = nes_music::measure(&rom, &f.recipe, v);
-                        let Ok(mut song) = nes_music::Song::open(&rom, &f.recipe, v, 44_100) else {
+                        let timing = music_search::measure::<Nes>(&rom, &f.recipe, v);
+                        let Ok(mut song) = Song::<Nes>::open(&rom, &f.recipe, v, 44_100) else {
                             continue;
                         };
                         let frames = (seconds as f64 * song.frame_rate()) as usize;
