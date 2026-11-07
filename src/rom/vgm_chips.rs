@@ -18,6 +18,7 @@ struct Api {
     write: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int),
     end_frame: unsafe extern "C" fn(*mut c_void, c_int) -> c_long,
     read: unsafe extern "C" fn(*mut c_void, *mut i16, c_long) -> c_long,
+    write_ram: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int),
 }
 
 fn api() -> Option<&'static Api> {
@@ -35,6 +36,7 @@ fn api() -> Option<&'static Api> {
                 write: *lib.get(b"rchip_write\0").ok()?,
                 end_frame: *lib.get(b"rchip_end_frame\0").ok()?,
                 read: *lib.get(b"rchip_read\0").ok()?,
+                write_ram: *lib.get(b"rchip_write_ram\0").ok()?,
                 _lib: lib,
             })
         }
@@ -65,7 +67,8 @@ pub enum Kind {
     /// Konami's SCC (in MSX cartridges). Even ports pick a register, odd ones write it: 0/1
     /// waveforms, 2/3 frequencies, 4/5 volumes, 6/7 key on, 10/11 test.
     Scc,
-    /// The WonderSwan's sound unit.
+    /// The WonderSwan's sound unit. Ports are the console's I/O ports (0x80-0x94); its
+    /// waveforms are in the console's RAM, sent with [`Chips::write_ram`].
     WonderSwan,
 }
 
@@ -119,6 +122,20 @@ impl Chips {
                 time as c_int,
                 chip as c_int,
                 port as c_int,
+                value as c_int,
+            )
+        }
+    }
+
+    /// A write to chip `chip`'s own memory (for the WonderSwan's, the console RAM its
+    /// waveforms are read from), at `time` into the frame.
+    pub fn write_ram(&mut self, time: u32, chip: u8, addr: u16, value: u8) {
+        unsafe {
+            (self.api.write_ram)(
+                self.handle,
+                time as c_int,
+                chip as c_int,
+                addr as c_int,
                 value as c_int,
             )
         }

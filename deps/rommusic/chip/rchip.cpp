@@ -1,6 +1,6 @@
 /* rchip_*: sound chips from libvgm (external/libvgm), one register write at a time, for
  * consoles whose game code the app runs itself (the Master System and Game Gear's PSG and
- * FM unit, and more as they are added). The app hands every write over with its time in the
+ * FM unit, the WonderSwan's sound unit and more). The app hands every write over with its time in the
  * frame; this renders the chips up to that moment first, so notes start where the game
  * started them, and mixes the chips to stereo at the requested rate.
  *
@@ -39,6 +39,9 @@ struct Chip {
     DEV_INFO dev;
     RESMPL_STATE rs;
     DEVFUNC_WRITE_A8D8 write;
+    /* The chip's own memory, for the chips that have some (the WonderSwan's sound unit
+     * reads its waveforms from the console's RAM); NULL for the rest. */
+    DEVFUNC_WRITE_A16D8 write_ram;
 };
 
 struct Host {
@@ -166,6 +169,8 @@ RCHIP_API int rchip_add(void *handle, int dev, int clock, int variant) {
         delete c;
         return -1;
     }
+    if (SndEmu_GetDeviceFunc(c->dev.devDef, RWF_MEMORY | RWF_WRITE, DEVRW_A16D8, 0, (void **)&c->write_ram))
+        c->write_ram = NULL;
     c->dev.devDef->Reset(c->dev.dataPtr);
     Resmpl_SetVals(&c->rs, RSMODE_LINEAR, volume_of((UINT8)dev), h.rate);
     Resmpl_DevConnect(&c->rs, &c->dev);
@@ -184,6 +189,19 @@ RCHIP_API void rchip_write(void *handle, int time, int chip, int port, int value
     render_to(h, sample_at(h, time));
     Chip *c = h.chips[chip];
     c->write(c->dev.dataPtr, (UINT8)port, (UINT8)value);
+}
+
+/* A write to chip `chip`'s own memory at `addr`, at `time` into the frame. Ignored by chips
+ * with none. */
+RCHIP_API void rchip_write_ram(void *handle, int time, int chip, int addr, int value) {
+    Host &h = *(Host *)handle;
+    if (chip < 0 || (size_t)chip >= h.chips.size())
+        return;
+    Chip *c = h.chips[chip];
+    if (!c->write_ram)
+        return;
+    render_to(h, sample_at(h, time));
+    c->write_ram(c->dev.dataPtr, (UINT16)addr, (UINT8)value);
 }
 
 /* Ends the frame at `time`. Returns the samples (left and right counted separately) now
