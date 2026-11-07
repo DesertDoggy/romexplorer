@@ -2,6 +2,9 @@
 
 **English** · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [Italiano](README.it.md) · [Português](README.pt.md) · [Deutsch](README.de.md) · [한국어](README.ko.md) · [Polski](README.pl.md)
 
+> **romexplorer does not distribute or download ROMs, BIOS files or keys, and does not
+> support piracy.** Use it with your own dumps of games you own.
+
 A ROM collection manager: it scans your folders, identifies every file by hash against
 reference DATs, fetches metadata and art, and converts, verifies and copies the files. It
 runs as a server with a browser console and web GUI, or as a desktop app, on Windows, macOS
@@ -96,6 +99,13 @@ a file's metadata and `chdhash` hashes it. Each tool does one thing, so a file d
 executable does the right thing; `chdlite-gui` is the same in a window. Every option is also a
 flag (`--help`). chdlite is released separately: see
 [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+
+### Command-line tool (rommusic)
+
+Drop a ROM, disc image, dumped folder or music rip set on `rommusic` and it writes the game's
+background music as FLAC in a folder beside it. Every option is also a flag (`--help`). The
+systems it reads are listed under [ROM audio](#rom-audio). rommusic is released separately: see
+[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
 
 ### Provider keys
 
@@ -236,6 +246,28 @@ the most definitive version is not in your collection (i.e. go play it on Steam)
 Note: Crossplats and Defs are built from IGDB metadata, so it must be downloaded. A setting can
 download the related data automatically (off by default, because the large database slows
 everything down).
+
+## ROM audio
+
+Title pages can play the music inside your ROMs, straight from the file: nothing is extracted or
+copied. Run Index ROM audio on the Audio tab first. `rommusic` reads the same.
+
+| music from | platforms | files |
+|---|---|---|
+| CD audio tracks | Any CD game: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast and others | CHD, cue/bin, gdi |
+| Music files on the disc | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360 | CHD, cue/bin, gdi, ISO, CSO/ZSO, RVZ/WIA/GCZ/WBFS, XISO |
+| | Wii U | .wua; .wud/.wux and downloaded titles with their key beside them |
+| | PS3, PS Vita | decrypted folder dumps |
+| The sound archive | Nintendo DS (streamed and sequenced music), Nintendo 3DS (decrypted images only) | .nds, .3ds/.cci |
+| The game's sound engine | Game Boy Advance: games made with Nintendo's standard engine (about half) | .gba |
+| Music rips | NES and Famicom Disk System (NSF, NSFE), SNES (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System and Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum and Amstrad CPC (AY), Atari 8-bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket and Virtual Boy (VGM) | in the game's folder or the rip library, loose or zipped |
+
+- The rip library (Settings › Audio) matches NSF, NSFE, GBS, SPC, HES, KSS and SGC sets to your
+  ROMs by their content, so one set plays for every region of a game whatever its name.
+- PlayStation and PlayStation 2 rips need a PS2 BIOS in your collection; without one they are
+  skipped.
+- Disc images inside zip or 7z are not read yet. Encrypted images are not read.
+- `rommusic` also renders a SNES game's title music without a rip.
 
 ## RetroAchievements tab
 
