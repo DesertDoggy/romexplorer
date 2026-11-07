@@ -82,6 +82,7 @@ replacing a build.
   the merge audit splits out the ones already there.
 - Undoing a merge taken from Merge review did not put the suggestion back. It is up for review
   again.
+- A merge suggestion stayed in Merge review after its titles were merged by hand.
 - Pirate and unlicensed games were merged into retail games' titles.
 - The "another game inside" card left pirate and unlicensed games from other regions in the
   title.

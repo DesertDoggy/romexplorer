@@ -135,6 +135,7 @@ async fn data_migrations(pool: &MySqlPool) -> Result<(), DatabaseError> {
     super::merge_audit::queue_lost_igdb_repair_once(pool).await?;
     super::merge_audit::queue_unlicensed_repair_once(pool).await?;
     super::merge_audit::queue_subset_repair_once(pool).await?;
+    super::title_merge::settle_merged_suggestions_once(pool).await?;
     super::release_merge::move_color_releases_once(pool).await?;
     super::title_merge::log_past_splits_once(pool).await?;
     // A collection's running number in front of a name ("0743 - ...") is no other game.

@@ -83,6 +83,7 @@ zapasową przed podmianą wersji.
 - „Aktualizuj metadane” ponownie wiązało z IGDB tytuł, którego powiązanie usunięto ręcznie. Teraz pozostaje bez powiązania, dopóki nie powiążesz go samodzielnie.
 - Podzestawy RetroAchievements (wyzwania, speedrun itp.) trafiały do tytułu swojej gry i mogły połączyć dwie wersje gry w jeden tytuł. Każdy podzestaw jest teraz osobnym tytułem; audyt scaleń wydziela te już istniejące.
 - Cofnięcie scalenia przyjętego w przeglądzie scaleń nie przywracało propozycji. Teraz wraca do przeglądu.
+- Propozycja scalenia zostawała w przeglądzie scaleń po ręcznym scaleniu jej tytułów.
 - Gry pirackie i nielicencjonowane były scalane z tytułami gier komercyjnych.
 - Karta „inna gra w środku” zostawiała w tytule pirackie i nielicencjonowane gry z innych regionów.
 - Karta „inna gra w środku” traktowała wydanie z numerem przed nazwą („0743 - ...”) jako inną grę.

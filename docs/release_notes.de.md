@@ -87,6 +87,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - „Metadaten aktualisieren“ verknüpfte einen Titel wieder mit IGDB, obwohl die Verknüpfung von Hand entfernt worden war. Sie bleibt jetzt entfernt, bis Sie selbst verknüpfen.
 - RetroAchievements-Subsets (Challenge, Speedrun usw.) landeten im Titel ihres Spiels und konnten zwei Versionen eines Spiels in einem Titel vereinen. Jedes Subset ist jetzt ein eigener Titel; die Zusammenführungsprüfung trennt die vorhandenen ab.
 - Wurde eine Zusammenführung aus der Zusammenführungsprüfung rückgängig gemacht, kam der Vorschlag nicht zurück. Er steht jetzt wieder zur Prüfung an.
+- Ein Zusammenführungsvorschlag blieb in der Zusammenführungsprüfung, nachdem seine Titel von Hand zusammengeführt wurden.
 - Raubkopien und unlizenzierte Spiele wurden mit den Titeln kommerzieller Spiele zusammengeführt.
 - Die Karte „ein anderes Spiel darin“ ließ Raubkopien und unlizenzierte Spiele anderer Regionen im
   Titel.
