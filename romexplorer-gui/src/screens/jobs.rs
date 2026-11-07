@@ -57,6 +57,14 @@ fn step_label(step: &Value) -> String {
         "versions" => state::tr("Find each game's official versions"),
         "basegames" => state::tr("Link ports, remakes and add-ons to their base game"),
         "families" => state::tr("Collections, families and definitive versions"),
+        // The merge audit's steps (`merge_audit::AUDIT_STEPS`).
+        "audit_demo" => state::tr("Titles linked through a demo of another game"),
+        "audit_remerge" => state::tr("Earlier audit splits that belong together"),
+        "audit_platforms" => state::tr("Automatic merges across platforms"),
+        "audit_unlicensed" => state::tr("Unlicensed titles merged with retail ones"),
+        "audit_wronglink" => state::tr("Titles whose own files name another game"),
+        "audit_merges" => state::tr("Merges made through an IGDB game"),
+        "audit_links" => state::tr("IGDB links made by hash, name or search"),
         _ => s(step, "label"),
     }
 }
@@ -136,7 +144,8 @@ fn progress_bar(j: &Value, full: bool) -> String {
         // Rounded down: 100% only once it is all done, never while the last bit is still going.
         let pct = (100.0 * done.unwrap_or(0) as f64 / total as f64).floor().min(100.0) as u64;
         format!("<div class=\"pbar\"><div style=\"width:{pct}%\"></div></div><span class=\"num\">{pct}%</span>")
-    } else if let Some(d) = done {
+    } else if let Some(d) = done.filter(|d| *d > 0) {
+        // A count with no total yet; a bare 0 beside the message only reads as stuck.
         format!("<span class=\"num\">{d}</span>")
     } else {
         String::new()

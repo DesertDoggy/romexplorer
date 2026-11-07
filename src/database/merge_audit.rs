@@ -22,7 +22,7 @@ use sqlx::mysql::MySqlPool;
 use sqlx::Row;
 
 use super::error::DatabaseError;
-use super::jobs::Progress;
+use super::jobs::{Progress, Steps};
 use super::matching::{names_close, names_related};
 use super::providers::ProviderClients;
 
@@ -198,7 +198,8 @@ pub fn demo_of(release_name: &str) -> Option<String> {
 /// game the demo names: the IGDB merges into it are decoupled, and each title that comes out of
 /// it keeps the link only when one of its own (non-demo) releases is that game. Titles that do
 /// are free to merge again; the rest are linked by their own discs the next time.
-async fn separate_demo_links(pool: &MySqlPool, clients: &ProviderClients, book: &mut IgdbNameBook, s: &mut AuditSummary) -> Result<(), DatabaseError> {
+async fn separate_demo_links(pool: &MySqlPool, clients: &ProviderClients, book: &mut IgdbNameBook, s: &mut AuditSummary, progress: &Progress) -> Result<(), DatabaseError> {
+    progress.force(0, None, "finding titles that hold a demo of another game").await;
     let rows: Vec<(u64, String, String)> = sqlx::query_as(
         "SELECT DISTINCT t.id, l.provider_id, r.name FROM title t \
          JOIN title_provider_links l ON l.title_id = t.id AND l.provider = 'igdb' AND l.deleted = FALSE AND l.confidence IN ('hash', 'name', 'fuzzy') \
@@ -210,7 +211,9 @@ async fn separate_demo_links(pool: &MySqlPool, clients: &ProviderClients, book: 
     let ids: Vec<u32> = rows.iter().filter_map(|(_, p, _)| p.parse().ok()).filter(|id| !book.primary.contains_key(id)).collect::<HashSet<u32>>().into_iter().collect();
     book.load_primary(pool, &ids).await?;
     let mut done: HashSet<u64> = HashSet::new();
-    for (title, igdb, demo_release) in rows {
+    let n = rows.len() as u64;
+    for (i, (title, igdb, demo_release)) in rows.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("demo {} of {n}: {demo_release} ({} title(s) fixed)", i + 1, s.demo_titles_fixed)).await;
         let (Ok(id), Some(game)) = (igdb.parse::<u32>(), demo_of(&demo_release)) else { continue };
         if done.contains(&title) || !book.related(pool, clients, id, &game, true, s).await? {
             continue;
@@ -358,21 +361,41 @@ pub async fn queue_demo_repair_once(pool: &MySqlPool) -> Result<(), DatabaseErro
     Ok(())
 }
 
+/// The audit's steps, as `jobs::Steps` lists them (key, English label). Both UIs translate
+/// them by key.
+pub const AUDIT_STEPS: [(&str, &str); 7] = [
+    ("audit_demo", "Titles linked through a demo of another game"),
+    ("audit_remerge", "Earlier audit splits that belong together"),
+    ("audit_platforms", "Automatic merges across platforms"),
+    ("audit_unlicensed", "Unlicensed titles merged with retail ones"),
+    ("audit_wronglink", "Titles whose own files name another game"),
+    ("audit_merges", "Merges made through an IGDB game"),
+    ("audit_links", "IGDB links made by hash, name or search"),
+];
+
 pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progress) -> Result<AuditSummary, DatabaseError> {
     let mut s = AuditSummary::default();
     let mut book = IgdbNameBook::default();
+    // Seven steps, each over its own list: the row says which step and which item of how
+    // many, the bar gives each step a seventh, and the step list says how each came out.
+    let mut steps = Steps::new(progress, &AUDIT_STEPS, "merge audit");
 
-    progress.force(0, None, "merge audit: titles linked through a demo of another game").await;
-    separate_demo_links(pool, clients, &mut book, &mut s).await?;
+    steps.start(1).await;
+    separate_demo_links(pool, clients, &mut book, &mut s, progress).await?;
+    steps.done(format!("{} title(s) fixed", s.demo_titles_fixed)).await;
 
     // 0. An earlier audit's decouples that the current name rule calls related: merged back
     //    (a merge by hand lifts the block the decouple set).
+    steps.start(2).await;
+    progress.force(0, None, "reading earlier audit splits").await;
     let undone = sqlx::query("SELECT id, survivor_id, merged_name, reason, restored_title_id FROM title_merge_log WHERE undone_at IS NOT NULL AND reason LIKE 'igdb:%(audit)' AND restored_title_id IS NOT NULL")
         .fetch_all(pool)
         .await?;
     let undone_ids: Vec<u32> = undone.iter().filter_map(|r| r.try_get::<String, _>("reason").ok()).filter_map(|r| r.trim_start_matches("igdb:").trim_end_matches(" (audit)").parse().ok()).collect::<HashSet<u32>>().into_iter().collect();
     book.load_primary(pool, &undone_ids).await?;
-    for r in &undone {
+    let n = undone.len() as u64;
+    for (i, r) in undone.iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("split {} of {n} ({} merged back)", i + 1, s.remerged)).await;
         let name: String = r.try_get("merged_name")?;
         let Ok(igdb) = r.try_get::<String, _>("reason")?.trim_start_matches("igdb:").trim_end_matches(" (audit)").parse::<u32>() else { continue };
         if !book.related(pool, clients, igdb, &name, false, &mut s).await? {
@@ -387,14 +410,19 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
             s.remerged += 1;
         }
     }
+    steps.done(format!("{} of {n} merged back", s.remerged)).await;
 
     // 0b. Automatic merges of titles with no platform in common: made by passes that did not
     //     ask (or through a link that was wrong), split again for good -- marked so step 0
     //     never joins them back.
+    steps.start(3).await;
+    progress.force(0, None, "reading the automatic merges").await;
     let automatic: Vec<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE undone_at IS NULL AND grade <> 'manual' AND (reason LIKE 'igdb:%' OR reason LIKE 'ra:%') ORDER BY id DESC")
         .fetch_all(pool)
         .await?;
-    for log_id in automatic {
+    let n = automatic.len() as u64;
+    for (i, log_id) in automatic.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("merge {} of {n} ({} split)", i + 1, s.platform_splits)).await;
         let Some((merged, survivor)) = super::title_merge::merge_side_platforms(pool, log_id).await? else { continue };
         if !merged.is_disjoint(&survivor) {
             continue;
@@ -410,16 +438,21 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
             }
         }
     }
+    steps.done(format!("{} of {n} split", s.platform_splits)).await;
 
     // 0b'. Automatic merges that joined a title of nothing but pirate or unlicensed releases
     //      to one with a retail release (`title_merge::unlicensed_only`): a shared IGDB or
     //      RetroAchievements game between the two was a wrong link. Split again for good.
     // Accepted suggestions too ("accept all" took many at once); a merge the user made by
     // picking the titles stays.
+    steps.start(4).await;
+    progress.force(0, None, "reading the automatic and accepted merges").await;
     let automatic: Vec<u64> = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE undone_at IS NULL AND ((grade <> 'manual' AND (reason LIKE 'igdb:%' OR reason LIKE 'ra:%')) OR reason LIKE 'suggestion:%') ORDER BY id DESC")
         .fetch_all(pool)
         .await?;
-    for log_id in automatic {
+    let n = automatic.len() as u64;
+    for (i, log_id) in automatic.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("merge {} of {n} ({} split)", i + 1, s.unlicensed_splits)).await;
         if !super::title_merge::merge_joined_unlicensed(pool, log_id).await? {
             continue;
         }
@@ -434,15 +467,20 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
             }
         }
     }
+    steps.done(format!("{} of {n} split", s.unlicensed_splits)).await;
 
     // 0c. A title whose own files Hasheous names as another game than its IGDB link: the link
     //     came in through something else (a file it shares with other games, a demo), and
     //     pulled that game's titles in. Those merges are undone, the link replaced by the
     //     title's own game.
+    steps.start(5).await;
+    progress.force(0, None, "reading the titles automatic merges went into").await;
     let survivors: Vec<u64> = sqlx::query_scalar("SELECT DISTINCT survivor_id FROM title_merge_log WHERE undone_at IS NULL AND grade <> 'manual' AND (reason LIKE 'igdb:%' OR reason LIKE 'ra:%')")
         .fetch_all(pool)
         .await?;
-    for survivor in survivors {
+    let n = survivors.len() as u64;
+    for (i, survivor) in survivors.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("title {} of {n} ({} relinked)", i + 1, s.relinked.len())).await;
         let Some(title) = super::title_merge::live_title(pool, survivor).await? else { continue };
         let link: Option<String> = sqlx::query_scalar("SELECT provider_id FROM title_provider_links WHERE title_id = ? AND provider = 'igdb' AND deleted = FALSE AND confidence IN ('hash', 'name', 'fuzzy')")
             .bind(title)
@@ -476,14 +514,17 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
         s.relinked.push(title);
         log::info!("merge audit: title {title} was linked to IGDB {link}, its own files name {own:?}: merges undone, relinked");
     }
+    steps.done(format!("{} of {n} relinked", s.relinked.len())).await;
 
     // 1. Merges made because of an IGDB id.
+    steps.start(6).await;
+    progress.force(0, None, "reading the merges made through an IGDB game").await;
     let merges = sqlx::query("SELECT id, merged_name, reason FROM title_merge_log WHERE undone_at IS NULL AND reason LIKE 'igdb:%' AND reason NOT LIKE '%(audit)%' AND reason NOT LIKE '%(platforms)%' ORDER BY id").fetch_all(pool).await?;
     let merge_ids: Vec<u32> = merges.iter().filter_map(|r| r.try_get::<String, _>("reason").ok()).filter_map(|r| r.trim_start_matches("igdb:").parse().ok()).collect::<HashSet<u32>>().into_iter().collect();
     book.load_primary(pool, &merge_ids).await?;
     let n = merges.len() as u64;
     for (i, m) in merges.iter().enumerate() {
-        progress.report(i as u64, Some(n), &format!("merge audit: merge {} of {n} ({} decoupled)", i + 1, s.merges_decoupled)).await;
+        progress.report(i as u64, Some(n), &format!("merge {} of {n} ({} decoupled)", i + 1, s.merges_decoupled)).await;
         let log_id: u64 = m.try_get("id")?;
         let name: String = m.try_get("merged_name")?;
         let Ok(igdb) = m.try_get::<String, _>("reason")?.trim_start_matches("igdb:").parse::<u32>() else { continue };
@@ -503,9 +544,13 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
         }
     }
 
+    steps.done(format!("{} of {} decoupled", s.merges_decoupled, s.merges_checked)).await;
+
     // 2. Loose IGDB links whose title doesn't answer to the game's names.
     // A fuzzy link (a search result, no exact name) has to name the same game; the others
     // only must not plainly name another one.
+    steps.start(7).await;
+    progress.force(0, None, "reading the IGDB links made by hash, name or search").await;
     let links: Vec<(u64, String, String)> = sqlx::query_as(
         "SELECT tpl.title_id, tpl.provider_id, CAST(tpl.confidence AS CHAR) FROM title_provider_links tpl JOIN title t ON t.id = tpl.title_id AND t.deleted = FALSE \
          WHERE tpl.provider = 'igdb' AND tpl.deleted = FALSE AND tpl.confidence IN ('hash', 'name', 'fuzzy')",
@@ -516,9 +561,7 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
     book.load_primary(pool, &link_ids).await?;
     let n = links.len() as u64;
     for (i, (title_id, igdb, confidence)) in links.iter().enumerate() {
-        if i % 200 == 0 {
-            progress.report(i as u64, Some(n), &format!("merge audit: link {} of {n} ({} removed)", i + 1, s.links_removed)).await;
-        }
+        progress.report(i as u64, Some(n), &format!("link {} of {n} ({} removed)", i + 1, s.links_removed)).await;
         let Ok(id) = igdb.parse::<u32>() else { continue };
         s.links_checked += 1;
         let mut related = false;
@@ -534,6 +577,8 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
             log::info!("merge audit: removed IGDB {igdb} ({}) from title {title_id}", book.primary.get(&id).cloned().unwrap_or_default());
         }
     }
+    steps.done(format!("{} of {} removed", s.links_removed, s.links_checked)).await;
+    steps.finish();
     progress.force(n, Some(n), &format!("merge audit: {} of {} merges decoupled, {} of {} links removed", s.merges_decoupled, s.merges_checked, s.links_removed, s.links_checked)).await;
     Ok(s)
 }

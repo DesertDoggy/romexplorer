@@ -94,6 +94,34 @@ skips cleanly (doesn't fail) when its samples root isn't populated, rather than 
 every dev to have the full sample set.
 
 
+## Job progress: always detailed, from the first second
+
+A running job must never sit at 0 with nothing said. Every job's progress (`jobs::Progress`)
+says, at all times:
+
+- **what it is doing right now** -- the step and the item ("merge 312 of 4,180", "reading
+  game 2,001 of 9,500", "removing deleted files"), not just the job's name;
+- **how many in total** and **how many done**, in the unit the step counts (titles, merges,
+  links, files, bytes), with running results where there are any ("(12 split)");
+- for a job made of steps, **which step of how many** -- use `jobs::Steps`, which names each
+  step, gives it a slice of the bar and lists how each one came out. Add each step key's
+  label to `step_label` in **both** UIs (`romexplorer-gui/src/screens/jobs.rs`,
+  `stepLabel` in `console.html`) and to every `app_root_ex/assets/i18n/*.json`.
+
+In practice:
+
+- `force` a message *before* every query, download or fetch that can take more than a
+  moment, saying what it is ("reading the automatic merges"); a phase that is one big
+  statement still says which statement of how many ("removing deleted files (3 of 9)").
+- In a loop, `report(i, Some(n), ...)` on every item -- it is throttled to one write a
+  second already, so no `i % 200` gates that leave the bar still for minutes on slow items.
+- `None` as the total only while the total is genuinely unknown (walking a folder), and
+  then the message carries the running count ("12,400 file(s) found so far").
+- The worker writes "<job>: starting" when it claims a job, so the row is never blank; a
+  job's own first report must follow before any long work, not after it.
+- A new job type is not done until its progress has been watched once on real-sized data:
+  if the row stays on one message for more than a few seconds, that phase needs reports.
+
 ## Database schema (`migrations/*.sql`)
 
 - Soft-delete (`deleted` column) on every entity table; hard deletes only happen in the
