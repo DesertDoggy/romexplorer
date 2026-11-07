@@ -2930,8 +2930,8 @@
   "new title": "新しいタイトル",
   "(left empty: removed)": "（空になるため削除）",
   "a new title": "新しいタイトル",
-  "apply this grouping": "この振り分けを適用",
-  "start from the titles as they are": "今のタイトルから始める",
-  "start from the suggestion": "提案から始める",
+  "apply this grouping": "手動振り分けを適用",
+  "start from the titles as they are": "自動振り分けを維持",
+  "start from the suggestion": "提案を適用",
   "Leave as it is": "振り分けない"
 }
