@@ -54,9 +54,9 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Le pagine dei titoli possono riprodurre la musica contenuta nelle tue ROM (solo piattaforme e
   tipi di supporto compatibili).
 - Nelle impostazioni si sceglie quali tracce riprodurre.
-- Sono supportati i rip musicali nel formato originale (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
+- Sono supportati i formati audio originali (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
   del Game Gear, sciolti o in zip).
-- Una libreria di rip: indica in Impostazioni › Audio le cartelle dove tieni i set, e «Indicizza
+- Una libreria audio originale: indica in Impostazioni › Audio le cartelle dove tieni i set, e «Indicizza
   l'audio delle ROM» abbina ogni set alle tue ROM in base al contenuto. Lo stesso set suona per tutte le regioni
   del gioco, qualunque sia il nome.
 - Il lettore delle pagine dei titoli ha un pulsante «non riprodurre questa traccia». Le tracce
@@ -71,7 +71,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
   scansionati).
 - La musica delle pagine dei titoli è attiva di default, e il primo avvio chiede se la vuoi, subito
   dopo la lingua. Un titolo senza audio proprio riproduce tracce a caso di default.
-- I rip PSF e PSF2 usano un BIOS PS2 della tua collezione e vengono saltati se manca.
+- I file PSF e PSF2 usano un BIOS PS2 della tua collezione e vengono saltati se manca.
 
 **Revisione unioni e Titoli uniti**
 - Le uscite di una scheda si possono trascinare sul titolo a cui appartengono, oppure su «+» per un

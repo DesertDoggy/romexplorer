@@ -102,7 +102,7 @@ flag (`--help`). chdlite is released separately: see
 
 ### Command-line tool (rommusic)
 
-Drop a ROM, disc image, dumped folder or music rip set on `rommusic` and it writes the game's
+Drop a ROM, disc image, dumped folder or set of music files in an original audio format on `rommusic` and it writes the game's
 background music as FLAC in a folder beside it. Every option is also a flag (`--help`). The
 systems it reads are listed under [ROM audio](#rom-audio). rommusic is released separately: see
 [docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
@@ -260,11 +260,11 @@ copied. Run Index ROM audio on the Audio tab first. `rommusic` reads the same.
 | | PS3, PS Vita | decrypted folder dumps |
 | The sound archive | Nintendo DS (streamed and sequenced music), Nintendo 3DS (decrypted images only) | .nds, .3ds/.cci |
 | The game's sound engine | Game Boy Advance: games made with Nintendo's standard engine (about half) | .gba |
-| Music rips | NES and Famicom Disk System (NSF, NSFE), SNES (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System and Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum and Amstrad CPC (AY), Atari 8-bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket and Virtual Boy (VGM) | in the game's folder or the rip library, loose or zipped |
+| Original audio formats | NES and Famicom Disk System (NSF, NSFE), SNES (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System and Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum and Amstrad CPC (AY), Atari 8-bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket and Virtual Boy (VGM) | in the game's folder or the original audio library, loose or zipped |
 
-- The rip library (Settings › Audio) matches NSF, NSFE, GBS, SPC, HES, KSS and SGC sets to your
+- The original audio library (Settings › Audio) matches NSF, NSFE, GBS, SPC, HES, KSS and SGC sets to your
   ROMs by their content, so one set plays for every region of a game whatever its name.
-- PlayStation and PlayStation 2 rips need a PS2 BIOS in your collection; without one they are
+- PlayStation and PlayStation 2 files need a PS2 BIOS in your collection; without one they are
   skipped.
 - Disc images inside zip or 7z are not read yet. Encrypted images are not read.
 

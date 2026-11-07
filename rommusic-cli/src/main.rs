@@ -1,4 +1,4 @@
-//! rommusic: drop a ROM, disc image, dumped folder or music rip set on it and it writes the
+//! rommusic: drop a ROM, disc image, dumped folder or set of music files in an original audio format on it and it writes the
 //! music as FLAC, in a "<name> (music)" folder beside what was dropped. The same readers and
 //! players the romexplorer app plays ROM music with (`rom::rom_audio`, `rom::rip_sets`,
 //! `rom::rom_songs`, `rom::snes_capture`). See rommusic-cli/README.md.
@@ -24,7 +24,7 @@ fn usage() -> String {
     format!(
         "rommusic {VERSION}: the music in a ROM, as FLAC.
 
-Usage: rommusic [options] <ROM, disc image, folder or rip set>...
+Usage: rommusic [options] <ROM, disc image, folder or original-format music set>...
 
 Dropping files on rommusic does the same as giving their paths with no options: the
 background music of each, as FLAC at its original rate, in \"<name> (music)\" beside it.
@@ -37,11 +37,11 @@ Options:
                     hires (96 kHz/24-bit) | <Hz>; --cd, --dvd and --hires are short for these
   --bits 16|24      bits per sample (default 16; 24 with --dvd and --hires)
   --format F        flac (default) | original | both. original copies the music as the game
-                    stores it (the stream files on a disc, the rip set's files, an .spc
+                    stores it (the stream files on a disc, the original-format music files, an .spc
                     from a SNES cartridge) into an \"original\" folder
-  --rips DIR        a folder of music rip sets (NSF, SPC, GBS, HES, KSS, SGC, zipped or not)
+  --originals DIR   a folder of music in original audio formats (NSF, SPC, GBS, HES, KSS, SGC, zipped or not)
                     to match cartridges against by their content; may be given more than once
-  --ps2-bios FILE   a PS2 BIOS image (4 MB) of your own, which PS1 and PS2 rips (PSF, PSF2)
+  --ps2-bios FILE   a PS2 BIOS image (4 MB) of your own, which PS1 and PS2 music files (PSF, PSF2)
                     need to play; without it they are skipped
   --seconds N       SNES: how long the game runs before its music is taken (default 20)
   --start           SNES: press Start now and then while it runs, for games whose music
@@ -92,7 +92,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--hires" => (a.rate, a.bits) = (Some(96_000), if a.bits == 0 { 24 } else { a.bits }),
             "--max" => a.max = Some(value(&mut it, arg)?.parse().map_err(|_| "--max needs a number")?),
             "--out" => a.out = Some(PathBuf::from(value(&mut it, arg)?)),
-            "--rips" => a.rips.push(PathBuf::from(value(&mut it, arg)?)),
+            "--originals" | "--rips" => a.rips.push(PathBuf::from(value(&mut it, arg)?)),
             "--ps2-bios" => a.ps2_bios = Some(PathBuf::from(value(&mut it, arg)?)),
             "--seconds" => a.seconds = value(&mut it, arg)?.parse().ok().filter(|s: &f32| (1.0..=600.0).contains(s)).ok_or("--seconds needs 1-600")?,
             "--bits" => a.bits = value(&mut it, arg)?.parse().ok().filter(|b| [16, 24].contains(b)).ok_or("--bits is 16 or 24")?,
@@ -205,7 +205,7 @@ fn run() -> i32 {
         }
     }
     let library = (!a.rips.is_empty()).then(|| {
-        eprintln!("reading the rip sets in {}", a.rips.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+        eprintln!("reading the original-format music sets in {}", a.rips.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
         rip_match::Library::build(&a.rips, None, |_, _| {})
     });
     let mut failed = 0;
@@ -364,13 +364,13 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
             return Ok(plan);
         }
         if member.as_deref().is_some_and(rip_sets::is_rip_member) {
-            return Err("a rip set, but none of its tracks could be played (--verbose says why)".into());
+            return Err("an original-format music set, but none of its tracks could be played (--verbose says why)".into());
         }
     }
     if member.as_deref().is_some_and(|m| rom_audio::may_hold_audio(Path::new(m))) {
         return Err("a disc image inside a zip or 7z is not read: extract it first".into());
     }
-    let platform = platform_of(member.as_deref().unwrap_or(&name)).ok_or("not a ROM, disc image or rip set rommusic knows")?;
+    let platform = platform_of(member.as_deref().unwrap_or(&name)).ok_or("not a ROM, disc image or original-format music set rommusic knows")?;
     // A cartridge: a matching rip set first, then what plays straight from the ROM.
     if let Some(library) = library.filter(|l| l.covers(platform as u16)) {
         let matches = library.match_rom(input, platform as u16)?;
@@ -401,9 +401,9 @@ fn find(input: &Path, a: &Args, library: Option<&rip_match::Library>, t: &Thresh
         }
         other => {
             plan.why_none = Some(if a.rips.is_empty() {
-                format!("{} music needs a rip set: pass --rips <folder>", other.display_name())
+                format!("{} music needs its original-format music files: pass --originals <folder>", other.display_name())
             } else {
-                "no rip set in --rips matches this ROM".to_string()
+                "no original-format music set in --originals matches this ROM".to_string()
             });
         }
     }

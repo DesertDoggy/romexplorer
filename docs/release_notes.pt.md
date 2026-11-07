@@ -53,9 +53,9 @@ de segurança antes de substituir uma versão.
 - As páginas de título podem tocar a música que está dentro das suas ROM (só plataformas e tipos de
   suporte compatíveis).
 - Nas definições escolhe-se que faixas tocam.
-- São suportados os rips de música no formato original (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
+- São suportados os formatos de áudio originais (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
   da Game Gear, soltos ou em zip).
-- Uma biblioteca de rips: indique em Definições › Áudio as pastas onde guarda os conjuntos, e
+- Uma biblioteca de áudio original: indique em Definições › Áudio as pastas onde guarda os conjuntos, e
   «Indexar o áudio das ROM» associa cada conjunto às suas ROM pelo conteúdo. O mesmo conjunto toca em todas
   as regiões do jogo, seja qual for o nome.
 - O leitor das páginas de título tem um botão «não tocar esta faixa». As faixas ocultas aparecem
@@ -70,7 +70,7 @@ de segurança antes de substituir uma versão.
   antes).
 - A música das páginas de título está ligada por predefinição, e o primeiro arranque pergunta se a
   quer, logo a seguir ao idioma. Um título sem áudio próprio toca faixas ao acaso por predefinição.
-- Os rips PSF e PSF2 usam uma BIOS da PS2 da sua coleção, e são saltados sem ela.
+- Os ficheiros PSF e PSF2 usam uma BIOS da PS2 da sua coleção, e são saltados sem ela.
 
 **Revisão de fusões e Títulos combinados**
 - Os lançamentos de um cartão podem ser arrastados para o título a que pertencem, ou para «+» para
