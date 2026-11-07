@@ -207,16 +207,37 @@ pub async fn is_cached(pool: &MySqlPool, provider: Provider, provider_id: &str, 
 /// The upsert tail both link tables share: an existing link is only replaced by one at
 /// least as strong (manual > exact > hash > name > fuzzy) -- so a later name/fuzzy pass
 /// (a bulk sync) can't overwrite the exact id a hash mapping (Hasheous, RA hashes) gave --
-/// or when the old link was removed. Assignment order matters: MySQL evaluates them left to
-/// right, so `confidence`/`deleted`, which the condition reads, come last. `deleted` ends up
-/// FALSE either way: when the condition failed the old link wasn't deleted to begin with.
+/// or when the old link was removed by a pass of ours.
+///
+/// A link the user removed (`deleted` with confidence `manual`, see `api::links::unlink_title`)
+/// stays removed: only another manual link brings it back. Before, the next metadata update
+/// searched the title by name and linked the same game again. Since `manual` is the strongest,
+/// "at least as strong" as a removed manual link means manual.
+///
+/// Assignment order matters: MySQL evaluates them left to right, so `confidence`/`deleted`,
+/// which the condition reads, come last. `deleted` reads the new `confidence`: it stays TRUE
+/// only for a user-removed link that a weaker one did not replace.
 const LINK_UPSERT_KEEP_STRONGER: &str = " ON DUPLICATE KEY UPDATE \
-     provider_id = IF(deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), VALUES(provider_id), provider_id), \
-     linked_at = IF(deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), NOW(), linked_at), \
-     confidence = IF(deleted OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), VALUES(confidence), confidence), \
-     deleted = FALSE";
+     provider_id = IF((deleted AND confidence <> 'manual') OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), VALUES(provider_id), provider_id), \
+     linked_at = IF((deleted AND confidence <> 'manual') OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), NOW(), linked_at), \
+     confidence = IF((deleted AND confidence <> 'manual') OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), VALUES(confidence), confidence), \
+     deleted = (deleted AND confidence = 'manual' AND VALUES(confidence) <> 'manual')";
 
-pub async fn link_title(pool: &MySqlPool, title_id: u64, provider: Provider, provider_id: &str, confidence: Confidence) -> Result<(), DatabaseError> {
+/// Whether the user removed `provider`'s link from this title (`api::links::unlink_title`):
+/// nothing but a manual link may make it again, so a by-name lookup is not even tried.
+pub async fn unlinked_by_user(pool: &MySqlPool, title_id: u64, provider: Provider) -> Result<bool, DatabaseError> {
+    Ok(sqlx::query("SELECT 1 FROM title_provider_links WHERE title_id = ? AND provider = ? AND deleted = TRUE AND confidence = 'manual'")
+        .bind(title_id)
+        .bind(provider.name())
+        .fetch_optional(pool)
+        .await?
+        .is_some())
+}
+
+/// Links a provider entry to a title. Returns false when the link was refused: the user
+/// removed this provider's link from the title and `confidence` is not manual. A caller
+/// that goes on to write the entry's metadata onto the title stops there.
+pub async fn link_title(pool: &MySqlPool, title_id: u64, provider: Provider, provider_id: &str, confidence: Confidence) -> Result<bool, DatabaseError> {
     let sql = format!("INSERT INTO title_provider_links (title_id, provider, provider_id, confidence, linked_at, deleted) VALUES (?, ?, ?, ?, NOW(), FALSE){LINK_UPSERT_KEEP_STRONGER}");
     sqlx::query(sqlx::AssertSqlSafe(sql))
     .bind(title_id)
@@ -225,7 +246,10 @@ pub async fn link_title(pool: &MySqlPool, title_id: u64, provider: Provider, pro
     .bind(confidence.as_str())
     .execute(pool)
     .await?;
-    Ok(())
+    if confidence == Confidence::Manual {
+        return Ok(true);
+    }
+    Ok(!unlinked_by_user(pool, title_id, provider).await?)
 }
 
 pub async fn link_release(pool: &MySqlPool, release_id: u64, provider: Provider, provider_id: &str, confidence: Confidence) -> Result<(), DatabaseError> {
@@ -278,8 +302,9 @@ pub async fn link_for_content(pool: &MySqlPool, content_id: u64, provider: Provi
             }
             Tier::Title => {
                 if let Some(title_id) = title_id {
-                    link_title(pool, title_id, provider, provider_id, confidence).await?;
-                    links += 1;
+                    if link_title(pool, title_id, provider, provider_id, confidence).await? {
+                        links += 1;
+                    }
                 } else if apart.contains(&release_id) {
                     link_release(pool, release_id, provider, provider_id, confidence).await?;
                     links += 1;
@@ -421,8 +446,9 @@ pub async fn link_by_name(pool: &MySqlPool, provider: Provider, provider_id: &st
     match provider.tier() {
         Tier::Title | Tier::Content => {
             if let Some(title_id) = best.title_id {
-                link_title(pool, title_id, provider, provider_id, confidence).await?;
-                return Ok(Some(title_id));
+                if link_title(pool, title_id, provider, provider_id, confidence).await? {
+                    return Ok(Some(title_id));
+                }
             }
             Ok(None)
         }

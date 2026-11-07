@@ -2480,7 +2480,7 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             let n_titles = title_ids.len() as u64;
             for (i, title_id) in title_ids.iter().enumerate() {
                 progress.report(i as u64, Some(n_titles.max(1)), &format!("follow-ups: titles without {}, {} of {n_titles}", provider.name(), i + 1)).await;
-                if !super::links::title_has_provider(pool, *title_id, provider).await? {
+                if !super::links::title_has_provider(pool, *title_id, provider).await? && !crate::database::providers::cache::unlinked_by_user(pool, *title_id, provider).await? {
                     missing.push(*title_id);
                 }
             }
