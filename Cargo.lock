@@ -5913,9 +5913,18 @@ dependencies = [
 name = "rommusic-cli"
 version = "0.1.0"
 dependencies = [
+ "dioxus",
  "flac-codec",
+ "image",
+ "jni 0.21.1",
  "log",
+ "ndk-context",
+ "rfd",
  "romexplorer",
+ "serde",
+ "serde_json",
+ "tokio",
+ "winresource",
 ]
 
 [[package]]

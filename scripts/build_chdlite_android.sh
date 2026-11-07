@@ -181,7 +181,9 @@ JNI_DIR="$PROJECT/app/src/main/jniLibs/$ABI"
 [[ -d "$PROJECT" ]] || { echo "error: dx left no Gradle project at $PROJECT" >&2; exit 1; }
 mkdir -p "$JNI_DIR"
 copied=0
-for lib in "$LIB_DIR"/*.so; do
+# Only chdlite's: app_root_ex/lib/android/arm64/ also holds rommusic's (scripts/build_rommusic_android.sh).
+for name in libchdman.so libdolphinrvz.so libcemuwua.so libexiso.so libpsxpbp.so libz.so; do
+    lib="$LIB_DIR/$name"
     [[ -f "$lib" ]] || continue
     cp -f "$lib" "$JNI_DIR/"
     copied=$((copied + 1))

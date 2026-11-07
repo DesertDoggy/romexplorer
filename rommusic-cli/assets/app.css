@@ -1,0 +1,88 @@
+/* rommusic's window (src/bin/rommusic-gui.rs). Started from chdlite's stylesheet, so the two
+   tools look alike. */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #14161b; color: #e6e8ee; font: 14px/1.4 "Segoe UI", system-ui, sans-serif; user-select: none; }
+/* WebKitGTK draws a pulldown with the system theme, a light box, unless told the page is dark;
+   with the page's light text on it, the selected value was unreadable. The popup list is the
+   platform's too and inherits only `color`, so its options get the dark background here. */
+:root { color-scheme: dark; }
+select option, select optgroup { background: #1b1e25; color: #e6e8ee; }
+#main { height: 100%; }
+.app { display: flex; flex-direction: column; height: 100vh; padding: 10px 12px 12px; gap: 10px; }
+
+.top { display: flex; align-items: center; gap: 8px; }
+.top h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+.top .ver { color: #8a90a0; font-size: 12px; }
+.spacer { flex: 1; }
+
+button, .btn { background: #262a33; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 5px 12px; font: inherit; cursor: pointer; }
+button:hover { background: #303644; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: #2f6fed; border-color: #2f6fed; }
+button.danger { background: #8d2b2b; border-color: #a33; }
+
+.hint { color: #8a90a0; font-size: 12px; margin: -4px 2px 0; }
+
+.drop { border: 2px dashed #3a404d; border-radius: 12px; padding: 18px 12px; text-align: center; color: #aab0bf; cursor: pointer; }
+.drop.over { border-color: #2f6fed; background: #1a2233; color: #fff; }
+.drop b { display: block; font-size: 15px; color: #e6e8ee; margin-bottom: 2px; }
+
+.row { display: flex; align-items: center; gap: 8px; }
+.row label { color: #aab0bf; white-space: nowrap; }
+input[type=text], input[type=number], select { flex: 1; min-width: 0; background: #1b1e25; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 5px 8px; font: inherit; user-select: text; }
+
+.bar { height: 8px; background: #20242c; border-radius: 4px; overflow: hidden; }
+.bar > div { height: 100%; background: linear-gradient(90deg, #2f6fed, #1fc8ff); transition: width .15s linear; }
+.status { color: #aab0bf; font-size: 12px; min-width: 110px; text-align: right; }
+
+.log { flex: 1; min-height: 80px; overflow-y: auto; background: #0f1115; border: 1px solid #262a33; border-radius: 8px; padding: 8px 10px; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; user-select: text; }
+.log div { white-space: pre-wrap; word-break: break-word; }
+.log .ok { color: #6fdc8c; }
+.log .err { color: #ff7b72; }
+.log .muted { color: #6f7686; }
+
+.overlay { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; }
+.panel { width: min(500px, 94vw); max-height: 92vh; overflow-y: auto; background: #1b1e25; border: 1px solid #3a404d; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.panel h2 { margin: 0 0 2px; font-size: 16px; }
+.panel h3 { margin: 8px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: #8a90a0; }
+.panel .row label { width: 120px; }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 14px; flex: 1; }
+.checks label { width: auto !important; color: #e6e8ee; display: flex; align-items: center; gap: 4px; }
+.note { color: #8a90a0; font-size: 12px; }
+
+.drop { cursor: default; display: flex; flex-direction: column; justify-content: center; min-height: 92px; }
+.inputs { display: flex; flex-direction: column; gap: 2px; text-align: left; max-height: 160px; overflow-y: auto; }
+.input { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 6px; }
+.input:hover { background: #20242c; }
+.input span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e6e8ee; }
+button.small { padding: 1px 8px; font-size: 12px; }
+
+.segmented { display: flex; flex: 1; gap: 0; }
+.seg { flex: 1; border-radius: 0; margin-left: -1px; }
+.seg:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg:last-child { border-radius: 0 6px 6px 0; }
+.seg.active { background: #2f6fed; border-color: #2f6fed; color: #fff; position: relative; }
+.status.wide { text-align: left; min-height: 17px; margin-top: -4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Android (class "android" on .app, set only there). Desktop never matches these.
+   Overlays here (.browser, .confirm) exist only on Android. */
+.app.android { padding: 8px 10px 10px; gap: 8px; }
+.app.android .access { flex-wrap: wrap; background: #2a1d12; border: 1px solid #6b4a1f; border-radius: 8px; padding: 8px 10px; }
+.app.android .access span { flex: 1; min-width: 200px; color: #f0d9b5; font-size: 13px; }
+.app.android button, .app.android input, .app.android select { min-height: 40px; }
+.app.android button.small { min-height: 32px; }
+.app.android .log { min-height: 60px; }
+
+/* The controller's focus, visible on everything it can reach. */
+.app.android :focus-visible { outline: 3px solid #1fc8ff; outline-offset: 2px; }
+.app.android .log:focus-visible { outline-offset: -3px; }
+
+.browser { width: min(640px, 96vw); height: 92vh; }
+.browser .where { color: #8a90a0; font-size: 12px; word-break: break-all; }
+.browser .entries { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; background: #0f1115; border: 1px solid #262a33; border-radius: 8px; padding: 4px; }
+.browser .entry { text-align: left; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 9px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.browser .entry.dir { color: #e6e8ee; }
+.browser .entry.file { color: #aab0bf; }
+.browser .entry.picked { background: #1a2233; border-color: #2f6fed; color: #fff; }
+.browser .entry.up { color: #8a90a0; }
+.confirm p { margin: 0; color: #aab0bf; }
