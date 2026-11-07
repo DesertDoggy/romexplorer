@@ -182,11 +182,15 @@ pub fn bios_image() -> Vec<u8> {
 pub struct State {
     pub disk: Arc<Disk>,
     /// The side in the drive.
-    side: usize,
+    pub side: usize,
     /// VINTWait is waiting for the vertical blank's interrupt.
     waiting: bool,
     /// BIOS addresses reached that the stand-in doesn't know (for the test tool's notes).
     pub unknown: Vec<u16>,
+    /// Reads of the drive's registers $4030-$4033, and LoadFiles calls (for the test
+    /// tool's notes: a game with its own disk loader polls the drive).
+    pub drive_reads: [u32; 4],
+    pub loads: u32,
 }
 
 impl State {
@@ -196,6 +200,8 @@ impl State {
             side: 0,
             waiting: false,
             unknown: Vec::new(),
+            drive_reads: [0; 4],
+            loads: 0,
         }
     }
 }
@@ -447,6 +453,7 @@ pub fn hle<B: Bus>(cpu: &mut Cpu, bus: &mut B, st: &mut State) -> u32 {
                 .collect();
             let list = if list.is_empty() { vec![0xFF] } else { list };
             st.side = find_side(&st.disk, &id, st.side);
+            st.loads += 1;
             cpu.y = load(st, bus, &list);
             set_a(cpu, 0);
             rts(cpu, bus, 4);
