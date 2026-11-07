@@ -13,11 +13,11 @@
 #   scripts/package.sh --kind desktop --os linux --arch x64 --no-archive
 #   scripts/package.sh --kind server  --os windows --arch arm64
 #
-#   scripts/package.sh --kind cli     --os windows --arch x64
+#   scripts/package.sh --kind chdlite --os windows --arch x64
 #   scripts/package.sh --kind rommusic --os windows --arch x64
 #
 # Kinds: `server` (the three server binaries + bundled MariaDB + installer), `desktop` (the
-# GUI + bundled MariaDB) and `cli` (the standalone tools: today chdlite, with its own version
+# GUI + bundled MariaDB) and `chdlite` (the chdlite tools, with its own version
 # and its own tree -- see below) and `rommusic` (the ROM music tool, versioned by
 # rommusic-cli/Cargo.toml, in release/rommusic/<version>/). `cli` used to name a server package without MariaDB, which
 # was a server under the wrong name.
@@ -31,8 +31,8 @@
 #   release/<version>/<os>/<arch>/<kind>/   <- where a staged package lands
 #   release/<version>/dist/                <- every platform's archives for that version
 #
-#   release/cli/<chdlite version>/<os>/<arch>/   <- the cli kind, versioned by chdlite/Cargo.toml
-#   release/cli/<chdlite version>/dist/
+#   release/chdlite/<chdlite version>/<os>/<arch>/   <- the chdlite kind, versioned by chdlite/Cargo.toml
+#   release/chdlite/<chdlite version>/dist/
 #
 #   chdlite-<v>-<os>-<arch>/chdlite, chdcomp, chdread, chdhash   <- one console tool per mode,
 #                                                since a file dropped on a binary can't pick one
@@ -73,7 +73,7 @@ usage() {
     cat <<'EOF'
 
 Options:
-  --kind server|desktop|cli   which package to build        (required)
+  --kind server|desktop|chdlite|rommusic   which package to build        (required)
   --os linux|macos|windows                                  (default: this host)
   --arch x64|arm64                                          (default: this host)
   --version V             (default: the workspace version from cargo metadata)
@@ -110,9 +110,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-case "$KIND" in server|desktop|cli|rommusic) ;; *) echo "error: --kind must be server, desktop, cli or rommusic" >&2; usage 2 ;; esac
-# The crate whose version names the package: the cli tools are released on their own schedule.
-VERSION_PACKAGE="romexplorer"; [[ "$KIND" == "cli" ]] && VERSION_PACKAGE="chdlite"; [[ "$KIND" == "rommusic" ]] && VERSION_PACKAGE="rommusic-cli"
+# `cli` is the old name of the chdlite kind, which wrote to release/cli/.
+[[ "$KIND" == "cli" ]] && KIND="chdlite"
+case "$KIND" in server|desktop|chdlite|rommusic) ;; *) echo "error: --kind must be server, desktop, chdlite or rommusic" >&2; usage 2 ;; esac
+# The crate whose version names the package: chdlite and rommusic are released on their own schedule.
+VERSION_PACKAGE="romexplorer"; [[ "$KIND" == "chdlite" ]] && VERSION_PACKAGE="chdlite"; [[ "$KIND" == "rommusic" ]] && VERSION_PACKAGE="rommusic-cli"
 
 # --- host defaults, in the app layout's spelling (native_lib::os_dir_name) ----------------
 if [[ -z "$OS" ]]; then
@@ -178,7 +180,7 @@ EXE=""; [[ "$OS" == "windows" ]] && EXE=".exe"
 case "$KIND" in
     server)  NAME="romexplorer-server-$VERSION-$OS-$ARCH" ;;
     desktop) NAME="romexplorer-$VERSION-$OS-$ARCH" ;;
-    cli)     NAME="chdlite-$VERSION-$OS-$ARCH" ;;
+    chdlite) NAME="chdlite-$VERSION-$OS-$ARCH" ;;
     rommusic) NAME="rommusic-$VERSION-$OS-$ARCH" ;;
 esac
 # Version first, then platform, arch, kind -- so everything belonging to one release sits
@@ -186,8 +188,8 @@ esac
 # every platform share that version's dist/, which is what a release upload actually needs.
 STAGE="${OUT_DIR:-$ROOT_DIR/release/$VERSION/$OS/$ARCH/$KIND}"
 DIST="$ROOT_DIR/release/$VERSION/dist"
-if [[ "$KIND" == "cli" || "$KIND" == "rommusic" ]]; then
-    tree="cli"; [[ "$KIND" == "rommusic" ]] && tree="rommusic"
+if [[ "$KIND" == "chdlite" || "$KIND" == "rommusic" ]]; then
+    tree="chdlite"; [[ "$KIND" == "rommusic" ]] && tree="rommusic"
     STAGE="${OUT_DIR:-$ROOT_DIR/release/$tree/$VERSION/$OS/$ARCH}"
     DIST="$ROOT_DIR/release/$tree/$VERSION/dist"
 fi
@@ -330,7 +332,7 @@ if [[ "$BUILD" -eq 1 ]]; then
             desktop)
                 note "cargo build --release -p romexplorer-gui ${target_args[*]}"
                 (cd "$ROOT_DIR" && cargo build --release -p romexplorer-gui "${target_args[@]}") || die "the build failed" ;;
-            cli)
+            chdlite)
                 # Two builds, because features are per package and not per binary: the console
                 # tools without the embedded libraries (they share lib/ beside them), then the
                 # GUI. On Windows the GUI carries the libraries itself so it is one file.
@@ -351,7 +353,7 @@ fi
 case "$KIND" in
     server)  BINS=(romexplorer_server romexplorer_worker romexplorer_dbtool) ;;
     desktop)    BINS=(romexplorer-gui) ;;
-    cli)        BINS=(chdlite chdcomp chdread chdhash chdlite-gui) ;;
+    chdlite)    BINS=(chdlite chdcomp chdread chdhash chdlite-gui) ;;
     rommusic)   BINS=(rommusic) ;;
 esac
 for b in "${BINS[@]}"; do
@@ -368,7 +370,7 @@ done
 # cp -a, never a hard link or --link-dest: the SONAME duplicates below have to survive as
 # real files (or as symlinks this script makes deliberately).
 mkdir -p "$APP/lib/$OS/$ARCH"
-if [[ "$KIND" == "cli" ]]; then
+if [[ "$KIND" == "chdlite" ]]; then
     # Only what chdlite loads: chdman and dolphinrvz, and the optional cemuwua (Wii U,
     # .zar), exiso (XISO), psxpbp (PBP) and zlib-ng (CSO), each self-contained apart from
     # the C runtime. No MariaDB, 7-Zip or RAHasher. OpenSSL only for chdlite-gui off Windows,
@@ -458,8 +460,8 @@ if [[ -d "$DEST_LIB/openssl" ]]; then
 fi
 
 # --- assets ---------------------------------------------------------------------------------
-# The cli tools read nothing from assets/: their images and stylesheet are compiled in.
-if [[ "$KIND" == "cli" ]]; then
+# The chdlite tools read nothing from assets/: their images and stylesheet are compiled in.
+if [[ "$KIND" == "chdlite" ]]; then
     for doc in chdlite_release_notes.md chdlite_release_notes.ja.md; do
         [[ -f "$ROOT_DIR/docs/$doc" ]] && cp -f "$ROOT_DIR/docs/$doc" "$STAGE/$doc" && note "$doc"
     done
@@ -606,7 +608,7 @@ fail=0
 # What src/database/server.rs::check_layout insists on. Getting this wrong means the server
 # and the desktop both refuse to start, which is exactly how the Windows tree is broken today.
 md="$DEST_LIB/mariadb"
-if [[ "$KIND" != "cli" && "$KIND" != "rommusic" ]]; then
+if [[ "$KIND" != "chdlite" && "$KIND" != "rommusic" ]]; then
 for required in "bin/mariadbd$EXE" "share/english/errmsg.sys"; do
     [[ -f "$md/$required" ]] || { echo "error: bundled MariaDB is incomplete: missing $required under $md" >&2; fail=1; }
 done

@@ -2,7 +2,7 @@
 name = "chdlite"
 # chdlite's own version, not the workspace's: it is released and release-noted separately
 # from romexplorer (docs/chdlite_release_notes.md), continuing the C++ tool's 0.2.x line.
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 repository.workspace = true
 description = "Drop a disc image, get a CHD or RVZ: the standalone convert tool built on the romexplorer core."

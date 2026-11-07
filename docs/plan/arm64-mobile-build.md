@@ -28,8 +28,8 @@
   targets and exits 2 with "not implemented yet".
 - **Release script and packages:** `scripts/build_release.sh` exists. The `cli` kind this
   plan describes below was built and then **removed**: it packaged the server without
-  MariaDB. `cli` now names the standalone tools: `scripts/package.sh --kind cli` packages
-  chdlite (the `chdlite/` crate, its own version) into `release/cli/<version>/`.
+  MariaDB. `chdlite` names the standalone tool: `scripts/package.sh --kind chdlite` packages
+  chdlite (the `chdlite/` crate, its own version) into `release/chdlite/<version>/`.
 
 ## Context
 

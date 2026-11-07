@@ -163,12 +163,12 @@ declare -A SUPPORTS_ARM64_LINUX=(
     [dolphin]=1
     [RALibretro]=1
     [libxaac]=1
-    [ffmpeg]=0
-    [vgmstream]=0
-    [rommusic]=0
-    [cemu]=0
-    [extract-xiso]=0
-    [beetle-psx-libretro]=0
+    [ffmpeg]=1
+    [vgmstream]=1
+    [rommusic]=1
+    [cemu]=1
+    [extract-xiso]=1
+    [beetle-psx-libretro]=1
 )
 declare -A SUPPORTS_ARM64_WINDOWS=(
     [openssl]=1
@@ -180,12 +180,12 @@ declare -A SUPPORTS_ARM64_WINDOWS=(
     [dolphin]=1
     [RALibretro]=1
     [libxaac]=1
-    [ffmpeg]=0
-    [vgmstream]=0
-    [rommusic]=0
-    [cemu]=0
-    [extract-xiso]=0
-    [beetle-psx-libretro]=0
+    [ffmpeg]=1
+    [vgmstream]=1
+    [rommusic]=1
+    [cemu]=1
+    [extract-xiso]=1
+    [beetle-psx-libretro]=1
 )
 
 # Cross compilers for the make-driven builds (7-Zip) when the target arch is not the host's.
@@ -612,17 +612,17 @@ build_one() {
             # cemuwua: Wii U .wud/.wux into .wua through Cemu's own disc and FST code
             # (deps/cemu/cemuwua.h), with ZArchive, zstd and fmt from external/. No streaming
             # variant: reading a .wua back is streamed by the one build.
-            run_step "$name" bash "$sub/cemu/scripts/build.sh" "$PLATFORM" "$ARCH"
+            run_step "$name" env $(cross_env) bash "$sub/cemu/scripts/build.sh" "$PLATFORM" "$ARCH"
             ;;
         extract-xiso)
             # exiso: an Xbox image rewritten as an XISO by extract-xiso's own code
             # (deps/extract-xiso/exiso.h). No streaming variant.
-            run_step "$name" bash "$sub/extract-xiso/scripts/build.sh" "$PLATFORM" "$ARCH"
+            run_step "$name" env $(cross_env) bash "$sub/extract-xiso/scripts/build.sh" "$PLATFORM" "$ARCH"
             ;;
         beetle-psx-libretro)
             # psxpbp: Beetle PSX's EBOOT.PBP reader (deps/beetle-psx-libretro/psxpbp.h),
             # for reading a PS1 disc out of a PBP. No streaming variant.
-            run_step "$name" bash "$sub/beetle-psx-libretro/scripts/build.sh" "$PLATFORM" "$ARCH"
+            run_step "$name" env $(cross_env) bash "$sub/beetle-psx-libretro/scripts/build.sh" "$PLATFORM" "$ARCH"
             ;;
     esac
 }
