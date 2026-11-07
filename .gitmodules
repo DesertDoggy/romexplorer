@@ -76,6 +76,7 @@
 	ignore = dirty
 [submodule "external/agbplay"]
 	path = external/agbplay
+	ignore = dirty
 	url = https://github.com/ipatix/agbplay
 [submodule "external/SSEQPlayer"]
 	path = external/SSEQPlayer

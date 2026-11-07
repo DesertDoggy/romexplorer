@@ -96,7 +96,7 @@ build_dir="$(mktemp -d "${TMPDIR:-/tmp}/rommusic_build.XXXXXX")"
 trap '[ -n "${KEEP_BUILD:-}" ] || rm -rf "$build_dir"' EXIT
 
 # Our fixes, applied to the checkouts idempotently (the 7-Zip scheme): patches/*.patch to the
-# fork, patches/sseq/*.patch to the SSEQ Player. They show as modified in `git status` inside
+# fork, patches/sseq/, usf/ and agb/ to the SSEQ Player, lazyusf2 and agbplay. They show as modified in `git status` inside
 # those submodules afterwards; that is expected.
 apply_patches() {
   # The patches of a directory are a series, applied in name order. Later ones may touch what
@@ -147,6 +147,7 @@ apply_patches() {
 apply_patches "$user_dir/patches" "$fork_root"
 apply_patches "$user_dir/patches/sseq" "$sseq_root"
 apply_patches "$user_dir/patches/usf" "$usf_root"
+apply_patches "$user_dir/patches/agb" "$agb_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
   "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root")

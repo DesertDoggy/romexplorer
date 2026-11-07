@@ -1,0 +1,26 @@
+diff --git a/gme/gme.cpp b/gme/gme.cpp
+index 3fbb080..e03693d 100644
+--- a/gme/gme.cpp
++++ b/gme/gme.cpp
+@@ -215,9 +215,20 @@ gme_err_t gme_load_data( Music_Emu* gme, void const* data, long size )
+ 	return gme->load( in );
+ }
+ 
++// The fork's gme_reader_t takes a long count, upstream's Callback_Reader (which this build
++// uses) an int one. Adapt rather than cast: a cast compiles under GCC's -fpermissive only,
++// and would leave the upper half of the count undefined.
++struct gme_custom_thunk { gme_reader_t func; void* data; };
++static const char* gme_custom_read( void* p, void* out, int count )
++{
++	gme_custom_thunk* t = (gme_custom_thunk*) p;
++	return t->func( t->data, out, count );
++}
++
+ gme_err_t gme_load_custom( Music_Emu* gme, gme_reader_t func, long size, void* data )
+ {
+-	Callback_Reader in( func, size, data );
++	gme_custom_thunk thunk = { func, data };
++	Callback_Reader in( gme_custom_read, size, &thunk );
+ 	return gme->load( in );
+ }
+ 

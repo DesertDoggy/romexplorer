@@ -240,19 +240,19 @@ jobs:
           if-no-files-found: error
 
       # chdlite: the standalone convert tools, with their own version (chdlite/Cargo.toml) and
-      # their own tree, release/cli/<version>/. A separate artifact, named so the gather job's
+      # their own tree, release/chdlite/<version>/. A separate artifact, named so the gather job's
       # `packages-*` pattern leaves it out of the romexplorer archive. After the romexplorer
       # packages on purpose: a chdlite failure must not cost those.
       - name: Package chdlite
-        run: scripts/package.sh --kind cli --os ${{ matrix.os }} --arch ${{ matrix.arch }}
+        run: scripts/package.sh --kind chdlite --os ${{ matrix.os }} --arch ${{ matrix.arch }}
 
       - name: Upload chdlite
         uses: actions/upload-artifact@v4
         with:
           name: chdlite-${{ matrix.name }}
           path: |
-            release/cli/*/dist/*.tar.gz
-            release/cli/*/dist/*.zip
+            release/chdlite/*/dist/*.tar.gz
+            release/chdlite/*/dist/*.zip
           if-no-files-found: error
 
   gather:
