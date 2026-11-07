@@ -743,7 +743,11 @@ fn decompress_huff(read: &mut dyn FnMut(u32) -> u8, from: u32) -> Vec<u8> {
     if bits == 0 || bits > 8 {
         return out;
     }
-    while out.len() < size {
+    // A tree that never reaches a leaf (garbage passed in) would read on forever; real data
+    // needs far fewer than 16 words a byte.
+    let mut words_left = size * 16 + 64;
+    while out.len() < size && words_left > 0 {
+        words_left -= 1;
         let word = src.word();
         for bit in (0..32).rev() {
             let right = word >> bit & 1 != 0;

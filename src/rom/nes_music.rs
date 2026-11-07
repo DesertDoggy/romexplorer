@@ -229,11 +229,16 @@ impl Bus for Board {
                 0x40 | v
             }
             0x4017 => 0x40,
-            0x4020..=0x5FFF => self
+            0x4020..=0x5FFF => {
+                if let (Some(f), 0x4030..=0x4033) = (self.fds.as_mut(), addr) {
+                    f.drive_reads[addr as usize - 0x4030] += 1;
+                }
+                self
                 .cart
                 .read_low(addr)
                 .or_else(|| self.cart.read(addr))
-                .unwrap_or((addr >> 8) as u8),
+                .unwrap_or((addr >> 8) as u8)
+            }
             0x6000..=0x7FFF => {
                 let v = self.cart.read(addr).unwrap_or((addr >> 8) as u8);
                 if let Some(t) = self.trace.as_mut() {
@@ -380,6 +385,17 @@ impl Nes {
             .as_ref()
             .map(|f| f.unknown.clone())
             .unwrap_or_default()
+    }
+
+    /// Where a Disk System game is (for the test tool's notes): the CPU's address, the side
+    /// in the drive, LoadFiles calls, and reads of the drive's registers.
+    pub fn disk_status(&self) -> Option<String> {
+        let f = self.board.fds.as_ref()?;
+        let r = f.drive_reads;
+        Some(format!(
+            "pc ${:04X}, side {}, {} loads, drive reads $4030 {} $4031 {} $4032 {} $4033 {}",
+            self.cpu.pc, f.side, f.loads, r[0], r[1], r[2], r[3]
+        ))
     }
 
     /// One instruction, or one BIOS routine of a Disk System game.
