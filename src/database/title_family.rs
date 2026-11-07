@@ -447,17 +447,19 @@ pub struct VersionSummary {
 /// The official versions of a game IGDB lists, through `relations`: its parent, its ports,
 /// remakes and remasters, the collections holding it, and its parent's versions too (its
 /// siblings). Found collections are not followed further, nor are add-ons.
-async fn family_games(pool: &MySqlPool, start: &HashSet<u32>, clients: Option<&ProviderClients>, store: &RawStore, summary: &mut VersionSummary) -> Result<HashMap<u32, (String, &'static str, Option<u16>, Vec<u16>)>, DatabaseError> {
+async fn family_games(pool: &MySqlPool, start: &HashSet<u32>, clients: Option<&ProviderClients>, store: &RawStore, summary: &mut VersionSummary, progress: &Progress, what: &str) -> Result<HashMap<u32, (String, &'static str, Option<u16>, Vec<u16>)>, DatabaseError> {
     let mut known: HashMap<u32, (String, &'static str, Option<u16>, Vec<u16>)> = HashMap::new();
     let mut seen: HashSet<u32> = start.clone();
     let mut frontier: Vec<u32> = start.iter().copied().collect();
-    for _round in 0..4 {
+    for round in 0..4 {
         if frontier.is_empty() {
             break;
         }
         // The frontier's own entries, fetched first when not cached yet.
         let mut missing: Vec<u32> = Vec::new();
-        for chunk in frontier.chunks(1000) {
+        let n = frontier.len() as u64;
+        for (i, chunk) in frontier.chunks(1000).enumerate() {
+            progress.report((i * 1000) as u64, Some(n), &format!("{what}: ring {} of up to 4, reading game {} of {n} ({} known)", round + 1, i * 1000 + 1, known.len())).await;
             let list = chunk.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
             let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT provider_id, title, game_type, first_year, platforms FROM igdb_games WHERE provider_id IN ({list}) AND deleted = FALSE AND relations_read = TRUE")))
                 .fetch_all(pool)
@@ -474,7 +476,9 @@ async fn family_games(pool: &MySqlPool, start: &HashSet<u32>, clients: Option<&P
             missing.extend(chunk.iter().filter(|id| !found.contains(id)));
         }
         if let Some(igdb) = clients.and_then(|c| c.igdb.as_ref()) {
-            for chunk in missing.chunks(400) {
+            let m = missing.len() as u64;
+            for (i, chunk) in missing.chunks(400).enumerate() {
+                progress.force((i * 400) as u64, Some(m), &format!("{what}: ring {} of up to 4, fetching from IGDB {} of {m} game(s) not cached yet", round + 1, i * 400 + 1)).await;
                 let games = igdb.get_games_by_id(chunk.iter().map(|i| *i as i32).collect()).await.map_err(|e| DatabaseError::Provider(format!("igdb: {e}")))?;
                 let mut index = Vec::new();
                 for g in &games {
@@ -551,11 +555,10 @@ pub async fn add_provider_versions(pool: &MySqlPool, clients: Option<&ProviderCl
         .into_iter()
         .map(|v: u64| v as u32)
         .collect();
-        progress.force(0, None, &format!("families: fetching the versions of {} held game(s)", held.len())).await;
-        family_games(pool, &held, clients, store, &mut summary).await?.into_keys().collect()
+        family_games(pool, &held, clients, store, &mut summary, progress, &format!("families: versions of {} held game(s)", held.len())).await?.into_keys().collect()
     };
     // Every family, from what is cached now.
-    let games = family_games(pool, &start, None, store, &mut summary).await?;
+    let games = family_games(pool, &start, None, store, &mut summary, progress, &format!("families: versions of {} linked game(s)", start.len())).await?;
     let mut to_sync: HashSet<u16> = HashSet::new();
     // Which platforms each game already has a title on (any of IGDB's names for the machine).
     let mut on: HashMap<u32, HashSet<u16>> = HashMap::new();
@@ -575,9 +578,7 @@ pub async fn add_provider_versions(pool: &MySqlPool, clients: Option<&ProviderCl
     let mut added_titles: Vec<(u64, u32)> = Vec::new();
     let total = games.len() as u64;
     for (i, (game, (name, ty, year, platforms))) in games.iter().enumerate() {
-        if i % 200 == 0 {
-            progress.report(i as u64, Some(total), &format!("families: official versions, game {i} of {total} ({} added)", summary.added)).await;
-        }
+        progress.report(i as u64, Some(total), &format!("families: official versions, game {} of {total} ({} added)", i + 1, summary.added)).await;
         if name.trim().is_empty() || matches!(*ty, "dlc" | "expansion" | "standalone" | "mod") {
             continue;
         }
