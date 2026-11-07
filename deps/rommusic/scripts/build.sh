@@ -148,6 +148,7 @@ apply_patches "$user_dir/patches" "$fork_root"
 apply_patches "$user_dir/patches/sseq" "$sseq_root"
 apply_patches "$user_dir/patches/usf" "$usf_root"
 apply_patches "$user_dir/patches/agb" "$agb_root"
+apply_patches "$user_dir/patches/ht" "$ht_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
   "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root")
