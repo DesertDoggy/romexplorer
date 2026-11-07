@@ -1,0 +1,16 @@
+diff --git a/Core/yam.c b/Core/yam.c
+--- a/Core/yam.c
++++ b/Core/yam.c
+@@ -24,7 +24,12 @@
+ 
+ #ifndef _WIN32
+ #define __cdecl
++/* regparm exists on 32-bit x86 only: Apple clang rejects it on arm64, GCC ignores it. */
++#if defined(__i386__)
+ #define __fastcall __attribute__((regparm(3)))
++#else
++#define __fastcall
++#endif
+ #endif
+ 
+ /* No dynarec for x86_64 yet */
