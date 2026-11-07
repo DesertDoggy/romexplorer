@@ -4,11 +4,14 @@
 
 *To jest tłumaczenie. W razie rozbieżności rozstrzyga angielska wersja README.*
 
+> **romexplorer nie rozpowszechnia ani nie pobiera ROM-ów, BIOS-ów ani kluczy i nie wspiera
+> piractwa.** Używaj go z własnymi zrzutami gier, które posiadasz.
+
 Menedżer kolekcji ROM-ów: skanuje foldery, identyfikuje każdy plik po hashu na podstawie
 referencyjnych plików DAT, pobiera metadane i grafiki, a także konwertuje, weryfikuje i kopiuje
 pliki. Działa jako serwer z konsolą w przeglądarce i webowym GUI albo jako aplikacja desktopowa,
 w systemach Windows, macOS i Linux. Informacje o tym, co i gdzie zostało przetestowane, znajdziesz
-w [docs/release_notes.md](docs/release_notes.md).
+w [docs/release_notes.pl.md](docs/release_notes.pl.md).
 
 ## Co robi
 
@@ -105,6 +108,13 @@ rozpakowywany. `chdread` pokazuje metadane pliku, a `chdhash` liczy jego hash. K
 robi jedną rzecz, więc plik upuszczony na plik wykonywalny zostanie obsłużony właściwie;
 `chdlite-gui` robi to samo w oknie. Każda opcja jest też dostępna jako flaga (`--help`). chdlite
 jest wydawany osobno: zobacz [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+
+### Narzędzie wiersza poleceń (rommusic)
+
+Upuść na `rommusic` ROM, obraz płyty, zrzucony folder lub zestaw ripów muzyki, a zapisze muzykę w
+tle gry jako FLAC w folderze obok. Każda opcja jest też dostępna jako flaga (`--help`). Obsługiwane
+systemy są wymienione w [Dźwięk z ROM-ów](#dźwięk-z-rom-ów). rommusic jest wydawany osobno: zobacz
+[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
 
 ### Klucze dostawców
 
@@ -253,6 +263,29 @@ ostatecznej wersji nie ma w kolekcji (czyli: zagraj w nią na Steamie).
 Uwaga: Crossplaty i Defy są budowane z metadanych IGDB, więc trzeba je pobrać. Ustawienie może
 automatycznie pobierać powiązane dane (domyślnie wyłączone, bo duża baza danych spowalnia
 wszystko).
+
+## Dźwięk z ROM-ów
+
+Strony tytułów mogą odtwarzać muzykę zapisaną w twoich ROM-ach prosto z pliku: nic nie jest
+rozpakowywane ani kopiowane. Najpierw uruchom „Index ROM audio” na karcie Audio. `rommusic` czyta
+to samo.
+
+| muzyka z | platformy | pliki |
+|---|---|---|
+| Ścieżki audio CD | Każda gra na CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast i inne | CHD, cue/bin, gdi |
+| Pliki muzyczne na płycie | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360 | CHD, cue/bin, gdi, ISO, CSO/ZSO, RVZ/WIA/GCZ/WBFS, XISO |
+| | Wii U | .wua; .wud/.wux i pobrane tytuły z kluczem obok |
+| | PS3, PS Vita | odszyfrowane zrzuty folderów |
+| Archiwum dźwięku | Nintendo DS (muzyka strumieniowa i sekwencyjna), Nintendo 3DS (tylko odszyfrowane obrazy) | .nds, .3ds/.cci |
+| Silnik dźwięku gry | Game Boy Advance: gry zrobione na standardowym silniku Nintendo (około połowy) | .gba |
+| Ripy muzyki | NES i Famicom Disk System (NSF, NSFE), SNES (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System i Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum i Amstrad CPC (AY), Atari 8-bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket i Virtual Boy (VGM) | w folderze gry lub w bibliotece ripów, luzem lub w zip |
+
+- Biblioteka ripów (Ustawienia › Audio) dopasowuje zestawy NSF, NSFE, GBS, SPC, HES, KSS i SGC do
+  twoich ROM-ów po zawartości: jeden zestaw gra dla każdego regionu gry, niezależnie od nazwy.
+- Ripy z PlayStation i PlayStation 2 wymagają BIOS-u PS2 w twojej kolekcji; bez niego są
+  pomijane.
+- Obrazy płyt w zip lub 7z nie są jeszcze czytane. Zaszyfrowane obrazy nie są czytane.
+- `rommusic` tworzy też muzykę tytułową gry na SNES bez ripu.
 
 ## Karta RetroAchievements
 
