@@ -33,6 +33,8 @@ const PLAY_LOOPS: u8 = 2;
 const GBA_M4A: &str = "gba-m4a";
 /// `nes@<recipe>@<body ms>@<fade ms>`: the game's own sound code (see [`super::nes_music`]).
 const NES: &str = "nes";
+/// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
+const GB: &str = "gb";
 /// How long a looping song from a game's own sound code fades out.
 const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
@@ -58,6 +60,12 @@ pub const MAX_SDAT_BYTES: u64 = 128 << 20;
 pub fn covers(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     (platform == P::GameBoyAdvance as u16 && agbplay::available()) || (is_nes(platform) && super::nes_apu::available())
+        || (is_gb(platform) && super::gb_apu::available())
+}
+
+fn is_gb(platform: u16) -> bool {
+    use crate::common::models::Platform as P;
+    platform == P::GameBoy as u16 || platform == P::GameBoyColor as u16
 }
 
 fn is_nes(platform: u16) -> bool {
@@ -159,6 +167,9 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
     }
     if is_nes(platform) {
         return index_nes(path, t);
+    }
+    if is_gb(platform) {
+        return index_machine::<super::gb_music::GameBoy>(path, t, GB, "Game Boy");
     }
     let rom = read_rom(path)?;
     let mut player = match agbplay::Player::open(&rom, MEASURE_RATE) {
@@ -371,6 +382,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     match engine.split('@').next() {
         Some(NDS_SSEQ) => open_sseq(path, engine, song),
         Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
+        Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;

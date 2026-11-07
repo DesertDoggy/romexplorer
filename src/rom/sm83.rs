@@ -570,6 +570,13 @@ impl Cpu {
                             }
                             2 => {
                                 self.pc = self.hl();
+                                // A jump table reached by RST pops its return address and
+                                // jumps on: the call in progress is now to where it went.
+                                if let Some(top) = self.calls.last_mut() {
+                                    if self.sp.wrapping_sub(top.1) as i16 >= 0 {
+                                        top.0 = self.pc;
+                                    }
+                                }
                                 1
                             }
                             _ => {

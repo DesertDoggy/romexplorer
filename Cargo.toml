@@ -29,8 +29,8 @@ name = "snes_capture"
 path = "tools/snes_capture.rs"
 
 [[bin]]
-name = "nes_music"
-path = "tools/nes_music.rs"
+name = "cart_music"
+path = "tools/cart_music.rs"
 
 [[test]]
 name = "test_archiver"
