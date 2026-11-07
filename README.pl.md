@@ -285,7 +285,6 @@ to samo.
 - Ripy z PlayStation i PlayStation 2 wymagają BIOS-u PS2 w twojej kolekcji; bez niego są
   pomijane.
 - Obrazy płyt w zip lub 7z nie są jeszcze czytane. Zaszyfrowane obrazy nie są czytane.
-- `rommusic` tworzy też muzykę tytułową gry na SNES bez ripu.
 
 ## Karta RetroAchievements
 

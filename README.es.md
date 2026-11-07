@@ -289,7 +289,6 @@ archivo: no se extrae ni se copia nada. Ejecuta primero «Indexar el audio de la
 - Los rips de PlayStation y PlayStation 2 necesitan una BIOS de PS2 en tu colección; sin ella se
   saltan.
 - Las imágenes de disco dentro de un zip o 7z todavía no se leen. Las imágenes cifradas no se leen.
-- `rommusic` también genera la música de título de un juego de Super Nintendo sin rip.
 
 ## Pestaña RetroAchievements
 
