@@ -53,6 +53,7 @@ de segurança antes de substituir uma versão.
 - As páginas de título podem tocar a música que está dentro das suas ROM (só plataformas e tipos de
   suporte compatíveis).
 - Nas definições escolhe-se que faixas tocam.
+- A música da NES e da Famicom toca diretamente da ROM, pelo próprio código de som do jogo: não são precisos ficheiros de áudio original. Inclui os chips de som da Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
 - São suportados os formatos de áudio originais (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
   da Game Gear, soltos ou em zip).
 - Uma biblioteca de áudio original: indique em Definições › Áudio as pastas onde guarda os conjuntos, e

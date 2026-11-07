@@ -54,6 +54,7 @@ Faites une sauvegarde avant de remplacer une version.
 - Les pages de titre peuvent jouer la musique contenue dans vos ROM (plateformes et types de
   support pris en charge uniquement).
 - Les réglages permettent de choisir quelles pistes sont jouées.
+- La musique NES et Famicom est jouée directement depuis la ROM, par le code sonore du jeu lui-même : aucun fichier audio d'origine n'est nécessaire. Puces sonores Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5) comprises.
 - Les formats audio d'origine (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP et SGC de la
   Game Gear, seuls ou en zip) sont pris en charge.
 - Une bibliothèque audio d'origine : indiquez dans Paramètres › Audio les dossiers où vous gardez vos sets,
