@@ -35,7 +35,9 @@
 # combination was skipped, or if any step failed (with --continue, after trying the rest).
 #
 # Options:
-#   --platform LIST   linux,windows,macos           (default: this host)
+#   --platform LIST   linux,windows,macos,android   (default: this host). android is the chdlite
+#                     app and CLI with their own natives; `--platform android` alone builds only
+#                     those, into release/chdlite/<chdlite version>/
 #   --arch LIST       x64,arm64                     (default: this host's)
 #   --mode LIST       server,desktop,chdlite,rommusic, or all (default: server,desktop).
 #                     chdlite goes to release/chdlite/<chdlite version>/ and rommusic to
@@ -127,6 +129,15 @@ done
 
 split() { tr ',' '\n' <<< "$1" | sed '/^$/d'; }
 mapfile -t P_LIST < <(split "$PLATFORMS")
+# `android` is not a (platform, arch) of its own here: it is the chdlite app and CLI (step 5b),
+# with their natives built by build_chdlite_android.sh --natives. `--platform android` alone
+# builds just that -- no host natives, no host packages.
+ANDROID_PLATFORM=0
+if printf '%s\n' "${P_LIST[@]}" | grep -qx android; then
+    ANDROID_PLATFORM=1
+    ANDROID=1
+    mapfile -t P_LIST < <(printf '%s\n' "${P_LIST[@]}" | grep -vx android)
+fi
 mapfile -t A_LIST < <(split "$ARCHES")
 # `all` is every package; `cli` the old name for the two standalone tools.
 MODES="$(sed -e 's/\ball\b/server,desktop,chdlite,rommusic/g' -e 's/\bcli\b/chdlite,rommusic/g' <<< "$MODES")"
@@ -244,12 +255,14 @@ for p in "${P_LIST[@]}"; do
     done
 done
 
-if [[ ${#TARGETS[@]} -eq 0 ]]; then
+if [[ ${#TARGETS[@]} -eq 0 && "$ANDROID_PLATFORM" -eq 1 && ${#P_LIST[@]} -eq 0 ]]; then
+    echo "release: android only (chdlite $(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1))"
+elif [[ ${#TARGETS[@]} -eq 0 ]]; then
     echo "nothing to build: every requested combination was skipped" >&2
     summary
     exit 1
 fi
-echo "release $VERSION: targets ${TARGETS[*]}; modes ${M_LIST[*]}"
+[[ ${#TARGETS[@]} -gt 0 ]] && echo "release $VERSION: targets ${TARGETS[*]}; modes ${M_LIST[*]}"
 
 # --- 2. natives -------------------------------------------------------------------------------
 if [[ "$SKIP_NATIVE" -eq 0 ]]; then
@@ -267,7 +280,7 @@ fi
 # --- 3. the GUI's web build, once ---------------------------------------------------------------
 wants_web=0
 for m in "${M_LIST[@]}"; do [[ "$m" == "server" ]] && wants_web=1; done
-if [[ "$GUI_WEB" -eq 1 && "$wants_web" -eq 1 ]]; then
+if [[ "$GUI_WEB" -eq 1 && "$wants_web" -eq 1 && ${#TARGETS[@]} -gt 0 ]]; then
     step "gui_web (wasm, once)" bash "$SCRIPTS/build_gui_web.sh" || true
 fi
 
@@ -351,7 +364,10 @@ done
 # build_chdlite_android.sh), which writes app-release.apk; unsigned otherwise. The file
 # name says which.
 android_release() {
-    bash "$SCRIPTS/build_chdlite_android.sh" --release --cli || return 1
+    local natives=()
+    # --platform android builds its own natives, as a host platform does; --skip-native reuses them.
+    [[ "$ANDROID_PLATFORM" -eq 1 && "$SKIP_NATIVE" -eq 0 ]] && natives=(--natives)
+    bash "$SCRIPTS/build_chdlite_android.sh" "${natives[@]}" --release --cli || return 1
     local cli_version apk_dir apk name cli_dir zip DIST
     cli_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/chdlite/Cargo.toml" | head -1)"
     # chdlite's own dist/, beside its desktop archives, not romexplorer's.
@@ -393,7 +409,7 @@ want_android=0
 for m in "${M_LIST[@]}"; do [[ "$m" == chdlite ]] && want_android=1; done
 [[ "$ANDROID" == 1 ]] && want_android=1
 if [[ "$ANDROID" != 0 && "$want_android" -eq 1 && "$NATIVE_ONLY" -eq 0 ]]; then
-    if [[ ! -f "$ROOT_DIR/app_root_ex/lib/android/arm64/libchdman.so" ]]; then
+    if [[ ! -f "$ROOT_DIR/app_root_ex/lib/android/arm64/libchdman.so" && ! ( "$ANDROID_PLATFORM" -eq 1 && "$SKIP_NATIVE" -eq 0 ) ]]; then
         reason="no android/arm64 libraries in app_root_ex/lib/android/arm64 (scripts/build_chdlite_android.sh --natives)"
     elif ! out="$(bash "$SCRIPTS/build_chdlite_android.sh" --check 2>&1)"; then
         reason="the Android toolchain is incomplete:"$'\n'"$(grep '^  - ' <<< "$out" | sed 's/^/    /')"
