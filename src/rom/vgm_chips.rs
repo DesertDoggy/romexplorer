@@ -1,6 +1,6 @@
 //! Sound chips from libvgm (`deps/rommusic/chip/rchip.cpp`, in the `rommusic` library), fed
 //! one register write at a time by a game's own code: the Master System and Game Gear's PSG
-//! and the Japanese Master System's FM unit, the Mega Drive's FM chip. Loaded at run time; [`available`] is false when
+//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit. Loaded at run time; [`available`] is false when
 //! the library has not been built for this machine.
 
 use std::ffi::{c_double, c_int, c_long, c_void};
@@ -58,6 +58,8 @@ pub enum Kind {
     Ym2413,
     /// The YM2612 (the Mega Drive's FM chip). Ports 0-3: address and data of its two halves.
     Ym2612,
+    /// The HuC6280's sound unit (the PC Engine's). Ports 0-9: its registers.
+    Huc6280,
 }
 
 impl Kind {
@@ -67,6 +69,7 @@ impl Kind {
             Kind::GameGearPsg => (0x00, 1),
             Kind::Ym2413 => (0x01, 0),
             Kind::Ym2612 => (0x02, 0),
+            Kind::Huc6280 => (0x1B, 0),
         }
     }
 }
