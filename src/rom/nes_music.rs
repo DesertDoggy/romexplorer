@@ -392,14 +392,33 @@ impl Nes {
     pub fn disk_status(&self) -> Option<String> {
         let f = self.board.fds.as_ref()?;
         let r = f.drive_reads;
+        let n = f.trail.len();
+        let trail: Vec<String> = (f.trail_at.saturating_sub(n)..f.trail_at)
+            .map(|i| format!("{:04X}", f.trail[i % n]))
+            .collect();
         Some(format!(
-            "pc ${:04X}, side {}, {} loads, drive reads $4030 {} $4031 {} $4032 {} $4033 {}",
-            self.cpu.pc, f.side, f.loads, r[0], r[1], r[2], r[3]
+            "pc ${:04X}{}, s ${:02X}, side {}, {} loads, drive reads $4030 {} $4031 {} $4032 {} \
+             $4033 {}, last run {}",
+            self.cpu.pc,
+            if self.cpu.jammed { " (jammed)" } else { "" },
+            self.cpu.s,
+            f.side,
+            f.loads,
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            trail.join(" ")
         ))
     }
 
     /// One instruction, or one BIOS routine of a Disk System game.
     fn exec(&mut self) -> u32 {
+        if let Some(st) = self.board.fds.as_mut() {
+            let n = st.trail.len();
+            st.trail[st.trail_at % n] = self.cpu.pc;
+            st.trail_at += 1;
+        }
         if self.cpu.pc >= 0xE000 {
             if let Some(mut st) = self.board.fds.take() {
                 let c = fds::hle(&mut self.cpu, &mut self.board, &mut st);

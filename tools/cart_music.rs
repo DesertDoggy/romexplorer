@@ -330,7 +330,7 @@ fn main() {
                         println!("    BIOS calls not handled: {}", list.join(" "));
                     }
                     // Where it stands after 15 seconds, and what it read of the drive.
-                    let pcs: Vec<String> = (0..4)
+                    let pcs: Vec<String> = (0..2)
                         .filter_map(|_| {
                             m.run_frame(None, None);
                             m.take_sound();

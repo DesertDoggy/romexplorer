@@ -191,6 +191,9 @@ pub struct State {
     /// tool's notes: a game with its own disk loader polls the drive).
     pub drive_reads: [u32; 4],
     pub loads: u32,
+    /// The last addresses run (for the test tool's notes), newest at `trail_at - 1`.
+    pub trail: [u16; 24],
+    pub trail_at: usize,
 }
 
 impl State {
@@ -202,6 +205,8 @@ impl State {
             unknown: Vec::new(),
             drive_reads: [0; 4],
             loads: 0,
+            trail: [0; 24],
+            trail_at: 0,
         }
     }
 }
