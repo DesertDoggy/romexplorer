@@ -22,7 +22,7 @@ de segurança antes de substituir uma versão.
 - Mostra quantas respostas estão guardadas e o seu custo aproximado este mês e no total. As
   respostas podem ser exportadas e importadas em JSON.
 
-**IA no separador Definitive**
+**IA no separador Definitiva**
 - A página de cada jogo pode perguntar à IA qual a versão com mais conteúdo e com melhores
   gráficos, som e comodidade de jogo. A resposta traz uma classificação, como as notas revistas.
 - Uma resposta obtida por uma ligação do navegador pode ser colada, ou guardada a partir da área de
@@ -30,19 +30,19 @@ de segurança antes de substituir uma versão.
 - A primeira pergunta mostra um aviso de custo. Config › AI tem ligações para a página de limites
   de gastos de cada fornecedor.
 - «Avaliar em lote com IA» pergunta sobre vários jogos numa só tarefa: os jogos escolhidos no
-  separador Definitive, ou as linhas escolhidas de um conjunto ou o conjunto inteiro. Primeiro
+  separador Definitiva, ou as linhas escolhidas de um conjunto ou o conjunto inteiro. Primeiro
   mostra o número de perguntas e um custo aproximado, salta os jogos já respondidos e pode ser
   agendada para um conjunto.
 - Uma classificação dada antes de sair uma versão mais recente do jogo fica marcada «Nova versão
   desde a avaliação», e o filtro pode excluir essas classificações.
 
 **Títulos: versões menores e grupos de versões**
-- «Hide minor versions» oculta um jogo quando existe uma edição mais completa na mesma plataforma e
+- «Ocultar versões menores» oculta um jogo quando existe uma edição mais completa na mesma plataforma e
   região (International, Director's Cut, Final Mix e semelhantes; uma Easy Type cede ao jogo
   normal). Em Títulos, Lançamentos e na lista de lançamentos de um título.
-- «One of each version group» mostra só uma versão dos jogos lançados em várias versões (Pokémon,
+- «Uma de cada conjunto de versões» mostra só uma versão dos jogos lançados em várias versões (Pokémon,
   Yo-kai Watch e outros): a que tem, senão a que escolheu, senão uma ao acaso, com 🎲 para ver
-  outra. As versões de um mesmo grupo já não formam uma só família no separador Definitive.
+  outra. As versões de um mesmo grupo já não formam uma só família no separador Definitiva.
 - O novo cartão Versões na página de um título mostra ambos e permite corrigi-los.
 
 **Config › Avançado**
@@ -56,7 +56,7 @@ de segurança antes de substituir uma versão.
 - São suportados os rips de música no formato original (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
   da Game Gear, soltos ou em zip).
 - Uma biblioteca de rips: indique em Definições › Áudio as pastas onde guarda os conjuntos, e
-  «Index ROM audio» associa cada conjunto às suas ROM pelo conteúdo. O mesmo conjunto toca em todas
+  «Indexar o áudio das ROM» associa cada conjunto às suas ROM pelo conteúdo. O mesmo conjunto toca em todas
   as regiões do jogo, seja qual for o nome.
 - O leitor das páginas de título tem um botão «não tocar esta faixa». As faixas ocultas aparecem
   por baixo da lista de reprodução: um clique toca uma e Restaurar devolve-a.
@@ -102,7 +102,7 @@ de segurança antes de substituir uma versão.
 
 **Tarefas**
 - As colunas de detalhe da lista de tarefas foram ajustadas.
-- Uma tarefa em espera tem um botão «Run next», também para uma seleção: começa assim que termina
+- Uma tarefa em espera tem um botão «Executar a seguir», também para uma seleção: começa assim que termina
   a tarefa em curso na sua fila. As outras filas não são afetadas.
 
 **Correspondência por hash**
@@ -118,12 +118,12 @@ de segurança antes de substituir uma versão.
 - Se a lista de modelos não puder ser lida, o Gemini é consultado na mesma; num erro de quota,
   tenta-se uma vez o modelo Flash seguinte.
 
-**Definitive e Crossplat**
+**Definitiva e Crossplat**
 - Só são listados os títulos com um ID do IGDB. Os títulos da Wii U com o nome do seu ID de título
-  deixam de aparecer em Definitive.
+  deixam de aparecer em Definitiva.
 
 ## Correções
 
 **Coleção**
-- A pesquisa do separador Definitive só encontrava o nome do título principal. Agora encontra uma
+- A pesquisa do separador Definitiva só encontrava o nome do título principal. Agora encontra uma
   família pelo nome de qualquer versão, incluindo os nomes localizados e alternativos.

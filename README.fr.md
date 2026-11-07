@@ -272,7 +272,7 @@ par défaut, car la grande base de données ralentit tout).
 ## Audio des ROM
 
 Les pages de titre peuvent jouer la musique contenue dans vos ROM, directement depuis le fichier :
-rien n'est extrait ni copié. Lancez d'abord « Index ROM audio » dans l'onglet Audio. `rommusic` lit
+rien n'est extrait ni copié. Lancez d'abord « Indexer l'audio des ROM » dans l'onglet Audio. `rommusic` lit
 les mêmes.
 
 | musique tirée de | plateformes | fichiers |

@@ -22,7 +22,7 @@ Faites une sauvegarde avant de remplacer une version.
 - Affiche le nombre de réponses enregistrées et leur coût approximatif ce mois-ci et au total. Les
   réponses peuvent être exportées et importées en JSON.
 
-**L'IA dans l'onglet Definitive**
+**L'IA dans l'onglet Définitive**
 - La page de chaque jeu peut demander à l'IA quelle version a le plus de contenu et les meilleurs
   graphismes, son et confort de jeu. La réponse porte un rang, comme les notes relues.
 - Une réponse obtenue par un lien du navigateur peut être collée, ou enregistrée depuis le
@@ -30,20 +30,20 @@ Faites une sauvegarde avant de remplacer une version.
 - La première question affiche un avertissement sur le coût. Config › AI renvoie vers la page des
   limites de dépense de chaque fournisseur.
 - « Évaluer en lot avec l'IA » interroge sur plusieurs jeux en une seule tâche : les jeux choisis
-  dans l'onglet Definitive, ou les lignes choisies d'un set ou le set entier. Le nombre de questions
+  dans l'onglet Définitive, ou les lignes choisies d'un set ou le set entier. Le nombre de questions
   et un coût approximatif s'affichent d'abord, les jeux déjà évalués sont sautés, et un set peut être
   planifié.
 - Un rang donné avant la sortie d'une version plus récente du jeu est marqué « Nouvelle version
   depuis l'évaluation », et le filtre peut écarter ces rangs.
 
 **Titres : versions mineures et groupes de versions**
-- « Hide minor versions » masque un jeu quand une édition plus complète existe sur la même
+- « Masquer les versions mineures » masque un jeu quand une édition plus complète existe sur la même
   plateforme et dans la même région (International, Director's Cut, Final Mix, etc. ; une Easy Type
   laisse la place au jeu normal). Dans Titres, Sorties et la liste des sorties d'un titre.
-- « One of each version group » n'affiche qu'une version des jeux sortis en plusieurs versions
+- « Une version de chaque ensemble » n'affiche qu'une version des jeux sortis en plusieurs versions
   (Pokémon, Yo-kai Watch, etc.) : celle que vous possédez, sinon votre choix, sinon une au hasard,
   avec 🎲 pour en voir une autre. Les versions d'un même groupe ne forment plus une seule famille
-  dans l'onglet Definitive.
+  dans l'onglet Définitive.
 - La nouvelle carte Versions de la page d'un titre montre les deux et permet de les corriger.
 
 **Config › Avancé**
@@ -57,7 +57,7 @@ Faites une sauvegarde avant de remplacer une version.
 - Les rips musicaux dans leur format d'origine (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP et SGC de la
   Game Gear, seuls ou en zip) sont pris en charge.
 - Une bibliothèque de rips : indiquez dans Paramètres › Audio les dossiers où vous gardez vos sets,
-  et « Index ROM audio » associe chaque set à vos ROM par leur contenu. Un même set joue pour toutes
+  et « Indexer l'audio des ROM » associe chaque set à vos ROM par leur contenu. Un même set joue pour toutes
   les régions du jeu, quel que soit son nom.
 - Le lecteur des pages de titre a un bouton « ne pas jouer cette piste ». Les pistes masquées sont
   listées sous la liste de lecture : un clic en joue une, Restaurer la remet.
@@ -105,7 +105,7 @@ Faites une sauvegarde avant de remplacer une version.
 
 **Tâches**
 - Les colonnes de détail de la liste des tâches ont été ajustées.
-- Une tâche en attente a un bouton « Run next », aussi pour une sélection : elle démarre dès que la
+- Une tâche en attente a un bouton « Exécuter ensuite », aussi pour une sélection : elle démarre dès que la
   tâche en cours dans sa file est terminée. Les autres files ne sont pas touchées.
 
 **Correspondance par hash**
@@ -121,13 +121,13 @@ Faites une sauvegarde avant de remplacer une version.
 - Si la liste des modèles ne peut pas être lue, Gemini est quand même interrogé ; en cas d'erreur
   de quota, le modèle Flash suivant est essayé une fois.
 
-**Definitive et Crossplat**
+**Définitive et Crossplat**
 - Seuls les titres avec un identifiant IGDB sont listés. Les titres Wii U nommés par leur
-  identifiant de titre n'apparaissent plus dans Definitive.
+  identifiant de titre n'apparaissent plus dans Définitive.
 
 ## Corrections
 
 **Collection**
-- La recherche de l'onglet Definitive ne trouvait que le nom du titre de tête. Elle trouve
+- La recherche de l'onglet Définitive ne trouvait que le nom du titre de tête. Elle trouve
   maintenant une famille par le nom de n'importe quelle version, noms localisés et alternatifs
   compris.
