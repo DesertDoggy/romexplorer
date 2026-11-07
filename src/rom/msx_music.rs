@@ -1035,6 +1035,10 @@ impl Machine for Msx {
         chip.0.end_frame(FRAME, out);
     }
 
+    fn frame_length(&self) -> u32 {
+        FRAME
+    }
+
     fn frame_rate(&self) -> f64 {
         RATE
     }

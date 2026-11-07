@@ -1275,6 +1275,10 @@ impl Machine for GameBoyAdvance {
         }
     }
 
+    fn frame_length(&self) -> u32 {
+        FRAME
+    }
+
     fn frame_rate(&self) -> f64 {
         RATE
     }

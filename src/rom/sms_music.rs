@@ -589,6 +589,10 @@ impl<const GG: bool> Machine for Sega8<GG> {
         chip.0.end_frame(FRAME, out);
     }
 
+    fn frame_length(&self) -> u32 {
+        FRAME
+    }
+
     fn frame_rate(&self) -> f64 {
         RATE
     }

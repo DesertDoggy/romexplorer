@@ -659,6 +659,10 @@ impl Machine for Nes {
         apu.set_reader(None, std::ptr::null_mut());
     }
 
+    fn frame_length(&self) -> u32 {
+        self.board.frame_cycles()
+    }
+
     fn frame_rate(&self) -> f64 {
         if self.board.pal {
             PAL_RATE
