@@ -159,6 +159,8 @@ mod at {
     pub const VRAM_FILL: u16 = 0xEA84;
     pub const MEM_FILL: u16 = 0xEAD2;
     pub const SET_SCROLL: u16 = 0xEAEA;
+    /// SetScroll past its read of the video status (a few games call in here).
+    pub const SET_SCROLL_NO_STATUS: u16 = 0xEAED;
     pub const JUMP_ENGINE: u16 = 0xEAFD;
     pub const READ_KEYBOARD: u16 = 0xEB13;
     pub const LOAD_TILESET: u16 = 0xEBAF;
@@ -621,8 +623,10 @@ pub fn hle<B: Bus>(cpu: &mut Cpu, bus: &mut B, st: &mut State) -> u32 {
             rts(cpu, bus, 0);
             cycles = 2000;
         }
-        at::SET_SCROLL => {
-            bus.read(0x2002);
+        at::SET_SCROLL | at::SET_SCROLL_NO_STATUS => {
+            if pc == at::SET_SCROLL {
+                bus.read(0x2002);
+            }
             let (x, y, ctrl) = (bus.read(0x00FD), bus.read(0x00FC), bus.read(0x00FF));
             bus.write(0x2005, x);
             bus.write(0x2005, y);
