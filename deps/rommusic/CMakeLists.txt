@@ -201,7 +201,7 @@ target_compile_options(rommusic_wsr PRIVATE ${ROMMUSIC_LAX_C})
 # not need. SNDDEV_SELECT builds the device table from only the SNDDEV_ named here.
 set(LV ${VGM_ROOT})
 set(RVGM_SOURCES vgm/rvgm.cpp chip/rchip.cpp
-  ${LV}/emu/cores/2413intf.c ${LV}/emu/cores/emu2413.c
+  ${LV}/emu/cores/2413intf.c ${LV}/emu/cores/emu2413.c ${LV}/emu/cores/2612intf.c ${LV}/emu/cores/ym3438.c
   ${LV}/emu/SoundEmu.c ${LV}/emu/Resampler.c ${LV}/emu/logging.c ${LV}/emu/panning.c ${LV}/emu/dac_control.c
   ${LV}/emu/cores/sn764intf.c ${LV}/emu/cores/sn76496.c ${LV}/emu/cores/vsu.c
   ${LV}/player/playerbase.cpp ${LV}/player/vgmplayer.cpp ${LV}/player/vgmplayer_cmdhandler.cpp ${LV}/player/playera.cpp
@@ -213,7 +213,7 @@ else()
 endif()
 add_library(rommusic_vgm OBJECT ${RVGM_SOURCES})
 target_include_directories(rommusic_vgm PRIVATE ${LV} ${LV}/libs/include)
-target_compile_definitions(rommusic_vgm PRIVATE HAVE_STDINT_H SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_YM2413 EC_YM2413_EMU2413 SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
+target_compile_definitions(rommusic_vgm PRIVATE HAVE_STDINT_H SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_YM2413 EC_YM2413_EMU2413 SNDDEV_YM2612 EC_YM2612_NUKED SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
 set_target_properties(rommusic_vgm PROPERTIES C_STANDARD 99 CXX_STANDARD 11 C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
 target_compile_options(rommusic_vgm PRIVATE -w)
 

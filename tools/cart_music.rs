@@ -3,7 +3,7 @@
 //!
 //!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
 //!
-//! For each NES/Famicom, Game Boy/Color, Master System or Game Gear ROM (loose, or the first one in a `.zip`/`.7z`): the
+//! For each NES/Famicom, Game Boy/Color, Master System, Game Gear or Mega Drive ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
 //! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
 //! ends the run.
@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use romexplorer::rom::gb_music::GameBoy;
+use romexplorer::rom::md_music::MegaDrive;
 use romexplorer::rom::music_search::{self, Machine, Song};
 use romexplorer::rom::nes_music::Nes;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
@@ -59,7 +60,7 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
             .to_ascii_lowercase();
         if matches!(
             ext.as_str(),
-            "nes" | "gb" | "gbc" | "sms" | "gg" | "zip" | "7z"
+            "nes" | "gb" | "gbc" | "sms" | "gg" | "md" | "gen" | "smd" | "zip" | "7z"
         ) {
             out.push(path.to_path_buf());
         }
@@ -75,7 +76,14 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if rom.len() >= 0x150 && rom[0x104..0x108] == [0xCE, 0xED, 0x66, 0x66] {
         return Some(if rom[0x143] & 0x80 != 0 { "GBC" } else { "GB" });
     }
+    // The Mega Drive header.
+    if rom.len() >= 0x200 && (&rom[0x100..0x104] == b"SEGA" || &rom[0x101..0x105] == b"SEGA") {
+        return Some("MD");
+    }
     let name = path.to_string_lossy().to_ascii_lowercase();
+    if name.ends_with(".md") || name.ends_with(".gen") || name.ends_with(".smd") {
+        return Some("MD");
+    }
     if name.ends_with(".gg") || name.contains("game gear") || name.contains("gamegear") {
         return Some("GG");
     }
@@ -223,6 +231,13 @@ fn main() {
                 "Master System",
                 &o,
                 tally.entry("Master System").or_default(),
+            ),
+            Some("MD") => run::<MegaDrive>(
+                &path,
+                &rom,
+                "Mega Drive",
+                &o,
+                tally.entry("Mega Drive").or_default(),
             ),
             Some("GG") => run::<GameGear>(
                 &path,

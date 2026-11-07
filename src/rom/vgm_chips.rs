@@ -1,6 +1,6 @@
 //! Sound chips from libvgm (`deps/rommusic/chip/rchip.cpp`, in the `rommusic` library), fed
 //! one register write at a time by a game's own code: the Master System and Game Gear's PSG
-//! and the Japanese Master System's FM unit. Loaded at run time; [`available`] is false when
+//! and the Japanese Master System's FM unit, the Mega Drive's FM chip. Loaded at run time; [`available`] is false when
 //! the library has not been built for this machine.
 
 use std::ffi::{c_double, c_int, c_long, c_void};
@@ -56,6 +56,8 @@ pub enum Kind {
     GameGearPsg,
     /// The YM2413 (the Japanese Master System's FM unit). Port 0 is the address, 1 the data.
     Ym2413,
+    /// The YM2612 (the Mega Drive's FM chip). Ports 0-3: address and data of its two halves.
+    Ym2612,
 }
 
 impl Kind {
@@ -64,6 +66,7 @@ impl Kind {
             Kind::SegaPsg => (0x00, 0),
             Kind::GameGearPsg => (0x00, 1),
             Kind::Ym2413 => (0x01, 0),
+            Kind::Ym2612 => (0x02, 0),
         }
     }
 }
@@ -149,6 +152,38 @@ mod tests {
         let peak = out.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
         assert!(peak > 300, "peak {peak}");
         // A tenth of a second, stereo.
-        assert!((out.len() as i64 - 2 * 44_100 / 6).abs() < 20, "{}", out.len());
+        assert!(
+            (out.len() as i64 - 2 * 44_100 / 6).abs() < 20,
+            "{}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn the_mega_drive_fm_chip_sounds() {
+        if !available() {
+            return;
+        }
+        let clock = 7_670_453;
+        let mut c = Chips::new(44_100, clock as f64, &[(Kind::Ym2612, clock)]).unwrap();
+        let mut regs = vec![(0xB0u8, 0x07u8), (0xB4, 0xC0), (0xA4, 0x22), (0xA0, 0x69)];
+        for op in [0x00u8, 0x04, 0x08, 0x0C] {
+            regs.push((0x30 + op, 0x01));
+            regs.push((0x40 + op, 0x00));
+            regs.push((0x50 + op, 0x1F));
+            regs.push((0x80 + op, 0x0F));
+        }
+        regs.push((0x28, 0xF0));
+        for (i, (r, v)) in regs.into_iter().enumerate() {
+            let t = i as u32 * 200;
+            c.write(t, 0, 0, r);
+            c.write(t, 0, 1, v);
+        }
+        let mut out = Vec::new();
+        for _ in 0..10 {
+            c.end_frame(127_856, &mut out);
+        }
+        let peak = out.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        assert!(peak > 300, "peak {peak}");
     }
 }
