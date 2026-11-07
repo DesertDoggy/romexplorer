@@ -22,7 +22,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 - Muestra cuántas respuestas hay guardadas y su coste aproximado este mes y en total. Las
   respuestas se pueden exportar e importar en JSON.
 
-**IA en la pestaña Definitive**
+**IA en la pestaña Definitiva**
 - La página de cada juego puede preguntar a la IA qué versión tiene más contenido y mejores
   gráficos, sonido y comodidad de juego. La respuesta trae un rango, como las notas revisadas.
 - Una respuesta obtenida con un enlace del navegador se puede pegar, o guardar desde el
@@ -30,19 +30,19 @@ Haz una copia de seguridad antes de sustituir una versión.
 - La primera pregunta muestra un aviso de coste. Config › AI enlaza a la página de límites de gasto
   de cada proveedor.
 - «Valorar en lote con IA» pregunta por varios juegos en una sola tarea: los juegos elegidos en la
-  pestaña Definitive, o las filas elegidas de un set o el set entero. Primero muestra el número de
+  pestaña Definitiva, o las filas elegidas de un set o el set entero. Primero muestra el número de
   preguntas y un coste aproximado, salta los juegos ya respondidos y se puede programar para un set.
 - Un rango dado antes de que saliera una versión más nueva del juego se marca «Nueva versión desde
   la valoración», y el filtro puede descartar esos rangos.
 
 **Títulos: versiones menores y grupos de versiones**
-- «Hide minor versions» oculta un juego cuando hay una edición más completa en la misma plataforma
+- «Ocultar versiones menores» oculta un juego cuando hay una edición más completa en la misma plataforma
   y región (International, Director's Cut, Final Mix, etc.; una Easy Type cede ante el juego
   normal). En Títulos, Lanzamientos y la lista de lanzamientos de un título.
-- «One of each version group» muestra una sola versión de los juegos que salieron en varias
+- «Una de cada conjunto de versiones» muestra una sola versión de los juegos que salieron en varias
   versiones (Pokémon, Yo-kai Watch, etc.): la que tienes, si no la que elegiste, si no una al azar,
   con 🎲 para ver otra. Las versiones de un mismo grupo ya no forman una sola familia en la pestaña
-  Definitive.
+  Definitiva.
 - La nueva tarjeta Versiones de la página de un título muestra ambos y permite corregirlos.
 
 **Config › Avanzado**
@@ -103,7 +103,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 **Tareas**
 - Se han ajustado las columnas de detalle de la lista de tareas.
-- Una tarea en espera tiene un botón «Run next», también para una selección: empieza en cuanto
+- Una tarea en espera tiene un botón «Ejecutar a continuación», también para una selección: empieza en cuanto
   termina la tarea en curso de su cola. Las demás colas no se ven afectadas.
 
 **Coincidencia de hash**
@@ -119,13 +119,13 @@ Haz una copia de seguridad antes de sustituir una versión.
 - Si no se puede leer la lista de modelos, se pregunta a Gemini de todos modos; ante un error de
   cuota, se prueba una vez el siguiente modelo Flash.
 
-**Definitive y Crossplat**
+**Definitiva y Crossplat**
 - Solo se listan los títulos con un ID de IGDB. Los títulos de Wii U nombrados por su ID de título
-  ya no aparecen en Definitive.
+  ya no aparecen en Definitiva.
 
 ## Correcciones
 
 **Colección**
-- La búsqueda de la pestaña Definitive solo encontraba el nombre del título principal. Ahora
+- La búsqueda de la pestaña Definitiva solo encontraba el nombre del título principal. Ahora
   encuentra una familia por el nombre de cualquier versión, incluidos los nombres localizados y
   alternativos.
