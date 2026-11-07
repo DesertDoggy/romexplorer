@@ -113,6 +113,8 @@ replacing a build.
   apart, and those already merged are split out once after the update.
 - The "another game inside" card left pirate and unlicensed games from other regions in the
   title.
+- The "another game inside" card treated a release with a number in front of its name
+  ("0743 - ...") as another game. Such cards are cleared once after the update.
 - Some jobs, like the merge audit, sat at 0 for a while with nothing said. Every job now says
   what it is doing and how far it is from the start, and the merge audit lists its steps
   like the title merge pass.

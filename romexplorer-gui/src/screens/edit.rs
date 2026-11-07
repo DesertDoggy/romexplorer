@@ -653,7 +653,7 @@ fn MergeCard(params: Signal<Vec<(&'static str, String)>>, at: Signal<u64>, reloa
         });
     };
     let position = at() + 1;
-    let (k_no, k_look) = (key.clone(), key.clone());
+    let k_look = key.clone();
     let matched = api::arr(&it, "matched").iter().filter_map(|m| m.as_str()).collect::<Vec<_>>().join(" ↔ ");
     let titles = api::arr(&it, "titles").to_vec();
     let options = api::arr(&it, "options").to_vec();
@@ -709,16 +709,13 @@ fn MergeCard(params: Signal<Vec<(&'static str, String)>>, at: Signal<u64>, reloa
                 }
             }
             if !taken {
-                ArrangePanel { key: "{k_arrange}", item: arrange, reload }
-            }
-            div { class: "toolbar", style: "margin-top:8px",
-                if status != "dismissed" {
-                    button { class: "btn danger", title: state::tr("not offered again"), onclick: move |_| decide(k_no.clone(), None), {state::tr("No")} }
+                ArrangePanel { key: "{k_arrange}", item: arrange, reload, at }
+            } else {
+                div { class: "toolbar", style: "margin-top:8px",
+                    button { class: "btn", onclick: move |_| at.set(at() + 1), {state::tr("Skip")} " ›" }
+                    " "
+                    button { class: "btn", disabled: at() == 0, onclick: move |_| at.set(at().saturating_sub(1)), "‹ " {state::tr("Back")} }
                 }
-                " "
-                button { class: "btn", onclick: move |_| at.set(at() + 1), {state::tr("Skip")} " ›" }
-                " "
-                button { class: "btn", disabled: at() == 0, onclick: move |_| at.set(at().saturating_sub(1)), "‹ " {state::tr("Back")} }
             }
         }
     }
@@ -729,9 +726,8 @@ type Names = std::collections::HashMap<u64, (String, String)>;
 /// The boxes of [`ArrangePanel`]: a title (none: a new one) and the releases in it.
 type Boxes = Vec<(Option<u64>, Vec<u64>)>;
 
-/// Where [`ArrangePanel`] starts (the console's `arrangeStart`): the recommended choice's
-/// grouping, each group in the title holding most of it, when it has one -- else the titles
-/// as they are.
+/// [`ArrangePanel`]'s boxes (the console's `arrangeStart`): the titles as they are, or the
+/// recommended choice's grouping, each group in the title holding most of it, when it has one.
 fn arrange_start(it: &Value, from_suggestion: bool) -> (Boxes, Names) {
     let mut names: Names = std::collections::HashMap::new();
     let mut holder: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
@@ -793,9 +789,13 @@ fn arrange_start(it: &Value, from_suggestion: bool) -> (Boxes, Names) {
 /// The releases of a merge review card as boxes, one per title, to drag between (the
 /// console's `arrangePanel`): into another title, or onto "+" for a new title named after the
 /// first one dropped there. A tap picks a release and a tap on a box puts it there.
+/// It starts from the titles as they are, and also draws the card's bottom row: "Leave as it
+/// is" (said no, not offered again) while the boxes match the titles, "Apply" once moved.
 #[component]
-fn ArrangePanel(item: Value, reload: Signal<u64>) -> Element {
-    let start = use_hook(|| arrange_start(&item, true));
+fn ArrangePanel(item: Value, reload: Signal<u64>, at: Signal<u64>) -> Element {
+    let mut at = at;
+    let start = use_hook(|| arrange_start(&item, false));
+    let as_now = use_hook(|| arrange_shape(&start.0));
     let names = use_signal(|| start.1.clone());
     let mut boxes = use_signal(|| start.0.clone());
     let mut picked = use_signal(|| None::<u64>);
@@ -817,6 +817,8 @@ fn ArrangePanel(item: Value, reload: Signal<u64>) -> Element {
     };
     let shown: Vec<(usize, Option<u64>, Vec<u64>)> = boxes.read().iter().enumerate().map(|(i, (t, r))| (i, *t, r.clone())).collect();
     let (it_now, it_rec) = (item.clone(), item.clone());
+    let changed = arrange_shape(&boxes.read()) != as_now;
+    let dismissed = s(&item, "status") == "dismissed";
     rsx! {
         div { class: "card", style: "margin:8px 0",
             h3 { {state::tr("Arrange yourself")} }
@@ -866,26 +868,53 @@ fn ArrangePanel(item: Value, reload: Signal<u64>) -> Element {
                 }
             }
             div { class: "toolbar", style: "margin-top:8px",
-                button { class: "btn primary",
+                button { class: "btn", onclick: move |_| { let (b, _) = arrange_start(&it_now, false); boxes.set(b); picked.set(None); }, {state::tr("back to the titles as they are")} }
+                " "
+                button { class: "btn", onclick: move |_| { let (b, _) = arrange_start(&it_rec, true); boxes.set(b); picked.set(None); }, {state::tr("arrange as suggested")} }
+            }
+        }
+        div { class: "toolbar", style: "margin-top:8px",
+            if changed || !dismissed {
+                button { class: if changed { "btn primary" } else { "btn danger" }, title: if changed { String::new() } else { state::tr("not offered again") },
                     onclick: move |_| {
                         let key = key.clone();
-                        let layout: Vec<Value> = boxes.read().iter().map(|(t, r)| json!({ "title_id": t, "releases": r })).collect();
+                        let (action, body) = if changed {
+                            let layout: Vec<Value> = boxes.read().iter().map(|(t, r)| json!({ "title_id": t, "releases": r })).collect();
+                            ("apply", json!({ "layout": layout }))
+                        } else {
+                            ("dismiss", json!({}))
+                        };
                         spawn(async move {
-                            match api::post(&format!("/api/v1/review/merges/{}/apply", api::encode(&key)), json!({ "layout": layout })).await {
+                            match api::post(&format!("/api/v1/review/merges/{}/{action}", api::encode(&key)), body).await {
                                 Ok(_) => bump(reload),
                                 Err(e) => ui::toast(e.message, true),
                             }
                         });
                     },
-                    {state::tr("apply this grouping")}
+                    if changed { {state::tr("Apply grouping")} } else { {state::tr("Leave as it is")} }
                 }
-                " "
-                button { class: "btn", onclick: move |_| { let (b, _) = arrange_start(&it_now, false); boxes.set(b); picked.set(None); }, {state::tr("start from the titles as they are")} }
-                " "
-                button { class: "btn", onclick: move |_| { let (b, _) = arrange_start(&it_rec, true); boxes.set(b); picked.set(None); }, {state::tr("start from the suggestion")} }
             }
+            " "
+            button { class: "btn", onclick: move |_| at.set(at() + 1), {state::tr("Skip")} " ›" }
+            " "
+            button { class: "btn", disabled: at() == 0, onclick: move |_| at.set(at().saturating_sub(1)), "‹ " {state::tr("Back")} }
         }
     }
+}
+
+/// A layout as text, empty boxes left out, to tell whether it still matches the titles.
+fn arrange_shape(boxes: &Boxes) -> String {
+    let mut parts: Vec<String> = boxes
+        .iter()
+        .filter(|(_, r)| !r.is_empty())
+        .map(|(t, r)| {
+            let mut r = r.clone();
+            r.sort_unstable();
+            format!("{t:?}:{r:?}")
+        })
+        .collect();
+    parts.sort();
+    parts.join("|")
 }
 
 /// One title of a merge review card: cover, name, platforms, IGDB game and releases.
