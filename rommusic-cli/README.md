@@ -105,7 +105,7 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 | Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--rips`. | 44.1 kHz |
 
 **Rip sets.** A rip file or zip dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
-HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF, Dreamcast DSF, GBA GSF and WonderSwan WSR (with the set's library
+HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF, Dreamcast DSF, GBA GSF and WonderSwan WSR, and Neo Geo Pocket and Virtual Boy VGM (with the set's library
 files beside them). Track names and lengths come from the set's playlist (`.m3u`) or the
 file's own tags. PSF and PSF2 need a PS2 BIOS image of your own, given with `--ps2-bios`;
 without it they are skipped.
@@ -115,7 +115,8 @@ without it they are skipped.
 ### Not supported yet
 
 - WonderSwan straight from the ROM. A WSR set is played when dropped on its own.
-- Neo Geo Pocket, Virtual Boy.
+- Neo Geo Pocket and Virtual Boy straight from the ROM. Their VGM sets play when dropped on
+  their own.
 - Nintendo 64 straight from the ROM. A USF set is played when dropped on its own.
 - Mega Drive / Genesis and 32X straight from the ROM. A VGM set is played when dropped on its
   own.

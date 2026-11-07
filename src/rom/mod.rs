@@ -30,6 +30,7 @@ pub mod rom_songs;
 pub mod rip_match;
 pub mod rip_sets;
 pub mod psf;
+pub mod vgm;
 pub mod wsr;
 pub mod sseq;
 pub mod track_timing;

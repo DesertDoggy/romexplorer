@@ -17,6 +17,7 @@ use std::sync::Arc;
 use super::gme::{self, Emu};
 use super::psf;
 use super::wsr;
+use super::vgm;
 use super::track_timing::{self, Listener, Timing};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 use super::sevenzip_wrapper::{ArchiveFormat, SevenZipArchive};
@@ -370,6 +371,7 @@ enum Player {
     Gme(Emu),
     Psf(psf::Player),
     Wsr(wsr::Player),
+    Vgm(vgm::Player),
 }
 
 impl Player {
@@ -378,12 +380,13 @@ impl Player {
             Player::Gme(e) => e.sample_rate(),
             Player::Psf(p) => p.sample_rate(),
             Player::Wsr(_) => wsr::SAMPLE_RATE,
+            Player::Vgm(_) => vgm::SAMPLE_RATE,
         }
     }
     fn track_count(&self) -> u32 {
         match self {
             Player::Gme(e) => e.track_count(),
-            Player::Psf(_) => 1,
+            Player::Psf(_) | Player::Vgm(_) => 1,
             Player::Wsr(w) => w.track_count(),
         }
     }
@@ -392,6 +395,7 @@ impl Player {
             Player::Gme(e) => e.track_info(track),
             Player::Psf(p) => Ok(p.info()),
             Player::Wsr(w) => w.track_info(track),
+            Player::Vgm(v) => Ok(v.info()),
         }
     }
     fn start(&mut self, track: u32) -> Result<(), String> {
@@ -399,6 +403,7 @@ impl Player {
             Player::Gme(e) => e.start(track, None),
             Player::Psf(p) => p.restart(),
             Player::Wsr(w) => w.start(track),
+            Player::Vgm(v) => v.restart(),
         }
     }
     /// The plan decides where a track ends, not a quiet passage. PSF players never stop by
@@ -413,12 +418,14 @@ impl Player {
             Player::Gme(e) => e.play(out),
             Player::Psf(p) => p.play(out),
             Player::Wsr(w) => w.play(out),
+            Player::Vgm(v) => v.play(out),
         }
     }
     fn ended(&self) -> bool {
         match self {
             Player::Gme(e) => e.ended(),
             Player::Psf(_) | Player::Wsr(_) => false,
+            Player::Vgm(v) => v.ended(),
         }
     }
     /// The format's name, as the index shows it.
@@ -427,6 +434,7 @@ impl Player {
             Player::Gme(_) => gme::identify(&gme::gunzip(&file.data).unwrap_or_else(|| file.data.clone())).unwrap_or_else(|| ext_of(&file.rel).to_ascii_uppercase()),
             Player::Psf(p) => p.system().codec().to_string(),
             Player::Wsr(_) => "WSR".into(),
+            Player::Vgm(_) => "VGM".into(),
         }
     }
 }
@@ -440,6 +448,14 @@ fn load(file: &RipFile) -> Result<Player, String> {
     }
     if wsr::is_track_file(&file.rel) {
         return Ok(Player::Wsr(wsr::Player::open(file.data.clone(), &file.playlist)?));
+    }
+    // A VGM for a chip gme lacks goes to libvgm.
+    if matches!(ext_of(&file.rel).as_str(), "vgm" | "vgz") && vgm::available() {
+        let unpacked = gme::gunzip(&file.data);
+        let data = unpacked.as_deref().unwrap_or(&file.data);
+        if vgm::wants(data) {
+            return Ok(Player::Vgm(vgm::Player::open(data)?));
+        }
     }
     let mut emu = Emu::open(file.data.clone(), Emu::SAMPLE_RATE)?;
     if !file.playlist.is_empty() {
@@ -539,6 +555,10 @@ fn plan(emu: &mut Player, file: &RipFile, track: u32) -> Result<Option<Plan>, St
     let own = own_length(&info);
     if let Some((body, fade, true)) = own {
         return Ok(Some(Plan { body, fade, looping: true, intro: info.intro_ms, lp: info.loop_ms }));
+    }
+    // A VGM log's length is where its writes end: it plays out there.
+    if let (Player::Vgm(_), Some((body, _, false))) = (&*emu, own) {
+        return Ok(Some(Plan { body, fade: 0, looping: false, intro: None, lp: None }));
     }
     // A PSF-family length is the ripper's own timing of that one song, and listening to an
     // emulated console is slow: it is taken as it is.
@@ -680,7 +700,7 @@ fn titled_jingle(name: &str) -> bool {
 
 /// Whether any rip-set player is in this machine's `rommusic` library.
 pub fn available() -> bool {
-    gme::available() || psf::available() || wsr::available()
+    gme::available() || psf::available() || wsr::available() || vgm::available()
 }
 
 /// Every track of every rip set under `folder`. `progress` is told which file is being read.
