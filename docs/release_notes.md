@@ -69,6 +69,7 @@ replacing a build.
 - Nintendo 64, PlayStation, PlayStation 2, Saturn, Dreamcast, Game Boy Advance and WonderSwan
   music rips (USF, PSF, PSF2, SSF, DSF, GSF, WSR, with their library files) play like the other rip sets, in a game's folder or the rip library, and in rommusic.
   PlayStation rips use a PS2 BIOS from your collection and are skipped without one.
+- Neo Geo Pocket and Virtual Boy VGM rips play too.
 
 **Merge review and combined titles**
 - Releases on a card can be dragged to the title they belong to, or onto "+" for a new title

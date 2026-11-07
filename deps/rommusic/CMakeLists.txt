@@ -24,14 +24,17 @@
 #   rwsr_*  WonderSwan music from WSR rips through Beetle WonderSwan
 #           (external/beetle-wswan-libretro, Mednafen's core, GPL-2.0+), without its
 #           libretro frontend.
+#   rvgm_   VGM logs for the chips gme lacks (Neo Geo Pocket T6W28, Virtual Boy VSU)
+#           through libvgm (external/libvgm): its VGM player with only the SN76496 (MAME,
+#           BSD-3-Clause) and VSU (Mednafen, GPL-2.0+) cores, no zlib or audio output.
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.24)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT and WSWAN_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT and VGM_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -169,10 +172,33 @@ set_target_properties(rommusic_wsr PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET 
 target_compile_definitions(rommusic_wsr PRIVATE SIZEOF_DOUBLE=8 MEDNAFEN_VERSION_NUMERIC=931 MPC_FIXED_POINT STDC_HEADERS __STDC_LIMIT_MACROS __LIBRETRO__ _LOW_ACCURACY_)
 target_compile_options(rommusic_wsr PRIVATE -w -fno-strict-aliasing -fpermissive)
 
+# --- libvgm, for VGM logs gme cannot play -------------------------------------------------
+# Its own CMake is not used: it would want zlib for loaders and a player list rommusic does
+# not need. SNDDEV_SELECT builds the device table from only the SNDDEV_ named here.
+set(LV ${VGM_ROOT})
+set(RVGM_SOURCES vgm/rvgm.cpp
+  ${LV}/emu/SoundEmu.c ${LV}/emu/Resampler.c ${LV}/emu/logging.c ${LV}/emu/panning.c ${LV}/emu/dac_control.c
+  ${LV}/emu/cores/sn764intf.c ${LV}/emu/cores/sn76496.c ${LV}/emu/cores/vsu.c
+  ${LV}/player/playerbase.cpp ${LV}/player/vgmplayer.cpp ${LV}/player/vgmplayer_cmdhandler.cpp ${LV}/player/playera.cpp
+  ${LV}/player/dblk_compr.c ${LV}/player/helper.c ${LV}/utils/DataLoader.c)
+if(WIN32)
+  list(APPEND RVGM_SOURCES ${LV}/utils/StrUtils-CPConv_Win.c)
+else()
+  list(APPEND RVGM_SOURCES ${LV}/utils/StrUtils-CPConv_IConv.c)
+endif()
+add_library(rommusic_vgm OBJECT ${RVGM_SOURCES})
+target_include_directories(rommusic_vgm PRIVATE ${LV} ${LV}/libs/include)
+target_compile_definitions(rommusic_vgm PRIVATE SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
+set_target_properties(rommusic_vgm PROPERTIES C_STANDARD 99 CXX_STANDARD 11 C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
+target_compile_options(rommusic_vgm PRIVATE -w)
+
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
-  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr>)
+  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>)
 target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>" mgba)
+if(APPLE)
+  target_link_libraries(rommusic PRIVATE iconv)
+endif()
 set_target_properties(rommusic PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON LINKER_LANGUAGE CXX)
 if(NOT WIN32 AND NOT APPLE)
   # A symbol nothing defines fails the link here, as it does on Windows, not at load time.
