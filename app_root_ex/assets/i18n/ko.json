@@ -2716,8 +2716,8 @@
   "new title": "새 타이틀",
   "(left empty: removed)": "(비게 되어 삭제)",
   "a new title": "새 타이틀",
-  "apply this grouping": "이 나누기 적용",
-  "start from the titles as they are": "지금 타이틀에서 시작",
-  "start from the suggestion": "제안에서 시작",
+  "Apply grouping": "나누기 적용",
+  "back to the titles as they are": "지금 타이틀로 되돌리기",
+  "arrange as suggested": "제안대로 나누기",
   "Leave as it is": "그대로 두기"
 }
