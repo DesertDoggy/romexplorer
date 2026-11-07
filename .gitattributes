@@ -3,3 +3,6 @@
 # Shell scripts run on Linux and macOS, where a CR after `#!/usr/bin/env bash` is part of
 # the interpreter name. LF in every checkout, Windows included.
 *.sh text eol=lf
+# lazyusf2's usf/usf.c is CRLF upstream, so the hunks for it must keep their CRs: GNU patch
+# refuses a LF hunk against CRLF lines ("different line endings"). Stored byte for byte.
+deps/rommusic/patches/usf/*.patch -text
