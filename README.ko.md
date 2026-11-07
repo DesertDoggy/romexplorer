@@ -4,10 +4,13 @@
 
 *이 문서는 번역본입니다. 내용이 다를 경우 영어 README를 기준으로 합니다.*
 
+> **romexplorer는 ROM, BIOS, 키를 배포하거나 다운로드하지 않으며, 불법 복제를 지원하지 않습니다.**
+> 직접 소유한 게임을 직접 덤프해서 사용하세요.
+
 ROM 컬렉션 관리 도구입니다. 폴더를 스캔하고, 모든 파일을 해시로 참조 DAT와 대조해 식별합니다.
 메타데이터와 아트를 가져오고, 파일을 변환·검증·복사합니다. 브라우저 콘솔과 웹 GUI를 갖춘 서버로,
 또는 데스크톱 앱으로 Windows, macOS, Linux에서 실행됩니다. 어떤 환경에서 무엇을 테스트했는지는
-[docs/release_notes.md](docs/release_notes.md)를 참고하십시오.
+[docs/release_notes.ko.md](docs/release_notes.ko.md)를 참고하십시오.
 
 ## 주요 기능
 
@@ -98,6 +101,13 @@ ROM 컬렉션 관리 도구입니다. 폴더를 스캔하고, 모든 파일을 �
 파일을 끌어다 놓기만 하면 알맞은 작업이 수행됩니다. `chdlite-gui`는 같은 기능을 창에서 제공합니다.
 모든 옵션은 플래그로도 지정할 수 있습니다(`--help`). chdlite는 별도로 릴리스됩니다.
 [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md)를 참고하십시오.
+
+### 명령줄 도구(rommusic)
+
+ROM, 디스크 이미지, 덤프한 폴더, 음악 립 세트를 `rommusic`에 끌어다 놓으면 게임의 배경 음악을 FLAC으로
+옆 폴더에 저장합니다. 모든 옵션은 플래그로도 지정할 수 있습니다(`--help`). 지원 기종은
+[ROM 오디오](#rom-오디오)를 참고하십시오. rommusic은 별도로 릴리스됩니다.
+[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md)를 참고하십시오.
 
 ### 제공자 키
 
@@ -238,6 +248,28 @@ Hoge Quest (GBA)에 있던 추가 던전이 없음). 이럴 때는 버전을 끌
 
 참고: 크로스플랫과 결정판은 IGDB 메타데이터로 구성되므로 이를 다운로드해야 합니다. 관련 데이터를
 자동으로 다운로드하도록 설정할 수 있습니다(데이터베이스가 커져 동작이 느려지므로 기본값은 꺼짐).
+
+## ROM 오디오
+
+타이틀 페이지에서 ROM 안의 음악을 파일에서 바로 재생합니다. 압축 해제나 복사는 하지 않습니다. 먼저
+오디오 탭에서 "Index ROM audio"를 실행하세요. `rommusic`도 같은 것을 읽습니다.
+
+| 음악 위치 | 기종 | 파일 |
+|---|---|---|
+| CD 오디오 트랙 | 모든 CD 게임(PC 엔진 CD, 메가 CD, 세가 새턴, 플레이스테이션, 드림캐스트 등) | CHD, cue/bin, gdi |
+| 디스크 안의 음악 파일 | 플레이스테이션, 플레이스테이션 2, PSP, 세가 새턴, 드림캐스트, 게임큐브, Wii, Xbox, Xbox 360 | CHD, cue/bin, gdi, ISO, CSO/ZSO, RVZ/WIA/GCZ/WBFS, XISO |
+| | Wii U | .wua. .wud/.wux와 다운로드판은 옆에 키가 있으면 읽습니다 |
+| | PS3, PS Vita | 복호화된 폴더 덤프 |
+| 사운드 아카이브 | 닌텐도 DS(스트림과 시퀀스 음악), 닌텐도 3DS(복호화된 이미지만) | .nds, .3ds/.cci |
+| 게임의 사운드 엔진 | 게임보이 어드밴스: 닌텐도 표준 엔진을 쓰는 게임(약 절반) | .gba |
+| 음악 립 | 패미컴·디스크 시스템(NSF, NSFE), 슈퍼 패미컴(SPC), 게임보이(GBS), PC 엔진(HES), MSX(KSS), 마스터 시스템·게임기어(SGC, VGM), 메가 드라이브(VGM, GYM), ZX Spectrum·Amstrad CPC(AY), Atari 8비트(SAP), 닌텐도 64(USF), 플레이스테이션(PSF), 플레이스테이션 2(PSF2), 세가 새턴(SSF), 드림캐스트(DSF), 게임보이 어드밴스(GSF), 원더스완(WSR), 네오지오 포켓·버추얼 보이(VGM) | 게임 폴더나 립 라이브러리. zip 그대로도 가능 |
+
+- 립 라이브러리(설정 › 오디오)는 NSF, NSFE, GBS, SPC, HES, KSS, SGC 세트를 내용으로 ROM과
+  대조합니다. 이름이 달라도 지역별 ROM 모두에서 재생됩니다.
+- 플레이스테이션과 플레이스테이션 2 립에는 컬렉션에 있는 PS2 BIOS를 사용합니다. BIOS가 없으면
+  건너뜁니다.
+- zip, 7z 안의 디스크 이미지는 아직 읽지 못합니다. 암호화된 이미지도 읽지 못합니다.
+- `rommusic`은 슈퍼 패미컴 게임의 타이틀 음악을 립 없이 만들 수 있습니다.
 
 ## RetroAchievements 탭
 
