@@ -3222,7 +3222,7 @@ async function showMergeReview() {
       if (taken) for (const b of host.querySelectorAll('[data-opt]')) b.disabled = true;
       if (!taken) arrangePanel(host.querySelector('#rv-arrange'), it, q); else host.querySelector('#rv-arrange').remove();
       for (const b of host.querySelectorAll('[data-opt]')) b.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { option: Number(b.dataset.opt) } }); q.done(); } catch (e) { toast(e.message, true); } };
-      const no = el(`<button class="btn danger" title="${tr('not offered again')}">${tr('No')}</button>`);
+      const no = el(`<button class="btn danger" title="${tr('not offered again')}">${tr('Leave as it is')}</button>`);
       no.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/dismiss', { method: 'POST', body: {} }); q.done(); } catch (e) { toast(e.message, true); } };
       if (it.status !== 'dismissed') q.nav.append(no);
       if (it.can_look_up) lookupPanel(host.querySelector('#rv-look'), it.key, {});
