@@ -2716,8 +2716,8 @@
   "new title": "neuer Titel",
   "(left empty: removed)": "(bleibt leer: wird entfernt)",
   "a new title": "ein neuer Titel",
-  "apply this grouping": "diese Zuordnung übernehmen",
-  "start from the titles as they are": "mit den Titeln wie jetzt beginnen",
-  "start from the suggestion": "mit dem Vorschlag beginnen",
+  "Apply grouping": "Zuordnung übernehmen",
+  "back to the titles as they are": "zurück zu den Titeln wie jetzt",
+  "arrange as suggested": "wie vorgeschlagen anordnen",
   "Leave as it is": "So lassen"
 }

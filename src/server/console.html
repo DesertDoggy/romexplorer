@@ -3222,9 +3222,6 @@ async function showMergeReview() {
       if (taken) for (const b of host.querySelectorAll('[data-opt]')) b.disabled = true;
       if (!taken) arrangePanel(host.querySelector('#rv-arrange'), it, q); else host.querySelector('#rv-arrange').remove();
       for (const b of host.querySelectorAll('[data-opt]')) b.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { option: Number(b.dataset.opt) } }); q.done(); } catch (e) { toast(e.message, true); } };
-      const no = el(`<button class="btn danger" title="${tr('not offered again')}">${tr('Leave as it is')}</button>`);
-      no.onclick = async () => { try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/dismiss', { method: 'POST', body: {} }); q.done(); } catch (e) { toast(e.message, true); } };
-      if (it.status !== 'dismissed') q.nav.append(no);
       if (it.can_look_up) lookupPanel(host.querySelector('#rv-look'), it.key, {});
     },
   });
@@ -3237,7 +3234,8 @@ function reviewStatusBadge(status) {
 // The releases on a merge review card as boxes, one per title, to drag between (the app's
 // ArrangePanel): into another title, or onto "+" for a new title named after the first one
 // dropped there. A tap picks a release and a tap on a box puts it there, for touch screens.
-// Starts from the recommended choice's grouping, or from the titles as they are.
+// Starts from the titles as they are. The card's bottom button follows the boxes: "Leave as
+// it is" (said no, not offered again) while they still match the titles, "Apply" once moved.
 function arrangeStart(it, fromSuggestion) {
   const names = {};
   for (const t of it.titles) for (const r of t.releases) names[r.id] = r;
@@ -3267,8 +3265,13 @@ function arrangeStart(it, fromSuggestion) {
   return { boxes, names };
 }
 function arrangePanel(host, it, q) {
-  let { boxes, names } = arrangeStart(it, true);
+  let { boxes, names } = arrangeStart(it, false);
   let picked = null;
+  // A layout as text, empty boxes left out, to tell whether it still matches the titles.
+  const shape = bs => bs.filter(b => b.releases.length).map(b => `${b.title_id}:${b.releases.slice().sort((x, y) => x - y).join(',')}`).sort().join('|');
+  const asNow = shape(boxes);
+  const action = el('<span></span>');
+  q.nav.append(action);
   const titleName = id => (it.titles.find(t => t.id === id) || {}).name || '#' + id;
   const label = id => { const r = names[id]; return r ? `${esc(r.name)} ${regionBadges(r.region)}` : '#' + id; };
   const move = (rid, to) => {
@@ -3283,7 +3286,15 @@ function arrangePanel(host, it, q) {
       <div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;font-size:12px">${b.releases.map(r => `<span draggable="true" data-rel="${r}" style="cursor:grab;padding:2px 4px;border-radius:4px;${picked === r ? 'outline:2px solid var(--accent, #4a8);' : ''}">⋮⋮ ${label(r)}</span>`).join('')}</div></div>`;
     host.innerHTML = `<h3>${tr('Arrange yourself')}</h3><p class="muted" style="font-size:12px">${tr('Drag releases to the title they belong to, or onto + for a new title named after the first one. Or tap a release, then a box.')}</p>
       <div style="display:flex;flex-wrap:wrap;gap:8px">${boxes.map(box).join('')}<div class="card" data-box="new" style="flex:0 0 120px;margin:0;min-height:60px;display:flex;align-items:center;justify-content:center;font-size:28px;border-style:dashed" title="${tr('a new title')}">+</div></div>
-      <div class="toolbar" style="margin-top:8px"><button class="btn primary" id="arr-go">${tr('apply this grouping')}</button> <button class="btn" id="arr-now">${tr('start from the titles as they are')}</button> <button class="btn" id="arr-rec">${tr('start from the suggestion')}</button></div>`;
+      <div class="toolbar" style="margin-top:8px"><button class="btn" id="arr-now">${tr('back to the titles as they are')}</button> <button class="btn" id="arr-rec">${tr('arrange as suggested')}</button></div>`;
+    const changed = shape(boxes) !== asNow;
+    action.innerHTML = changed ? `<button class="btn primary">${tr('Apply grouping')}</button>`
+      : it.status !== 'dismissed' ? `<button class="btn danger" title="${tr('not offered again')}">${tr('Leave as it is')}</button>` : '';
+    const act = action.querySelector('button');
+    if (act) act.onclick = async () => {
+      const body = changed ? { layout: boxes.map(b => ({ title_id: b.title_id, releases: b.releases })) } : {};
+      try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + (changed ? '/apply' : '/dismiss'), { method: 'POST', body }); q.done(); } catch (e) { toast(e.message, true); }
+    };
     for (const s of host.querySelectorAll('[data-rel]')) {
       s.ondragstart = e => { e.dataTransfer.setData('text/plain', s.dataset.rel); };
       s.onclick = e => { e.stopPropagation(); picked = picked === Number(s.dataset.rel) ? null : Number(s.dataset.rel); draw(); };
@@ -3296,9 +3307,6 @@ function arrangePanel(host, it, q) {
     }
     host.querySelector('#arr-now').onclick = () => { ({ boxes, names } = arrangeStart(it, false)); draw(); };
     host.querySelector('#arr-rec').onclick = () => { ({ boxes, names } = arrangeStart(it, true)); draw(); };
-    host.querySelector('#arr-go').onclick = async () => {
-      try { await api('/api/v1/review/merges/' + encodeURIComponent(it.key) + '/apply', { method: 'POST', body: { layout: boxes.map(b => ({ title_id: b.title_id, releases: b.releases })) } }); q.done(); } catch (e) { toast(e.message, true); }
-    };
   };
   draw();
 }
