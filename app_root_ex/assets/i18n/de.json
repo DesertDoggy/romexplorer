@@ -2936,5 +2936,15 @@
   "When this finds nothing, audio_fallback decides.": "Findet sich nichts, entscheidet audio_fallback.",
   "Seconds. A ROM sound that loops and is at least this long is music (default 3).": "Sekunden. Ein ROM-Klang, der sich wiederholt und mindestens so lang ist, ist Musik (Standard 3).",
   "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.": "Sekunden. Ein ROM-Klang, der sich nicht wiederholt, ist ab dieser Länge Musik (Standard 20), ab audio_rom_jingle_min_s (Standard 8) ein Jingle und darunter ein Soundeffekt.",
-  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "Klänge werden danach eingeteilt, ob sie sich wiederholen und wie lang sie sind (die drei Längen unten)."
+  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "Klänge werden danach eingeteilt, ob sie sich wiederholen und wie lang sie sind (die drei Längen unten).",
+  "combine into one release": "zu einer Veröffentlichung zusammenfassen",
+  "select at least two releases": "mindestens zwei Veröffentlichungen auswählen",
+  "Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.": "{n} Veröffentlichungen zu einer zusammenfassen? Für die getrennt gelisteten Discs eines Spiels: Eine Veröffentlichung steht unter ihrem Titel für alle, und beim Kopieren werden alle Discs kopiert.",
+  "combined into release #{id}": "in Veröffentlichung #{id} zusammengefasst",
+  "+{n} combined": "+{n} zusammengefasst",
+  "Combined releases": "Zusammengefasste Veröffentlichungen",
+  "Combined into": "Zusammengefasst in",
+  "list and copy this release on its own again": "diese Veröffentlichung wieder einzeln listen und kopieren",
+  "split off": "abtrennen",
+  "Listed and copied with this release.": "Werden mit dieser Veröffentlichung gelistet und kopiert."
 }

@@ -2936,5 +2936,15 @@
   "When this finds nothing, audio_fallback decides.": "Si rien n'est trouvé, audio_fallback décide.",
   "Seconds. A ROM sound that loops and is at least this long is music (default 3).": "Secondes. Un son de ROM qui boucle et dure au moins cela est de la musique (3 par défaut).",
   "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.": "Secondes. Un son de ROM qui ne boucle pas est de la musique à partir de cette durée (20 par défaut), un jingle à partir de audio_rom_jingle_min_s (8 par défaut), et un effet sonore en dessous.",
-  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "Les sons sont classés selon qu'ils bouclent et selon leur durée (les trois durées ci-dessous)."
+  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "Les sons sont classés selon qu'ils bouclent et selon leur durée (les trois durées ci-dessous).",
+  "combine into one release": "regrouper en une seule sortie",
+  "select at least two releases": "sélectionnez au moins deux sorties",
+  "Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.": "Regrouper {n} sorties en une seule ? Pour les disques d’un même jeu listés séparément : une sortie les représente toutes sous son titre, et la copier copie tous les disques.",
+  "combined into release #{id}": "regroupé dans la sortie #{id}",
+  "+{n} combined": "+{n} regroupées",
+  "Combined releases": "Sorties regroupées",
+  "Combined into": "Regroupée dans",
+  "list and copy this release on its own again": "lister et copier de nouveau cette sortie seule",
+  "split off": "séparer",
+  "Listed and copied with this release.": "Listées et copiées avec cette sortie."
 }
