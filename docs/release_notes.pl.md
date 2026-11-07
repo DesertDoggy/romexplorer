@@ -53,7 +53,7 @@ zapasową przed podmianą wersji.
   rodzaje nośników).
 - W ustawieniach wybiera się, które utwory są odtwarzane.
 - Muzyka z NES i Famicom gra prosto z ROM-u, przez własny kod dźwiękowy gry: pliki oryginalnego audio nie są potrzebne. Także układy dźwiękowe Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
-- Muzyka z Disk System, Game Boya, Game Boya Color, Master System, Game Geara, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy i Game Boy Advance również gra prosto z ROM-u, także dźwięk FM japońskiego Master System.
+- Muzyka z Disk System, Game Boya, Game Boya Color, Master System, Game Geara, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance i Neo Geo Pocket również gra prosto z ROM-u, także dźwięk FM japońskiego Master System.
 - Obsługiwane są oryginalne formaty audio (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP i SGC z
   Game Gear, luzem lub w zip).
 - Biblioteka oryginalnego audio: wskaż w Ustawienia › Audio foldery z zestawami, a „Indeksuj dźwięk z ROM-ów” dopasuje

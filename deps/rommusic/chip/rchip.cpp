@@ -33,6 +33,8 @@ enum {
     PSG_SEGA = 0,     /* Master System, Mega Drive */
     PSG_GAME_GEAR = 1, /* with the Game Gear's stereo register */
     PSG_SN76489 = 2,  /* ColecoVision, SG-1000 */
+    PSG_T6W28_TONE = 3,  /* Neo Geo Pocket: the T6W28's left port (tone) */
+    PSG_T6W28_NOISE = 4, /* and its right port (noise); added right after the tone half */
 };
 
 struct Chip {
@@ -132,10 +134,17 @@ RCHIP_API int rchip_add(void *handle, int dev, int clock, int variant) {
         cfg._genCfg.srMode = DEVRI_SRMODE_NATIVE;
         cfg._genCfg.smplRate = h.rate;
         cfg.clkDiv = 8;
-        if (variant == PSG_SN76489) {
+        if (variant == PSG_SN76489 || variant == PSG_T6W28_TONE || variant == PSG_T6W28_NOISE) {
             cfg.noiseTaps = 0x03;
             cfg.shiftRegWidth = 15;
             cfg.negate = 1;
+            if (variant == PSG_T6W28_NOISE) {
+                if (h.chips.empty()) {
+                    delete c;
+                    return -1;
+                }
+                cfg.t6w28_tone = h.chips.back()->dev.dataPtr;
+            }
         } else {
             cfg.noiseTaps = 0x09;
             cfg.shiftRegWidth = 16;

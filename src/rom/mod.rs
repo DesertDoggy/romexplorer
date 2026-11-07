@@ -54,6 +54,8 @@ pub mod v810;
 pub mod vb_music;
 pub mod arm7;
 pub mod gba_music;
+pub mod tlcs900h;
+pub mod ngp_music;
 pub mod vgm_chips;
 pub mod sms_music;
 pub mod md_music;

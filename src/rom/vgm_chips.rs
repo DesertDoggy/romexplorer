@@ -1,6 +1,6 @@
 //! Sound chips from libvgm (`deps/rommusic/chip/rchip.cpp`, in the `rommusic` library), fed
 //! one register write at a time by a game's own code: the Master System and Game Gear's PSG
-//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit, the MSX's PSG and Konami's SCC, the WonderSwan's sound unit, the Virtual Boy's VSU. Loaded at run time; [`available`] is false when
+//! and the Japanese Master System's FM unit, the Mega Drive's FM chip, the PC Engine's sound unit, the MSX's PSG and Konami's SCC, the WonderSwan's sound unit, the Virtual Boy's VSU, the Neo Geo Pocket's PSG. Loaded at run time; [`available`] is false when
 //! the library has not been built for this machine.
 
 use std::ffi::{c_double, c_int, c_long, c_void};
@@ -70,6 +70,13 @@ pub enum Kind {
     /// The WonderSwan's sound unit. Ports are the console's I/O ports (0x80-0x94); its
     /// waveforms are in the console's RAM, sent with [`Chips::write_ram`].
     WonderSwan,
+    /// The T6W28 (the Neo Geo Pocket's PSG), as libvgm makes it: two linked SN76489s. This
+    /// half takes the writes to the left port: the tone channels' periods and left volumes.
+    /// It must be added right before its [`Kind::T6W28Noise`].
+    T6W28Tone,
+    /// The T6W28's other half: the writes to the right port, the noise channel and the
+    /// right volumes.
+    T6W28Noise,
     /// The Virtual Boy's VSU. Ports are its registers' byte addresses over 4 (0-0x1FF):
     /// waveforms, modulation table, then the channels; write with [`Chips::write_wide`].
     VirtualBoyVsu,
@@ -86,6 +93,8 @@ impl Kind {
             Kind::Ay8910 => (0x12, 0),
             Kind::Scc => (0x19, 0),
             Kind::WonderSwan => (0x21, 0),
+            Kind::T6W28Tone => (0x00, 3),
+            Kind::T6W28Noise => (0x00, 4),
             Kind::VirtualBoyVsu => (0x22, 0),
         }
     }

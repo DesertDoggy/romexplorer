@@ -4,7 +4,7 @@
 //!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
-//! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy or Game Boy Advance ROM (loose, or the first one in a `.zip`/`.7z`): the
+//! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy, Game Boy Advance or Neo Geo Pocket/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
 //! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
 //! ends the run.
@@ -20,6 +20,7 @@ use romexplorer::rom::msx_music::Msx;
 use romexplorer::rom::pce_music::PcEngine;
 use romexplorer::rom::sms_music::{GameGear, MasterSystem};
 use romexplorer::rom::gba_music::GameBoyAdvance;
+use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::rom::{nes_cart, rom_songs};
@@ -83,6 +84,9 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "wsc"
                 | "vb"
                 | "gba"
+                | "ngp"
+                | "ngc"
+                | "npc"
                 | "zip"
                 | "7z"
         ) {
@@ -128,6 +132,12 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
         || name.contains("turbografx")
     {
         return Some("PCE");
+    }
+    if name.ends_with(".ngc") || name.ends_with(".npc") || name.contains("neo geo pocket color") {
+        return Some("NGPC");
+    }
+    if name.ends_with(".ngp") || name.contains("neo geo pocket") {
+        return Some("NGP");
     }
     if name.ends_with(".vb") || name.contains("virtual boy") {
         return Some("VB");
@@ -340,6 +350,23 @@ fn main() {
             Some(c @ ("WS" | "WSC")) => {
                 let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
                 run::<WonderSwan>(&path, &rom, what, &o, tally.entry(what).or_default())
+            }
+            Some(c @ ("NGP" | "NGPC")) => {
+                let what = if c == "NGP" { "Neo Geo Pocket" } else { "Neo Geo Pocket Color" };
+                run::<NeoGeoPocket>(&path, &rom, what, &o, tally.entry(what).or_default());
+                // BIOS calls the stand-in doesn't answer, met in the first 15 seconds.
+                if let Ok(mut m) = NeoGeoPocket::boot(&rom) {
+                    for _ in 0..900 {
+                        m.run_frame(None, None);
+                        m.take_sound();
+                    }
+                    let unknown = m.unknown_bios_calls();
+                    if !unknown.is_empty() {
+                        let list: Vec<String> =
+                            unknown.iter().map(|a| format!("${a:06X}")).collect();
+                        println!("    BIOS calls not handled: {}", list.join(" "));
+                    }
+                }
             }
             Some("GBA") => run::<GameBoyAdvance>(
                 &path,
