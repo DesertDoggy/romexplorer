@@ -545,6 +545,11 @@ fn or_fade(fade: u32, fallback: u32) -> u32 {
     if fade > 0 { fade } else { fallback }
 }
 
+/// The fade over the end of a VGM song that does not loop, and the length from which it gets
+/// one.
+const VGM_END_FADE_MS: u32 = 1_500;
+const VGM_FADE_FROM_MS: u32 = 20_000;
+
 /// How track `track` plays. A length of the track's own with an intro and a loop is used as
 /// it is. Otherwise the track is played through once, quietly, and its sound decides
 /// ([`track_timing`]): it stops where it falls silent, and one that repeats plays its loop
@@ -556,9 +561,11 @@ fn plan(emu: &mut Player, file: &RipFile, track: u32) -> Result<Option<Plan>, St
     if let Some((body, fade, true)) = own {
         return Ok(Some(Plan { body, fade, looping: true, intro: info.intro_ms, lp: info.loop_ms }));
     }
-    // A VGM log's length is where its writes end: it plays out there.
-    if let (Player::Vgm(_), Some((body, _, false))) = (&*emu, own) {
-        return Ok(Some(Plan { body, fade: 0, looping: false, intro: None, lp: None }));
+    // A VGM log's length is where its writes end. A song is often logged up to where the
+    // game cut it, still sounding, so its last stretch fades; a short jingle plays out whole.
+    if let (Player::Vgm(_), Some((len, _, false))) = (&*emu, own) {
+        let fade = if len >= VGM_FADE_FROM_MS { VGM_END_FADE_MS } else { 0 };
+        return Ok(Some(Plan { body: len - fade, fade, looping: false, intro: None, lp: None }));
     }
     // A PSF-family length is the ripper's own timing of that one song, and listening to an
     // emulated console is slow: it is taken as it is.
