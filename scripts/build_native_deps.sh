@@ -370,6 +370,26 @@ if is_selected cemu; then
         PREFLIGHT_ERRORS+=("external/${f%%/*} is not checked out -- git submodule update --init external/${f%%/*}")
     done
 fi
+# The audio builds read these checkouts. A clone made before a submodule was added has an
+# empty folder for it until it is initialized; collect them all into one command, so a
+# missing one is reported here and not as "configure: No such file" halfway through.
+declare -A AUDIO_SOURCES=(
+    [libxaac]="libxaac"
+    [ffmpeg]="ffmpeg"
+    [vgmstream]="vgmstream"
+    [rommusic]="game-music-emu gme-kode54 agbplay fmt SSEQPlayer lazyusf2 highly_experimental highly_theoretical mgba beetle-wswan-libretro libvgm"
+)
+missing_sources=()
+for name in libxaac ffmpeg vgmstream rommusic; do
+    is_selected "$name" || continue
+    for d in ${AUDIO_SOURCES[$name]}; do
+        [[ -n "$(ls -A "$ROOT_DIR/external/$d" 2>/dev/null)" ]] && continue
+        [[ " ${missing_sources[*]} " == *" external/$d "* ]] || missing_sources+=("external/$d")
+    done
+done
+if ((${#missing_sources[@]})); then
+    PREFLIGHT_ERRORS+=("not checked out: ${missing_sources[*]} -- git submodule update --init ${missing_sources[*]}")
+fi
 if is_selected extract-xiso && [[ ! -f "$ROOT_DIR/external/extract-xiso/extract-xiso.c" ]]; then
     PREFLIGHT_ERRORS+=("external/extract-xiso is not checked out -- git submodule update --init external/extract-xiso")
 fi
