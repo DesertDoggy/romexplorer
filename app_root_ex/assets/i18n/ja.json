@@ -2936,5 +2936,15 @@
   "Apply grouping": "振り分けを確定",
   "back to the titles as they are": "ボックス内は自動振り分けに戻す",
   "arrange as suggested": "提案を適用",
-  "Leave as it is": "自動振り分けを維持"
+  "Leave as it is": "自動振り分けを維持",
+  "combine into one release": "ひとつのリリースに統合",
+  "select at least two releases": "リリースを2件以上選んでください",
+  "Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.": "{n} 件のリリースをひとつに統合しますか？ 別々に登録されている同じゲームのディスク用です。代表のリリースがタイトルに表示され、コピーするとすべてのディスクがコピーされます。",
+  "combined into release #{id}": "リリース #{id} に統合しました",
+  "+{n} combined": "+{n} 件統合",
+  "Combined releases": "統合されたリリース",
+  "Combined into": "統合先:",
+  "list and copy this release on its own again": "このリリースを再び単独で表示・コピーします",
+  "split off": "分離",
+  "Listed and copied with this release.": "このリリースと一緒に表示・コピーされます。"
 }

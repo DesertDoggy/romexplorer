@@ -107,8 +107,11 @@ fn owned(source_id: Option<u16>, id: u64) -> OwnedRef {
 
 /// Every release the selection names, in the order it named them. Its games, roms and files
 /// are planned separately, from the very copy that was picked.
+/// A release the user combined others into brings them along, so every disc of the game is
+/// copied (`release_combine`).
 async fn releases_for(app: &App, req: &CopyFilesRequest, warnings: &mut Vec<String>) -> Result<Vec<u64>> {
-    crate::api::selection::named_releases(app, &req.selection, req.titles_all_releases, warnings).await
+    let named = crate::api::selection::named_releases(app, &req.selection, req.titles_all_releases, warnings).await?;
+    crate::api::release_combine::with_combined(&app.pool, &named).await
 }
 
 /// A candidate holder of one release.

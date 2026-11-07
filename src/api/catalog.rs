@@ -272,6 +272,10 @@ pub struct ReleaseRow {
     /// `suggested` is marked in the lists until the user confirms or unlinks it.
     pub base_status: Option<String>,
     pub disc_count: u16,
+    /// Releases the user combined into this one (`release_combine`): the other discs of the
+    /// game, listed under it and copied with it.
+    #[serde(default)]
+    pub combined_count: u64,
     pub source: Option<String>,
     pub title_id: Option<u64>,
     pub title_name: Option<String>,
@@ -647,6 +651,10 @@ pub struct ReleaseDetail {
     pub base: Option<super::bases::BaseLink>,
     /// The releases made from this one: its translations and hacks, trainers and patches.
     pub patched: Vec<super::bases::PatchedRef>,
+    /// The releases the user combined into this one (`release_combine`).
+    pub combined: Vec<super::release_combine::CombinedRef>,
+    /// The release this one is combined into, if it is.
+    pub combined_into: Option<super::release_combine::CombinedRef>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2419,7 +2427,7 @@ pub async fn title(app: &App, id: u64) -> Result<TitleDetail> {
 // `local_verified` asks with IN, not EXISTS: an EXISTS naming both this release and the file
 // of the enclosing subquery is rewritten by MariaDB 13.2 into a two-column IN, and preparing
 // that crashed the server now and then (Item_row::fix_fields under Item_in_optimizer).
-const RELEASE_SELECT_BASE: &str = concat!("r.id, r.name, r.app_platform_id AS platform_id, MAX(p.name) AS platform, r.region, r.languages, r.year, r.revision, r.serial, r.category, r.material, r.game_kind, r.languages_state, (SELECT rbs.status FROM release_bases rbs WHERE rbs.release_id = r.id) AS base_status, r.disc_count, \
+const RELEASE_SELECT_BASE: &str = concat!("r.id, r.name, r.app_platform_id AS platform_id, MAX(p.name) AS platform, r.region, r.languages, r.year, r.revision, r.serial, r.category, r.material, r.game_kind, r.languages_state, (SELECT rbs.status FROM release_bases rbs WHERE rbs.release_id = r.id) AS base_status, r.disc_count, (SELECT COUNT(*) FROM release_combined rcmc WHERE rcmc.lead_id = r.id) AS combined_count, \
     r.is_budget, r.is_special_edition, r.is_aftermarket, r.is_rerelease, \
     (SELECT GROUP_CONCAT(s2.name ORDER BY s2.name SEPARATOR ',') FROM release_sources rs2 JOIN sources s2 ON s2.id = rs2.source_id WHERE rs2.release_id = r.id) AS source, MAX(t.id) AS title_id, MAX(t.name) AS title_name, COUNT(DISTINCT lg.id) AS local_games, IF(EXISTS (SELECT 1 FROM remote_sources m WHERE m.role = 'main' AND m.enabled = TRUE AND m.deleted = FALSE), COUNT(DISTINCT IF(rsrc.role = 'main', rg.id, NULL)), NULL) AS remote_games, COUNT(DISTINCT IF(rsrc.role = 'peer', rg.source_id, NULL), IF(rsrc.role = 'peer', rg.id, NULL)) AS peer_games, (SELECT COUNT(DISTINCT rc.content_id) FROM release_contents rc WHERE rc.release_id = r.id) AS content_count, \
     (SELECT m.id FROM release_media rm JOIN media m ON m.id = rm.media_id WHERE rm.release_id = r.id AND FIND_IN_SET(m.media_type, ?) AND m.deleted = FALSE ORDER BY ", media_order!(), " LIMIT 1) AS cover_media_id, \
@@ -2490,6 +2498,7 @@ fn row_to_release_raw(row: &MySqlRow) -> Result<ReleaseRow> {
         languages_state: row.try_get("languages_state").unwrap_or(None),
         base_status: row.try_get("base_status").unwrap_or(None),
         disc_count: row.try_get("disc_count")?,
+        combined_count: row.try_get::<i64, _>("combined_count").unwrap_or(0) as u64,
         source: row.try_get("source")?,
         title_id: row.try_get("title_id")?,
         title_name: row.try_get("title_name")?,
@@ -2564,6 +2573,11 @@ pub async fn releases(app: &App, q: &ListQuery) -> Result<Page<ReleaseRow>> {
         binds.push(Bind::U64(set_id));
     }
     body.push_str(" WHERE r.deleted = FALSE");
+    // A release combined into another is listed under it (its page), not as a row of its
+    // own; a set lists what it holds.
+    if q.set_id.is_none() {
+        body.push_str(&format!(" AND NOT {}", super::release_combine::is_combined_sql("r")));
+    }
     if let Some(s) = q.search.as_deref().filter(|s| !s.trim().is_empty()) {
         // The release's own name / serial, or a localized or alternative name of its title
         // (ほげほげ伝説 finds "Shin Legend of Hogehoge (Japan)").
@@ -2912,6 +2926,8 @@ pub async fn release(app: &App, id: u64) -> Result<ReleaseDetail> {
         addons,
         base: super::bases::of_release(pool, id).await?.filter(|b| b.status != "rejected"),
         patched: super::bases::made_from_release(pool, id).await?,
+        combined: super::release_combine::combined_into(pool, id).await?,
+        combined_into: super::release_combine::lead_of(pool, id).await?,
         released_on: row.try_get("released_on")?,
         min_players: row.try_get("min_players")?,
         max_players: row.try_get("max_players")?,

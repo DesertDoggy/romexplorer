@@ -368,6 +368,10 @@ fn ReleasePage(id: u64) -> Element {
     // user put this release's copies in an order of their own.
     let manual_games = games.iter().any(|g| api::uo(g, "manual_position").is_some());
     let game_ids: Vec<u64> = games.iter().map(|g| u(g, "id")).collect();
+    // The other discs of the game, combined into this release by hand -- or the release this
+    // one is combined into.
+    let combined = api::arr(&r, "combined").to_vec();
+    let combined_into: Option<(u64, String)> = r.get("combined_into").filter(|v| !v.is_null()).map(|l| (u(l, "id"), s(l, "name")));
 
     rsx! {
         super::PagePlayer { query: format!("release_id={id}") }
@@ -506,6 +510,39 @@ fn ReleasePage(id: u64) -> Element {
         }
         super::display::DisplayCard { values: api::arr(&r, "display").to_vec(), release_ids: vec![id], note: String::new(), media: format!("release_id={id}"), on_change: move |_| *gen.write() += 1 }
         widgets::MediaStrip { query: format!("release_id={id}"), stamp: gen() }
+        if !combined.is_empty() || combined_into.is_some() {
+            div { class: "card",
+                h2 { {state::tr("Combined releases")} }
+                if let Some((lead_id, lead_name)) = combined_into {
+                    p {
+                        {state::tr("Combined into")} " "
+                        span { class: "link", onclick: move |_| { navigator().push(Route::Release { id: lead_id }); }, "{lead_name}" }
+                        " "
+                        button { class: "btn small", title: state::tr("list and copy this release on its own again"),
+                            onclick: move |_| { spawn(async move { uncombine(id, gen).await }); },
+                            {state::tr("split off")}
+                        }
+                    }
+                }
+                if !combined.is_empty() {
+                    p { class: "muted", {state::tr("Listed and copied with this release.")} }
+                    table { class: "grid",
+                        for c in combined {
+                            tr { key: "{u(&c, \"id\")}",
+                                td { span { class: "link", onclick: { let cid = u(&c, "id"); move |_| { navigator().push(Route::Release { id: cid }); } }, "{s(&c, \"name\")}" } }
+                                td { if u(&c, "local_games") > 0 { Html { html: badge(&state::tr("held"), "ok") } } }
+                                td {
+                                    button { class: "btn small", title: state::tr("list and copy this release on its own again"),
+                                        onclick: { let cid = u(&c, "id"); move |_| { spawn(async move { uncombine(cid, gen).await }); } },
+                                        {state::tr("split off")}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         div { class: "card",
             h2 {
                 "{copies_h} "
@@ -592,6 +629,14 @@ fn ReleasePage(id: u64) -> Element {
                 Grid { spec: Spec(spec) }
             }
         }
+    }
+}
+
+/// Takes a release out of the group it was combined into (a lead lets go of them all).
+async fn uncombine(release_id: u64, mut gen: Signal<u64>) {
+    match api::post(&format!("/api/v1/catalog/releases/{release_id}/uncombine"), json!({})).await {
+        Ok(_) => *gen.write() += 1,
+        Err(e) => ui::toast(e.message, true),
     }
 }
 

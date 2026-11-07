@@ -41,6 +41,7 @@ pub mod parallel;
 pub mod patches;
 pub mod providers;
 pub mod ra;
+pub mod release_combine;
 pub mod restore;
 pub mod rows;
 pub mod sqlite;
