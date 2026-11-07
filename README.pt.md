@@ -271,7 +271,7 @@ de ser transferidos. Uma definição pode transferir automaticamente os dados re
 ## Áudio das ROM
 
 As páginas de título podem tocar a música que está dentro das suas ROM, diretamente do ficheiro:
-nada é extraído nem copiado. Execute primeiro «Index ROM audio» no separador Áudio. O `rommusic` lê
+nada é extraído nem copiado. Execute primeiro «Indexar o áudio das ROM» no separador Áudio. O `rommusic` lê
 o mesmo.
 
 | música de | plataformas | ficheiros |

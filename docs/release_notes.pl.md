@@ -22,26 +22,26 @@ zapasową przed podmianą wersji.
 - Pokazuje, ile odpowiedzi zapisano i ich przybliżony koszt w tym miesiącu i łącznie. Odpowiedzi
   można eksportować i importować jako JSON.
 
-**AI na karcie Definitive**
+**AI na karcie Definitywne**
 - Na stronie każdej gry można zapytać AI, która wersja ma najwięcej treści oraz najlepszą grafikę,
   dźwięk i wygodę gry. Odpowiedź ma ocenę, taką jak sprawdzone notatki.
 - Odpowiedź uzyskaną przez link w przeglądarce można wkleić albo zapisać ze schowka jednym
   kliknięciem.
 - Przed pierwszym pytaniem pojawia się ostrzeżenie o kosztach. Config › AI zawiera linki do stron
   z limitami wydatków każdego dostawcy.
-- „Oceń zbiorczo z AI” pyta o kilka gier w jednym zadaniu: o gry wybrane na karcie Definitive albo
+- „Oceń zbiorczo z AI” pyta o kilka gier w jednym zadaniu: o gry wybrane na karcie Definitywne albo
   o wybrane wiersze zestawu lub cały zestaw. Najpierw pokazuje liczbę pytań i przybliżony koszt,
   pomija gry, które mają już odpowiedź, i można je zaplanować dla zestawu.
 - Ocena wystawiona przed wydaniem nowszej wersji gry jest oznaczona „Nowa wersja od oceny”, a filtr
   może takie oceny pominąć.
 
 **Tytuły: wersje pomniejsze i grupy wersji**
-- „Hide minor versions” ukrywa grę, gdy na tej samej platformie i w tym samym regionie jest
+- „Ukryj wersje pomniejsze” ukrywa grę, gdy na tej samej platformie i w tym samym regionie jest
   pełniejsze wydanie (International, Director's Cut, Final Mix i podobne; Easy Type ustępuje
   zwykłej grze). W Tytułach, Wydaniach i na liście wydań tytułu.
-- „One of each version group” pokazuje tylko jedną wersję gier wydanych w kilku wersjach (Pokémon,
+- „Jedna z każdego zestawu wersji” pokazuje tylko jedną wersję gier wydanych w kilku wersjach (Pokémon,
   Yo-kai Watch i inne): tę, którą masz, w przeciwnym razie wybraną przez ciebie, a jeśli nie, losową,
-  z 🎲, by zobaczyć inną. Wersje z jednej grupy nie tworzą już jednej rodziny na karcie Definitive.
+  z 🎲, by zobaczyć inną. Wersje z jednej grupy nie tworzą już jednej rodziny na karcie Definitywne.
 - Nowa karta Wersje na stronie tytułu pokazuje oba i pozwala je poprawić.
 
 **Config › Zaawansowane**
@@ -54,7 +54,7 @@ zapasową przed podmianą wersji.
 - W ustawieniach wybiera się, które utwory są odtwarzane.
 - Obsługiwane są ripy muzyki w oryginalnym formacie (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP i SGC z
   Game Gear, luzem lub w zip).
-- Biblioteka ripów: wskaż w Ustawienia › Audio foldery z zestawami, a „Index ROM audio” dopasuje
+- Biblioteka ripów: wskaż w Ustawienia › Audio foldery z zestawami, a „Indeksuj dźwięk z ROM-ów” dopasuje
   każdy zestaw do twoich ROM-ów po zawartości. Jeden zestaw gra dla każdego regionu gry, niezależnie
   od nazwy.
 - Odtwarzacz na stronach tytułów ma przycisk „nie odtwarzaj tego utworu”. Ukryte utwory są pod
@@ -98,7 +98,7 @@ zapasową przed podmianą wersji.
 
 **Zadania**
 - Dostosowano kolumny szczegółów na liście zadań.
-- Oczekujące zadanie ma przycisk „Run next”, także dla zaznaczenia: rusza, gdy tylko skończy się
+- Oczekujące zadanie ma przycisk „Uruchom jako następne”, także dla zaznaczenia: rusza, gdy tylko skończy się
   zadanie działające w jego torze. Inne tory pozostają bez zmian.
 
 **Dopasowanie po hashu**
@@ -114,12 +114,12 @@ zapasową przed podmianą wersji.
 - Jeśli listy modeli nie da się odczytać, Gemini i tak jest pytany; przy błędzie limitu raz
   próbowany jest następny model Flash.
 
-**Definitive i Crossplat**
+**Definitywne i Crossplat**
 - Wyświetlane są tylko tytuły z identyfikatorem IGDB. Tytuły Wii U nazwane swoim identyfikatorem
-  tytułu nie pojawiają się już w Definitive.
+  tytułu nie pojawiają się już w Definitywne.
 
 ## Poprawki błędów
 
 **Kolekcja**
-- Wyszukiwanie na karcie Definitive znajdowało tylko nazwę pierwszego tytułu. Teraz znajduje
+- Wyszukiwanie na karcie Definitywne znajdowało tylko nazwę pierwszego tytułu. Teraz znajduje
   rodzinę po nazwie dowolnej wersji, także po nazwach zlokalizowanych i alternatywnych.

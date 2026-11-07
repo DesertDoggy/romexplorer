@@ -270,7 +270,7 @@ defecto, porque la gran base de datos lo ralentiza todo).
 ## Audio de las ROM
 
 Las páginas de título pueden reproducir la música que hay dentro de tus ROM, directamente desde el
-archivo: no se extrae ni se copia nada. Ejecuta primero «Index ROM audio» en la pestaña Audio.
+archivo: no se extrae ni se copia nada. Ejecuta primero «Indexar el audio de las ROM» en la pestaña Audio.
 `rommusic` lee lo mismo.
 
 | música de | plataformas | archivos |

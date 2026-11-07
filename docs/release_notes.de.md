@@ -22,7 +22,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Zeigt, wie viele Antworten gespeichert sind und was sie diesen Monat und insgesamt ungefähr
   gekostet haben. Antworten lassen sich als JSON exportieren und importieren.
 
-**KI im Definitive-Tab**
+**KI im Definitiv-Tab**
 - Auf der Seite jedes Spiels lässt sich die KI fragen, welche Version den meisten Inhalt und die
   beste Grafik, den besten Sound und den meisten Komfort hat. Die Antwort trägt einen Rang wie die
   geprüften Notizen.
@@ -30,7 +30,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   gespeichert werden.
 - Vor der ersten Frage erscheint ein Kostenhinweis. Config › AI verlinkt die Ausgabenlimits jedes
   Anbieters.
-- „Mit KI gesammelt bewerten“ fragt mehrere Spiele in einem Job ab: die im Definitive-Tab
+- „Mit KI gesammelt bewerten“ fragt mehrere Spiele in einem Job ab: die im Definitiv-Tab
   gewählten Spiele oder die gewählten Zeilen eines Sets oder das ganze Set. Vorher werden die Zahl
   der Fragen und die ungefähren Kosten angezeigt, schon beantwortete Spiele werden übersprungen, und
   für ein Set lässt es sich planen.
@@ -38,12 +38,12 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   Version seit der Bewertung“ markiert, und der Filter kann solche Ränge auslassen.
 
 **Titel: Nebenversionen und Versionsgruppen**
-- „Hide minor versions“ blendet ein Spiel aus, wenn es auf derselben Plattform und in derselben
+- „Nebenversionen ausblenden“ blendet ein Spiel aus, wenn es auf derselben Plattform und in derselben
   Region eine vollständigere Ausgabe gibt (International, Director's Cut, Final Mix und ähnliche;
   eine Easy Type weicht dem normalen Spiel). In Titel, Releases und der Release-Liste eines Titels.
-- „One of each version group“ zeigt nur eine Version von Spielen, die in mehreren Versionen
+- „Eine je Versionsset“ zeigt nur eine Version von Spielen, die in mehreren Versionen
   erschienen sind (Pokémon, Yo-kai Watch und andere): die, die Sie besitzen, sonst Ihre Wahl, sonst
-  eine zufällige, mit 🎲 für eine andere. Versionen derselben Gruppe bilden im Definitive-Tab keine
+  eine zufällige, mit 🎲 für eine andere. Versionen derselben Gruppe bilden im Definitiv-Tab keine
   gemeinsame Familie mehr.
 - Die neue Karte „Versionen“ auf der Seite eines Titels zeigt beides und lässt es korrigieren.
 
@@ -58,7 +58,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Musik-Rips im Originalformat (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP und Game-Gear-SGC, einzeln
   oder gezippt) werden unterstützt.
 - Eine Rip-Bibliothek: Tragen Sie unter Einstellungen › Audio die Ordner Ihrer Sets ein, und
-  „Index ROM audio“ ordnet jedes Set anhand des Inhalts Ihren ROMs zu. Ein Set spielt so für jede
+  „ROM-Audio indizieren“ ordnet jedes Set anhand des Inhalts Ihren ROMs zu. Ein Set spielt so für jede
   Region des Spiels, egal wie es heißt.
 - Der Player auf Titelseiten hat eine Schaltfläche „diesen Track nicht spielen“. Ausgeblendete
   Tracks stehen unter der Playlist: Ein Klick spielt einen ab, „Wiederherstellen“ holt ihn zurück.
@@ -104,7 +104,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 **Jobs**
 - Die Detailspalten der Jobliste wurden angepasst.
-- Ein wartender Job hat eine Schaltfläche „Run next“, auch für eine Auswahl: Er startet, sobald der
+- Ein wartender Job hat eine Schaltfläche „Als Nächstes ausführen“, auch für eine Auswahl: Er startet, sobald der
   laufende Job in seiner Spur fertig ist. Andere Spuren sind nicht betroffen.
 
 **Hash-Abgleich**
@@ -121,12 +121,12 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Lässt sich die Modellliste nicht lesen, wird Gemini trotzdem gefragt; bei einem
   Kontingentfehler wird das nächste Flash-Modell einmal versucht.
 
-**Definitive und Crossplat**
+**Definitiv und Crossplat**
 - Nur Titel mit einer IGDB-ID werden aufgeführt. Wii-U-Titel, die nach ihrer Titel-ID benannt
-  sind, erscheinen nicht mehr in Definitive.
+  sind, erscheinen nicht mehr in Definitiv.
 
 ## Fehlerbehebungen
 
 **Sammlung**
-- Die Suche im Definitive-Tab fand nur den Namen des führenden Titels. Jetzt findet sie eine
+- Die Suche im Definitiv-Tab fand nur den Namen des führenden Titels. Jetzt findet sie eine
   Familie über den Namen jeder Version, auch über lokalisierte und alternative Namen.
