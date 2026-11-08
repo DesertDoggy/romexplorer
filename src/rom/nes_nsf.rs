@@ -162,13 +162,28 @@ struct Player {
     banked: bool,
     fds: bool,
     writes: Vec<Write>,
+    /// For each byte of `mem`, 1 + its offset in the file's data (after the header); 0 for
+    /// none.
+    src: Vec<u32>,
+    /// Bytes before the data in bank 0 (banked files).
+    pad: usize,
+    /// When set, marks each data byte read ([`used_bytes`]).
+    used: Option<Vec<bool>>,
 }
 
 impl Bus for Player {
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF],
-            0x6000..=0xFFFF => self.mem[addr as usize - 0x6000],
+            0x6000..=0xFFFF => {
+                let i = addr as usize - 0x6000;
+                if let (Some(used), s @ 1..) = (self.used.as_mut(), self.src[i]) {
+                    if let Some(u) = used.get_mut(s as usize - 1) {
+                        *u = true;
+                    }
+                }
+                self.mem[i]
+            }
             _ => 0,
         }
     }
@@ -188,8 +203,14 @@ impl Bus for Player {
                     self.bank(slot, v);
                 }
             }
-            0x6000..=0x7FFF => self.mem[addr as usize - 0x6000] = v,
-            0x8000..=0xFFFF if self.fds => self.mem[addr as usize - 0x6000] = v,
+            0x6000..=0x7FFF => {
+                self.mem[addr as usize - 0x6000] = v;
+                self.src[addr as usize - 0x6000] = 0;
+            }
+            0x8000..=0xFFFF if self.fds => {
+                self.mem[addr as usize - 0x6000] = v;
+                self.src[addr as usize - 0x6000] = 0;
+            }
             _ => {}
         }
     }
@@ -201,6 +222,10 @@ impl Player {
         let from = bank as usize * 0x1000;
         for i in 0..0x1000 {
             self.mem[slot * 0x1000 + i] = self.data.get(from + i).copied().unwrap_or(0);
+            self.src[slot * 0x1000 + i] = match (from + i).checked_sub(self.pad) {
+                Some(d) if from + i < self.data.len() => d as u32 + 1,
+                _ => 0,
+            };
         }
     }
 
@@ -253,6 +278,28 @@ pub fn track_writes(nsf: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write
     Some(out)
 }
 
+/// Which bytes of the file's data (after the header) its tracks read, running each track's
+/// init and `frames` frames of play: the code and song data a map of the game must place.
+pub fn used_bytes(nsf: &[u8], frames: usize) -> Option<Vec<bool>> {
+    let songs = *nsf.get(6)?;
+    let mut used = vec![false; nsf.len().checked_sub(0x80)?];
+    for t in 0..songs {
+        let (mut p, init, play) = load(nsf)?;
+        p.used = Some(std::mem::take(&mut used));
+        let mut cpu = Cpu::with(init, 0xFD);
+        p.write(0x4015, 0x0F);
+        if p.call(&mut cpu, init, t, 0) {
+            for _ in 0..frames {
+                if !p.call(&mut cpu, play, 0, 0) {
+                    break;
+                }
+            }
+        }
+        used = p.used.take().unwrap_or_default();
+    }
+    Some(used)
+}
+
 /// For each routine in `routines`, the registers (A, X, Y) it is first entered with while the
 /// NSF's init starts each track: `None` for a track that never enters it.
 fn entries(nsf: &[u8], songs: u8, routines: &[u16]) -> Vec<Vec<Option<[u8; 3]>>> {
@@ -286,6 +333,9 @@ fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
         banked,
         fds,
         writes: Vec::new(),
+        src: vec![0; 0xA000],
+        pad: (load & 0xFFF) as usize,
+        used: None,
     };
     if banked {
         p.data = vec![0; (load & 0xFFF) as usize];
@@ -302,6 +352,7 @@ fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
         for (i, &b) in nsf[0x80..].iter().enumerate() {
             if let Some(m) = p.mem.get_mut(at + i) {
                 *m = b;
+                p.src[at + i] = i as u32 + 1;
             }
         }
     }
