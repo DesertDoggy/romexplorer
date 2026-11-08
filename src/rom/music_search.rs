@@ -844,6 +844,11 @@ pub fn search_logged<M: Machine>(
                     if timed_out() {
                         break;
                     }
+                    // Songs end at the first long gap (see `song_run`): past it, nothing
+                    // more can count.
+                    if played.last().is_some_and(|&l: &u8| (v - l) as usize > SONG_GAP) {
+                        break;
+                    }
                     let Some(mut l) = Listening::start(&base, &t, call.as_ref(), v, calls)
                         .and_then(|mut l| l.until(&entry, TRY_FRAMES).map(|_| l))
                     else {
