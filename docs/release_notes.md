@@ -43,17 +43,8 @@ replacing a build.
   from Jobs and Data › DB.
 
 **ROM audio**
-- Title pages can play the music inside your ROMs (supported platforms and media types only).
-- NES and Famicom music plays straight from the ROM, through the game's own sound code: no
-  original audio files needed. Famicom sound chips (VRC6, Namco 163, Sunsoft 5B, MMC5) included.
-- Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance and Neo Geo Pocket music plays straight from the
-  ROM the same way, the Japanese Master System's FM sound included.
+- Title pages can play the music inside your ROMs (CD audio tracks of disc games, and Nintendo DS and 3DS sound archives).
 - Settings adjust which tracks play.
-- Original audio formats (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP and Game Gear SGC,
-  loose or zipped) are supported.
-- An original audio library: list the folders where you keep these files in Settings › Audio, and Index ROM
-  audio matches each set to your ROMs by their content, so one set plays for every region of
-  the game whatever its name.
 - The player on title pages has a "don't play this track" button. Hidden tracks are listed under
   the playlist, where a click plays one and Restore brings it back.
 - ROM music decoded for playing is cached in memory (Settings › Audio, 256 MiB by default).
@@ -65,7 +56,6 @@ replacing a build.
   scan measures where the sound ends (run it again to measure files scanned before).
 - Music on title pages is on by default, and the first start asks whether you want it, right
   after the language. A title with no audio of its own plays random tracks by default.
-- PSF and PSF2 files use a PS2 BIOS from your collection and are skipped without one.
 
 **Merge review and combined titles**
 - Releases on a card can be dragged to the title they belong to, or onto "+" for a new title

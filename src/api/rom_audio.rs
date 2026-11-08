@@ -990,10 +990,16 @@ pub async fn stand_in(app: &App, titles: &[u64], s: &Settings) -> Result<(Vec<Au
 
 /// Where a cached decode of track `id` goes: `rom<id>-<what>-<index time>.<ext>`. A ROM
 /// indexed again gets new names; the old ones are left for the size cap.
-fn cache_name(id: u64, target: Target, stamp: i64, level: bool) -> String {
+fn cache_name(id: u64, target: Target, stamp: i64, level: bool, limit: bool) -> String {
     // `-ts`: the silent end is trimmed ([`TailTrim`]); earlier cache files without it are
-    // left for the size cap.
-    format!("rom{id}-{}-{stamp}{}-ts.{}", target.tag(), if level { "-lv" } else { "" }, target.ext())
+    // left for the size cap. `-lm`: through the peak limiter ([`Limiter`]).
+    format!(
+        "rom{id}-{}-{stamp}{}{}-ts.{}",
+        target.tag(),
+        if level { "-lv" } else { "" },
+        if limit { "-lm" } else { "" },
+        target.ext()
+    )
 }
 
 /// What a track is decoded to: AAC when the encoder is built and takes the track's shape,
@@ -1051,7 +1057,11 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     let stamp = row.try_get::<Option<chrono::NaiveDateTime>, _>("indexed_at")?.map(|t| t.and_utc().timestamp()).unwrap_or(0);
 
     let dir = super::audio_convert::cache_dir(app).await;
-    let name = cache_name(id, target, stamp, level);
+    // Music a sound chip makes (from the ROM's own code, or a library set's) can burst out
+    // loud where code is read wrong; the limiter holds such bursts down.
+    let chip = matches!(location, TrackLocation::RomSong { .. } | TrackLocation::Rip { .. });
+    let limit = chip && db_settings::get::<bool>(&app.pool, db_settings::KEY_AUDIO_ROM_LIMITER).await?.unwrap_or(true);
+    let name = cache_name(id, target, stamp, level, limit);
     let cached = dir.join(&name);
     let served = |body: Option<super::audio_ram::Bytes>| Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached.clone(), converted: true, note: None, body };
     if let Some(bytes) = super::audio_ram::get(&name) {
@@ -1070,7 +1080,7 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     let ram_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_RAM_CACHE_MB).await?.unwrap_or(super::audio_ram::DEFAULT_MB).saturating_mul(1 << 20);
     let (out, keep_dir) = (cached.clone(), dir.clone());
     let made = tokio::task::spawn_blocking(move || -> std::result::Result<Option<super::audio_ram::Bytes>, String> {
-        decode_to(&path, &location, &out, target, config, level)?;
+        decode_to(&path, &location, &out, target, config, level, limit)?;
         if ram_cap == 0 {
             super::audio_convert::evict(&keep_dir, disk_cap, &out);
             return Ok(None);
@@ -1115,14 +1125,18 @@ fn near_aac_rate(rate: u32) -> Option<u32> {
     xaac::SAMPLE_RATES.iter().copied().find(|&r| (i64::from(rate) - i64::from(r)).unsigned_abs() * 200 <= u64::from(r))
 }
 
-pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool) -> std::result::Result<(), String> {
+pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool, limit: bool) -> std::result::Result<(), String> {
     let dir = out.parent().ok_or("no cache directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let partial = out.with_extension(format!("{}.part", target.ext()));
     let _ = std::fs::remove_file(&partial);
     let made = super::audio_convert::encode_with(&partial, target, |write| {
         let mut trim = TailTrim::default();
-        let mut sink = |pcm: &[i16], rate: u32, channels: u16| trim.push(pcm, rate, channels, &mut *write);
+        let mut limiter = limit.then(Limiter::default);
+        let mut sink = |pcm: &[i16], rate: u32, channels: u16| match limiter.as_mut() {
+            Some(l) => trim.push(&l.apply(pcm, rate, channels), rate, channels, &mut *write),
+            None => trim.push(pcm, rate, channels, &mut *write),
+        };
         let made = (|| {
         let mut stream = rom_audio::open_track(rom, location, config)?;
         let (rate, channels) = (stream.sample_rate(), stream.channels());
@@ -1270,6 +1284,41 @@ pub fn level_gain(pcm: &[Vec<i16>], rate: u32, channels: u16) -> f32 {
     wanted.min(ceiling) as f32
 }
 
+/// Peaks a limited track stays under: -1 dBFS.
+const LIMIT_CEILING: f32 = 0.891 * 32767.0;
+/// How fast the limiter lets the level back up after a burst.
+const LIMIT_RELEASE_MS: f32 = 250.0;
+
+/// A peak limiter: holds every sample under [`LIMIT_CEILING`], turning a burst down at once and
+/// letting the level back up over [`LIMIT_RELEASE_MS`]. Music that stays under the ceiling
+/// passes unchanged. One gain for all channels, so the stereo picture holds.
+#[derive(Default)]
+struct Limiter {
+    /// The gain now (1 when nothing is held down; 0 before the first sample).
+    gain: f32,
+    started: bool,
+}
+
+impl Limiter {
+    fn apply(&mut self, pcm: &[i16], rate: u32, channels: u16) -> Vec<i16> {
+        if !self.started {
+            self.started = true;
+            self.gain = 1.0;
+        }
+        let channels = usize::from(channels.max(1));
+        let release = 1.0 - (-1000.0 / (LIMIT_RELEASE_MS * rate.max(1) as f32)).exp();
+        let mut out = Vec::with_capacity(pcm.len());
+        for frame in pcm.chunks(channels) {
+            let peak = frame.iter().map(|&s| f32::from(s).abs()).fold(0.0, f32::max);
+            let need = if peak > LIMIT_CEILING { LIMIT_CEILING / peak } else { 1.0 };
+            self.gain = if need < self.gain { need } else { self.gain + (1.0 - self.gain) * release };
+            let g = self.gain.min(need);
+            out.extend(frame.iter().map(|&s| (f32::from(s) * g).round().clamp(-32768.0, 32767.0) as i16));
+        }
+        out
+    }
+}
+
 fn scaled(mut pcm: Vec<i16>, gain: f32) -> Vec<i16> {
     if (gain - 1.0).abs() > 1e-3 {
         for s in &mut pcm {
@@ -1282,6 +1331,19 @@ fn scaled(mut pcm: Vec<i16>, gain: f32) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_limiter_holds_a_burst_down_and_leaves_quiet_music_alone() {
+        let mut l = Limiter::default();
+        let quiet: Vec<i16> = (0..2000).map(|i| ((i % 50) as i16 - 25) * 400).collect();
+        assert_eq!(l.apply(&quiet, 48_000, 2), quiet);
+        let burst = vec![32767i16; 2000];
+        let held = l.apply(&burst, 48_000, 2);
+        assert!(held.iter().all(|&s| f32::from(s) <= LIMIT_CEILING + 1.0));
+        // A second after the burst the level is back.
+        let after = l.apply(&vec![10_000i16; 96_000], 48_000, 2);
+        assert!(*after.last().unwrap() > 9_900);
+    }
 
     fn tone(level: f32, peak_click: bool) -> Vec<Vec<i16>> {
         let mut pcm: Vec<i16> = (0..48_000 * 5).flat_map(|i| {

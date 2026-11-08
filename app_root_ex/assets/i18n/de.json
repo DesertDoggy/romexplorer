@@ -2917,6 +2917,8 @@
   "stop the music when the page is left": "die Musik beim Verlassen der Seite stoppen",
   "play the sound of video files in ROMs, such as title movies": "den Ton von Videos in ROMs abspielen, etwa von Titelfilmen",
   "leave video sound out (default)": "den Ton von Videos weglassen (Standard)",
+  "soften sudden loud bursts in music played from ROMs (default)": "plötzliche laute Spitzen in Musik aus ROMs abmildern (Standard)",
+  "play it as the sound chip makes it": "so abspielen, wie der Soundchip sie erzeugt",
   "Video sound for this title": "Videoton für diesen Titel",
   "as in Settings": "wie in den Einstellungen",
   "Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.": "Woher die Musik einer Titelseite kommt. ROM-Musik wird wie bei einem CD-Player direkt aus dem ROM gespielt: Führen Sie zuerst „ROM-Audio indizieren“ im Audio-Tab aus.",

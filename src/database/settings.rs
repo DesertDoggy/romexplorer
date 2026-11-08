@@ -165,6 +165,9 @@ pub const KEY_AUDIO_KEEP_PLAYING: &str = "audio_keep_playing";
 /// Whether a title page plays the sound of the video files in its ROMs (title movies);
 /// default false. A title's own choice (`rom_audio_title`) goes over it.
 pub const KEY_AUDIO_ROM_VIDEOS: &str = "audio_rom_videos";
+/// Whether music played from a ROM's sound chip goes through a peak limiter (a sudden loud
+/// burst is held down); default true.
+pub const KEY_AUDIO_ROM_LIMITER: &str = "audio_rom_limiter";
 /// The lengths, in seconds, a ROM sound is sorted by (`rom::rom_audio::classify`).
 pub const KEY_AUDIO_ROM_LOOP_MIN_S: &str = "audio_rom_loop_min_s";
 pub const KEY_AUDIO_ROM_BGM_MIN_S: &str = "audio_rom_bgm_min_s";
@@ -400,7 +403,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 106] = [
+pub const KNOWN_KEYS: [(&str, &str); 107] = [
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -451,6 +454,7 @@ pub const KNOWN_KEYS: [(&str, &str); 106] = [
     (KEY_AUDIO_ROM_NOT_OWNED, "ROM music for a title with no ROM here: related (default; another version of the game, such as the original of a remake) | random (another title's) | none."),
     (KEY_AUDIO_KEEP_PLAYING, "Keep a title's music playing on other screens until another title page opens (true | false; default true)."),
     (KEY_AUDIO_ROM_VIDEOS, "Play the sound of the video files in a title's ROMs, such as its title movie (true | false; default false). Each title page can turn it on or off for that title."),
+    (KEY_AUDIO_ROM_LIMITER, "Hold down sudden loud bursts in music played from a ROM's sound chip, with a peak limiter (true | false; default true)."),
     (KEY_AUDIO_ROM_LOOP_MIN_S, "A ROM sound that loops is music from this many seconds (default 3)."),
     (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 60)."),
     (KEY_AUDIO_ROM_JINGLE_MIN_S, "A ROM sound that does not loop is a jingle from this many seconds (default 8); shorter is a sound effect."),
