@@ -845,8 +845,18 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
     let script = m.tracks.get(song as usize)?.as_ref()?;
     let mut nes = super::nes_music::Nes::boot(rom).ok()?;
     let prg_len = super::nes_cart::parse(rom).ok()?.prg.len();
+    // A bank the board puts in a window from power on (a fixed bank) stays there, wherever
+    // the file has it.
+    let boot = nes.windows();
+    let place = |d: usize, a: u16| {
+        let (g, w, base) = game_place(m, prg_len, d, a)?;
+        match (1..5).find(|&k| boot[k] == base) {
+            Some(k) if k != w => Some(((0x6000 + k * 0x2000) as u16 | (g & 0x1FFF), k, base)),
+            _ => Some((g, w, base)),
+        }
+    };
     // The windows the runs ask for, the longest first; the rest as the board starts.
-    let mut windows = nes.windows();
+    let mut windows = boot;
     let mut set = [false; 5];
     let mut runs: Vec<_> = m.runs.iter().collect();
     runs.sort_by_key(|r| std::cmp::Reverse(r.len));
@@ -855,7 +865,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
         let mut d = r.data;
         while d < r.data + r.len {
             let Some(a) = cpu_of(&m.header, d) else { break };
-            if let Some((_, w, base)) = game_place(m, prg_len, d, a) {
+            if let Some((_, w, base)) = place(d, a) {
                 if w > 0 && !set[w] {
                     windows[w] = base;
                     set[w] = true;
@@ -887,7 +897,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                         .max();
                     if let Some((_, d)) = best {
                         let a = (0x8000 + slot * 0x1000 + (d - d0)) as u16;
-                        if let Some((_, w, base)) = game_place(m, prg_len, d, a) {
+                        if let Some((_, w, base)) = place(d, a) {
                             let mut win = nes.windows();
                             win[w] = base;
                             nes.set_windows(win);
@@ -902,8 +912,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                 // is entered where the game enters it).
                 Op::Push(_) => {}
                 Op::Call { addr, a, x, y, src } => {
-                    let place = src.checked_sub(1).and_then(|d| game_place(m, prg_len, d as usize, addr));
-                    let at = match place {
+                    let at = match src.checked_sub(1).and_then(|d| place(d as usize, addr)) {
                         Some((g, w, base)) => {
                             let mut win = nes.windows();
                             if w > 0 {
