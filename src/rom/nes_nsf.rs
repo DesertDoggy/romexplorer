@@ -429,11 +429,16 @@ pub struct Map {
     /// other addresses (most runs at one distance in the CPU's view, not 0): that distance,
     /// and the game's own 8 KB windows ($6000-$FFFF base, offset in the ROM) to run it in.
     pub moved: Option<(i32, Vec<(u16, usize)>)>,
+    /// The moved driver tried, if any: its distance, and the file's tracks' summed likeness
+    /// without and with it.
+    pub tried: Option<(i32, f64, f64)>,
 }
 
 /// Runs the routine at `pc` and records it as a start script: while the code running isn't
-/// in `placed` (the bytes the ROM holds), its writes are pokes; a jump into placed code is a
-/// call, run through without recording. None when it doesn't return.
+/// the game's, its writes are pokes; a jump into the game's code is a call, run through
+/// without recording. The game's code is what the ROM holds (`placed`), entered by a jump, a
+/// call or a return (the file's own code may run on into bytes that happen to match the ROM:
+/// that is still the file's), or a hole of a few bytes inside it. None when it doesn't return.
 fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool]) -> Option<Vec<Op>> {
     p.ram[0x1FF] = 0x5F;
     p.ram[0x1FE] = 0xF5;
@@ -442,9 +447,14 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
     cpu.a = a;
     cpu.x = x;
     cpu.calls = vec![(pc, 0xFF)];
+    let held = |p: &Player, addr: u16| {
+        let s = addr.checked_sub(0x6000).and_then(|i| p.src.get(i as usize)).copied().unwrap_or(0);
+        s > 0 && placed.get(s as usize - 1).copied().unwrap_or(false)
+    };
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
     let mut used = 0u32;
+    let mut jumped = true;
     while !cpu.calls.is_empty() {
         if used > 400_000 || cpu.jammed {
             return None;
@@ -452,13 +462,19 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
         if in_game.is_some_and(|d| cpu.calls.len() < d) {
             in_game = None;
         }
-        let i = cpu.pc.checked_sub(0x6000).map(usize::from);
-        let here = i.and_then(|i| p.src.get(i)).copied().unwrap_or(0);
-        let game = here > 0 && placed.get(here as usize - 1).copied().unwrap_or(false);
-        if in_game.is_none() && game {
-            ops.push(Op::Call { addr: cpu.pc, a: cpu.a, x: cpu.x, y: cpu.y });
-            in_game = Some(cpu.calls.len());
+        let at = cpu.pc;
+        if in_game.is_none() && jumped {
+            let hole = || {
+                (1..=GAME_HOLE).any(|k| held(p, at.wrapping_add(k)))
+                    && (1..=GAME_HOLE * 8).any(|k| held(p, at.wrapping_sub(k)))
+            };
+            if held(p, at) || hole() {
+                ops.push(Op::Call { addr: at, a: cpu.a, x: cpu.x, y: cpu.y });
+                in_game = Some(cpu.calls.len());
+            }
         }
+        let op = if at >= 0x6000 { p.mem[at as usize - 0x6000] } else { p.ram[at as usize & 0x7FF] };
+        jumped = matches!(op, 0x20 | 0x4C | 0x6C | 0x60 | 0x40);
         p.log = in_game.is_none().then(Vec::new);
         used += cpu.step(p);
         if let Some(log) = p.log.take() {
@@ -471,6 +487,10 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
     }
     Some(ops)
 }
+
+/// Bytes after a jump target within which the game's code must go on for an unplaced target
+/// to count as the game's (a byte the file's author patched at a routine's start).
+const GAME_HOLE: u16 = 8;
 
 /// Plays a start script.
 fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], shift: i32) -> bool {
@@ -529,14 +549,18 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
         }
         tracks.push(Some(script));
     }
-    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks, moved: None };
+    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks, moved: None, tried: None };
     // A moved driver only where it plays more of the file's tracks than the file's layout.
     if let Some(mv) = moved(&h, &m.runs, prg.len(), &calls(&m)) {
         let score = |m: &Map| map_check(nsf, m, prg, MOVED_CHECK_FRAMES, Fill::Bridged).iter().flatten().sum::<f64>();
         let before = score(&m);
         let mut with = m.clone();
+        let d = mv.0;
         with.moved = Some(mv);
-        if score(&with) > before {
+        let after = score(&with);
+        m.tried = Some((d, before, after));
+        if after > before {
+            with.tried = m.tried;
             m = with;
         }
     }
@@ -722,7 +746,7 @@ pub fn map_check(nsf: &[u8], m: &Map, prg: &[u8], frames: usize, fill: Fill) -> 
     (0..m.header.songs)
         .map(|t| {
             let real = melody(&track_writes(nsf, t, frames)?);
-            if real.is_empty() {
+            if real.len() < music_search::MIN_MELODY {
                 return None;
             }
             let mine = map_track_writes(m, prg, t, frames, fill).map(|w| melody(&w)).unwrap_or_default();

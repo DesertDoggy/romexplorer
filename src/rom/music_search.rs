@@ -168,11 +168,15 @@ pub fn melody(frames: &[Vec<Write>], channels: &[(u32, u32)]) -> HashSet<u64> {
     out
 }
 
+/// Fewest steps a [`melody`] fingerprint needs to be compared: a few notes (an ending, a
+/// near-silent track) are alike almost anything.
+pub const MIN_MELODY: usize = 8;
+
 /// How alike two [`melody`] fingerprints are: the share of the smaller one found in the
-/// other (0 when either is empty).
+/// other (0 when either has fewer than [`MIN_MELODY`] steps).
 pub fn alike(a: &HashSet<u64>, b: &HashSet<u64>) -> f64 {
     let small = a.len().min(b.len());
-    if small == 0 {
+    if small < MIN_MELODY {
         return 0.0;
     }
     a.intersection(b).count() as f64 / small as f64
@@ -591,6 +595,11 @@ pub struct Found {
     pub songs: Vec<u8>,
     /// Why nothing was found, when nothing was.
     pub why: Option<String>,
+    /// Against a matched file's tracks (NSF, GBS): how many of them the songs play, and of
+    /// how many. Some with 0 found: the songs are kept but unchecked (no song is like any of
+    /// the file's tracks; often the file is from another version of the game). None: no
+    /// file to check against.
+    pub checked: Option<(usize, usize)>,
 }
 
 /// Finds the sound routine of a game that played music during boot: the routines that
@@ -1137,7 +1146,7 @@ pub fn search_hinted<M: Machine>(
             }
             screened.sort_by_key(|s| std::cmp::Reverse(s.0));
             // The best way, as [`Rank`] orders them.
-            let mut best: Option<(Rank, Trigger, Vec<u8>)> = None;
+            let mut best: Option<(Rank, Trigger, Vec<u8>, Option<usize>)> = None;
             for (i, (_, t, call)) in screened.into_iter().enumerate() {
                 // The best few; more while none has a song table that ends.
                 let settled = best.as_ref().is_some_and(|b| b.0 .2 && b.0 .3 && b.0 .4);
@@ -1257,6 +1266,7 @@ pub fn search_hinted<M: Machine>(
                 let core = played.len() < CORE_SONGS;
                 // Against the known answer: each track once, by the song most like it; songs
                 // like no track (variants of one, sound effects, junk) are left out.
+                let checked = hint.filter(|h| !h.tracks.is_empty() && !melodies.is_empty()).map(|h| h.tracks.len());
                 let (songs, tracks_found) = match hint.filter(|h| !h.tracks.is_empty()) {
                     Some(h) if !melodies.is_empty() => {
                         let mut by_track: Vec<Option<(f64, u8)>> = vec![None; h.tracks.len()];
@@ -1276,16 +1286,17 @@ pub fn search_hinted<M: Machine>(
                         }
                         let n = by_track.iter().flatten().count();
                         note(format!("    like the known answer: {n} of {} tracks, by {} songs", h.tracks.len(), kept.len()));
+                        // None like a track: kept, as unchecked (see `Found::checked`).
                         if kept.is_empty() { (songs, 0) } else { (kept, n) }
                     }
                     _ => (songs, 0),
                 };
                 let rank = (tracks_found, !played.is_empty(), core, list, bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
-                    best = Some((rank, t, songs));
+                    best = Some((rank, t, songs, checked));
                 }
             }
-            if let Some((rank, trigger, songs)) = best.filter(|b| !b.2.is_empty()) {
+            if let Some((rank, trigger, songs, checked)) = best.filter(|b| !b.2.is_empty()) {
                 let recipe = Recipe {
                     boot_frames: at,
                     press_start,
@@ -1301,6 +1312,7 @@ pub fn search_hinted<M: Machine>(
                             recipe,
                             songs,
                             why: None,
+                            checked: checked.map(|of| (rank.0, of)),
                         },
                     ));
                 }
@@ -1332,6 +1344,7 @@ pub fn search_hinted<M: Machine>(
         },
         songs: Vec::new(),
         why: Some(why.1.to_string()),
+        checked: None,
     })
 }
 
