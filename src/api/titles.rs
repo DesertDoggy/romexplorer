@@ -37,6 +37,8 @@ pub async fn merge(app: &App, req: &MergeRequest) -> Result<MergeResult> {
     let title_id = title_merge::merge_titles(&app.pool, &ids, "manual", "manual").await?;
     sync_lead_igdb(app, Some(&[title_id])).await?;
     family::after_edit(&app.pool, &[title_id], &heads).await?;
+    // A merge suggestion for these titles is done now: it leaves the review.
+    title_merge::settle_merged_suggestions(&app.pool, Some(&ids)).await?;
     Ok(MergeResult { title_id, merged: ids.len() - 1 })
 }
 

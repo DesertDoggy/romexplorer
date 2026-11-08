@@ -91,6 +91,7 @@ Faites une sauvegarde avant de remplacer une version.
 - « Mettre à jour les métadonnées » reliait de nouveau à IGDB un titre dont le lien avait été retiré à la main. Il reste désormais sans lien jusqu’à ce que vous le reliiez vous-même.
 - Les subsets RetroAchievements (défi, speedrun, etc.) allaient dans le titre de leur jeu et pouvaient réunir deux versions d'un jeu en un titre. Chaque subset est désormais un titre à part ; l'audit des fusions sépare ceux déjà présents.
 - Annuler une fusion acceptée dans la revue des fusions ne remettait pas la suggestion. Elle est de nouveau à examiner.
+- Une suggestion de fusion restait dans la revue des fusions après la fusion manuelle de ses titres.
 - Des jeux pirates et sans licence étaient fusionnés dans les titres de jeux commerciaux.
 - La carte « un autre jeu à l'intérieur » laissait dans le titre des jeux pirates et sans licence
   d'autres régions.
