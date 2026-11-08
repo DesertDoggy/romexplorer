@@ -186,7 +186,7 @@ pub struct RomCandidate {
 }
 
 impl RomCandidate {
-    fn of(path: PathBuf) -> Self {
+    pub fn of(path: PathBuf) -> Self {
         let kind = if path.is_dir() {
             CandidateKind::DirectoryBundle
         } else if is_sheet_extension(&extension_lowercase(&path)) {

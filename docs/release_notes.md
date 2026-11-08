@@ -76,6 +76,11 @@ replacing a build.
   bundle's discs, a bonus disc) and choose "Combine into one release". One release is listed
   for them all, and copying it copies every disc. The release page can split one off again.
 
+**Scan**
+- A file's page has "Rescan this file". It reads the file again with the rest of its ROM and links
+  its game to a release right away.
+- A file's page shows the release and title the file is linked to.
+
 ## Bug fixes
 
 - Some games got no IGDB match: a name with a hyphen inside a word did not match IGDB's
@@ -98,6 +103,8 @@ replacing a build.
 - Jobs like the merge audit showed little of their progress. They now show it in detail.
 - The Windows arm64 and Linux arm64 builds could not convert Wii U, Xbox and Xbox 360 images,
   read PBP files or play ROM music.
+- A file a DAT lists could stay linked to no release or title, when the DAT was added after the
+  scan or a subfolder was scanned after the folder above it.
 
 # romexplorer 0.1.8 (alpha)
 
