@@ -83,6 +83,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Fehlerbehebungen
 
+- Manche Spiele fanden keinen IGDB-Treffer: Ein Name mit Bindestrich innerhalb eines Wortes passte nicht zur Schreibweise bei IGDB, und die IGDB-Synchronisierung für SNES und NES ließ Spiele aus, die nur in Japan erschienen.
 - Ein Titel behielt die alternativen Titel von IGDB, nachdem seine IGDB-Verknüpfung entfernt wurde, und sie ließen sich nicht löschen. Sie werden jetzt mit der Verknüpfung entfernt, und jeder alternative Titel lässt sich mit ✕ löschen.
 - „Metadaten aktualisieren“ verknüpfte einen Titel wieder mit IGDB, obwohl die Verknüpfung von Hand entfernt worden war. Sie bleibt jetzt entfernt, bis Sie selbst verknüpfen.
 - RetroAchievements-Subsets (Challenge, Speedrun usw.) landeten im Titel ihres Spiels und konnten zwei Versionen eines Spiels in einem Titel vereinen. Jedes Subset ist jetzt ein eigener Titel; die Zusammenführungsprüfung trennt die vorhandenen ab.

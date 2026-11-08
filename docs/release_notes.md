@@ -73,6 +73,8 @@ replacing a build.
 
 ## Bug fixes
 
+- Some games got no IGDB match: a name with a hyphen inside a word did not match IGDB's
+  spelling without one, and the SNES and NES IGDB syncs skipped Japan-only games.
 - A title kept IGDB's alternative titles after its IGDB link was removed, and they could not be
   deleted. Unlinking now removes them, and any alternative title can be removed with ✕.
 - "Refresh metadata" linked IGDB again to a title whose link you had removed. It now stays
