@@ -2030,9 +2030,21 @@ async fn phase_undo_reopens_suggestion(env: &Env, report: &mut Report) {
         romexplorer::api::titles::decouple(&app, log).await.map_err(ae)?;
         let back: String = sqlx::query_scalar("SELECT CAST(status AS CHAR) FROM title_merge_suggestions WHERE igdb_id = ?").bind(key).fetch_one(pool).await.map_err(e)?;
         let both_live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title WHERE id IN (?, ?) AND deleted = FALSE").bind(a).bind(b).fetch_one(pool).await.map_err(e)?;
+        // Merged by hand instead of from the card: the card is done, and undoing brings it back.
+        let c = title("Reopen Fuga", "Reopen Fuga (Japan)").await.map_err(e)?;
+        let d = title("Reopen Fuga Gaiden", "Reopen Fuga Gaiden (Japan)").await.map_err(e)?;
+        let by_hand = "name:reopen-by-hand";
+        sqlx::query("INSERT INTO title_merge_suggestions (igdb_id, title_ids, reason) VALUES (?, ?, 'name_suffix')").bind(by_hand).bind(format!("{c},{d}")).execute(pool).await.map_err(e)?;
+        romexplorer::api::titles::merge(&app, &romexplorer::api::titles::MergeRequest { title_ids: vec![c, d] }).await.map_err(ae)?;
+        let hand_status: String = sqlx::query_scalar("SELECT CAST(status AS CHAR) FROM title_merge_suggestions WHERE igdb_id = ?").bind(by_hand).fetch_one(pool).await.map_err(e)?;
+        let hand_log: u64 = sqlx::query_scalar("SELECT id FROM title_merge_log WHERE merged_title_id = ? AND undone_at IS NULL").bind(c.max(d)).fetch_one(pool).await.map_err(e)?;
+        romexplorer::api::titles::decouple(&app, hand_log).await.map_err(ae)?;
+        let hand_back: String = sqlx::query_scalar("SELECT CAST(status AS CHAR) FROM title_merge_suggestions WHERE igdb_id = ?").bind(by_hand).fetch_one(pool).await.map_err(e)?;
         let checks = [
             (taken == "accepted", format!("taking it marks it accepted: {taken}")),
             (back == "pending" && both_live == 2, format!("undone, it is pending again: {back}, {both_live} titles live")),
+            (hand_status == "accepted", format!("merging its titles by hand takes it off the review: {hand_status}")),
+            (hand_back == "pending", format!("and undoing that merge puts it back: {hand_back}")),
         ];
         if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
             return Err(why.clone());
