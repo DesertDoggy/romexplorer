@@ -203,6 +203,9 @@ type Rank = (bool, bool, usize);
 /// Numbers sounding different past which a way of starting songs is taken to read past
 /// its song table.
 const UNBOUNDED_SONGS: usize = 128;
+/// Past the gap that ends a way's songs, one number in this many is listened to, to tell
+/// whether the way's numbers run out.
+const PAST_GAP_STEP: usize = 4;
 /// Songs that last a search stops at; with fewer it tries the other routines and boots.
 const GOOD_SONGS: usize = 4;
 /// Ways to start a song that are tried with every number, best screened first.
@@ -840,6 +843,7 @@ pub fn search_logged<M: Machine>(
                 // sound effects).
                 let mut dropped = [0usize; 4];
                 let mut short = Vec::new();
+                let mut gap_at = None;
                 for v in 0..=255u8 {
                     if timed_out() {
                         break;
@@ -847,6 +851,7 @@ pub fn search_logged<M: Machine>(
                     // Songs end at the first long gap (see `song_run`): past it, nothing
                     // more can count.
                     if played.last().is_some_and(|&l: &u8| (v - l) as usize > SONG_GAP) {
+                        gap_at = Some(v);
                         break;
                     }
                     let Some(mut l) = Listening::start(&base, &t, call.as_ref(), v, calls)
@@ -877,6 +882,21 @@ pub fn search_logged<M: Machine>(
                         break;
                     }
                 }
+                // Whether the numbers past the gap run out too: a quick listen to every
+                // `PAST_GAP_STEP`th one, each new sound counting for that many.
+                let mut past_gap = 0;
+                if let Some(from) = gap_at {
+                    for v in (from as usize..=255).step_by(PAST_GAP_STEP) {
+                        if timed_out() {
+                            break;
+                        }
+                        if listen(&base, &entry, &t, call.as_ref(), v as u8, TRY_FRAMES, calls)
+                            .is_some_and(|h| h.audible && seen.insert(h.sound))
+                        {
+                            past_gap += PAST_GAP_STEP;
+                        }
+                    }
+                }
                 // A game whose every tune is a few seconds long (older games are mostly
                 // jingles): its short ones are its music.
                 let songs = if played.is_empty() {
@@ -886,7 +906,7 @@ pub fn search_logged<M: Machine>(
                 };
                 note(format!(
                     "  {t:?}: {} songs ({} numbers played music, {} jingles; left out: {} crashed, {} silent, \
-                     {} same as another, {} crashed later)",
+                     {} same as another, {} crashed later; ~{} more sound different past the gap)",
                     songs.len(),
                     played.len(),
                     short.len(),
@@ -894,11 +914,12 @@ pub fn search_logged<M: Machine>(
                     dropped[1],
                     dropped[2],
                     dropped[3],
+                    past_gap,
                 ));
                 // A way where most numbers sound different reads past the end of its song
                 // table (or isn't a song number at all): its "songs" are noise from whatever
                 // follows. A way with a table that ends beats it.
-                let bounded = played.len() + short.len() < UNBOUNDED_SONGS;
+                let bounded = played.len() + short.len() + past_gap < UNBOUNDED_SONGS;
                 let rank = (!played.is_empty(), bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
                     best = Some((rank, t, songs));
