@@ -71,6 +71,17 @@ pub trait Machine: Clone + Sized {
     /// Calls the routine of `entry` with register `reg` set to `v`, then puts the CPU and
     /// banks back as they were; its sound writes count at the current moment.
     fn call_with(&mut self, entry: &Self::Entry, reg: u8, v: u8) -> bool;
+    /// Calls the routine at `addr` as [`Self::call_with`] does, from the moment of `ctx` (its
+    /// banks and registers). For a song-start routine known from an original audio format
+    /// file that the game itself may never be seen calling. False where unsupported.
+    fn call_at(&mut self, _ctx: &Self::Entry, _addr: u32, _reg: u8, _v: u8) -> bool {
+        false
+    }
+    /// `len` code bytes at `addr`, as the CPU sees them at the moment of `entry`; empty where
+    /// unsupported.
+    fn code_at(&mut self, _entry: &Self::Entry, _addr: u32, _len: usize) -> Vec<u8> {
+        Vec::new()
+    }
     /// Registers a song number can be passed in.
     const REGISTERS: u8;
     /// Writes a byte of RAM.
@@ -110,6 +121,9 @@ pub enum Trigger {
     /// Passed in a register to the routine at this address, as called the `nth` time during
     /// boot.
     Call { addr: u32, reg: u8, nth: u32 },
+    /// Passed in a register to the routine at this address, called from the sound routine's
+    /// moment (an address an original audio format file gives).
+    Jump { addr: u32, reg: u8 },
 }
 
 impl Trigger {
@@ -117,12 +131,20 @@ impl Trigger {
         match self {
             Trigger::Byte(a) => format!("m{a:04x}"),
             Trigger::Call { addr, reg, nth } => format!("c{addr:04x}.{reg}.{nth}"),
+            Trigger::Jump { addr, reg } => format!("j{addr:04x}.{reg}"),
         }
     }
 
     fn decode(s: &str) -> Option<Self> {
         if let Some(a) = s.strip_prefix('m') {
             return u32::from_str_radix(a, 16).ok().map(Trigger::Byte);
+        }
+        if let Some(j) = s.strip_prefix('j') {
+            let (a, r) = j.split_once('.')?;
+            return Some(Trigger::Jump {
+                addr: u32::from_str_radix(a, 16).ok()?,
+                reg: r.parse().ok()?,
+            });
         }
         let mut p = s.strip_prefix('c')?.split('.');
         let addr = u32::from_str_radix(p.next()?, 16).ok()?;
@@ -435,6 +457,8 @@ fn run_alone<M: Machine>(
     (0..frames).map(|_| play_frame(m, play, calls)).collect()
 }
 
+/// Fewest boot frames an NSF-named routine must run in to be taken as the sound routine.
+const HINT_MIN_FRAMES: usize = 30;
 /// Verified sound routines tried in turn, per boot.
 const MAX_PLAYS: usize = 3;
 /// Most times a frame a sound routine is taken to run.
@@ -456,10 +480,53 @@ fn find_play<M: Machine>(
     rom: &[u8],
     press_start: u8,
     log: &BootLog,
+    hint: Option<&Hint>,
     note: &mut dyn FnMut(String),
 ) -> Result<Vec<(u32, u32, u8)>, String> {
     let mut found = Vec::new();
-    if log.total_writes < 50 {
+    let first_sound = log
+        .frames
+        .iter()
+        .position(|f| f.iter().any(|w| !M::incidental(w)))
+        .unwrap_or(0) as u32;
+    let latest = BOOT_FRAMES - VERIFY_FRAMES as u32 - 1;
+    // Routines a matched NSF names: the game's code at the same address, byte for byte, is
+    // its sound routine even when it plays nothing yet (or its music can't be told apart
+    // from the rest of the boot's sound).
+    for (routine, code) in hint.map(|h| h.play.as_slice()).unwrap_or_default() {
+        if found.len() == MAX_PLAYS {
+            break;
+        }
+        let Some((frames, total)) = log.entered_frames.get(routine) else {
+            continue;
+        };
+        if frames.len() < HINT_MIN_FRAMES {
+            note(format!("  NSF routine {routine:04x}: entered in only {} frames", frames.len()));
+            continue;
+        }
+        let calls = (*total as f64 / frames.len() as f64).round().clamp(1.0, MAX_CALLS) as u8;
+        let mut at = (first_sound + 60).min(latest);
+        while at <= latest && !frames.contains(&at) {
+            at += 1;
+        }
+        if at > latest {
+            at = (0..=latest).rev().find(|f| frames.contains(f)).unwrap_or(0);
+        }
+        let Some((mut m, entry)) = entry_at::<M>(rom, press_start, at, *routine)? else {
+            continue;
+        };
+        if m.code_at(&entry, *routine, code.len()) != *code {
+            note(format!("  NSF routine {routine:04x}: the game's code there differs"));
+            continue;
+        }
+        if run_alone(&mut m, &entry, VERIFY_FRAMES, calls).is_none() {
+            note(format!("  NSF routine {routine:04x}: crashed when run alone"));
+            continue;
+        }
+        note(format!("  NSF routine {routine:04x}: the game's own, {calls} a frame"));
+        found.push((at, *routine, calls));
+    }
+    if log.total_writes < 50 || found.len() == MAX_PLAYS {
         return Ok(found);
     }
     // Routines most writes happened inside, innermost first.
@@ -473,11 +540,7 @@ fn find_play<M: Machine>(
         })
         .collect();
     candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let first_sound = log
-        .frames
-        .iter()
-        .position(|f| f.iter().any(|w| !M::incidental(w)))
-        .unwrap_or(0) as u32;
+    candidates.retain(|c| !found.iter().any(|f| f.1 == c.0));
     // Routines run once a frame first: a routine entered a few times a frame is often a
     // helper of the real one (a channel's update), which plays the boot music alone but not
     // a new song. Timer-driven routines get their turn after.
@@ -505,7 +568,6 @@ fn find_play<M: Machine>(
             ));
             continue;
         }
-        let latest = BOOT_FRAMES - VERIFY_FRAMES as u32 - 1;
         let mut at = (first_sound + 60).min(latest);
         while at <= latest && !frames.contains(&at) {
             at += 1;
@@ -679,6 +741,7 @@ fn apply<M: Machine>(m: &mut M, trigger: &Trigger, call: Option<&M::Entry>, v: u
             true
         }
         Trigger::Call { reg, .. } => call.is_some_and(|e| m.call_with(e, *reg, v)),
+        Trigger::Jump { addr, reg } => call.is_some_and(|e| m.call_at(e, *addr, *reg, v)),
     }
 }
 
@@ -795,6 +858,16 @@ pub fn search_logged<M: Machine>(
     rom: &[u8],
     note: &mut dyn FnMut(String),
 ) -> Result<Found, String> {
+    search_hinted::<M>(rom, None, note)
+}
+
+/// [`search_logged`], pointed at the game's sound code by `hint` (from an original audio
+/// format file that matched the ROM) when there is one.
+pub fn search_hinted<M: Machine>(
+    rom: &[u8],
+    hint: Option<&Hint>,
+    note: &mut dyn FnMut(String),
+) -> Result<Found, String> {
     // The furthest the search got, over both boots.
     let mut why = (0, "the game played no music in its first 15 seconds");
     let started = std::time::Instant::now();
@@ -822,7 +895,7 @@ pub fn search_logged<M: Machine>(
             log.total_writes,
             busiest.join(" ")
         ));
-        let plays = find_play::<M>(rom, press_start, &log, note)?;
+        let plays = find_play::<M>(rom, press_start, &log, hint, note)?;
         if plays.is_empty() && log.total_writes >= 50 && why.0 < 1 {
             why = (1, "the routine that plays the music wasn't found");
         }
@@ -834,7 +907,24 @@ pub fn search_logged<M: Machine>(
             let Some((base, entry)) = entry_at::<M>(rom, press_start, at, play)? else {
                 continue;
             };
-            let candidates = trigger_candidates::<M>(rom, press_start, play)?;
+            let mut candidates = trigger_candidates::<M>(rom, press_start, play)?;
+            // The NSF's song-start routines that are the game's own code, tried first.
+            if let Some(h) = hint {
+                let mut probe = base.clone();
+                let jumps: Vec<Trigger> = h
+                    .start
+                    .iter()
+                    .filter(|(a, code)| probe.code_at(&entry, *a, code.len()) == *code)
+                    .flat_map(|(a, _)| (0..M::REGISTERS).map(move |reg| Trigger::Jump { addr: *a, reg }))
+                    .collect();
+                note(format!(
+                    "NSF ({} songs): {} of {} song-start routines are the game's own code",
+                    h.songs,
+                    jumps.len() / M::REGISTERS.max(1) as usize,
+                    h.start.len()
+                ));
+                candidates.splice(0..0, jumps);
+            }
             note(format!(
                 "sound routine {play:04x} (frame {at}); {} ways to start a song to try",
                 candidates.len()
@@ -862,6 +952,7 @@ pub fn search_logged<M: Machine>(
                             None => continue,
                         }
                     }
+                    Trigger::Jump { .. } => Some(entry.clone()),
                     Trigger::Byte(_) => None,
                 };
                 let mut seen = HashSet::new();
@@ -1064,6 +1155,7 @@ impl<M: Machine> Song<M> {
                 call_entry::<M>(rom, recipe.press_start, *addr, *nth)?
                     .ok_or("the game no longer calls its song routine")?,
             ),
+            Trigger::Jump { .. } => Some(play.clone()),
             Trigger::Byte(_) => None,
         };
         if !apply(&mut m, &recipe.trigger, call.as_ref(), v) {
@@ -1179,6 +1271,15 @@ mod tests {
             calls: 6,
         };
         assert_eq!(r.encode(), "5@0@8000@m07f0@6");
+        assert_eq!(Recipe::decode(&r.encode()), Some(r));
+        let r = Recipe {
+            boot_frames: 60,
+            press_start: 1,
+            play: 0xC081,
+            trigger: Trigger::Jump { addr: 0xA06B, reg: 0 },
+            calls: 1,
+        };
+        assert_eq!(r.encode(), "60@1@c081@ja06b.0");
         assert_eq!(Recipe::decode(&r.encode()), Some(r));
     }
 }
