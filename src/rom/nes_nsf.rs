@@ -851,12 +851,17 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
     let mut runs: Vec<_> = m.runs.iter().collect();
     runs.sort_by_key(|r| std::cmp::Reverse(r.len));
     for r in runs {
-        let Some(a) = cpu_of(&m.header, r.data) else { continue };
-        if let Some((_, w, base)) = game_place(m, prg_len, r.data, a) {
-            if w > 0 && !set[w] {
-                windows[w] = base;
-                set[w] = true;
+        // Every 8 KB window the run covers, from where each part of it starts.
+        let mut d = r.data;
+        while d < r.data + r.len {
+            let Some(a) = cpu_of(&m.header, d) else { break };
+            if let Some((_, w, base)) = game_place(m, prg_len, d, a) {
+                if w > 0 && !set[w] {
+                    windows[w] = base;
+                    set[w] = true;
+                }
             }
+            d += 0x2000 - (a as usize & 0x1FFF);
         }
     }
     nes.set_windows(windows);
