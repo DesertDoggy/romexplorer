@@ -2288,6 +2288,12 @@ async fn catalog_file(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult
     Ok(Json(api::catalog::file(&s.app, id).await?))
 }
 
+/// The file page's "Rescan this file": a scan job for this one file (`FileScanRequest::file_id`).
+async fn catalog_file_rescan(State(s): State<Shared>, Path(id): Path<u64>) -> std::result::Result<(StatusCode, Json<api::jobs::JobEnqueued>), ApiError> {
+    let job_id = api::catalog::rescan_file(&s.app, id).await?;
+    Ok((StatusCode::ACCEPTED, Json(api::jobs::JobEnqueued { job_id })))
+}
+
 #[derive(Deserialize)]
 struct LookupQuery {
     algorithm: Option<String>,
@@ -2834,6 +2840,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/catalog/contents/{id}", get(catalog_content))
         .route("/api/v1/catalog/files", get(catalog_files))
         .route("/api/v1/catalog/files/{id}", get(catalog_file))
+        .route("/api/v1/catalog/files/{id}/rescan", post(catalog_file_rescan))
         .route("/api/v1/catalog/lookup", get(catalog_lookup))
         .route("/api/v1/providers", get(providers_list))
         .route("/api/v1/providers/credentials", get(providers_credentials).put(providers_credentials_put))

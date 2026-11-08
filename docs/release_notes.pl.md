@@ -80,6 +80,11 @@ zapasową przed podmianą wersji.
 **Połączone wydania**
 - Płyty jednej gry wymienione osobno (płyty z pakietu, płyta bonusowa) można połączyć poleceniem „Połącz w jedno wydanie”. Na liście jest jedno wydanie dla wszystkich, a skopiowanie go kopiuje wszystkie płyty. Na stronie wydania można jedno odłączyć.
 
+**Skanowanie**
+- Strona pliku ma „Przeskanuj ten plik ponownie”. Plik jest czytany ponownie z resztą swojego ROM-u,
+  a jego gra od razu dopasowana do wydania.
+- Strona pliku pokazuje wydanie i tytuł, z którymi plik jest powiązany.
+
 ## Poprawki błędów
 
 - Niektóre gry nie znajdowały dopasowania w IGDB: nazwa z łącznikiem wewnątrz słowa nie pasowała do pisowni IGDB, a synchronizacja IGDB dla SNES i NES pomijała gry wydane tylko w Japonii.
@@ -93,6 +98,8 @@ zapasową przed podmianą wersji.
 - Karta „inna gra w środku” traktowała wydanie z numerem przed nazwą („0743 - ...”) jako inną grę.
 - Zadania takie jak audyt scaleń pokazywały niewiele ze swojego postępu. Teraz pokazują go
   szczegółowo.
+- Plik wymieniony w DAT mógł zostać bez wydania i tytułu, gdy DAT dodano po skanowaniu albo podfolder
+  zeskanowano po folderze nad nim.
 
 # romexplorer 0.1.8 (alpha)
 

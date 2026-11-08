@@ -84,6 +84,11 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 **Zusammengefasste Veröffentlichungen**
 - Getrennt gelistete Discs eines Spiels (die Discs eines Bundles, eine Bonus-Disc) lassen sich mit „Zu einer Veröffentlichung zusammenfassen“ zusammenlegen. Gelistet wird eine Veröffentlichung für alle, und beim Kopieren werden alle Discs kopiert. Auf der Seite der Veröffentlichung lässt sich eine wieder abtrennen.
 
+**Scan**
+- Die Seite einer Datei hat „Diese Datei neu scannen“. Die Datei wird mit dem Rest ihres ROMs neu
+  gelesen und ihr Spiel sofort einem Release zugeordnet.
+- Die Seite einer Datei zeigt das Release und den Titel, mit denen die Datei verknüpft ist.
+
 ## Fehlerbehebungen
 
 - Manche Spiele fanden keinen IGDB-Treffer: Ein Name mit Bindestrich innerhalb eines Wortes passte nicht zur Schreibweise bei IGDB, und die IGDB-Synchronisierung für SNES und NES ließ Spiele aus, die nur in Japan erschienen.
@@ -99,6 +104,8 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   („0743 - ...“) für ein anderes Spiel.
 - Jobs wie die Zusammenführungsprüfung zeigten wenig von ihrem Fortschritt. Jetzt zeigen sie ihn
   im Detail.
+- Eine Datei, die ein DAT listet, konnte ohne Release und Titel bleiben, wenn das DAT nach dem Scan
+  hinzukam oder ein Unterordner nach dem Ordner darüber gescannt wurde.
 
 # romexplorer 0.1.8 (alpha)
 

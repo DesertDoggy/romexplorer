@@ -83,6 +83,11 @@ de segurança antes de substituir uma versão.
 **Lançamentos combinados**
 - Os discos de um jogo listados em separado (os de um pack, um disco bónus) podem ser juntos com «Combinar num só lançamento». É listado um lançamento para todos, e copiá-lo copia todos os discos. Na página do lançamento é possível separar um.
 
+**Análise**
+- A página de um ficheiro tem «Voltar a analisar este ficheiro». Lê o ficheiro de novo com o resto da
+  sua ROM e faz corresponder logo o seu jogo a um lançamento.
+- A página de um ficheiro mostra o lançamento e o título a que está ligado.
+
 ## Correções
 
 - Alguns jogos não encontravam correspondência no IGDB: um nome com hífen dentro de uma palavra não correspondia à grafia do IGDB, e a sincronização do IGDB para SNES e NES ignorava os jogos lançados só no Japão.
@@ -97,6 +102,8 @@ de segurança antes de substituir uma versão.
   («0743 - ...»).
 - Tarefas como a auditoria de fusões mostravam pouco do seu progresso. Agora mostram-no em
   detalhe.
+- Um ficheiro listado num DAT podia ficar sem lançamento nem título, quando o DAT era adicionado depois
+  da análise ou uma subpasta era analisada depois da pasta acima.
 
 # romexplorer 0.1.8 (alpha)
 
