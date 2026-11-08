@@ -424,7 +424,9 @@ pub enum Op {
     /// A byte the file's code left on the stack for the game's routine (the next call) to
     /// pull.
     Push(u8),
-    Call { addr: u16, a: u8, x: u8, y: u8 },
+    /// `src`: 1 + where in the file's data the routine starts (0: not known), to find it in
+    /// the ROM.
+    Call { addr: u16, a: u8, x: u8, y: u8, src: u32 },
 }
 
 /// A game's music map, from a matched NSF and the ROM: the NSF's needed data as ROM ranges,
@@ -491,7 +493,8 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
                 if let Some((_, s)) = target.filter(|t| t.1 > cpu.s) {
                     ops.extend((cpu.s as u16 + 1..=s as u16).rev().map(|i| Op::Push(p.ram[0x100 | i as usize])));
                 }
-                ops.push(Op::Call { addr: at, a: cpu.a, x: cpu.x, y: cpu.y });
+                let src = at.checked_sub(0x6000).and_then(|i| p.src.get(i as usize)).copied().unwrap_or(0);
+                ops.push(Op::Call { addr: at, a: cpu.a, x: cpu.x, y: cpu.y, src });
                 in_game = Some(cpu.calls.len());
             }
         }
@@ -525,7 +528,7 @@ fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], shift: i32) -> bool {
         match *op {
             Op::Poke(a, v) => p.write(a, v),
             Op::Push(v) => pushed.push(v),
-            Op::Call { addr, a, x, y } => {
+            Op::Call { addr, a, x, y, .. } => {
                 cpu.y = y;
                 if !p.call_with(cpu, (addr as i32 + shift) as u16, a, x, &std::mem::take(&mut pushed), &mut |_| {}) {
                     return false;
@@ -797,6 +800,111 @@ pub fn map_check(nsf: &[u8], m: &Map, prg: &[u8], frames: usize, fill: Fill) -> 
         .collect()
 }
 
+/// Where the game has the file's byte at data offset `data` (the file's CPU address `addr`):
+/// its CPU address (in the file's window, or the next one), the 8 KB window, and the ROM
+/// offset that window reads from. None when no run holds it.
+fn game_place(m: &Map, prg_len: usize, data: usize, addr: u16) -> Option<(u16, usize, usize)> {
+    let r = m.runs.iter().find(|r| (r.data..r.data + r.len).contains(&data))?;
+    let rom = r.rom + (data - r.data);
+    let mut g = (addr & 0xE000) as i32 | (rom & 0x1FFF) as i32;
+    if g - addr as i32 > 0x1000 {
+        g -= 0x2000;
+    } else if addr as i32 - g > 0x1000 {
+        g += 0x2000;
+    }
+    if !(0x6000..0x10000).contains(&g) || rom >= prg_len {
+        return None;
+    }
+    Some((g as u16, (g as usize - 0x6000) >> 13, rom & !0x1FFF))
+}
+
+/// Track `song` played on the game's own board: the user's ROM in its cartridge (its own
+/// bank switching), the game's code where the ROM has it, and the script's calls moved to
+/// where the game has each routine. For a file made from another version of the game, whose
+/// addresses differ area by area. None when the board isn't supported or the script fails.
+pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+    use super::music_search::Machine;
+    let script = m.tracks.get(song as usize)?.as_ref()?;
+    let mut nes = super::nes_music::Nes::boot(rom).ok()?;
+    let prg_len = super::nes_cart::parse(rom).ok()?.prg.len();
+    // The windows the runs ask for, the longest first; the rest as the board starts.
+    let mut windows = nes.windows();
+    let mut set = [false; 5];
+    let mut runs: Vec<_> = m.runs.iter().collect();
+    runs.sort_by_key(|r| std::cmp::Reverse(r.len));
+    for r in runs {
+        let Some(a) = cpu_of(&m.header, r.data) else { continue };
+        if let Some((_, w, base)) = game_place(m, prg_len, r.data, a) {
+            if w > 0 && !set[w] {
+                windows[w] = base;
+                set[w] = true;
+            }
+        }
+    }
+    nes.set_windows(windows);
+    let budget = 400_000;
+    let mut run = |nes: &mut super::nes_music::Nes, ops: &[Op]| -> bool {
+        let mut pushed = Vec::new();
+        for op in ops {
+            match *op {
+                // The file's own bank registers: the board has its own.
+                Op::Poke(0x5FF6..=0x5FFF, _) => {}
+                Op::Poke(a @ (0x0000..=0x1FFF | 0x4000..=0x4017), v) => nes.write_bus(a, v),
+                Op::Poke(a @ 0x6000..=0x7FFF, v) => nes.poke(a as u32, v),
+                Op::Poke(..) => {}
+                Op::Push(v) => pushed.push(v),
+                Op::Call { addr, a, x, y, src } => {
+                    let place = src.checked_sub(1).and_then(|d| game_place(m, prg_len, d as usize, addr));
+                    let at = match place {
+                        Some((g, w, base)) => {
+                            let mut win = nes.windows();
+                            if w > 0 {
+                                win[w] = base;
+                            }
+                            nes.set_windows(win);
+                            g
+                        }
+                        None => addr,
+                    };
+                    if !nes.run_routine(at, [a, x, y], &std::mem::take(&mut pushed), budget) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    };
+    nes.write_bus(0x4015, 0x0F);
+    if !run(&mut nes, script) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(frames);
+    let mut first = nes.take_sound();
+    for _ in 0..frames {
+        if !run(&mut nes, &m.play) {
+            break;
+        }
+        let mut f = std::mem::take(&mut first);
+        f.append(&mut nes.take_sound());
+        out.push(f);
+    }
+    Some(out)
+}
+
+/// [`map_check`] on the game's own board ([`cart_track_writes`]).
+pub fn cart_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<f64>> {
+    (0..m.header.songs)
+        .map(|t| {
+            let real = melody(&track_writes(nsf, t, frames)?);
+            if real.len() < music_search::MIN_MELODY {
+                return None;
+            }
+            let mine = cart_track_writes(m, rom, t, frames).map(|w| melody(&w)).unwrap_or_default();
+            Some(alike(&real, &mine))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,7 +1012,7 @@ mod tests {
         let prg = rom(0);
         let m = map(&f, &prg).unwrap();
         // Track 1's script calls the game's start routine with A = 2, as the file's init does.
-        assert!(m.tracks[1].as_ref().unwrap().iter().any(|o| *o == Op::Call { addr: 0x8040, a: 2, x: 0, y: 0 }));
+        assert!(m.tracks[1].as_ref().unwrap().iter().any(|o| matches!(o, Op::Call { addr: 0x8040, a: 2, x: 0, y: 0, .. })));
         let check = map_check(&f, &m, &prg, 60, Fill::Zeros);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
         // The same from a version with the sound code $2C further on: run where it sits.
@@ -912,6 +1020,12 @@ mod tests {
         let m = map(&f, &prg).unwrap();
         assert_eq!(m.moved.as_ref().map(|m| m.0), Some(0x2C));
         let check = map_check(&f, &m, &prg, 60, Fill::Zeros);
+        assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
+        // And on the game's own board, from the ROM as a cartridge.
+        let mut ines = b"NES\x1a\x01\x00\x00\x00".to_vec();
+        ines.resize(16, 0);
+        ines.extend_from_slice(&prg);
+        let check = cart_check(&f, &m, &ines, 60);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
     }
 
@@ -931,7 +1045,7 @@ mod tests {
         let mut prg = vec![0u8; 0x4000];
         prg[0x1000..0x1000 + 0x90].copy_from_slice(&f[0x80 + 0x70..0x80 + 0x100]);
         let m = map(&f, &prg).unwrap();
-        assert_eq!(m.play, vec![Op::Call { addr: 0x8070, a: 1, x: 0, y: 0 }]);
+        assert!(matches!(m.play[..], [Op::Call { addr: 0x8070, a: 1, x: 0, y: 0, .. }]), "{:?}", m.play);
         let t = m.tracks[2].as_ref().unwrap();
         assert_eq!(t[0], Op::Poke(0x110, 2));
         assert!(t.contains(&Op::Poke(0x02, 1)) && t.contains(&Op::Poke(0x00, 1)), "{t:?}");
@@ -974,7 +1088,7 @@ mod tests {
         prg[0x40..0x40 + game.len()].copy_from_slice(&game);
         let m = map(&f, &prg).unwrap();
         let t = m.tracks[2].as_ref().unwrap();
-        assert_eq!(t[..2], [Op::Push(2), Op::Call { addr: 0x8041, a: 2, x: 0, y: 0 }], "{t:?}");
+        assert!(matches!(t[..2], [Op::Push(2), Op::Call { addr: 0x8041, a: 2, x: 0, y: 0, .. }]), "{t:?}");
         let (mut p, _, _) = load(&f).unwrap();
         let mut cpu = Cpu::with(0, 0xFD);
         assert!(replay(&mut p, &mut cpu, t, 0));
