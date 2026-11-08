@@ -326,7 +326,16 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         *t.reasons.entry("the NSF doesn't run".into()).or_default() += 1;
         return;
     };
-    let check = nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES);
+    let check = nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, nes_nsf::Fill::Zeros);
+    // Why tracks play wrong: the gaps filled with the game's own bytes, or with the file's.
+    let right_with = |fill| {
+        nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, fill)
+            .iter()
+            .flatten()
+            .filter(|&&a| a >= MAP_RIGHT)
+            .count()
+    };
+    let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
     let with_melody = check.iter().flatten().count();
     let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     let no_script = m.tracks.iter().filter(|s| s.is_none()).count();
@@ -339,7 +348,7 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         .take(12)
         .collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps){}",
         started.elapsed().as_secs_f32(),
         m.header.songs,
         m.runs.len(),
@@ -350,6 +359,8 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
     );
     t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
     t.checked[3] += with_melody;
     t.checked[4] += right;
     if with_melody > 0 && right == with_melody {
@@ -751,9 +762,14 @@ fn main() {
             t.with_music as f64 * 100.0 / t.games.max(1) as f64,
             t.songs
         );
-        if t.checked[0] > 0 {
+        if t.checked[0] > 0 && o.mapcheck {
             println!(
-                "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found (map check: tracks right)",
+                "  map check in {} games: {} of {} tracks played right from the ROM; with the gaps from the ROM {}, from the file {}",
+                t.checked[0], t.checked[4], t.checked[3], t.checked[1], t.checked[2]
+            );
+        } else if t.checked[0] > 0 {
+            println!(
+                "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found",
                 t.checked[0], t.checked[2], t.checked[1], t.checked[4], t.checked[3]
             );
         }

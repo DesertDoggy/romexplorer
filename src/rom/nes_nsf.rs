@@ -508,21 +508,49 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
     Some(Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks })
 }
 
-/// The file's data as a map rebuilds it from the ROM: its runs, and nothing elsewhere.
-fn rebuilt(m: &Map, prg: &[u8]) -> Vec<u8> {
-    let mut data = vec![0u8; m.data_len];
+/// How a map fills the file's data between its runs (for finding why a track plays wrong).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill<'a> {
+    /// Nothing: zeros.
+    Zeros,
+    /// A gap between two runs at the same distance in the ROM from the file: the ROM's bytes
+    /// there (the game's own, where the file's author patched a few).
+    Bridged,
+    /// The file's own bytes (an oracle: what the map would play if it held them).
+    File(&'a [u8]),
+}
+
+/// The file's data as a map rebuilds it from the ROM: its runs, and the gaps as `fill` says.
+fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
+    let mut data = match fill {
+        Fill::File(d) => d.to_vec(),
+        _ => vec![0u8; m.data_len],
+    };
+    data.resize(m.data_len, 0);
     for r in &m.runs {
         if let Some(src) = prg.get(r.rom..r.rom + r.len) {
             data[r.data..r.data + r.len].copy_from_slice(src);
+        }
+    }
+    if fill == Fill::Bridged {
+        for w in m.runs.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let gap = a.data + a.len..b.data;
+            if b.data > a.data + a.len && b.rom as isize - b.data as isize == a.rom as isize - a.data as isize {
+                let from = a.rom + a.len;
+                if let Some(src) = prg.get(from..from + gap.len()) {
+                    data[gap].copy_from_slice(src);
+                }
+            }
         }
     }
     data
 }
 
 /// Track `song` played from the ROM by its map: each frame's sound writes.
-pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize, fill: Fill) -> Option<Vec<Vec<Write>>> {
     let script = m.tracks.get(song as usize)?.as_ref()?;
-    let data = rebuilt(m, prg);
+    let data = rebuilt(m, prg, fill);
     let mut p = player(&m.header, &data)?;
     let mut cpu = Cpu::with(0, 0xFD);
     p.write(0x4015, 0x0F);
@@ -544,14 +572,14 @@ pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize) -> Option<
 
 /// How a map plays the NSF's tracks: per track, how alike its melody is to the NSF's own
 /// (None for a track whose script didn't record, or that has no melody in the NSF either).
-pub fn map_check(nsf: &[u8], m: &Map, prg: &[u8], frames: usize) -> Vec<Option<f64>> {
+pub fn map_check(nsf: &[u8], m: &Map, prg: &[u8], frames: usize, fill: Fill) -> Vec<Option<f64>> {
     (0..m.header.songs)
         .map(|t| {
             let real = melody(&track_writes(nsf, t, frames)?);
             if real.is_empty() {
                 return None;
             }
-            let mine = map_track_writes(m, prg, t, frames).map(|w| melody(&w)).unwrap_or_default();
+            let mine = map_track_writes(m, prg, t, frames, fill).map(|w| melody(&w)).unwrap_or_default();
             Some(alike(&real, &mine))
         })
         .collect()
@@ -642,7 +670,7 @@ mod tests {
         let m = map(&f, &prg).unwrap();
         // Track 1's script calls the game's start routine with A = 2, as the file's init does.
         assert!(m.tracks[1].as_ref().unwrap().iter().any(|o| *o == Op::Call { addr: 0x8040, a: 2, x: 0, y: 0 }));
-        let check = map_check(&f, &m, &prg, 60);
+        let check = map_check(&f, &m, &prg, 60, Fill::Zeros);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
     }
 
