@@ -91,6 +91,17 @@ pub trait Machine: Clone + Sized {
     fn frame_length(&self) -> u32;
 }
 
+/// What a matched original audio format file (an NSF) says about where a game's sound code is: its play routine and its
+/// song-start routine (each with the routines they call), by address with their first code
+/// bytes, and its song count. Only addresses are taken from it; the music still plays
+/// from the ROM.
+#[derive(Debug, Clone, Default)]
+pub struct Hint {
+    pub play: Vec<(u32, Vec<u8>)>,
+    pub start: Vec<(u32, Vec<u8>)>,
+    pub songs: u8,
+}
+
 /// How the game is handed a song number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
