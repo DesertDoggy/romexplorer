@@ -267,6 +267,25 @@ fn original_hint(
             // On equal names the better match, and among those the first listed.
             n(a).cmp(&n(b)).then(a.1.total_cmp(&b.1)).then(std::cmp::Ordering::Greater)
         })?;
+    // A set of the game's sound effects alone ("(SFX)") gives way to the same game's music
+    // set, however much less of the ROM that one matched.
+    let sfx = |p: &Path| p.to_string_lossy().to_lowercase().contains("(sfx)");
+    let title = |p: &Path| {
+        let mut w = words(p);
+        w.retain(|w| !matches!(w.as_str(), "sfx" | "emu"));
+        w
+    };
+    let (set, share) = match sfx(set) {
+        true => matches
+            .iter()
+            .filter(|m| !sfx(&m.0) && title(&m.0) == title(set))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|m| (m.0.as_path(), &m.1))
+            // Matched too little to be listed: still the same game's music.
+            .or_else(|| lib.set_paths().find(|p| !sfx(p) && title(p) == title(set) && p.parent() == set.parent()).map(|p| (p, &0.0)))
+            .unwrap_or((set.as_path(), share)),
+        false => (set.as_path(), share),
+    };
     let hint = rip_sets::first_with_magic(set, magic).and_then(|d| Some((read(&d)?, d)));
     if verbose {
         println!(
