@@ -1196,7 +1196,9 @@ impl Worker {
             // which ranks candidates.
             let mut best: Option<(cache::CachedEntry, cache::Confidence)> = None;
             if provider == Provider::Igdb && platform.is_some() {
-                let rows = sqlx::query("SELECT CAST(provider_id AS CHAR) AS provider_id, title, raw_response_path FROM igdb_games WHERE deleted = FALSE AND title = ? LIMIT 20").bind(&name).fetch_all(pool).await?;
+                // The name as written and with in-word hyphens joined ("Fu-Ga" -> "FuGa").
+                let joined = crate::database::matching::util::join_word_hyphens(&name);
+                let rows = sqlx::query("SELECT CAST(provider_id AS CHAR) AS provider_id, title, raw_response_path FROM igdb_games WHERE deleted = FALSE AND title IN (?, ?) LIMIT 20").bind(&name).bind(&joined).fetch_all(pool).await?;
                 let local: Vec<cache::CachedEntry> = rows
                     .iter()
                     .map(|r| Ok(cache::CachedEntry { provider, provider_id: r.try_get("provider_id")?, title: r.try_get("title")?, raw_path: r.try_get::<Option<String>, _>("raw_response_path")?.map(std::path::PathBuf::from) }))
@@ -1277,7 +1279,7 @@ impl Worker {
     /// main one, where only the main name was compared before and a DAT's Japanese title
     /// fell through to the first search result. Costs at most a couple of list requests.
     async fn igdb_other_name_hit(&self, candidates: &[cache::CachedEntry], name: &str) -> Result<Option<cache::CachedEntry>, DatabaseError> {
-        let key = crate::database::matching::util::norm_key(name);
+        let key = crate::database::matching::util::loose_key(name);
         if key.is_empty() || candidates.is_empty() {
             return Ok(None);
         }
@@ -1294,7 +1296,7 @@ impl Worker {
             log::warn!("igdb: resolving other names for \"{name}\" failed: {e}");
             return Ok(None);
         }
-        Ok(games.into_iter().find(|(_, g)| names.other_names(g).into_iter().any(|n| crate::database::matching::util::norm_key(n) == key)).map(|(c, _)| c.clone()))
+        Ok(games.into_iter().find(|(_, g)| names.other_names(g).into_iter().any(|n| crate::database::matching::util::loose_key(n) == key)).map(|(c, _)| c.clone()))
     }
 
     /// Metadata + art for a freshly linked entry, from what the search already cached (a
