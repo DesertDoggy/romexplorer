@@ -84,6 +84,11 @@ Haz una copia de seguridad antes de sustituir una versión.
 **Lanzamientos combinados**
 - Los discos de un mismo juego listados por separado (los de un pack, un disco extra) se pueden unir con «Combinar en un solo lanzamiento». Se lista un lanzamiento para todos y al copiarlo se copian todos los discos. Desde la página del lanzamiento se puede separar uno.
 
+**Escaneo**
+- La página de un archivo tiene «Volver a escanear este archivo». Lo lee de nuevo con el resto de su
+  ROM y empareja su juego con un lanzamiento al momento.
+- La página de un archivo muestra el lanzamiento y el título a los que está vinculado.
+
 ## Correcciones
 
 - Algunos juegos no encontraban coincidencia en IGDB: un nombre con un guion dentro de una palabra no coincidía con la grafía de IGDB, y la sincronización de IGDB para SNES y NES omitía los juegos lanzados solo en Japón.
@@ -98,6 +103,8 @@ Haz una copia de seguridad antes de sustituir una versión.
 - La tarjeta «otro juego dentro» tomaba por otro juego un lanzamiento con un número delante del
   nombre («0743 - ...»).
 - Tareas como la auditoría de fusiones mostraban poco de su progreso. Ahora lo muestran en detalle.
+- Un archivo que lista un DAT podía quedarse sin lanzamiento ni título, si el DAT se añadía después
+  del escaneo o una subcarpeta se escaneaba después de la carpeta superior.
 
 # romexplorer 0.1.8 (alpha)
 

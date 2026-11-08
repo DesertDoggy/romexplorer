@@ -84,6 +84,11 @@ aggiornamento. Fai un backup prima di sostituire una build.
 **Uscite unite**
 - I dischi di un gioco elencati separatamente (quelli di un bundle, un disco bonus) si possono unire con «Unisci in un'unica uscita». Viene elencata un'uscita per tutti e copiandola si copiano tutti i dischi. Dalla pagina dell'uscita se ne può separare uno.
 
+**Scansione**
+- La pagina di un file ha «Riscansiona questo file». Rilegge il file con il resto della sua ROM e
+  abbina subito il suo gioco a un'uscita.
+- La pagina di un file mostra l'uscita e il titolo a cui è collegato.
+
 ## Correzioni
 
 - Alcuni giochi non trovavano corrispondenza su IGDB: un nome con un trattino dentro una parola non corrispondeva alla grafia di IGDB, e la sincronizzazione IGDB di SNES e NES saltava i giochi usciti solo in Giappone.
@@ -99,6 +104,8 @@ aggiornamento. Fai un backup prima di sostituire una build.
   al nome («0743 - ...»).
 - Attività come l'audit delle unioni mostravano poco del loro avanzamento. Ora lo mostrano in
   dettaglio.
+- Un file elencato da un DAT poteva restare senza uscita né titolo, se il DAT veniva aggiunto dopo la
+  scansione o una sottocartella veniva scansionata dopo la cartella superiore.
 
 # romexplorer 0.1.8 (alpha)
 

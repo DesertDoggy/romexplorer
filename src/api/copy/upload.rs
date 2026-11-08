@@ -120,7 +120,7 @@ async fn resolve_and_scan(target: &Target, mounts: &[mount::Resolved], dir: &Pat
 
     // New-only: the server's other files are its own business, and a full rescan of a
     // collection because a client added one game is a cost the user did not ask for.
-    let request = JobRequest::FileScan(FileScanRequest { directory_id, mode: FileScanMode::NewOnly, platform: PlatformSelect::All, hash_match: None });
+    let request = JobRequest::FileScan(FileScanRequest { directory_id, mode: FileScanMode::NewOnly, platform: PlatformSelect::All, hash_match: None, file_id: None });
     let url = format!("{}/api/v1/jobs", target.base_url);
     let response = authed(target.peer.http.post(&url), target).json(&request).send().await.map_err(|e| Error::unavailable(format!("{}: {e}", target.name)))?;
     if !response.status().is_success() {

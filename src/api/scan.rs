@@ -103,6 +103,29 @@ pub struct ScanSummary {
     /// Roms with a replaced file, for the release-link check at the end of the scan.
     #[serde(skip)]
     replaced_roms: Vec<u64>,
+    /// A rescan of one file (`FileScanRequest::file_id`): what it read and what it linked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_rescan: Option<FileRescan>,
+}
+
+/// What "Rescan this file" did beyond the scan's counts.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct FileRescan {
+    pub file: String,
+    /// What was read again: the rom the file belongs to (its sheet, its folder, its archive),
+    /// or the file alone when it belongs to none.
+    pub read: Vec<String>,
+    /// The games those roms are in.
+    pub games: u64,
+    /// Games this run linked: "game #id → release (title)".
+    pub linked: Vec<String>,
+    /// Games that were linked already, the same way.
+    pub already_linked: Vec<String>,
+    /// Games no DAT line or serial matched.
+    pub unmatched: u64,
+    /// The DAT releases listing these files' bytes or their members': with a game still
+    /// unlinked, which release it should have been.
+    pub listed_by: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -717,6 +740,25 @@ pub(crate) async fn upsert_local_file(pool: &MySqlPool, path: &str, content_id: 
     Ok(result.last_insert_id())
 }
 
+/// Moves the live files under `dir` that are recorded with a directory above it (a scan of
+/// that folder got there first) to `dir`, the most specific configured directory they lie in.
+/// Returns how many moved.
+async fn adopt_files_below(pool: &MySqlPool, dir: &Directory) -> Result<u64> {
+    let all = db_dirs::list(pool, true).await?;
+    let above: Vec<u64> = all.iter().filter(|d| d.id != dir.id && !db_dirs::same_path(&d.path, &dir.path) && db_dirs::path_contains(&d.path, &dir.path)).map(|d| d.id).collect();
+    if above.is_empty() {
+        return Ok(0);
+    }
+    let list = above.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let rows: Vec<(u64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT id, path FROM local_files WHERE deleted = FALSE AND directory_id IN ({list})"))).fetch_all(pool).await?;
+    let ours: Vec<u64> = rows.into_iter().filter(|(_, path)| db_dirs::path_contains(&dir.path, path)).map(|(id, _)| id).collect();
+    for part in ours.chunks(1000) {
+        let ids = part.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_files SET directory_id = ? WHERE id IN ({ids})"))).bind(dir.id).execute(pool).await?;
+    }
+    Ok(ours.len() as u64)
+}
+
 async fn local_file_is_live(pool: &MySqlPool, path: &str) -> Result<bool> {
     let row = sqlx::query("SELECT deleted FROM local_files WHERE path_hash = ?").bind(sha1_hex(path)).fetch_optional(pool).await?;
     Ok(matches!(row, Some(r) if !r.try_get::<bool, _>("deleted").unwrap_or(true)))
@@ -1012,8 +1054,19 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     settings::apply_chd_reader(&app.pool).await?;
     settings::apply_scan_pkg_titles(&app.pool).await?;
     let _ = crate::rom::chd_info::take_check_report();
+    if let Some(file_id) = req.file_id {
+        return rescan_file(app, req, file_id, flags, ra_wanted, progress).await;
+    }
     let mut summary = ScanSummary { mode: req.mode.name().to_string(), directory: dir.path.clone(), ..Default::default() };
 
+    // Files under this directory that a scan of a folder above it recorded are this
+    // directory's from now on: a quick scan skips them as known, a rehash reads only its own
+    // directory's rows, and the hash match after the scan looks only at this directory's --
+    // so left with the folder above, they were never read or matched from here.
+    let adopted = adopt_files_below(&app.pool, &dir).await?;
+    if adopted > 0 {
+        log::info!("scan of {}: took over {adopted} file(s) a scan of a folder above it recorded", dir.path);
+    }
     if req.mode == FileScanMode::Rehash {
         return rehash(app, &dir, forced, flags, summary, progress).await;
     }
@@ -1204,6 +1257,232 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     let message = format!("done: {n} candidate(s), {} hashed, {} skipped, {} error(s){}{chd_note}", summary.files_hashed, summary.skipped_existing, summary.errors.len(), warnings_note(&summary));
     progress.finish(total_bytes, Some(total_bytes), &message, &job_result(&summary)).await;
     Ok(summary)
+}
+
+/// "Rescan this file": reads the rom `file_id` belongs to again (a track reads its sheet, a
+/// folder's file its folder), records it as a scan would, then matches its game(s) to the DATs
+/// on the spot -- by hash, then by serial -- without walking the directory or matching the
+/// rest of it. The result says what was read, what each game is linked to, and which DAT
+/// releases list the bytes, so a game left unlinked shows what it should have matched.
+async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: HashFlags, ra_wanted: bool, progress: &crate::database::jobs::Progress) -> Result<ScanSummary> {
+    let pool = &app.pool;
+    let (path, deleted): (String, bool) = sqlx::query_as("SELECT path, deleted FROM local_files WHERE id = ?").bind(file_id).fetch_optional(pool).await?.ok_or_else(|| Error::not_found(format!("no file {file_id}")))?;
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+    progress.force(0, None, &format!("{name}: finding the rom it belongs to")).await;
+    let effective = db_dirs::resolve(pool, &path).await?;
+    // Recorded under the nearest configured directory, as a scan of that directory would.
+    let dir = match effective.directory.clone() {
+        Some(d) => d,
+        None => load_directory(app, req.directory_id).await?.0,
+    };
+    let forced = match req.platform {
+        PlatformSelect::Id(id) => Platform::from_igdb_id(id),
+        PlatformSelect::All => effective.app_platform_id.and_then(Platform::from_igdb_id),
+    };
+    let as_roms = effective.dir_type.as_deref() != Some("patch");
+    let mut summary = ScanSummary { mode: "file".to_string(), directory: dir.path.clone(), ..Default::default() };
+    let mut rescan = FileRescan { file: path.clone(), ..Default::default() };
+    if !as_roms {
+        summary.warnings.push(format!("{} is a patch directory: its files are recorded but not made into games", dir.path));
+    }
+
+    // What to read: the rom the file is part of, by its main file -- a track alone would be
+    // recorded as a rom of its own. A file that is in no rom is read by itself.
+    let mut mains: Vec<String> = sqlx::query_scalar("SELECT DISTINCT lr.main_path FROM local_rom_files lrf JOIN local_rom lr ON lr.id = lrf.rom_id AND lr.deleted = FALSE WHERE lrf.file_id = ? ORDER BY lr.main_path")
+        .bind(file_id)
+        .fetch_all(pool)
+        .await?;
+    if mains.is_empty() {
+        mains.push(path.clone());
+    }
+    let mut candidates = Vec::new();
+    for main in &mains {
+        match std::fs::metadata(main) {
+            Ok(_) => candidates.push(RomCandidate::of(PathBuf::from(main))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if *main == path && !deleted {
+                    sqlx::query("UPDATE local_files SET deleted = TRUE WHERE id = ?").bind(file_id).execute(pool).await?;
+                    summary.marked_missing += 1;
+                }
+                summary.errors.push(format!("{main}: not on disk"));
+            }
+            Err(e) => summary.errors.push(format!("{main}: {e}")),
+        }
+    }
+    summary.candidates = candidates.len() as u64;
+    rescan.read = candidates.iter().map(|c| c.path.display().to_string()).collect();
+
+    // Read, as a scan reads: in the scan's worker pool, so the bar shows the bytes and the
+    // files being read.
+    let sizes: Vec<u64> = candidates.iter().map(|c| candidate_bytes(&c.path)).collect();
+    let total_bytes: u64 = sizes.iter().sum();
+    let style = super::sheets::style_setting(app).await?;
+    let limits = settings::parallel_files(pool, settings::KEY_SCAN_PARALLEL).await?.resolve_for(PathBuf::from(&dir.path), flags, crate::rom::operation::JobStages::default()).await?;
+    let multiple = Multiple::new(limits);
+    let _stop_on_drop = CancelOnDrop(multiple.clone());
+    let jobs = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let detect = detect_for(c, hint_for(c, forced));
+            (String::new(), Job { input: c.path.clone(), args: scan_args(detect, flags, style, false), size: sizes[i], tag: (i, detect) })
+        })
+        .collect();
+    let wanted = candidates.len();
+    let mut running = multiple.run_in_turn(jobs);
+    let report = RunningReport::start(&multiple, progress, format!("{name}: reading {wanted} rom(s)"));
+    let mut roms: Vec<u64> = Vec::new();
+    let mut finished = 0usize;
+    while let Some(((i, detect), result)) = running.next().await {
+        if multiple.is_cancelled() {
+            return Err(Error::internal("cancelled"));
+        }
+        let candidate = &candidates[i];
+        let main = candidate.path.display().to_string();
+        report.set(format!("{name}: {finished} of {wanted} read"), format!(", recording: {main}"));
+        let outcome = match result {
+            Ok(outcome) => Ok(outcome),
+            Err(SingleError::Input(message)) if candidate.path.is_file() => {
+                if lone_sheet(&candidate.path) {
+                    summary.warnings.push(format!("{main}: none of the sheet's track files are beside it"));
+                } else {
+                    summary.errors.push(format!("{main}: {message}"));
+                }
+                scan_one(candidate.path.clone(), scan_args(detect, flags, style, true)).await
+            }
+            Err(e) => Err(Error::internal(e.to_string())),
+        };
+        let recorded = match outcome {
+            Ok(outcome) => {
+                let platform = outcome.metadata.platform;
+                if platform == Platform::Unknown {
+                    summary.platform_unconfirmed += 1;
+                    if ra_wanted {
+                        summary.ra_hash_skipped_unknown_platform += 1;
+                    }
+                }
+                match record_candidate(app, &dir, candidate, platform, as_roms, &outcome, &mut summary).await {
+                    Ok(Some(rom_id)) => {
+                        roms.push(rom_id);
+                        if ra_wanted && platform != Platform::Unknown {
+                            record_ra_hash(pool, rom_id, &candidate.path, platform, None, &mut summary).await
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Ok(None) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = recorded {
+            summary.errors.push(format!("{main}: {e}"));
+        }
+        finished += 1;
+        report.set(format!("{name}: {finished} of {wanted} read"), format!(", last: {main}"));
+    }
+    report.finish().await;
+    summary.release_links_dropped = drop_unbacked_release_links(pool, &std::mem::take(&mut summary.replaced_roms)).await?;
+    (summary.chd_compared, summary.chd_not_compared, summary.chd_reader_differences) = crate::rom::chd_info::take_check_report();
+
+    // Its games, matched now: by hash (the DAT line covering most of their files), then by
+    // serial for what that leaves.
+    let to_dat = req.hash_match.map_or(true, |h| h.to_dat);
+    let games: Vec<u64> = if roms.is_empty() {
+        Vec::new()
+    } else {
+        let list = roms.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT DISTINCT lgr.game_id FROM local_game_roms lgr JOIN local_game lg ON lg.id = lgr.game_id AND lg.deleted = FALSE WHERE lgr.rom_id IN ({list}) ORDER BY lgr.game_id"))).fetch_all(pool).await?
+    };
+    rescan.games = games.len() as u64;
+    let source_order = settings::release_source_priority(pool).await?;
+    let best_sql = best_release_sql(&source_order);
+    let mut unlinked: Vec<u64> = Vec::new();
+    for (i, &game_id) in games.iter().enumerate() {
+        progress.report(i as u64, Some(games.len() as u64), &format!("{name}: matching game {} of {} to the DATs, {} linked", i + 1, games.len(), rescan.linked.len())).await;
+        let existing: Vec<u64> = sqlx::query_scalar("SELECT release_id FROM local_release_games WHERE game_id = ? ORDER BY release_id").bind(game_id).fetch_all(pool).await?;
+        if !existing.is_empty() {
+            for release_id in existing {
+                rescan.already_linked.push(describe_link(pool, game_id, release_id).await?);
+            }
+            continue;
+        }
+        if !to_dat {
+            unlinked.push(game_id);
+            continue;
+        }
+        match best_release(pool, &best_sql, &source_order, game_id).await? {
+            Some((release_id, platform_id)) => {
+                link_game(pool, game_id, release_id, platform_id).await?;
+                rescan.linked.push(describe_link(pool, game_id, release_id).await?);
+            }
+            None => unlinked.push(game_id),
+        }
+    }
+    if to_dat && !unlinked.is_empty() {
+        let cfg = settings::serial_match(pool).await?;
+        if !cfg.formats.is_empty() {
+            progress.force(0, None, &format!("{name}: serial match for {} game(s) no hash matched", unlinked.len())).await;
+            let (linked, _) = crate::database::serial_match::match_games(pool, &unlinked, &cfg, &source_order).await?;
+            for &game_id in &linked {
+                let releases: Vec<u64> = sqlx::query_scalar("SELECT release_id FROM local_release_games WHERE game_id = ? ORDER BY release_id").bind(game_id).fetch_all(pool).await?;
+                for release_id in releases {
+                    rescan.linked.push(describe_link(pool, game_id, release_id).await?);
+                }
+            }
+            unlinked.retain(|g| !linked.contains(g));
+        }
+    }
+    crate::database::import::confirm_rom_platforms(pool).await?;
+    rescan.unmatched = unlinked.len() as u64;
+
+    // Which DAT releases list these bytes: the file's own, and the other files of its roms.
+    let mut files: Vec<u64> = vec![file_id];
+    if !roms.is_empty() {
+        let list = roms.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        files.extend(sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(format!("SELECT file_id FROM local_rom_files WHERE rom_id IN ({list})"))).fetch_all(pool).await?);
+    }
+    files.sort_unstable();
+    files.dedup();
+    let list = files.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let listed: Vec<(u64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT r.id, r.name FROM local_files f JOIN release_contents rc ON rc.content_id = f.content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE WHERE f.id IN ({list}) \
+         UNION SELECT DISTINCT r.id, r.name FROM local_files f JOIN content_contents cc ON cc.parent_content_id = f.content_id JOIN release_contents rc ON rc.content_id = cc.child_content_id \
+           JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE WHERE f.id IN ({list}) ORDER BY 1 LIMIT 50"
+    )))
+    .fetch_all(pool)
+    .await?;
+    rescan.listed_by = listed.into_iter().map(|(id, n)| format!("{n} #{id}")).collect();
+
+    let outcome = if !rescan.linked.is_empty() {
+        format!("linked {} game(s)", rescan.linked.len())
+    } else if !rescan.already_linked.is_empty() && rescan.unmatched == 0 {
+        "already linked".to_string()
+    } else if rescan.unmatched > 0 {
+        format!("{} game(s) not matched by any DAT", rescan.unmatched)
+    } else {
+        "not in a game".to_string()
+    };
+    let message = format!("done: {name}: {} rom(s) read, {} file(s) hashed, {outcome}, {} error(s){}", wanted, summary.files_hashed, summary.errors.len(), warnings_note(&summary));
+    summary.file_rescan = Some(rescan);
+    progress.finish(total_bytes, Some(total_bytes), &message, &job_result(&summary)).await;
+    Ok(summary)
+}
+
+/// "game #12 → Release (Region) #34 · title Name #56", for a rescan's result.
+async fn describe_link(pool: &MySqlPool, game_id: u64, release_id: u64) -> Result<String> {
+    let row: Option<(String, Option<u64>, Option<String>)> = sqlx::query_as(
+        "SELECT r.name, t.id, t.name FROM `release` r LEFT JOIN title_releases tr ON tr.release_id = r.id LEFT JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE WHERE r.id = ? ORDER BY t.id IS NULL, t.id LIMIT 1",
+    )
+    .bind(release_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(match row {
+        Some((release, Some(title_id), Some(title))) => format!("game #{game_id} → {release} #{release_id} · title {title} #{title_id}"),
+        Some((release, _, _)) => format!("game #{game_id} → {release} #{release_id} · no title"),
+        None => format!("game #{game_id} → release #{release_id}, which is not in the catalogue"),
+    })
 }
 
 /// After a full scan of `directory_id`: its live files the scan did not record (no full
@@ -1991,6 +2270,50 @@ mod dat_resolve_tests {
     }
 }
 
+/// The query [`best_release`] runs: the release whose DAT lines cover the most of one game's
+/// files. A tie on hits (a TOSEC release and a No-Intro one listing the same files under
+/// different names) goes to the source ranked first in Settings > metadata source priority >
+/// release name, not to whichever DAT happened to be imported first.
+fn best_release_sql(source_order: &[String]) -> String {
+    let rank_sql = format!(
+        "(SELECT COALESCE(MIN(NULLIF(FIELD(s.name, {}), 0)), 255) FROM release_sources rs JOIN sources s ON s.id = rs.source_id WHERE rs.release_id = hits.release_id)",
+        vec!["?"; source_order.len().max(1)].join(", ")
+    );
+    format!(
+        "SELECT release_id, MAX(platform_id) AS platform_id, COUNT(DISTINCT content_id) AS hits FROM ( \
+           SELECT rc.release_id, r.app_platform_id AS platform_id, rc.content_id FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id \
+             JOIN local_files f ON f.id = lrf.file_id JOIN release_contents rc ON rc.content_id = f.content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE WHERE lgr.game_id = ? \
+           UNION ALL \
+           SELECT rc.release_id, r.app_platform_id, rc.content_id FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id \
+             JOIN local_files f ON f.id = lrf.file_id JOIN content_contents cc ON cc.parent_content_id = f.content_id \
+             JOIN release_contents rc ON rc.content_id = cc.child_content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE WHERE lgr.game_id = ? \
+         ) hits GROUP BY release_id ORDER BY hits DESC, {rank_sql}, release_id LIMIT 1"
+    )
+}
+
+/// The release a game's files match best by hash, and its platform. A file matches a DAT line
+/// by its own hash (a zip / CHD a DAT lists as is) or by an archive member's (a CHD's tracks
+/// against Redump's bins). `sql` is [`best_release_sql`] for `source_order`.
+async fn best_release(pool: &MySqlPool, sql: &str, source_order: &[String], game_id: u64) -> Result<Option<(u64, u16)>> {
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(game_id).bind(game_id);
+    if source_order.is_empty() {
+        query = query.bind("");
+    }
+    for source in source_order {
+        query = query.bind(source.as_str());
+    }
+    let Some(row) = query.fetch_optional(pool).await? else { return Ok(None) };
+    Ok(Some((row.try_get("release_id")?, row.try_get("platform_id")?)))
+}
+
+/// Links a game to a release a hash matched, and gives its roms with no platform yet the
+/// release's.
+async fn link_game(pool: &MySqlPool, game_id: u64, release_id: u64, platform_id: u16) -> Result<()> {
+    sqlx::query("INSERT IGNORE INTO local_release_games (release_id, game_id) VALUES (?, ?)").bind(release_id).bind(game_id).execute(pool).await?;
+    sqlx::query("UPDATE local_rom SET app_platform_id = ? WHERE app_platform_id = 0 AND id IN (SELECT rom_id FROM local_game_roms WHERE game_id = ?)").bind(platform_id).bind(game_id).execute(pool).await?;
+    Ok(())
+}
+
 /// Hash match, in order: (1) `to_dat` links each game under the directory to the release
 /// whose `release_contents` cover the most of its files -- possible because a scanned file
 /// that hashes like a DAT line reuses the DAT's own `content` row (`upsert_content`);
@@ -2045,24 +2368,8 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
         }
     }
     let n_todo = todo.len() as u64;
-    // A tie on hits (a TOSEC release and a No-Intro one listing the same files under
-    // different names) goes to the source ranked first in Settings > metadata source
-    // priority > release name, not to whichever DAT happened to be imported first.
     let source_order = settings::release_source_priority(pool).await?;
-    let rank_sql = format!(
-        "(SELECT COALESCE(MIN(NULLIF(FIELD(s.name, {}), 0)), 255) FROM release_sources rs JOIN sources s ON s.id = rs.source_id WHERE rs.release_id = hits.release_id)",
-        vec!["?"; source_order.len().max(1)].join(", ")
-    );
-    let best_sql = format!(
-        "SELECT release_id, MAX(platform_id) AS platform_id, COUNT(DISTINCT content_id) AS hits FROM ( \
-           SELECT rc.release_id, r.app_platform_id AS platform_id, rc.content_id FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id \
-             JOIN local_files f ON f.id = lrf.file_id JOIN release_contents rc ON rc.content_id = f.content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE WHERE lgr.game_id = ? \
-           UNION ALL \
-           SELECT rc.release_id, r.app_platform_id, rc.content_id FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id \
-             JOIN local_files f ON f.id = lrf.file_id JOIN content_contents cc ON cc.parent_content_id = f.content_id \
-             JOIN release_contents rc ON rc.content_id = cc.child_content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE WHERE lgr.game_id = ? \
-         ) hits GROUP BY release_id ORDER BY hits DESC, {rank_sql}, release_id LIMIT 1"
-    );
+    let best_sql = best_release_sql(&source_order);
     let linked_note = if summary.already_linked > 0 { format!(", {} already linked", summary.already_linked) } else { String::new() };
     progress.force(0, Some(n_todo.max(1)), &format!("DAT match: {n_todo} of {n_games} game(s) need a match{linked_note}")).await;
     for (i, game_id) in todo.into_iter().enumerate() {
@@ -2073,22 +2380,9 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             unlinked.push(game_id);
             continue;
         }
-        // A file matches a DAT line by its own hash (a zip / CHD a DAT lists as is) or by an
-        // archive member's (a CHD's tracks against Redump's bins).
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(best_sql.as_str())).bind(game_id).bind(game_id);
-        if source_order.is_empty() {
-            query = query.bind("");
-        }
-        for source in &source_order {
-            query = query.bind(source.as_str());
-        }
-        let best = query.fetch_optional(pool).await?;
-        match best {
-            Some(row) => {
-                let release_id: u64 = row.try_get("release_id")?;
-                let platform_id: u16 = row.try_get("platform_id")?;
-                sqlx::query("INSERT IGNORE INTO local_release_games (release_id, game_id) VALUES (?, ?)").bind(release_id).bind(game_id).execute(pool).await?;
-                sqlx::query("UPDATE local_rom SET app_platform_id = ? WHERE app_platform_id = 0 AND id IN (SELECT rom_id FROM local_game_roms WHERE game_id = ?)").bind(platform_id).bind(game_id).execute(pool).await?;
+        match best_release(pool, &best_sql, &source_order, game_id).await? {
+            Some((release_id, platform_id)) => {
+                link_game(pool, game_id, release_id, platform_id).await?;
                 summary.matched += 1;
             }
             None => unlinked.push(game_id),

@@ -344,6 +344,12 @@ pub struct FileScanRequest {
     /// All three off: no hash match after the scan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_match: Option<ScanHashMatch>,
+    /// One recorded file instead of the directory (the file page's "Rescan this file"): the
+    /// rom it belongs to is read again, recorded, and its game matched to a release on the
+    /// spot -- no walk, no directory-wide hash match afterwards. `directory_id` is the
+    /// directory the file lies in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<u64>,
 }
 
 /// The sources a scan's follow-up hash match uses (see `FileScanRequest::hash_match`).

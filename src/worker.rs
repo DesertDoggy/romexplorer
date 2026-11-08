@@ -402,6 +402,15 @@ impl Worker {
         if ran_through && job.job_type == JobType::FileScan {
             self.queue_hash_match_after_scan(&job).await;
         }
+        // A DAT that describes files scanned before it arrived: their games are matched now
+        // (DAT only, offline), not left unlinked until a scan or a hash match by hand.
+        if ran_through && job.job_type == JobType::DatSync {
+            match api::sync::relink_matchable(&self.app).await {
+                Ok(queued) if !queued.is_empty() => log::info!("dat_sync job {}: queued hash_match job(s) {queued:?} for files the new DATs list", job.id),
+                Ok(_) => {}
+                Err(e) => log::warn!("dat_sync job {}: could not queue the re-link: {e}", job.id),
+            }
+        }
         // Jobs that link titles to IGDB games can reveal titles that are one game under
         // regional names: queue one merge pass (never a second while one is queued).
         let links_igdb = match job.job_type {
@@ -425,6 +434,11 @@ impl Worker {
 
     async fn queue_hash_match_after_scan(&self, job: &Job) {
         let Some(directory_id) = payload_u64(job, "directory_id") else { return };
+        // A rescan of one file matched its own game already; the rest of the directory is
+        // not what was asked about.
+        if payload_u64(job, "file_id").is_some() {
+            return;
+        }
         let with = scan_hash_match(job);
         if !(with.to_dat || with.to_hasheous || with.to_playmatch) {
             return;
@@ -747,7 +761,7 @@ impl Worker {
                 // What was written is recorded at once: a playlist is tied to its game (and
                 // used to launch it), and a run after this one knows the dump has its sidecar.
                 for directory_id in &summary.directories {
-                    let scan = api::jobs::JobRequest::FileScan(api::jobs::FileScanRequest { directory_id: *directory_id, mode: romexplorer_types::jobs::FileScanMode::NewOnly, platform: api::jobs::PlatformSelect::All, hash_match: None });
+                    let scan = api::jobs::JobRequest::FileScan(api::jobs::FileScanRequest { directory_id: *directory_id, mode: romexplorer_types::jobs::FileScanMode::NewOnly, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None });
                     if let Err(e) = api::jobs::enqueue_unless_queued(&self.app, &scan).await {
                         log::warn!("sheet_create job {}: could not queue a scan of directory {directory_id}: {e}", job.id);
                     }
