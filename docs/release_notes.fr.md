@@ -85,6 +85,11 @@ Faites une sauvegarde avant de remplacer une version.
 **Sorties regroupées**
 - Les disques d’un même jeu listés séparément (ceux d’un pack, un disque bonus) peuvent être réunis avec « Regrouper en une seule sortie ». Une seule sortie est listée pour tous, et la copier copie tous les disques. La page de la sortie permet d’en séparer un.
 
+**Analyse**
+- La page d'un fichier propose « Réanalyser ce fichier ». Le fichier est relu avec le reste de sa ROM
+  et son jeu est aussitôt associé à une sortie.
+- La page d'un fichier affiche la sortie et le titre auxquels il est lié.
+
 ## Corrections
 
 - Certains jeux ne trouvaient pas de correspondance IGDB : un nom avec un trait d’union au milieu d’un mot ne correspondait pas à l’orthographe d’IGDB, et la synchronisation IGDB de la SNES et de la NES omettait les jeux sortis uniquement au Japon.
@@ -100,6 +105,8 @@ Faites une sauvegarde avant de remplacer une version.
   (« 0743 - ... ») pour un autre jeu.
 - Des tâches comme l'audit des fusions montraient peu de leur progression. Elles la montrent
   maintenant en détail.
+- Un fichier listé par un DAT pouvait rester sans sortie ni titre, quand le DAT était ajouté après
+  l'analyse ou qu'un sous-dossier était analysé après le dossier au-dessus.
 
 # romexplorer 0.1.8 (alpha)
 

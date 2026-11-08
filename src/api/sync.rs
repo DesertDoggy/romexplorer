@@ -1149,9 +1149,32 @@ pub async fn relink_unlinked(app: &App) -> Result<Vec<u64>> {
     )
     .fetch_all(&app.pool)
     .await?;
+    queue_relinks(app, &rows).await
+}
 
+/// After a DAT import on this machine: a DAT-only hash match for each directory holding an
+/// unlinked game whose file (or one of its members) a DAT line now lists. Narrower than
+/// [`relink_unlinked`]: a DAT sync runs on a schedule, and a library's homebrew and digital
+/// files no DAT will ever list are not a reason to match the whole directory again each time.
+pub async fn relink_matchable(app: &App) -> Result<Vec<u64>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT f.directory_id AS id FROM local_game g \
+           JOIN local_game_roms lgr ON lgr.game_id = g.id \
+           JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id \
+           JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE \
+         WHERE g.deleted = FALSE AND f.directory_id IS NOT NULL \
+           AND NOT EXISTS (SELECT 1 FROM local_release_games lrg WHERE lrg.game_id = g.id) \
+           AND (EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = f.content_id) \
+             OR EXISTS (SELECT 1 FROM content_contents cc JOIN release_contents rc ON rc.content_id = cc.child_content_id WHERE cc.parent_content_id = f.content_id))",
+    )
+    .fetch_all(&app.pool)
+    .await?;
+    queue_relinks(app, &rows).await
+}
+
+async fn queue_relinks(app: &App, rows: &[sqlx::mysql::MySqlRow]) -> Result<Vec<u64>> {
     let mut queued = Vec::new();
-    for row in &rows {
+    for row in rows {
         let Ok(directory_id) = row.try_get::<u64, _>("id") else { continue };
         let request = super::jobs::JobRequest::HashMatch(super::jobs::HashMatchRequest {
             directory_id,

@@ -679,6 +679,16 @@ pub struct FileOwner {
     pub main_path: String,
     pub game_id: Option<u64>,
     pub game_name: Option<String>,
+    /// The releases the game is linked to, with their titles: empty when it is unlinked.
+    pub releases: Vec<OwnerRelease>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OwnerRelease {
+    pub release_id: u64,
+    pub release_name: String,
+    pub title_id: Option<u64>,
+    pub title_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3575,8 +3585,48 @@ pub async fn file(app: &App, id: u64) -> Result<FileDetail> {
         .bind(id)
         .fetch_all(pool)
         .await?;
-    let owners = owner_rows.iter().map(|r| Ok(FileOwner { rom_id: r.try_get("rom_id")?, main_path: r.try_get("main_path")?, game_id: r.try_get("game_id")?, game_name: r.try_get("game_name")? })).collect::<Result<_>>()?;
+    let mut owners = Vec::with_capacity(owner_rows.len());
+    for r in &owner_rows {
+        let game_id: Option<u64> = r.try_get("game_id")?;
+        let releases = match game_id {
+            Some(game) => sqlx::query_as::<_, (u64, String, Option<u64>, Option<String>)>(
+                "SELECT r.id, r.name, t.id, t.name FROM local_release_games lrg JOIN `release` r ON r.id = lrg.release_id \
+                 LEFT JOIN title_releases tr ON tr.release_id = r.id LEFT JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE \
+                 WHERE lrg.game_id = ? ORDER BY r.id, t.id IS NULL, t.id",
+            )
+            .bind(game)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .fold(Vec::<OwnerRelease>::new(), |mut v, (release_id, release_name, title_id, title_name)| {
+                // A release in several titles is listed once, with its first.
+                if v.last().is_none_or(|x| x.release_id != release_id) {
+                    v.push(OwnerRelease { release_id, release_name, title_id, title_name });
+                }
+                v
+            }),
+            None => Vec::new(),
+        };
+        owners.push(FileOwner { rom_id: r.try_get("rom_id")?, main_path: r.try_get("main_path")?, game_id, game_name: r.try_get("game_name")?, releases });
+    }
     Ok(FileDetail { file, content, members, owners })
+}
+
+/// Queues "Rescan this file" (`FileScanRequest::file_id`), in the scan lane's fast slot so it
+/// does not wait behind a long scan. The directory is the nearest configured one the file lies
+/// in; a file outside every configured directory cannot be read from here.
+pub async fn rescan_file(app: &App, id: u64) -> Result<u64> {
+    let (path, directory_id): (String, Option<u64>) = sqlx::query_as("SELECT path, directory_id FROM local_files WHERE id = ?").bind(id).fetch_optional(&app.pool).await?.ok_or_else(|| Error::not_found(format!("no file {id}")))?;
+    let nearest = crate::database::directories::resolve(&app.pool, &path).await?.directory.map(|d| d.id);
+    let directory_id = nearest.or(directory_id).ok_or_else(|| Error::invalid(format!("{path} is not inside a configured directory")))?;
+    let request = super::jobs::JobRequest::FileScan(super::jobs::FileScanRequest {
+        directory_id,
+        mode: romexplorer_types::jobs::FileScanMode::Rehash,
+        platform: super::jobs::PlatformSelect::All,
+        hash_match: None,
+        file_id: Some(id),
+    });
+    super::jobs::enqueue_with_priority(app, &request, 1).await
 }
 
 // ---------------------------------------------------------------------------

@@ -160,7 +160,7 @@ async fn settings(app: &App) {
 }
 
 async fn jobs(app: &App, directory_id: u64) {
-    let req = api::jobs::JobRequest::FileScan(api::jobs::FileScanRequest { directory_id, mode: FileScanMode::NewOnly, platform: api::jobs::PlatformSelect::All, hash_match: None });
+    let req = api::jobs::JobRequest::FileScan(api::jobs::FileScanRequest { directory_id, mode: FileScanMode::NewOnly, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None });
     let id = api::jobs::enqueue(app, &req).await.unwrap();
     let claimed = db_jobs::claim(&app.pool, JobType::FileScan, 5).await.unwrap();
     assert_eq!(claimed.len(), 1);
@@ -2146,6 +2146,7 @@ fn api_and_server_end_to_end() {
         scan_platforms(&app, &base).await;
         scan_replaced_files(&app, &base).await;
         scan_goes_on_from_where_it_was(&app, &base).await;
+        rescan_one_file(&app, &base).await;
         naming(&app).await;
         mounts(&app, &base).await;
         secrets_stay_in(&app, &base).await;
@@ -2167,6 +2168,86 @@ fn api_and_server_end_to_end() {
         server.shutdown(std::time::Duration::from_secs(20)).await.expect("shutdown");
     });
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// "Rescan this file" reads one file again and links its game to the release a DAT lists it
+/// under, on the spot. And the two ways a file a DAT lists stayed unlinked: a scan of a
+/// subfolder whose files a scan of the folder above recorded never matched them, and a DAT
+/// imported after the scan queued no match.
+async fn rescan_one_file(app: &App, base: &PathBuf) {
+    use romexplorer::database::jobs::Progress;
+    let root = base.join("collection");
+    let dir = root.join("rescan");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    let path = |n: &str| dir.join("a").join(format!("Rescan {n}.bin"));
+    std::fs::write(path("One"), vec![0x31u8; 3000]).unwrap();
+    std::fs::write(path("Two"), vec![0x32u8; 3000]).unwrap();
+    let root_id = api::directories::resolve(app, &root.display().to_string()).await.unwrap().directory.unwrap().id;
+    let scan = |directory_id: u64, mode: FileScanMode, file_id: Option<u64>| api::jobs::FileScanRequest { directory_id, mode, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id };
+    api::scan::run_file_scan(app, &scan(root_id, FileScanMode::NewOnly, None), &Progress::none()).await.unwrap();
+    // The subfolder is configured after the folder above it was scanned.
+    let child = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), ..Default::default() }).await.unwrap().directory.id;
+    let file = |n: &'static str| async move {
+        sqlx::query_as::<_, (u64, u64, u64)>("SELECT id, content_id, directory_id FROM local_files WHERE path = ? AND deleted = FALSE").bind(path(n).display().to_string()).fetch_one(&app.pool).await.unwrap()
+    };
+    // A DAT that lists the files' bytes arrives after the scan.
+    let release = |n: &'static str, content: u64| async move {
+        let name = format!("Rescan {n} (Japan)");
+        let title = sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, SHA1(?))").bind(format!("Rescan {n}")).bind(format!("rescan {n}")).bind(format!("rescan {n}")).execute(&app.pool).await.unwrap().last_insert_id();
+        let id = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region) VALUES (0, ?, SHA1(?), ?, SHA1(?), 'JP')").bind(&name).bind(&name).bind(name.to_lowercase()).bind(name.to_lowercase()).execute(&app.pool).await.unwrap().last_insert_id();
+        sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(title).bind(id).execute(&app.pool).await.unwrap();
+        sqlx::query("INSERT INTO release_contents (release_id, content_id, file_name) VALUES (?, ?, ?)").bind(id).bind(content).bind(format!("{name}.bin")).execute(&app.pool).await.unwrap();
+        (id, title)
+    };
+    let (one, one_content, one_dir) = file("One").await;
+    assert_eq!(one_dir, root_id, "recorded by the scan of the folder above");
+    let (one_release, one_title) = release("One", one_content).await;
+
+    // "Rescan this file": read again, its game linked to the DAT's release and its title.
+    let rescanned = api::scan::run_file_scan(app, &scan(child, FileScanMode::Rehash, Some(one)), &Progress::none()).await.unwrap();
+    let outcome = rescanned.file_rescan.expect("a file rescan's outcome");
+    assert_eq!(outcome.read, vec![path("One").display().to_string()]);
+    assert_eq!((outcome.games, outcome.unmatched), (1, 0));
+    assert!(outcome.linked.len() == 1 && outcome.linked[0].contains("Rescan One (Japan)") && outcome.linked[0].contains("title Rescan One"), "{outcome:?}");
+    assert!(outcome.listed_by.iter().any(|r| r.starts_with("Rescan One (Japan)")), "{outcome:?}");
+    let detail = api::catalog::file(app, one).await.unwrap();
+    let releases = &detail.owners[0].releases;
+    assert!(releases.len() == 1 && releases[0].release_id == one_release && releases[0].title_id == Some(one_title), "the file page shows the release and title: {releases:?}");
+    assert_eq!(detail.file.directory_id, Some(child), "recorded under the nearest configured directory");
+    // Again: already linked, nothing new.
+    let again = api::scan::run_file_scan(app, &scan(child, FileScanMode::Rehash, Some(one)), &Progress::none()).await.unwrap().file_rescan.unwrap();
+    assert!(again.linked.is_empty() && again.already_linked.len() == 1, "{again:?}");
+
+    // A quick scan of the subfolder takes over what the scan above recorded, so the match
+    // after it reaches the file.
+    let (_, two_content, _) = file("Two").await;
+    release("Two", two_content).await;
+    std::fs::write(path("Three"), vec![0x33u8; 3000]).unwrap();
+    api::scan::run_file_scan(app, &scan(child, FileScanMode::NewOnly, None), &Progress::none()).await.unwrap();
+    assert_eq!(file("Two").await.2, child, "taken over by the subfolder");
+    let req = api::jobs::HashMatchRequest { directory_id: child, to_dat: true, to_hasheous: false, to_playmatch: false, all: false };
+    api::scan::run_hash_match(app, &req, &Progress::none()).await.unwrap();
+    let linked = |n: &'static str| async move {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM local_files f JOIN local_rom_files lrf ON lrf.file_id = f.id JOIN local_game_roms lgr ON lgr.rom_id = lrf.rom_id JOIN local_release_games lrg ON lrg.game_id = lgr.game_id WHERE f.path = ?")
+            .bind(path(n).display().to_string())
+            .fetch_one(&app.pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(linked("Two").await, 1, "the subfolder's match linked the file the folder above recorded");
+    assert_eq!(linked("Three").await, 0, "no DAT lists it yet");
+
+    // A DAT that lists it now: the re-link after a DAT sync queues a match for its directory.
+    let (_, three_content, _) = file("Three").await;
+    release("Three", three_content).await;
+    let queued = api::sync::relink_matchable(app).await.unwrap();
+    assert!(!queued.is_empty(), "a match queued for the directory holding it");
+    let payloads: Vec<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT payload FROM jobs WHERE id IN ({})", queued.iter().map(u64::to_string).collect::<Vec<_>>().join(",")))).fetch_all(&app.pool).await.unwrap();
+    assert!(payloads.iter().any(|p| p["directory_id"] == json!(child)), "{payloads:?}");
+    sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM jobs WHERE id IN ({})", queued.iter().map(u64::to_string).collect::<Vec<_>>().join(",")))).execute(&app.pool).await.unwrap();
+    api::directories::delete(app, child, false).await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A peer's token never leaves the database through a generic reader: the viewer masks it and
@@ -2252,7 +2333,7 @@ async fn dsi_cdn_folder(app: &App, base: &PathBuf) {
     std::fs::write(game.join("titleKey.bin"), [7u8; 16]).unwrap();
     std::fs::write(game.join("titlePass.txt"), b"hogepass").unwrap();
     let view = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(Platform::NintendoDsi.igdb_id()), ..Default::default() }).await.unwrap();
-    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     let live = || async {
         sqlx::query_as::<_, (String, i64)>("SELECT lr.main_path, (SELECT COUNT(*) FROM local_rom_files lrf WHERE lrf.rom_id = lr.id) FROM local_rom lr WHERE lr.main_path LIKE '%Hoge Quest (Europe)%' AND lr.deleted = FALSE ORDER BY lr.main_path")
             .fetch_all(&app.pool)
@@ -2296,7 +2377,7 @@ async fn playlists(app: &App, base: &PathBuf) {
 Playlist Game (Disc 2).cue
 ").unwrap();
     let view = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(romexplorer::common::models::Platform::PlayStation.igdb_id()), ..Default::default() }).await.unwrap();
-    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     let summary = api::scan::run_file_scan(app, &req, &romexplorer::database::jobs::Progress::new(&app.pool, 0)).await.unwrap();
     assert_eq!(summary.playlists_grouped, 1, "{summary:?}");
     let rows: Vec<(u64, Option<u16>, Option<u64>)> = sqlx::query_as(
@@ -2413,7 +2494,7 @@ async fn scan_platforms(app: &App, base: &PathBuf) {
         created.push(api::directories::create(app, &api::directories::DirectorySpec { path: d.display().to_string(), app_platform_id: Some(p.igdb_id()), ..Default::default() }).await.unwrap().directory.id);
     }
     // One scan, of the folder above: the subfolders' platforms come along as hints.
-    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     let summary = api::scan::run_file_scan(app, &req, &romexplorer::database::jobs::Progress::new(&app.pool, 0)).await.unwrap();
     assert!(summary.errors.is_empty(), "{:?}", summary.errors);
     let platform_of = |path: PathBuf| async move {
@@ -2449,7 +2530,7 @@ async fn scan_goes_on_from_where_it_was(app: &App, base: &PathBuf) {
         std::fs::write(dir.join(name), fixtures::snes_rom(&name[..8].to_uppercase(), 0x8000, seed)).unwrap();
     }
     let directory_id = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(Platform::Snes.igdb_id()), ..Default::default() }).await.unwrap().directory.id;
-    let req = api::jobs::FileScanRequest { directory_id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     // When the job was queued: a second before now, as the database counts it.
     let queued: chrono::NaiveDateTime = sqlx::query_scalar("SELECT CAST(NOW() - INTERVAL 1 SECOND AS DATETIME)").fetch_one(&app.pool).await.unwrap();
     let first = api::scan::run_file_scan_since(app, &req, Some(queued), &Progress::none()).await.unwrap();
@@ -2476,7 +2557,7 @@ async fn scan_replaced_files(app: &App, base: &PathBuf) {
     std::fs::write(&file, &original).unwrap();
     let directory_id = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(Platform::Snes.igdb_id()), ..Default::default() }).await.unwrap().directory.id;
     let full = || async {
-        let req = api::jobs::FileScanRequest { directory_id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+        let req = api::jobs::FileScanRequest { directory_id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
         let s = api::scan::run_file_scan(app, &req, &romexplorer::database::jobs::Progress::none()).await.unwrap();
         assert!(s.errors.is_empty(), "{:?}", s.errors);
         s
@@ -2569,7 +2650,7 @@ async fn scan_containers(app: &App, base: &PathBuf) {
     )
     .unwrap();
     let view = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(romexplorer::common::models::Platform::PlayStation.igdb_id()), ..Default::default() }).await.unwrap();
-    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     let summary = api::scan::run_file_scan(app, &req, &romexplorer::database::jobs::Progress::new(&app.pool, 0)).await.unwrap();
     assert!(summary.errors.iter().any(|e| e.contains("Half (USA).cue") && e.contains("missing track")), "a sheet missing some of its tracks is an error: {:?}", summary.errors);
     assert_eq!(summary.errors.len(), 1, "{:?}", summary.errors);
@@ -2638,7 +2719,7 @@ async fn copy_converts(app: &App, base: &PathBuf) {
     for (path, platform) in [(&dir, snes), (&ps1, psx)] {
         let view = api::directories::create(app, &api::directories::DirectorySpec { path: path.display().to_string(), app_platform_id: Some(platform), ..Default::default() }).await.unwrap();
         created.push(view.directory.id);
-        let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+        let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
         let summary = api::scan::run_file_scan(app, &req, &Progress::new(&app.pool, 0)).await.unwrap();
         assert!(summary.errors.is_empty(), "{:?}", summary.errors);
         if path == &dir {
@@ -2792,7 +2873,7 @@ async fn copy_plan_and_run(app: &App, base: &PathBuf) {
     std::fs::write(dir.join("Copy Me (USA).sfc"), fixtures::snes_rom("COPY ME", 0x8000, 3)).unwrap();
     std::fs::write(dir.join("Copy Me Too (USA).sfc"), fixtures::snes_rom("COPY ME TOO", 0x8000, 4)).unwrap();
     let view = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(romexplorer::common::models::Platform::Snes.igdb_id()), ..Default::default() }).await.unwrap();
-    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     api::scan::run_file_scan(app, &req, &Progress::new(&app.pool, 0)).await.unwrap();
 
     let file_ids: Vec<u64> = sqlx::query_scalar("SELECT id FROM local_files WHERE directory_id = ? AND deleted = FALSE ORDER BY id").bind(view.directory.id).fetch_all(&app.pool).await.unwrap();
@@ -2934,7 +3015,7 @@ async fn copy_from_a_mounted_server(app: &App, base: &PathBuf) {
     // Staged as a root of its own: the share sits beside the collection, not inside it, and
     // a configured directory has to be one or the other.
     let stage = api::directories::create(app, &api::directories::DirectorySpec { path: share.display().to_string(), is_collection_root: true, app_platform_id: Some(Platform::Snes.igdb_id()), ..Default::default() }).await.unwrap();
-    let req = api::jobs::FileScanRequest { directory_id: stage.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: stage.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     api::scan::run_file_scan(app, &req, &romexplorer::database::jobs::Progress::none()).await.unwrap();
     let staged: Vec<(u64, String, u64, u64)> = sqlx::query_as("SELECT id, path, content_id, size FROM local_files WHERE directory_id = ? ORDER BY path").bind(stage.directory.id).fetch_all(&app.pool).await.unwrap();
     assert_eq!(staged.len(), 2);
@@ -3093,7 +3174,7 @@ async fn copy_modes(app: &App, base: &PathBuf) {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("Mode Game (USA).sfc"), fixtures::snes_rom("MODE GAME", 0x8000, 9)).unwrap();
     let view = api::directories::create(app, &api::directories::DirectorySpec { path: src.display().to_string(), app_platform_id: Some(romexplorer::common::models::Platform::Snes.igdb_id()), ..Default::default() }).await.unwrap();
-    let scan = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let scan = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     api::scan::run_file_scan(app, &scan, &Progress::none()).await.unwrap();
     let file_id: u64 = sqlx::query_scalar("SELECT id FROM local_files WHERE directory_id = ? AND deleted = FALSE").bind(view.directory.id).fetch_one(&app.pool).await.unwrap();
 
@@ -3208,7 +3289,7 @@ async fn integrity(app: &App, base: &PathBuf) {
     std::fs::write(dir.join("Intact (USA).sfc"), vec![11u8; 3000]).unwrap();
     std::fs::write(dir.join("Rotted (USA).sfc"), vec![12u8; 3000]).unwrap();
     let view = api::directories::create(app, &api::directories::DirectorySpec { path: dir.display().to_string(), app_platform_id: Some(romexplorer::common::models::Platform::Snes.igdb_id()), ..Default::default() }).await.unwrap();
-    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None };
+    let req = api::jobs::FileScanRequest { directory_id: view.directory.id, mode: FileScanMode::Full, platform: api::jobs::PlatformSelect::All, hash_match: None, file_id: None };
     api::scan::run_file_scan(app, &req, &romexplorer::database::jobs::Progress::none()).await.unwrap();
 
     // A copy-registered file is the one worth checking: it has hashes it never computed and

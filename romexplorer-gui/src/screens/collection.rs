@@ -549,7 +549,9 @@ pub fn File(id: u64) -> Element {
 
 #[component]
 fn FilePage(id: u64) -> Element {
-    let data = use_resource(move || async move { api::get(&format!("/api/v1/catalog/files/{id}")).await });
+    let mut data = use_resource(move || async move { api::get(&format!("/api/v1/catalog/files/{id}")).await });
+    // "Rescan this file": the job being watched, and the page read again when it ends.
+    let rescan_job = use_signal(|| None::<u64>);
     let f = match &*data.read() {
         None => return rsx! { div { class: "muted", {state::tr("loading…")} } },
         Some(Err(e)) => return rsx! { div { class: "card bad", "{e.message}" } },
@@ -578,6 +580,16 @@ fn FilePage(id: u64) -> Element {
         div { class: "two",
             div { class: "card",
                 h2 { {state::tr("File")} }
+                div { class: "toolbar",
+                    button { class: "btn", r#type: "button",
+                        title: state::tr("read this file again (with the rest of its ROM: a sheet's tracks, a folder's files) and match its game to a release now"),
+                        onclick: move |_| super::backup::start_job(format!("/api/v1/catalog/files/{id}/rescan"), rescan_job),
+                        {state::tr("Rescan this file")}
+                    }
+                }
+                if let Some(job) = rescan_job() {
+                    super::backup::JobWatch { key: "{job}", job_id: job, on_done: move |_| data.restart() }
+                }
                 div { class: "kv",
                     div { {state::tr("id")} } div { "{id}" }
                     div { {state::tr("path")} } div { class: "mono", "{path}" }
@@ -603,6 +615,20 @@ fn FilePage(id: u64) -> Element {
                             tr {
                                 td { class: "mono", "{s(&o, \"main_path\")}" }
                                 td { if let Some(g) = api::so(&o, "game_name") { "{g} " span { class: "muted", "#{s(&o, \"game_id\")}" } } else { span { class: "muted", {state::tr("no game")} } } }
+                                td {
+                                    if api::arr(&o, "releases").is_empty() { span { class: "muted", {state::tr("no release linked")} } }
+                                    for r in api::arr(&o, "releases").to_vec() {
+                                        div {
+                                            a { onclick: { let rid = u(&r, "release_id"); move |e| common::go(Route::Release { id: rid }, &e) }, "{s(&r, \"release_name\")}" }
+                                            " · "
+                                            if let Some(tid) = api::uo(&r, "title_id") {
+                                                a { onclick: move |e| common::go(Route::TitleDetail { id: tid }, &e), "{s(&r, \"title_name\")}" }
+                                            } else {
+                                                span { class: "muted", {state::tr("no title")} }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
