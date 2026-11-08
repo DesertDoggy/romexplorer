@@ -16,7 +16,9 @@ set -euo pipefail
 #   - Highly Theoretical for Saturn/Dreamcast SSF/DSF rips (external/highly_theoretical, GPL-3.0);
 #   - mGBA's GBA core for GSF rips (external/mgba, MPL-2.0);
 #   - Beetle WonderSwan for WSR rips (external/beetle-wswan-libretro, GPL-2.0+).
-#   - libvgm for Neo Geo Pocket and Virtual Boy VGM logs (external/libvgm; SN76496 and VSU cores).
+#   - libvgm for Neo Geo Pocket and Virtual Boy VGM logs (external/libvgm; SN76496 and VSU cores),
+#     and its SN76496, emu2413 (YM2413, MIT) and Nuked OPN2 (YM2612, LGPL-2.1+) cores driven a
+#     write at a time (rchip_).
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
