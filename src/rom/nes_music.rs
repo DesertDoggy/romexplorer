@@ -395,7 +395,9 @@ impl Nes {
     /// Runs the routine at `addr` with A, X, Y = `regs` and `pushed` on the stack above its
     /// return address (in the order pushed), as the banks are now, until it returns. False
     /// when it doesn't within `budget` cycles. Its sound writes wait in the board.
-    pub fn run_routine(&mut self, addr: u16, regs: [u8; 3], pushed: &[u8], budget: u32) -> bool {
+    /// Windows `pinned` (Some) keep their bank whatever the routine writes to the board.
+    pub fn run_routine(&mut self, addr: u16, regs: [u8; 3], pushed: &[u8], budget: u32, pinned: &[Option<usize>; 5]) -> bool {
+        let pin = pinned.iter().any(Option::is_some);
         self.board.ram[0x1FF] = 0x5F;
         self.board.ram[0x1FE] = 0xF5;
         let mut s = 0xFDu8;
@@ -417,6 +419,15 @@ impl Nes {
             let c = self.exec() + std::mem::take(&mut self.board.stall);
             self.board.cycle += c;
             used += c;
+            if pin {
+                let mut w = self.board.cart.windows();
+                for (k, p) in pinned.iter().enumerate() {
+                    if let Some(b) = *p {
+                        w[k] = b;
+                    }
+                }
+                self.board.cart.set_windows(w);
+            }
         }
         self.board.cycle = 0;
         true

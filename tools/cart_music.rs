@@ -341,6 +341,8 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     };
     let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
     // On the game's own board: its code where the ROM has it, the calls moved there.
+    let mut m = m;
+    nes_nsf::choose_board(nsf, &mut m, rom);
     let board = nes_nsf::cart_check(nsf, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     t.board += board;
     let with_melody = check.iter().flatten().count();
@@ -355,8 +357,9 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         .take(12)
         .collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board} {:?}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
         started.elapsed().as_secs_f32(),
+        m.board,
         m.header.songs,
         m.runs.len(),
         pokes,
