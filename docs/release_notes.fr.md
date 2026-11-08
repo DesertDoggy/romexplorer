@@ -51,17 +51,8 @@ Faites une sauvegarde avant de remplacer une version.
   des fichiers. L'optimisation de la DB y a été déplacée depuis Tâches et données › DB.
 
 **Audio des ROM**
-- Les pages de titre peuvent jouer la musique contenue dans vos ROM (plateformes et types de
-  support pris en charge uniquement).
+- Les pages de titre peuvent jouer la musique contenue dans vos ROM (pistes audio CD des jeux sur disque, et archives sonores Nintendo DS et 3DS).
 - Les réglages permettent de choisir quelles pistes sont jouées.
-- La musique NES et Famicom est jouée directement depuis la ROM, par le code sonore du jeu lui-même : aucun fichier audio d'origine n'est nécessaire. Puces sonores Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5) comprises.
-- Un limiteur adoucit les pics de volume soudains dans la musique jouée par la puce sonore (Paramètres › Audio, activé par défaut).
-- La musique Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance et Neo Geo Pocket est elle aussi jouée directement depuis la ROM, son FM de la Master System japonaise compris.
-- Les formats audio d'origine (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP et SGC de la
-  Game Gear, seuls ou en zip) sont pris en charge.
-- Une bibliothèque audio d'origine : indiquez dans Paramètres › Audio les dossiers où vous gardez vos sets,
-  et « Indexer l'audio des ROM » associe chaque set à vos ROM par leur contenu. Un même set joue pour toutes
-  les régions du jeu, quel que soit son nom.
 - Le lecteur des pages de titre a un bouton « ne pas jouer cette piste ». Les pistes masquées sont
   listées sous la liste de lecture : un clic en joue une, Restaurer la remet.
 - La musique des ROM décodée pour la lecture est mise en cache en mémoire (Paramètres › Audio,
@@ -74,7 +65,6 @@ Faites une sauvegarde avant de remplacer une version.
   scannés).
 - La musique des pages de titre est activée par défaut, et le premier démarrage demande si vous la
   voulez, juste après la langue. Un titre sans audio propre joue des pistes au hasard par défaut.
-- Les fichiers PSF et PSF2 utilisent un BIOS PS2 de votre collection, et sont sautés sans lui.
 
 **Revue des fusions et Titres fusionnés**
 - Les sorties d'une carte peuvent être glissées vers le titre auquel elles appartiennent, ou sur

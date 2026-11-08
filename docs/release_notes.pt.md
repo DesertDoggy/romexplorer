@@ -50,17 +50,8 @@ de segurança antes de substituir uma versão.
   ficheiros. Otimizar a DB passou para aqui a partir de Tarefas e dados › DB.
 
 **Áudio das ROM**
-- As páginas de título podem tocar a música que está dentro das suas ROM (só plataformas e tipos de
-  suporte compatíveis).
+- As páginas de título podem tocar a música que está dentro das suas ROM (faixas de áudio CD dos jogos em disco e arquivos de som da Nintendo DS e 3DS).
 - Nas definições escolhe-se que faixas tocam.
-- A música da NES e da Famicom toca diretamente da ROM, pelo próprio código de som do jogo: não são precisos ficheiros de áudio original. Inclui os chips de som da Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
-- Um limitador suaviza picos súbitos de volume na música do chip de som (Definições › Áudio, ativado por predefinição).
-- A música do Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance e Neo Geo Pocket também toca diretamente da ROM, incluindo o som FM da Master System japonesa.
-- São suportados os formatos de áudio originais (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
-  da Game Gear, soltos ou em zip).
-- Uma biblioteca de áudio original: indique em Definições › Áudio as pastas onde guarda os conjuntos, e
-  «Indexar o áudio das ROM» associa cada conjunto às suas ROM pelo conteúdo. O mesmo conjunto toca em todas
-  as regiões do jogo, seja qual for o nome.
 - O leitor das páginas de título tem um botão «não tocar esta faixa». As faixas ocultas aparecem
   por baixo da lista de reprodução: um clique toca uma e Restaurar devolve-a.
 - A música das ROM descodificada para tocar fica em cache na memória (Definições › Áudio, 256 MiB
@@ -73,7 +64,6 @@ de segurança antes de substituir uma versão.
   antes).
 - A música das páginas de título está ligada por predefinição, e o primeiro arranque pergunta se a
   quer, logo a seguir ao idioma. Um título sem áudio próprio toca faixas ao acaso por predefinição.
-- Os ficheiros PSF e PSF2 usam uma BIOS da PS2 da sua coleção, e são saltados sem ela.
 
 **Revisão de fusões e Títulos combinados**
 - Os lançamentos de um cartão podem ser arrastados para o título a que pertencem, ou para «+» para
