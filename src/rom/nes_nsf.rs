@@ -245,10 +245,20 @@ impl Player {
 
     /// [`Self::call`], showing `watch` the CPU before each instruction.
     fn call_watched(&mut self, cpu: &mut Cpu, pc: u16, a: u8, x: u8, watch: &mut dyn FnMut(&Cpu)) -> bool {
+        self.call_with(cpu, pc, a, x, &[], watch)
+    }
+
+    /// [`Self::call_watched`], with `pushed` on the stack first (in the order pushed), for
+    /// the routine to pull.
+    fn call_with(&mut self, cpu: &mut Cpu, pc: u16, a: u8, x: u8, pushed: &[u8], watch: &mut dyn FnMut(&Cpu)) -> bool {
         // A return address on the stack the routine's RTS takes (never run).
         self.ram[0x1FF] = 0x5F;
         self.ram[0x1FE] = 0xF5;
         cpu.s = 0xFD;
+        for &v in pushed {
+            self.ram[0x100 | cpu.s as usize] = v;
+            cpu.s = cpu.s.wrapping_sub(1);
+        }
         cpu.pc = pc;
         cpu.a = a;
         cpu.x = x;
@@ -411,6 +421,9 @@ pub use music_search::alike;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Poke(u16, u8),
+    /// A byte the file's code left on the stack for the game's routine (the next call) to
+    /// pull.
+    Push(u8),
     Call { addr: u16, a: u8, x: u8, y: u8 },
 }
 
@@ -459,8 +472,9 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
     let mut in_game: Option<usize> = None;
     let mut used = 0u32;
     let mut jumped = true;
-    // Where the last jump (call, return) outside the game's code landed.
-    let mut target: Option<u16> = None;
+    // Where the last jump (call, return) outside the game's code landed, and the stack
+    // pointer then.
+    let mut target: Option<(u16, u8)> = None;
     while !cpu.calls.is_empty() {
         if used > 400_000 || cpu.jammed {
             return None;
@@ -470,9 +484,13 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
         }
         let at = cpu.pc;
         if in_game.is_none() {
-            let near = target.is_some_and(|t| at > t && at - t <= PATCHED_BYTES);
+            let near = target.is_some_and(|(t, _)| at > t && at - t <= PATCHED_BYTES);
             let entered = if jumped || near { held(p, at) } else { of(p, at, aligned) };
             if entered {
+                // What the file's code pushed since it got here, still on the stack.
+                if let Some((_, s)) = target.filter(|t| t.1 > cpu.s) {
+                    ops.extend((cpu.s as u16 + 1..=s as u16).rev().map(|i| Op::Push(p.ram[0x100 | i as usize])));
+                }
                 ops.push(Op::Call { addr: at, a: cpu.a, x: cpu.x, y: cpu.y });
                 in_game = Some(cpu.calls.len());
             }
@@ -482,7 +500,7 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
         p.log = in_game.is_none().then(Vec::new);
         used += cpu.step(p);
         if jumped && in_game.is_none() {
-            target = Some(cpu.pc);
+            target = Some((cpu.pc, cpu.s));
         }
         if let Some(log) = p.log.take() {
             // Pushes (JSR, PHA) land in the live stack, at or above S; a store into the rest
@@ -502,12 +520,14 @@ const PATCHED_BYTES: u16 = 3;
 
 /// Plays a start script.
 fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], shift: i32) -> bool {
+    let mut pushed = Vec::new();
     for op in ops {
         match *op {
             Op::Poke(a, v) => p.write(a, v),
+            Op::Push(v) => pushed.push(v),
             Op::Call { addr, a, x, y } => {
                 cpu.y = y;
-                if !p.call(cpu, (addr as i32 + shift) as u16, a, x) {
+                if !p.call_with(cpu, (addr as i32 + shift) as u16, a, x, &std::mem::take(&mut pushed), &mut |_| {}) {
                     return false;
                 }
             }
@@ -602,7 +622,7 @@ fn calls(m: &Map) -> Vec<u16> {
         .flatten()
         .filter_map(|o| match *o {
             Op::Call { addr, .. } => Some(addr),
-            Op::Poke(..) => None,
+            Op::Poke(..) | Op::Push(_) => None,
         })
         .collect();
     out.sort_unstable();
@@ -937,6 +957,28 @@ mod tests {
         let t = m.tracks[1].as_ref().unwrap();
         assert_eq!(t[0], Op::Poke(0x00, 1), "{t:?}");
         assert!(matches!(t[1], Op::Call { addr: 0x8042, .. }), "{t:?}");
+    }
+
+    #[test]
+    fn a_push_the_files_patched_byte_makes_is_handed_to_the_call() {
+        // The game's routine at $8040 pulls A (PLA; STA $00; ...; RTS); the file's author
+        // patched the byte before it into PHA.
+        let mut game = vec![0xEA, 0x68, 0x85, 0x00];
+        (0..8).for_each(|_| game.extend([0xE8, 0xC8]));
+        game.push(0x60);
+        let mut patched = game.clone();
+        patched[0] = 0x48;
+        let f = nsf(&[(0x8000, &[0x4C, 0x40, 0x80]), (0x8010, &[0x60]), (0x8040, &patched)]);
+        let mut prg = vec![0u8; 0x4000];
+        prg[0x40..0x100].copy_from_slice(&f[0x80 + 0x40..0x80 + 0x100]);
+        prg[0x40..0x40 + game.len()].copy_from_slice(&game);
+        let m = map(&f, &prg).unwrap();
+        let t = m.tracks[2].as_ref().unwrap();
+        assert_eq!(t[..2], [Op::Push(2), Op::Call { addr: 0x8041, a: 2, x: 0, y: 0 }], "{t:?}");
+        let (mut p, _, _) = load(&f).unwrap();
+        let mut cpu = Cpu::with(0, 0xFD);
+        assert!(replay(&mut p, &mut cpu, t, 0));
+        assert_eq!(p.ram[0], 2);
     }
 
     #[test]
