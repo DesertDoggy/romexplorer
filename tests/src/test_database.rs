@@ -2154,6 +2154,63 @@ async fn phase_bulk_release_moves(env: &Env, report: &mut Report) {
     .await;
 }
 
+/// The discs of one game listed as releases of their own, combined by hand: the lists show
+/// one, the title's best release is that one, a copy takes every disc, a pirate release is
+/// refused, and splitting one off undoes it.
+async fn phase_combined_releases(env: &Env, report: &mut Report) {
+    let pool = &env.pool;
+    step(report, "releases: discs listed apart combine into one release", async {
+        use romexplorer::api::release_combine::{self, CombineRequest};
+        let e = |e: sqlx::Error| e.to_string();
+        let de = |e: database::DatabaseError| e.to_string();
+        let ae = |e: romexplorer::api::Error| e.message;
+        let app = romexplorer::api::App::with_pool(pool.clone(), env.paths.clone(), DatabaseConfig::default()).map_err(ae)?;
+        let src = import::ensure_source(pool, "redump").await.map_err(de)?;
+        let ps2 = Platform::PlayStation2.igdb_id();
+        let title = |name: &'static str| async move {
+            sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, ?)").bind(name).bind(name.to_lowercase()).bind(import::sha1_hex(&format!("combined/{name}"))).execute(pool).await.map(|r| r.last_insert_id())
+        };
+        let release = |t: u64, name: &'static str| async move {
+            let norm = name.to_lowercase();
+            let r = sqlx::query("INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, region, source_id, is_unlicensed, is_pirate) VALUES (?, ?, ?, ?, ?, 'JP', ?, ?, ?)")
+                .bind(ps2).bind(name).bind(import::sha1_hex(name)).bind(&norm).bind(import::sha1_hex(&norm)).bind(src).bind(name.contains("Pirate")).bind(name.contains("Pirate"))
+                .execute(pool).await?.last_insert_id();
+            sqlx::query("INSERT INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(t).bind(r).execute(pool).await?;
+            Ok::<u64, sqlx::Error>(r)
+        };
+        let t = title("Combihoge Saga").await.map_err(e)?;
+        let other = title("Combihoge Saga Bonus").await.map_err(e)?;
+        let game = release(t, "Combihoge Saga (Japan) (Premium Box) (Game Disc)").await.map_err(e)?;
+        let bonus = release(other, "Combihoge Saga (Japan) (Premium Box) (Bonus Disc)").await.map_err(e)?;
+        let pirate = release(t, "Combihoge Saga (China) (Pirate)").await.map_err(e)?;
+        let done = release_combine::combine(&app, &CombineRequest { release_ids: vec![bonus, game] }).await.map_err(ae)?;
+        let holds: Vec<u64> = sqlx::query_scalar("SELECT release_id FROM title_releases WHERE title_id = ? ORDER BY release_id").bind(t).fetch_all(pool).await.map_err(e)?;
+        let other_gone: bool = sqlx::query_scalar("SELECT deleted FROM title WHERE id = ?").bind(other).fetch_one(pool).await.map_err(e)?;
+        let listed = romexplorer::api::catalog::releases(&app, &romexplorer::api::catalog::ListQuery { title_id: Some(t), limit: Some(50), ..Default::default() }).await.map_err(ae)?;
+        let ids: Vec<u64> = listed.items.iter().map(|r| r.id).collect();
+        let count = listed.items.iter().find(|r| r.id == game).map(|r| r.combined_count);
+        let copied = release_combine::with_combined(pool, &[bonus]).await.map_err(ae)?;
+        let detail = romexplorer::api::catalog::release(&app, game).await.map_err(ae)?;
+        let refused = release_combine::combine(&app, &CombineRequest { release_ids: vec![game, pirate] }).await.is_err();
+        let split = release_combine::split(&app, bonus).await.map_err(ae)?;
+        let after = romexplorer::api::catalog::releases(&app, &romexplorer::api::catalog::ListQuery { title_id: Some(t), limit: Some(50), ..Default::default() }).await.map_err(ae)?;
+        let checks = [
+            (done.release_id == game && done.combined == 1, format!("combined into the lowest id: {done:?}")),
+            (holds.contains(&bonus) && other_gone, format!("the bonus disc moves under the game's title: holds {holds:?}, old title deleted {other_gone}")),
+            (ids.contains(&game) && !ids.contains(&bonus) && count == Some(1), format!("the title lists the game only, marked: {ids:?}, count {count:?}")),
+            (copied == vec![bonus, game], format!("a copy of either takes both: {copied:?}")),
+            (detail.combined.iter().any(|c| c.id == bonus), format!("the release page lists the bonus disc: {:?}", detail.combined)),
+            (refused, "a pirate release is not combined with a licensed one".to_string()),
+            (split == 1 && after.items.iter().any(|r| r.id == bonus), format!("splitting it off lists it again: {split}")),
+        ];
+        if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
+            return Err(why.clone());
+        }
+        Ok(((), format!("{} checks", checks.len())))
+    })
+    .await;
+}
+
 /// A copy holding two dumps of one file (a headered and a headerless cartridge a scan
 /// joined, in two folders): a copy takes one file, the one in the priority directory, and
 /// the set's size on disk counts that one.
@@ -4315,6 +4372,7 @@ fn database_end_to_end() {
         Box::pin(phase_copy_one_format(&env, &mut report)).await;
         Box::pin(phase_bulk_release_moves(&env, &mut report)).await;
         Box::pin(phase_split_log(&env, &mut report)).await;
+        Box::pin(phase_combined_releases(&env, &mut report)).await;
         Box::pin(phase_unlicensed_apart(&env, &mut report)).await;
         Box::pin(phase_ra_subsets_apart(&env, &mut report)).await;
         Box::pin(phase_undo_reopens_suggestion(&env, &mut report)).await;

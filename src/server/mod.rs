@@ -2396,6 +2396,14 @@ async fn releases_split(State(s): State<Shared>, Json(b): Json<api::titles::Rele
     Ok(Json(json!({ "title_id": api::titles::split_releases(&s.app, &b).await? })))
 }
 
+async fn releases_combine(State(s): State<Shared>, Json(b): Json<api::release_combine::CombineRequest>) -> ApiResult<api::release_combine::CombineResult> {
+    Ok(Json(api::release_combine::combine(&s.app, &b).await?))
+}
+
+async fn release_uncombine(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<Value> {
+    Ok(Json(json!({ "split": api::release_combine::split(&s.app, id).await? })))
+}
+
 async fn releases_move(State(s): State<Shared>, Json(b): Json<api::titles::ReleasesMove>) -> ApiResult<Value> {
     Ok(Json(json!({ "moved": api::titles::move_releases(&s.app, &b).await?, "title_id": b.title_id })))
 }
@@ -2869,6 +2877,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/catalog/releases/split", post(releases_split))
         .route("/api/v1/catalog/releases/display", post(releases_display_set))
         .route("/api/v1/catalog/releases/move-title", post(releases_move))
+        .route("/api/v1/catalog/releases/combine", post(releases_combine))
+        .route("/api/v1/catalog/releases/{id}/uncombine", post(release_uncombine))
         .route("/api/v1/catalog/releases/{id}/base", post(release_base_set))
         .route("/api/v1/catalog/releases/{id}/language", post(release_language_set))
         .route("/api/v1/catalog/base-links", get(base_links))

@@ -71,6 +71,11 @@ replacing a build.
 - Splits are now listed under Edit › Combined titles and can be undone there. Splits made
   from Merge review before this update are added to the list.
 
+**Combined releases**
+- Releases can be combined into one: select the discs of one game that are listed apart (a
+  bundle's discs, a bonus disc) and choose "Combine into one release". One release is listed
+  for them all, and copying it copies every disc. The release page can split one off again.
+
 ## Bug fixes
 
 - A title kept IGDB's alternative titles after its IGDB link was removed, and they could not be

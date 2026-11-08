@@ -69,7 +69,9 @@ pub async fn named_releases(app: &App, selection: &CopySelection, titles_all: bo
                 return Err(super::Error::invalid(format!("title row {:?} is not a row key", row.row_key)));
             };
             let sql = format!(
-                "SELECT r.id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE WHERE tr.title_id = ? AND {in_row} ORDER BY {}{}",
+                "SELECT r.id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE WHERE tr.title_id = ? AND {in_row}{} ORDER BY {}{}",
+                // The best one is a lead, never a release combined into it (`release_combine`).
+                if titles_all { String::new() } else { format!(" AND NOT {}", super::release_combine::is_combined_sql("r")) },
                 rank.sql("r"),
                 if titles_all { "" } else { " LIMIT 1" }
             );

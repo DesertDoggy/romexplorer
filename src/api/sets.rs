@@ -587,7 +587,9 @@ async fn family_rows(app: &App, list: &str, held: &str, rank: &str, row_key: &st
 /// language priority, edition). Titles without releases are left out.
 pub async fn top_releases(app: &App, title_ids: &[u64]) -> Result<Vec<u64>> {
     let rank = catalog::ReleaseRank::load(app).await?;
-    let sql = format!("SELECT r.id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE WHERE tr.title_id = ? ORDER BY {} LIMIT 1", rank.sql("r"));
+    // A release combined into another stands for nothing on its own: its lead is picked,
+    // and a copy takes it with the lead (`release_combine::with_combined`).
+    let sql = format!("SELECT r.id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE WHERE tr.title_id = ? AND NOT {} ORDER BY {} LIMIT 1", super::release_combine::is_combined_sql("r"), rank.sql("r"));
     let mut out = Vec::new();
     for t in title_ids {
         if let Some(id) = sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(sql.clone())).bind(t).fetch_optional(&app.pool).await? {

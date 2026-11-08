@@ -77,6 +77,9 @@ zapasową przed podmianą wersji.
 - Podziały są teraz wymienione w Edycja › Połączone tytuły i można je tam cofnąć. Podziały z
   Przeglądu scaleń sprzed tej aktualizacji są dodawane do listy.
 
+**Połączone wydania**
+- Płyty jednej gry wymienione osobno (płyty z pakietu, płyta bonusowa) można połączyć poleceniem „Połącz w jedno wydanie”. Na liście jest jedno wydanie dla wszystkich, a skopiowanie go kopiuje wszystkie płyty. Na stronie wydania można jedno odłączyć.
+
 ## Poprawki błędów
 
 - Tytuł zachowywał alternatywne tytuły z IGDB po usunięciu powiązania z IGDB i nie dało się ich usunąć. Teraz znikają razem z powiązaniem, a każdy alternatywny tytuł można usunąć przyciskiem ✕.

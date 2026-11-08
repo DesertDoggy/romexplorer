@@ -93,6 +93,12 @@ async fn fold_mapped(conn: &mut sqlx::MySqlConnection) -> Result<(), DatabaseErr
         let sql = format!("DELETE t FROM {table} t JOIN release_merge m ON m.old_id = t.release_id");
         sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *tx).await?;
     }
+    // A release the user combined others into, or combined into another, stays so as the
+    // survivor (`api::release_combine`); a group folded into itself is no group.
+    sqlx::query("UPDATE IGNORE release_combined c JOIN release_merge m ON m.old_id = c.release_id SET c.release_id = m.new_id").execute(&mut *tx).await?;
+    sqlx::query("DELETE c FROM release_combined c JOIN release_merge m ON m.old_id = c.release_id").execute(&mut *tx).await?;
+    sqlx::query("UPDATE release_combined c JOIN release_merge m ON m.old_id = c.lead_id SET c.lead_id = m.new_id").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM release_combined WHERE release_id = lead_id").execute(&mut *tx).await?;
     // A set's release entries follow too (a set holding both keeps one).
     sqlx::query("UPDATE IGNORE collection_set_entries e JOIN release_merge m ON m.old_id = e.release_id SET e.release_id = m.new_id").execute(&mut *tx).await?;
     sqlx::query("DELETE e FROM collection_set_entries e JOIN release_merge m ON m.old_id = e.release_id").execute(&mut *tx).await?;

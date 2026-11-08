@@ -2936,5 +2936,15 @@
   "When this finds nothing, audio_fallback decides.": "찾지 못하면 audio_fallback을 따릅니다.",
   "Seconds. A ROM sound that loops and is at least this long is music (default 3).": "초 단위입니다. 반복되는 ROM 소리 중 이 길이 이상인 것을 BGM으로 봅니다(기본값 3).",
   "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.": "초 단위입니다. 반복되지 않는 ROM 소리는 이 길이(기본값 20)부터 BGM, audio_rom_jingle_min_s(기본값 8)부터 징글, 그보다 짧으면 효과음으로 봅니다.",
-  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "소리는 반복 여부와 길이(아래 세 가지 설정)로 나눕니다."
+  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "소리는 반복 여부와 길이(아래 세 가지 설정)로 나눕니다.",
+  "combine into one release": "하나의 릴리스로 합치기",
+  "select at least two releases": "릴리스를 2개 이상 선택하세요",
+  "Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.": "릴리스 {n}개를 하나로 합칠까요? 따로 등록된 같은 게임의 디스크용입니다. 대표 릴리스 하나가 타이틀에 표시되고, 복사하면 모든 디스크가 복사됩니다.",
+  "combined into release #{id}": "릴리스 #{id}에 합쳤습니다",
+  "+{n} combined": "+{n}개 합침",
+  "Combined releases": "합쳐진 릴리스",
+  "Combined into": "합쳐진 릴리스:",
+  "list and copy this release on its own again": "이 릴리스를 다시 따로 표시하고 복사합니다",
+  "split off": "분리",
+  "Listed and copied with this release.": "이 릴리스와 함께 표시되고 복사됩니다."
 }
