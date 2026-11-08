@@ -81,6 +81,9 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Le separazioni sono ora elencate in Modifica › Titoli uniti e si possono annullare da lì. Quelle
   fatte da Revisione unioni prima di questo aggiornamento vengono aggiunte all'elenco.
 
+**Uscite unite**
+- I dischi di un gioco elencati separatamente (quelli di un bundle, un disco bonus) si possono unire con «Unisci in un'unica uscita». Viene elencata un'uscita per tutti e copiandola si copiano tutti i dischi. Dalla pagina dell'uscita se ne può separare uno.
+
 ## Correzioni
 
 - Un titolo conservava i titoli alternativi di IGDB dopo la rimozione del collegamento a IGDB, e non si potevano eliminare. Ora vengono rimossi con il collegamento, e ogni titolo alternativo si può rimuovere con ✕.

@@ -80,6 +80,9 @@ de segurança antes de substituir uma versão.
 - As separações passam a aparecer em Editar › Títulos combinados e podem ser desfeitas aí. As
   feitas na Revisão de fusões antes desta atualização são acrescentadas à lista.
 
+**Lançamentos combinados**
+- Os discos de um jogo listados em separado (os de um pack, um disco bónus) podem ser juntos com «Combinar num só lançamento». É listado um lançamento para todos, e copiá-lo copia todos os discos. Na página do lançamento é possível separar um.
+
 ## Correções
 
 - Um título mantinha os títulos alternativos do IGDB depois de remover a ligação ao IGDB, e não era possível apagá-los. Agora são removidos com a ligação, e qualquer título alternativo pode ser removido com ✕.

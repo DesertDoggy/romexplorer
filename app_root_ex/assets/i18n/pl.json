@@ -2936,5 +2936,15 @@
   "When this finds nothing, audio_fallback decides.": "Gdy nic się nie znajdzie, decyduje audio_fallback.",
   "Seconds. A ROM sound that loops and is at least this long is music (default 3).": "Sekundy. Zapętlony dźwięk z ROM-u o co najmniej tej długości jest muzyką (domyślnie 3).",
   "Seconds. A ROM sound that does not loop is music from this length (default 20), a jingle from audio_rom_jingle_min_s (default 8), and a sound effect below that.": "Sekundy. Niezapętlony dźwięk z ROM-u jest muzyką od tej długości (domyślnie 20), dżinglem od audio_rom_jingle_min_s (domyślnie 8), a poniżej efektem dźwiękowym.",
-  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "Dźwięki są dzielone według zapętlenia i długości (trzy długości poniżej)."
+  "Sounds are sorted by whether they loop and how long they are (the three lengths below).": "Dźwięki są dzielone według zapętlenia i długości (trzy długości poniżej).",
+  "combine into one release": "połącz w jedno wydanie",
+  "select at least two releases": "zaznacz co najmniej dwa wydania",
+  "Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.": "Połączyć {n} wydań w jedno? Dla płyt jednej gry wymienionych osobno: jedno wydanie reprezentuje wszystkie w swoim tytule, a skopiowanie go kopiuje wszystkie płyty.",
+  "combined into release #{id}": "połączono w wydanie #{id}",
+  "+{n} combined": "+{n} połączone",
+  "Combined releases": "Połączone wydania",
+  "Combined into": "Połączone w",
+  "list and copy this release on its own again": "znów wyświetlaj i kopiuj to wydanie osobno",
+  "split off": "odłącz",
+  "Listed and copied with this release.": "Wyświetlane i kopiowane razem z tym wydaniem."
 }

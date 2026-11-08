@@ -1180,7 +1180,7 @@ function gameHints(r) { return [r.merge_hint ? hintIcon(tr('missing match found:
 function gameChips(r) { return gameHints(r) + [r.complete === true ? badge(tr('complete'), 'ok') : r.complete === false && !r.missing_files ? `<span class="badge warn" title="${esc(trf('DAT files held {present} of {required}', { present: r.contents_present, required: r.contents_required }))}">${esc(trf('incomplete {present}/{required}', { present: r.contents_present, required: r.contents_required }))}</span>` : '', r.dat_verified ? badge('DAT', 'ok') : '', r.hasheous_verified ? badge(tr('✓ hasheous'), 'ok') : '', r.missing_files ? badge(trf('missing {n}', { n: r.missing_files }), 'bad') : ''].join(''); }
 // Complete / missing filter for the local lists (games, roms).
 function statusFilter() { return { key: 'status', label: tr('status'), type: 'select', options: () => `<option value="">${tr('any status')}</option><option value="complete">${tr('complete (all files present)')}</option><option value="missing">${tr('missing files')}</option>` }; }
-function releaseChips(r) { return [r.local_verified ? badge(tr('✓ verified'), 'ok') : '', r.local_missing ? badge(trf('missing {n}', { n: r.local_missing }), 'bad') : '', r.is_budget ? badge(tr('budget'), 'ok') : '', r.is_special_edition ? badge(tr('special'), 'warn') : '', r.is_aftermarket ? badge(tr('aftermarket')) : '', r.is_rerelease ? badge(tr('re-release'), 'dim') : ''].join(''); }
+function releaseChips(r) { return [r.local_verified ? badge(tr('✓ verified'), 'ok') : '', r.local_missing ? badge(trf('missing {n}', { n: r.local_missing }), 'bad') : '', r.is_budget ? badge(tr('budget'), 'ok') : '', r.is_special_edition ? badge(tr('special'), 'warn') : '', r.is_aftermarket ? badge(tr('aftermarket')) : '', r.is_rerelease ? badge(tr('re-release'), 'dim') : '', r.combined_count ? badge(trf('+{n} combined', { n: r.combined_count })) : ''].join(''); }
 
 // modal dialog
 const modal = document.getElementById('modal');
@@ -2776,6 +2776,11 @@ function releaseTitleActions() {
       if (!confirm(trf('Put the {n} selected release(s) together in a new title of their own? It will not be combined with their old titles again automatically.', { n: ids.length }))) return;
       try { const r = await api('/api/v1/catalog/releases/split', { method: 'POST', body: { release_ids: ids } }); done(); go('collection/titles/' + r.title_id); } catch (e) { toast(e.message, true); }
     } },
+    { label: tr('combine into one release'), run: async (ids, done) => {
+      if (ids.length < 2) return toast(tr('select at least two releases'), true);
+      if (!confirm(trf('Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.', { n: ids.length }))) return;
+      try { const r = await api('/api/v1/catalog/releases/combine', { method: 'POST', body: { release_ids: ids } }); toast(trf('combined into release #{id}', { id: r.release_id })); done(); } catch (e) { toast(e.message, true); }
+    } },
     { label: tr('move to another title…'), run: async (ids, done) => {
       pickTitleDialog(trf('Move {n} release(s) to', { n: ids.length }), async title => {
         try { await api('/api/v1/catalog/releases/move-title', { method: 'POST', body: { release_ids: ids, title_id: title } }); done(); go('collection/titles/' + title); } catch (e) { toast(e.message, true); }
@@ -3692,6 +3697,7 @@ async function showRelease(id) {
     </div>
     <div class="card" id="display-card"></div>
     <div class="card" id="media-strip" hidden></div>
+    ${(r.combined || []).length || r.combined_into ? `<div class="card" id="combined-card"><h2>${tr('Combined releases')}</h2>${r.combined_into ? `<p>${tr('Combined into')} <span class="link" data-go="collection/releases/${r.combined_into.id}">${esc(r.combined_into.name)}</span> <button class="btn small" data-uncombine="${id}" title="${tr('list and copy this release on its own again')}">${tr('split off')}</button></p>` : ''}${(r.combined || []).length ? `<p class="muted">${tr('Listed and copied with this release.')}</p><table class="grid">${r.combined.map(c => `<tr><td><span class="link" data-go="collection/releases/${c.id}">${esc(c.name)}</span></td><td>${c.local_games ? badge(tr('held'), 'ok') : ''}</td><td><button class="btn small" data-uncombine="${c.id}" title="${tr('list and copy this release on its own again')}">${tr('split off')}</button></td></tr>`).join('')}</table>` : ''}</div>` : ''}
     <div class="card"><h2>${trf('Local copies ({n})', { n: r.games.length })} <span id="games-order"></span></h2><div id="games"></div></div>
     <div id="r-ra"></div>
     <div class="card"><h2>${trf('Catalog contents ({n})', { n: r.contents.length })}</h2>${new Set(r.contents.map(c => c.dump_source)).size > 1 ? `<p class="muted">${tr('Listed by several DATs: each source’s file list is one dump of this release (e.g. redump cue/bin, mame-redump CHD); a local copy matching any of them is this release.')}</p>` : ''}${r.contents.some(c => c.variant) ? `<p class="muted">${tr('Versions of one patched work: holding any one of them is holding this release.')}</p>` : ''}<table class="grid"><thead><tr><th>${tr('dump')}</th>${r.contents.some(c => c.variant) ? `<th>${tr('version')}</th>` : ''}<th>${tr('file')}</th><th>${tr('size')}</th><th>${tr('platform')}</th><th>${tr('type')}</th><th>${tr('hashes')}</th></tr></thead><tbody>${r.contents.map(c => `<tr><td>${sourceBadges(c.dump_sources || c.dump_source || '')}</td>${r.contents.some(x => x.variant) ? `<td>${esc(c.variant || '')} ${c.held ? badge(tr('held'), 'ok') : ''}</td>` : ''}<td>${esc(c.file_name || '')} ${c.partial ? badge(tr('partial'), 'dim') : ''} ${c.member_count ? badge(trf('×{n} members', { n: c.member_count }), 'warn') : ''}</td><td class="num">${fmtSize(c.size)}</td><td>${cbadge('platform', c.platform)}</td><td>${esc(c.media_type || '')}</td><td>${hashesHtml(c.hashes)}</td></tr>`).join('') || `<tr><td colspan="6" class="muted">${tr('none')}</td></tr>`}</tbody></table></div>
@@ -3699,6 +3705,11 @@ async function showRelease(id) {
     ${r.patched.length ? `<div class="card" id="patched-card"><h2>${trf('Patched ROMs and extras of this release ({n})', { n: r.patched.length })}</h2>${patchedRefTable(r.patched)}</div>` : ''}
     <div id="r-material"></div>`;
   for (const row of view.querySelectorAll('#patched-card tr[data-href]')) linkify(row, row.dataset.href);
+  // The other discs of the game, combined into this release by hand -- or the one this is in.
+  for (const a of view.querySelectorAll('#combined-card [data-go]')) a.onclick = () => go(a.dataset.go);
+  for (const b of view.querySelectorAll('#combined-card [data-uncombine]')) b.onclick = async () => {
+    try { await api('/api/v1/catalog/releases/' + b.dataset.uncombine + '/uncombine', { method: 'POST', body: {} }); showRelease(id); } catch (e) { toast(e.message, true); }
+  };
   // What it is made from: the link, how sure it is, and the user's say.
   const baseRow = document.getElementById('base-row');
   if (baseRow) {

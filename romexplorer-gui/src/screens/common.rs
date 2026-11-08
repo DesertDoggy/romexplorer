@@ -516,6 +516,9 @@ pub fn release_chips(r: &Value) -> String {
     if api::b(r, "is_rerelease") {
         v.push_str(&badge(&state::tr("re-release"), "dim"));
     }
+    if u(r, "combined_count") > 0 {
+        v.push_str(&badge(&state::trf("+{n} combined", &[("n", &u(r, "combined_count").to_string())]), ""));
+    }
     v
 }
 
@@ -1156,6 +1159,25 @@ pub fn release_title_actions() -> Vec<crate::components::SelAction> {
                         ui::toast(e.message, true);
                         false
                     }
+                }
+            }
+        }),
+        SelAction::new(&state::tr("combine into one release"), |ids: Vec<u64>| async move {
+            if ids.len() < 2 {
+                ui::toast(state::tr("select at least two releases"), true);
+                return false;
+            }
+            if !ui::confirm(&state::trf("Combine {n} releases into one? For the discs of one game that are listed apart: one release stands for them all under its title, and copying it copies every disc.", &[("n", &ids.len().to_string())])).await {
+                return false;
+            }
+            match api::post("/api/v1/catalog/releases/combine", json!({ "release_ids": ids })).await {
+                Ok(r) => {
+                    ui::toast(state::trf("combined into release #{id}", &[("id", &u(&r, "release_id").to_string())]), false);
+                    true
+                }
+                Err(e) => {
+                    ui::toast(e.message, true);
+                    false
                 }
             }
         }),

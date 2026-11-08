@@ -82,6 +82,9 @@ Faites une sauvegarde avant de remplacer une version.
 - Les séparations sont désormais listées dans Édition › Titres fusionnés et peuvent y être
   annulées. Celles faites depuis Revue des fusions avant cette mise à jour sont ajoutées à la liste.
 
+**Sorties regroupées**
+- Les disques d’un même jeu listés séparément (ceux d’un pack, un disque bonus) peuvent être réunis avec « Regrouper en une seule sortie ». Une seule sortie est listée pour tous, et la copier copie tous les disques. La page de la sortie permet d’en séparer un.
+
 ## Corrections
 
 - Un titre gardait les titres alternatifs d’IGDB après le retrait de son lien IGDB, sans pouvoir les supprimer. Ils partent désormais avec le lien, et chaque titre alternatif peut être retiré avec ✕.

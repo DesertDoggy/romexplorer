@@ -81,6 +81,9 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Trennungen stehen jetzt unter Bearbeiten › Zusammengeführte Titel und lassen sich dort rückgängig
   machen. Trennungen aus „Zusammenführungen prüfen“ vor diesem Update werden der Liste hinzugefügt.
 
+**Zusammengefasste Veröffentlichungen**
+- Getrennt gelistete Discs eines Spiels (die Discs eines Bundles, eine Bonus-Disc) lassen sich mit „Zu einer Veröffentlichung zusammenfassen“ zusammenlegen. Gelistet wird eine Veröffentlichung für alle, und beim Kopieren werden alle Discs kopiert. Auf der Seite der Veröffentlichung lässt sich eine wieder abtrennen.
+
 ## Fehlerbehebungen
 
 - Ein Titel behielt die alternativen Titel von IGDB, nachdem seine IGDB-Verknüpfung entfernt wurde, und sie ließen sich nicht löschen. Sie werden jetzt mit der Verknüpfung entfernt, und jeder alternative Titel lässt sich mit ✕ löschen.
