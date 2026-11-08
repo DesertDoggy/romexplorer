@@ -651,6 +651,11 @@ impl Machine for GameBoy {
         self.board.buttons = if held { 0x08 } else { 0 };
     }
 
+    fn press(&mut self, buttons: u8) {
+        // A, B, Select, Start: the button group's own bits.
+        self.board.buttons = buttons & 0x0F;
+    }
+
     fn entry(&self) -> Entry {
         let mut cpu = self.cpu.clone();
         cpu.calls.clear();
