@@ -7,7 +7,9 @@
 //! in the boot alone. The music still plays from the ROM: the NSF is only read for addresses.
 
 use super::m6502::{Bus, Cpu};
-use super::music_search::{hint_routines, Hint, Write};
+use std::collections::HashSet;
+
+use super::music_search::{self, hint_routines, Hint, Write};
 
 /// Code bytes compared at each address, in the NSF and in the game.
 const CODE_BYTES: usize = 12;
@@ -306,52 +308,13 @@ fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
     Some((p, init, play))
 }
 
-/// A melody's fingerprint: the runs of four pitches in a row on each of the NES's tone
-/// channels (pulse 1 and 2, triangle), as the writes set them. Two plays of one song share
-/// most of theirs whatever the timing or volume, two songs few.
-pub fn melody(frames: &[Vec<Write>]) -> std::collections::HashSet<u64> {
-    use std::hash::{Hash, Hasher};
-    let mut regs = [0u8; 12];
-    let mut last = [u16::MAX; 3];
-    let mut runs: [Vec<u16>; 3] = Default::default();
-    let mut out = std::collections::HashSet::new();
-    for f in frames {
-        for w in f {
-            let a = w.port;
-            if !(0x4000..0x400C).contains(&a) {
-                continue;
-            }
-            regs[(a - 0x4000) as usize] = w.value as u8;
-            let ch = ((a - 0x4000) / 4) as usize;
-            if a & 3 < 2 {
-                continue;
-            }
-            let period = (regs[ch * 4 + 3] as u16 & 7) << 8 | regs[ch * 4 + 2] as u16;
-            if period == last[ch] || period < 8 {
-                continue;
-            }
-            last[ch] = period;
-            let run = &mut runs[ch];
-            run.push(period);
-            if run.len() >= 4 {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                (ch, &run[run.len() - 4..]).hash(&mut h);
-                out.insert(h.finish());
-            }
-        }
-    }
-    out
+/// A melody's fingerprint (see [`music_search::melody`]) on the NES's tone channels: pulse 1
+/// and 2, and the triangle.
+pub fn melody(frames: &[Vec<Write>]) -> HashSet<u64> {
+    music_search::melody(frames, &[(0x4002, 0x4003), (0x4006, 0x4007), (0x400A, 0x400B)])
 }
 
-/// How alike two [`melody`] fingerprints are: the share of the smaller one found in the
-/// other (0 when either is empty).
-pub fn alike(a: &std::collections::HashSet<u64>, b: &std::collections::HashSet<u64>) -> f64 {
-    let small = a.len().min(b.len());
-    if small == 0 {
-        return 0.0;
-    }
-    a.intersection(b).count() as f64 / small as f64
-}
+pub use music_search::alike;
 
 #[cfg(test)]
 mod tests {
