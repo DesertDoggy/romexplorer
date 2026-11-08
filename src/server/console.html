@@ -5047,7 +5047,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': case 'audio_rom_limiter': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -5062,6 +5062,7 @@ function settingEditor(key, value) {
         media_reuse_existing: [true, tr('take art already in the media folder instead of downloading it again (default)'), tr('always download')],
         audio_keep_playing: [true, tr("keep a title's music playing on other screens until another title page opens (default)"), tr('stop the music when the page is left')],
         audio_rom_videos: [false, tr('play the sound of video files in ROMs, such as title movies'), tr('leave video sound out (default)')],
+        audio_rom_limiter: [true, tr('soften sudden loud bursts in music played from ROMs (default)'), tr('play it as the sound chip makes it')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));

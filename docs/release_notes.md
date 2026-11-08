@@ -46,6 +46,7 @@ replacing a build.
 - Title pages can play the music inside your ROMs (supported platforms and media types only).
 - NES and Famicom music plays straight from the ROM, through the game's own sound code: no
   original audio files needed. Famicom sound chips (VRC6, Namco 163, Sunsoft 5B, MMC5) included.
+- A limiter holds down sudden loud bursts in music played from a sound chip (Settings › Audio, on by default).
 - Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance and Neo Geo Pocket music plays straight from the
   ROM the same way, the Japanese Master System's FM sound included.
 - Settings adjust which tracks play.
