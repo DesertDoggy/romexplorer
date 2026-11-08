@@ -843,16 +843,41 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
     }
     nes.set_windows(windows);
     let budget = 400_000;
+    let banked = m.header.banks.iter().any(|&b| b != 0);
     let mut run = |nes: &mut super::nes_music::Nes, ops: &[Op]| -> bool {
-        let mut pushed = Vec::new();
         for op in ops {
             match *op {
-                // The file's own bank registers: the board has its own.
+                // The file's own bank registers: the board's window where the game has
+                // that bank (through the run holding most of it).
+                Op::Poke(r @ 0x5FF8..=0x5FFF, b) if banked => {
+                    let slot = r as usize - 0x5FF8;
+                    let d0 = (b as usize * 0x1000).checked_sub((m.header.load & 0xFFF) as usize);
+                    let Some(d0) = d0 else { continue };
+                    let best = m
+                        .runs
+                        .iter()
+                        .filter_map(|r| {
+                            let from = r.data.max(d0);
+                            let to = (r.data + r.len).min(d0 + 0x1000);
+                            (to > from).then_some((to - from, from))
+                        })
+                        .max();
+                    if let Some((_, d)) = best {
+                        let a = (0x8000 + slot * 0x1000 + (d - d0)) as u16;
+                        if let Some((_, w, base)) = game_place(m, prg_len, d, a) {
+                            let mut win = nes.windows();
+                            win[w] = base;
+                            nes.set_windows(win);
+                        }
+                    }
+                }
                 Op::Poke(0x5FF6..=0x5FFF, _) => {}
                 Op::Poke(a @ (0x0000..=0x1FFF | 0x4000..=0x4017), v) => nes.write_bus(a, v),
                 Op::Poke(a @ 0x6000..=0x7FFF, v) => nes.poke(a as u32, v),
                 Op::Poke(..) => {}
-                Op::Push(v) => pushed.push(v),
+                // Bytes the file's own code pushed: the game's code didn't (its routine
+                // is entered where the game enters it).
+                Op::Push(_) => {}
                 Op::Call { addr, a, x, y, src } => {
                     let place = src.checked_sub(1).and_then(|d| game_place(m, prg_len, d as usize, addr));
                     let at = match place {
@@ -866,7 +891,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                         }
                         None => addr,
                     };
-                    if !nes.run_routine(at, [a, x, y], &std::mem::take(&mut pushed), budget) {
+                    if !nes.run_routine(at, [a, x, y], &[], budget) {
                         return false;
                     }
                 }
@@ -891,15 +916,49 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
     Some(out)
 }
 
-/// [`map_check`] on the game's own board ([`cart_track_writes`]).
+/// A [`melody`] by notes rather than periods: each tone channel's period turned into the
+/// nearest semitone at the console's clock (`pal`), so a PAL release (its own period table,
+/// about 7% lower) matches the NTSC file it was made from.
+pub fn note_melody(frames: &[Vec<Write>], pal: bool) -> HashSet<u64> {
+    let clock = if pal { 1_662_607.0 } else { 1_789_773.0 };
+    let pairs = [(0x4002u32, 0x4003u32), (0x4006, 0x4007), (0x400A, 0x400B)];
+    let mut lo = [0u16; 3];
+    let mut hi = [0u16; 3];
+    let notes: Vec<Vec<Write>> = frames
+        .iter()
+        .map(|f| {
+            let mut out = Vec::new();
+            for w in f {
+                let Some(ch) = pairs.iter().position(|p| p.0 == w.port || p.1 == w.port) else { continue };
+                if pairs[ch].0 == w.port {
+                    lo[ch] = w.value & 0xFF;
+                } else {
+                    hi[ch] = w.value & 7;
+                }
+                let period = (hi[ch] << 8 | lo[ch]) as f64;
+                // The note number, written as a period the fingerprint takes (8 and up).
+                let note = (12.0 * (clock / (16.0 * (period + 1.0)) / 27.5).log2()).round();
+                let n = (note.clamp(-100.0, 400.0) + 108.0) as u16;
+                out.push(Write { at: w.at, port: pairs[ch].0, value: n & 0xFF });
+                out.push(Write { at: w.at, port: pairs[ch].1, value: n >> 8 });
+            }
+            out
+        })
+        .collect();
+    melody(&notes)
+}
+
+/// [`map_check`] on the game's own board ([`cart_track_writes`]), by notes ([`note_melody`]).
 pub fn cart_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<f64>> {
+    let pal = super::nes_cart::parse(rom).is_ok_and(|h| h.pal);
     (0..m.header.songs)
         .map(|t| {
             let real = melody(&track_writes(nsf, t, frames)?);
             if real.len() < music_search::MIN_MELODY {
                 return None;
             }
-            let mine = cart_track_writes(m, rom, t, frames).map(|w| melody(&w)).unwrap_or_default();
+            let real = note_melody(&track_writes(nsf, t, frames)?, false);
+            let mine = cart_track_writes(m, rom, t, frames).map(|w| note_melody(&w, pal)).unwrap_or_default();
             Some(alike(&real, &mine))
         })
         .collect()
