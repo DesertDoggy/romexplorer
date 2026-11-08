@@ -7,6 +7,10 @@
 #           Sms_Apu, Gme_File...), so its sources are compiled with sgc/rename.h force-included:
 #           every name it defines gets an rsgc_ prefix and both copies live side by side.
 #   rspc_*  upstream's SNES sound chip (Snes_Spc) driven through its ports, in time.
+#   rnes_*  the NES sound chip and the Famicom cartridge ones (VRC6, Namco 163, Sunsoft 5B,
+#           MMC5) from upstream libgme, fed by the game's own code running on the app's 6502.
+#   rgb_*   the Game Boy sound chip from upstream libgme, fed by the game's own code running
+#           on the app's Game Boy CPU.
 #   ragb_*  GBA music from the ROM through agbplay (external/agbplay, LGPL-3.0): the playback
 #           core only, fmt header-only from external/fmt.
 #   rsseq_* DS sequenced music (SSEQ in a sound archive) through kode54's SSEQ Player
@@ -77,6 +81,19 @@ add_library(rommusic_spc OBJECT spc/rspc.cpp)
 target_include_directories(rommusic_spc PRIVATE ${GME_ROOT}/gme)
 target_compile_definitions(rommusic_spc PRIVATE HAVE_STDINT_H BLARGG_LITTLE_ENDIAN=1 SPC_MORE_ACCURACY=1)
 set_target_properties(rommusic_spc PROPERTIES CXX_STANDARD 11 CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
+# --- the NES sound chips, fed register by register (the chip classes come from gme_static) --
+add_library(rommusic_nes OBJECT nes/rnes.cpp)
+target_include_directories(rommusic_nes PRIVATE ${GME_ROOT}/gme)
+target_compile_definitions(rommusic_nes PRIVATE HAVE_STDINT_H BLARGG_LITTLE_ENDIAN=1)
+set_target_properties(rommusic_nes PROPERTIES CXX_STANDARD 11 CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
+add_library(rommusic_gb OBJECT gb/rgb.cpp)
+target_include_directories(rommusic_gb PRIVATE ${GME_ROOT}/gme)
+target_compile_definitions(rommusic_gb PRIVATE HAVE_STDINT_H BLARGG_LITTLE_ENDIAN=1)
+set_target_properties(rommusic_gb PROPERTIES CXX_STANDARD 11 CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+# gme is built without RTTI; Stereo_Buffer's vtable must match.
+target_compile_options(rommusic_gb PRIVATE -fno-rtti)
 
 # --- agbplay's playback core ----------------------------------------------------------
 set(AGB ${AGBPLAY_ROOT}/src/agbplay)
@@ -179,13 +196,16 @@ set_target_properties(rommusic_wsr PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET 
 target_compile_definitions(rommusic_wsr PRIVATE SIZEOF_DOUBLE=8 MEDNAFEN_VERSION_NUMERIC=931 MPC_FIXED_POINT STDC_HEADERS __STDC_LIMIT_MACROS __LIBRETRO__ _LOW_ACCURACY_)
 target_compile_options(rommusic_wsr PRIVATE ${ROMMUSIC_LAX_C})
 
-# --- libvgm, for VGM logs gme cannot play -------------------------------------------------
+# --- libvgm, for VGM logs gme cannot play, and chips for consoles the app runs (rchip_) --
 # Its own CMake is not used: it would want zlib for loaders and a player list rommusic does
 # not need. SNDDEV_SELECT builds the device table from only the SNDDEV_ named here.
 set(LV ${VGM_ROOT})
-set(RVGM_SOURCES vgm/rvgm.cpp
+set(RVGM_SOURCES vgm/rvgm.cpp chip/rchip.cpp
+  ${LV}/emu/cores/2413intf.c ${LV}/emu/cores/emu2413.c ${LV}/emu/cores/2612intf.c ${LV}/emu/cores/ym3438.c
   ${LV}/emu/SoundEmu.c ${LV}/emu/Resampler.c ${LV}/emu/logging.c ${LV}/emu/panning.c ${LV}/emu/dac_control.c
   ${LV}/emu/cores/sn764intf.c ${LV}/emu/cores/sn76496.c ${LV}/emu/cores/vsu.c
+  ${LV}/emu/cores/c6280intf.c ${LV}/emu/cores/c6280_mame.c
+  ${LV}/emu/cores/ayintf.c ${LV}/emu/cores/ay8910.c ${LV}/emu/cores/k051649.c ${LV}/emu/cores/ws_audio.c
   ${LV}/player/playerbase.cpp ${LV}/player/vgmplayer.cpp ${LV}/player/vgmplayer_cmdhandler.cpp ${LV}/player/playera.cpp
   ${LV}/player/dblk_compr.c ${LV}/player/helper.c ${LV}/utils/DataLoader.c)
 if(WIN32)
@@ -195,12 +215,12 @@ else()
 endif()
 add_library(rommusic_vgm OBJECT ${RVGM_SOURCES})
 target_include_directories(rommusic_vgm PRIVATE ${LV} ${LV}/libs/include)
-target_compile_definitions(rommusic_vgm PRIVATE SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
+target_compile_definitions(rommusic_vgm PRIVATE HAVE_STDINT_H SNDDEV_SELECT SNDDEV_SN76496 EC_SN76496_MAME SNDDEV_YM2413 EC_YM2413_EMU2413 SNDDEV_YM2612 EC_YM2612_NUKED SNDDEV_C6280 EC_C6280_MAME SNDDEV_AY8910 EC_AY8910_MAME SNDDEV_K051649 SNDDEV_WSWAN SNDDEV_VBOY_VSU VGM_LITTLE_ENDIAN)
 set_target_properties(rommusic_vgm PROPERTIES C_STANDARD 99 CXX_STANDARD 11 C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
 target_compile_options(rommusic_vgm PRIVATE -w)
 
 # --- the library ----------------------------------------------------------------------
-add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
+add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_nes> $<TARGET_OBJECTS:rommusic_gb> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
   $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>)
 # llvm-mingw's lld (windows/arm64) takes --whole-archive but not the --push-state/--pop-state
 # that CMake wraps WHOLE_ARCHIVE in for MinGW, nor --exclude-libs (below).

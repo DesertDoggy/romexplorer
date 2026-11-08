@@ -55,6 +55,8 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Titelseiten können die Musik in Ihren ROMs abspielen (nur unterstützte Plattformen und
   Medientypen).
 - In den Einstellungen wird festgelegt, welche Tracks spielen.
+- NES- und Famicom-Musik spielt direkt aus dem ROM, über den eigenen Soundcode des Spiels: keine Original-Audiodateien nötig. Famicom-Soundchips (VRC6, Namco 163, Sunsoft 5B, MMC5) inklusive.
+- Musik von Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance und Neo Geo Pocket spielt ebenso direkt aus dem ROM, FM-Sound des japanischen Master System inklusive.
 - Original-Audioformate (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP und Game-Gear-SGC, einzeln
   oder gezippt) werden unterstützt.
 - Eine Original-Audio-Bibliothek: Tragen Sie unter Einstellungen › Audio die Ordner Ihrer Sets ein, und

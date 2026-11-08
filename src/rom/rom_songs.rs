@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use super::agbplay;
+use super::music_search::{self, Machine};
 use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresholds, TrackLocation};
 
 /// The data view a ROM song is stored under: no disc has this many data tracks, and it is one
@@ -30,6 +31,29 @@ const PLAY_LOOPS: u8 = 2;
 
 /// The engine a stored path names.
 const GBA_M4A: &str = "gba-m4a";
+/// `nes@<recipe>@<body ms>@<fade ms>`: the game's own sound code (see [`super::nes_music`]).
+const NES: &str = "nes";
+/// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
+const GB: &str = "gb";
+/// The same, for the Master System and the Game Gear.
+const SMS: &str = "sms";
+const GG: &str = "gg";
+/// The same, for the Mega Drive.
+const MD: &str = "md";
+/// The same, for the PC Engine.
+const PCE: &str = "pce";
+/// The same, for the MSX.
+const MSX: &str = "msx";
+/// The same, for the WonderSwan and WonderSwan Color.
+const WS: &str = "ws";
+/// The same, for the Virtual Boy.
+const VB: &str = "vb";
+/// The same, for Game Boy Advance games not on the standard sound engine.
+const GBA: &str = "gba";
+/// The same, for the Neo Geo Pocket and Neo Geo Pocket Color.
+const NGP: &str = "ngp";
+/// How long a looping song from a game's own sound code fades out.
+const SONG_FADE_MS: u64 = 8_000;
 /// `nds-sseq@<data view>@<body ms>@<fade ms>@<sound archive's path on the disc>`.
 const NDS_SSEQ: &str = "nds-sseq";
 /// DS songs are listened to at this rate to time them: enough to hear the drums' level.
@@ -52,7 +76,28 @@ pub const MAX_SDAT_BYTES: u64 = 128 << 20;
 /// Which engines can read ROMs of `platform` (`platforms.id`) on this machine.
 pub fn covers(platform: u16) -> bool {
     use crate::common::models::Platform as P;
-    platform == P::GameBoyAdvance as u16 && agbplay::available()
+    (platform == P::GameBoyAdvance as u16 && (agbplay::available() || super::gb_apu::available())) || (is_nes(platform) && super::nes_apu::available())
+        || (is_gb(platform) && super::gb_apu::available())
+        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::SegaGenesis as u16
+            || platform == P::TurboGrafx16 as u16
+            || platform == P::Msx as u16
+            || platform == P::Msx2 as u16
+            || platform == P::WonderSwan as u16
+            || platform == P::WonderSwanColor as u16
+            || platform == P::VirtualBoy as u16
+            || platform == P::NeoGeoPocket as u16
+            || platform == P::NeoGeoPocketColor as u16)
+            && super::vgm_chips::available())
+}
+
+fn is_gb(platform: u16) -> bool {
+    use crate::common::models::Platform as P;
+    platform == P::GameBoy as u16 || platform == P::GameBoyColor as u16
+}
+
+fn is_nes(platform: u16) -> bool {
+    use crate::common::models::Platform as P;
+    platform == P::Nes as u16 || platform == P::Famicom as u16 || platform == P::FamicomDiskSystem as u16
 }
 
 /// How many ROM images [`read_rom`] keeps in memory. A cartridge is at most
@@ -139,14 +184,53 @@ fn measure(player: &mut agbplay::Player, number: u32) -> Result<u64, String> {
 /// The songs in the ROM at `path`, measured and classified. Empty when no engine on this
 /// machine reads the ROM's music.
 pub fn index(path: &Path, platform: u16, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+    index_explained(path, platform, t).map(|(found, _)| found)
+}
+
+/// [`index`], and when nothing was found, why.
+pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     if !covers(platform) {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
+    }
+    if is_nes(platform) {
+        return index_nes(path, t);
+    }
+    if is_gb(platform) {
+        return index_machine::<super::gb_music::GameBoy>(path, t, GB, "Game Boy");
+    }
+    {
+        use crate::common::models::Platform as P;
+        if platform == P::SegaMasterSystem as u16 {
+            return index_machine::<super::sms_music::MasterSystem>(path, t, SMS, "Master System");
+        }
+        if platform == P::SegaGameGear as u16 {
+            return index_machine::<super::sms_music::GameGear>(path, t, GG, "Game Gear");
+        }
+        if platform == P::SegaGenesis as u16 {
+            return index_machine::<super::md_music::MegaDrive>(path, t, MD, "Mega Drive");
+        }
+        if platform == P::TurboGrafx16 as u16 {
+            return index_machine::<super::pce_music::PcEngine>(path, t, PCE, "PC Engine");
+        }
+        if platform == P::Msx as u16 || platform == P::Msx2 as u16 {
+            return index_machine::<super::msx_music::Msx>(path, t, MSX, "MSX");
+        }
+        if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
+            return index_machine::<super::wswan_music::WonderSwan>(path, t, WS, "WonderSwan");
+        }
+        if platform == P::VirtualBoy as u16 {
+            return index_machine::<super::vb_music::VirtualBoy>(path, t, VB, "Virtual Boy");
+        }
+        if platform == P::NeoGeoPocket as u16 || platform == P::NeoGeoPocketColor as u16 {
+            return index_machine::<super::ngp_music::NeoGeoPocket>(path, t, NGP, "Neo Geo Pocket");
+        }
     }
     let rom = read_rom(path)?;
     let mut player = match agbplay::Player::open(&rom, MEASURE_RATE) {
         Ok(p) => p,
-        // No standard engine: the game's music is made another way.
-        Err(_) => return Ok(Vec::new()),
+        // No standard engine: the game's own sound code is run instead.
+        Err(_) if super::gb_apu::available() => return index_machine::<super::gba_music::GameBoyAdvance>(path, t, GBA, "Game Boy Advance"),
+        Err(_) => return Ok((Vec::new(), Some("this game does not use the sound engine rommusic plays Game Boy Advance music with".into()))),
     };
     let songs = player.songs();
     // The music player most multi-track songs use carries the BGM; the others carry effects.
@@ -183,7 +267,8 @@ pub fn index(path: &Path, platform: u16, t: &Thresholds) -> Result<Vec<FoundTrac
             video: false,
         });
     }
-    Ok(found)
+    let why = found.is_empty().then(|| "this game does not use the sound engine rommusic plays Game Boy Advance music with".to_string());
+    Ok((found, why))
 }
 
 struct AgbPcm(agbplay::Player);
@@ -351,6 +436,17 @@ fn sdat_bytes(path: &Path, view: u32, inner: &str) -> Result<std::sync::Arc<Vec<
 pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
     match engine.split('@').next() {
         Some(NDS_SSEQ) => open_sseq(path, engine, song),
+        Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
+        Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
+        Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
+        Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
+        Some(MD) => open_machine::<super::md_music::MegaDrive>(path, engine, song),
+        Some(PCE) => open_machine::<super::pce_music::PcEngine>(path, engine, song),
+        Some(MSX) => open_machine::<super::msx_music::Msx>(path, engine, song),
+        Some(WS) => open_machine::<super::wswan_music::WonderSwan>(path, engine, song),
+        Some(VB) => open_machine::<super::vb_music::VirtualBoy>(path, engine, song),
+        Some(NGP) => open_machine::<super::ngp_music::NeoGeoPocket>(path, engine, song),
+        Some(GBA) => open_machine::<super::gba_music::GameBoyAdvance>(path, engine, song),
         Some(GBA_M4A) => {
             let rom = read_rom(path)?;
             let mut player = agbplay::Player::open(&rom, PLAY_RATE)?;
@@ -359,4 +455,123 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         }
         _ => Err(format!("unknown ROM music engine {engine}")),
     }
+}
+
+// --- Consoles whose own sound code plays the music (super::music_search) -----------------
+
+fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
+    index_machine::<super::nes_music::Nes>(path, t, NES, "NES")
+}
+
+fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
+    let rom = read_rom(path)?;
+    let found = music_search::search::<M>(&rom)?;
+    if found.songs.is_empty() {
+        return Ok((Vec::new(), found.why));
+    }
+    let rate = M::boot(&rom)?.frame_rate();
+    let ms = |frames: usize| (frames as f64 * 1000.0 / rate) as u64;
+    let recipe = found.recipe.encode();
+    let mut out = Vec::with_capacity(found.songs.len());
+    for (i, &v) in found.songs.iter().enumerate() {
+        let timing = music_search::measure::<M>(&rom, &found.recipe, v)?;
+        let (looping, intro, lp) = match timing.looping {
+            Some((start, len)) => (true, ms(start), ms(len)),
+            None => (false, ms(timing.frames), 0),
+        };
+        let duration_ms = if looping { intro + lp } else { intro };
+        // Played: the intro and the loop twice, then a fade; a song that ends plays to its end.
+        let (body, fade) = if looping { (intro + lp * u64::from(PLAY_LOOPS), SONG_FADE_MS) } else { (duration_ms, 0) };
+        let name = format!("Track {}", i + 1);
+        let shape = Shape { looping, duration_ms, channels: M::CHANNELS, cd_track: 0, rip: true };
+        let kind = classify(&shape, &name, t);
+        let r = u64::from(PLAY_RATE);
+        out.push(FoundTrack {
+            location: TrackLocation::RomSong { engine: format!("{engine}@{recipe}@{body}@{fade}"), song: u32::from(v) },
+            name,
+            kind,
+            sample_rate: PLAY_RATE,
+            channels: M::CHANNELS,
+            duration_ms,
+            looping,
+            loop_start: intro * r / 1000,
+            loop_end: (intro + lp) * r / 1000,
+            codec: codec.into(),
+            format: format!("song {v}"),
+            bytes: 0,
+            video: false,
+        });
+    }
+    Ok((out, None))
+}
+
+/// A song from the game's own code, played for `left` more sample frames, the last `fade` of
+/// them fading out.
+struct MachinePcm<M: Machine> {
+    song: music_search::Song<M>,
+    left: u64,
+    fade: u64,
+    tail: u64,
+    pending: Vec<i16>,
+}
+
+impl<M: Machine + Send> PcmStream for MachinePcm<M>
+where
+    M::Entry: Send,
+    M::Chip: Send,
+{
+    fn sample_rate(&self) -> u32 {
+        PLAY_RATE
+    }
+    fn channels(&self) -> u16 {
+        M::CHANNELS
+    }
+    fn total_samples(&self) -> Option<u64> {
+        Some(self.left)
+    }
+    fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        if self.left == 0 {
+            return Ok(None);
+        }
+        let ch = M::CHANNELS as usize;
+        while self.pending.len() < 4096 * ch {
+            self.song.frame(&mut self.pending)?;
+        }
+        let n = (self.left as usize).min(self.pending.len() / ch);
+        let mut buf: Vec<i16> = self.pending.drain(..n * ch).collect();
+        if self.fade > 0 {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
+                let g = super::track_timing::fade_gain(self.left - i as u64, self.fade, self.tail);
+                if g < 1.0 {
+                    for s in frame {
+                        *s = (f32::from(*s) * g) as i16;
+                    }
+                }
+            }
+        }
+        self.left -= n as u64;
+        Ok(Some(buf))
+    }
+}
+
+fn open_machine<M: Machine + Send + 'static>(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String>
+where
+    M::Entry: Send,
+    M::Chip: Send,
+{
+    let bad = || format!("a damaged ROM song record: {engine}");
+    // The engine's name, the recipe's four fields, then body and fade.
+    let parts: Vec<&str> = engine.split('@').collect();
+    if parts.len() != 7 {
+        return Err(bad());
+    }
+    let recipe = music_search::Recipe::decode(&parts[1..5].join("@")).ok_or_else(bad)?;
+    let body: u64 = parts[5].parse().map_err(|_| bad())?;
+    let fade: u64 = parts[6].parse().map_err(|_| bad())?;
+    let rom = read_rom(path)?;
+    let v = u8::try_from(song).map_err(|_| bad())?;
+    let player = music_search::Song::<M>::open(&rom, &recipe, v, PLAY_RATE)?;
+    let r = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(MachinePcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
