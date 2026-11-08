@@ -601,6 +601,17 @@ impl Machine for Nes {
         self.board.buttons = if held { 0x08 } else { 0 };
     }
 
+    const BUTTONS: bool = true;
+
+    fn slow_loading(&self) -> bool {
+        self.board.fds.is_some()
+    }
+
+    fn press(&mut self, buttons: u8) {
+        // A, B, Select, Start: the controller's own order.
+        self.board.buttons = buttons & 0x0F;
+    }
+
     fn entry(&self) -> Entry {
         let (_, s_before) = *self.cpu.calls.last().expect("inside a routine");
         let interrupt = s_before.wrapping_sub(self.cpu.s) == 3;
@@ -645,6 +656,32 @@ impl Machine for Nes {
             w.at = cycle;
         }
         ok
+    }
+
+    fn call_at(&mut self, ctx: &Entry, addr: u32, reg: u8, v: u8) -> bool {
+        let mut e = ctx.clone();
+        e.cpu.pc = addr as u16;
+        // A plain call: the routine returns with RTS. X = 0 says NTSC to an NSF's init.
+        e.interrupt = false;
+        e.cpu.x = 0;
+        self.call_with(&e, reg, v)
+    }
+
+    fn code_at(&mut self, entry: &Entry, addr: u32, len: usize) -> Vec<u8> {
+        let windows = self.board.cart.windows();
+        self.board.cart.set_windows(entry.windows);
+        let out = (0..len as u32)
+            .map(|i| {
+                let a = (addr + i) as u16;
+                if a < 0x2000 {
+                    self.board.ram[a as usize & 0x7FF]
+                } else {
+                    self.board.cart.peek(a)
+                }
+            })
+            .collect();
+        self.board.cart.set_windows(windows);
+        out
     }
 
     fn poke(&mut self, addr: u32, v: u8) {

@@ -51,16 +51,8 @@ aggiornamento. Fai un backup prima di sostituire una build.
   L'ottimizzazione DB è stata spostata qui da Attività e dati › DB.
 
 **Audio delle ROM**
-- Le pagine dei titoli possono riprodurre la musica contenuta nelle tue ROM (solo piattaforme e
-  tipi di supporto compatibili).
+- Le pagine dei titoli possono riprodurre la musica contenuta nelle tue ROM (tracce audio CD dei giochi su disco e archivi sonori Nintendo DS e 3DS).
 - Nelle impostazioni si sceglie quali tracce riprodurre.
-- La musica NES e Famicom suona direttamente dalla ROM, tramite il codice audio del gioco stesso: non servono file audio originali. Inclusi i chip sonori Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
-- Anche la musica Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance e Neo Geo Pocket suona direttamente dalla ROM, compreso il suono FM del Master System giapponese.
-- Sono supportati i formati audio originali (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP e SGC
-  del Game Gear, sciolti o in zip).
-- Una libreria audio originale: indica in Impostazioni › Audio le cartelle dove tieni i set, e «Indicizza
-  l'audio delle ROM» abbina ogni set alle tue ROM in base al contenuto. Lo stesso set suona per tutte le regioni
-  del gioco, qualunque sia il nome.
 - Il lettore delle pagine dei titoli ha un pulsante «non riprodurre questa traccia». Le tracce
   nascoste sono elencate sotto la playlist: un clic ne riproduce una e Ripristina la rimette.
 - La musica delle ROM decodificata per la riproduzione viene tenuta in cache in memoria
@@ -73,7 +65,6 @@ aggiornamento. Fai un backup prima di sostituire una build.
   scansionati).
 - La musica delle pagine dei titoli è attiva di default, e il primo avvio chiede se la vuoi, subito
   dopo la lingua. Un titolo senza audio proprio riproduce tracce a caso di default.
-- I file PSF e PSF2 usano un BIOS PS2 della tua collezione e vengono saltati se manca.
 
 **Revisione unioni e Titoli uniti**
 - Le uscite di una scheda si possono trascinare sul titolo a cui appartengono, oppure su «+» per un

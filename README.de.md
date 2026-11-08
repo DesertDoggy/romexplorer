@@ -112,7 +112,7 @@ Kommandozeilenparameter (`--help`). chdlite erscheint als eigenes Release: siehe
 
 ### Kommandozeilenwerkzeug (rommusic)
 
-Ziehen Sie ein ROM, ein Disc-Image, einen gedumpten Ordner oder ein Set von Musikdateien im Original-Audioformat auf `rommusic`,
+Ziehen Sie ein ROM, ein Disc-Image oder einen gedumpten Ordner auf `rommusic`,
 und es schreibt die Hintergrundmusik des Spiels als FLAC in einen Ordner daneben. Jede Option gibt
 es auch als Flag (`--help`). Die unterstützten Systeme stehen unter [ROM-Audio](#rom-audio).
 rommusic wird separat veröffentlicht: siehe
@@ -277,19 +277,10 @@ oder kopiert. Führen Sie zuerst „ROM-Audio indizieren“ im Audio-Tab aus. `r
 | Musik aus | Plattformen | Dateien |
 |---|---|---|
 | CD-Audiotracks | Jedes CD-Spiel: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast und andere | CHD, cue/bin, gdi |
-| Musikdateien auf der Disc | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360 | CHD, cue/bin, gdi, ISO, CSO/ZSO, RVZ/WIA/GCZ/WBFS, XISO |
-| | Wii U | .wua; .wud/.wux und heruntergeladene Titel mit ihrem Schlüssel daneben |
-| | PS3, PS Vita | entschlüsselte Ordner-Dumps |
 | Das Soundarchiv | Nintendo DS (gestreamte und sequenzierte Musik), Nintendo 3DS (nur entschlüsselte Images) | .nds, .3ds/.cci |
-| Die Sound-Engine des Spiels | Game Boy Advance: Spiele mit Nintendos Standard-Engine (etwa die Hälfte) | .gba |
-| Original-Audioformate | NES und Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System und Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum und Amstrad CPC (AY), Atari 8-Bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket und Virtual Boy (VGM) | im Ordner des Spiels oder in der Original-Audio-Bibliothek, einzeln oder gezippt |
 
-- Die Original-Audio-Bibliothek (Einstellungen › Audio) ordnet NSF-, NSFE-, GBS-, SPC-, HES-, KSS- und
-  SGC-Sets anhand des Inhalts Ihren ROMs zu: Ein Set spielt für jede Region eines Spiels, egal wie
-  es heißt.
-- PlayStation- und PlayStation-2-Dateien brauchen ein PS2-BIOS in Ihrer Sammlung; ohne werden sie
-  übersprungen.
 - Disc-Images in zip oder 7z werden noch nicht gelesen. Verschlüsselte Images werden nicht gelesen.
+- Musik aus Modulspielen und aus Musikdateien auf Discs ist noch in Arbeit.
 
 ## Tab RetroAchievements
 

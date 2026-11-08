@@ -2917,6 +2917,8 @@
   "stop the music when the page is left": "페이지를 떠나면 음악 정지",
   "play the sound of video files in ROMs, such as title movies": "ROM 안의 동영상 소리(타이틀 무비 등)도 재생",
   "leave video sound out (default)": "동영상 소리는 재생하지 않음(기본값)",
+  "soften sudden loud bursts in music played from ROMs (default)": "ROM에서 재생하는 음악의 갑작스러운 큰 소리를 줄임 (기본값)",
+  "play it as the sound chip makes it": "사운드 칩이 내는 소리 그대로 재생",
   "Video sound for this title": "이 타이틀의 동영상 소리",
   "as in Settings": "설정에 따름",
   "Where a title page's music comes from. ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first.": "타이틀 페이지에서 재생할 음악의 출처입니다. ROM 음악은 CD 플레이어처럼 ROM에서 바로 재생합니다. 먼저 오디오 탭에서 \"ROM 오디오 색인\"를 실행하세요.",

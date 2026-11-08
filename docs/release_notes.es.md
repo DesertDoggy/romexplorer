@@ -50,16 +50,8 @@ Haz una copia de seguridad antes de sustituir una versión.
   archivos. Optimizar DB se ha movido aquí desde Tareas y datos › DB.
 
 **Audio de las ROM**
-- Las páginas de título pueden reproducir la música que hay dentro de tus ROM (solo plataformas y
-  tipos de soporte compatibles).
+- Las páginas de título pueden reproducir la música que hay dentro de tus ROM (pistas de audio CD de los juegos en disco y archivos de sonido de Nintendo DS y 3DS).
 - En los ajustes se elige qué pistas se reproducen.
-- La música de NES y Famicom suena directamente desde la ROM, con el propio código de sonido del juego: no hacen falta archivos de audio original. Incluye los chips de sonido de Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
-- La música de Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance y Neo Geo Pocket también suena directamente desde la ROM, con el sonido FM de la Master System japonesa.
-- Se admiten los formatos de audio originales (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP y SGC
-  de Game Gear, sueltos o en zip).
-- Una biblioteca de audio original: indica en Ajustes › Audio las carpetas donde guardas los sets, e «Index
-  ROM audio» empareja cada set con tus ROM por su contenido. Un mismo set suena en todas las
-  regiones del juego, se llame como se llame.
 - El reproductor de las páginas de título tiene un botón «no reproducir esta pista». Las pistas
   ocultas aparecen bajo la lista de reproducción: un clic reproduce una y Restaurar la recupera.
 - La música de las ROM decodificada para reproducir se guarda en caché en memoria (Ajustes › Audio,
@@ -73,7 +65,6 @@ Haz una copia de seguridad antes de sustituir una versión.
 - La música de las páginas de título está activada por defecto, y el primer inicio pregunta si la
   quieres, justo después del idioma. Un título sin audio propio reproduce pistas al azar por
   defecto.
-- Los archivos PSF y PSF2 usan una BIOS de PS2 de tu colección, y se saltan si no hay ninguna.
 
 **Revisión de fusiones y Títulos combinados**
 - Los lanzamientos de una tarjeta se pueden arrastrar al título al que pertenecen, o a «+» para un

@@ -109,7 +109,7 @@ chdlite viene pubblicato separatamente: vedere
 
 ### Strumento da riga di comando (rommusic)
 
-Si trascina su `rommusic` una ROM, un'immagine disco, una cartella estratta o un set di file musicali in formato audio originale
+Si trascina su `rommusic` una ROM, un'immagine disco o una cartella estratta
 e scrive la musica di sottofondo del gioco in FLAC in una cartella accanto. Ogni opzione è
 disponibile anche come flag (`--help`). I sistemi supportati sono elencati in
 [Audio delle ROM](#audio-delle-rom). rommusic è rilasciato separatamente: vedi
@@ -273,19 +273,10 @@ legge le stesse cose.
 | musica da | piattaforme | file |
 |---|---|---|
 | Tracce audio CD | Qualsiasi gioco su CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast e altri | CHD, cue/bin, gdi |
-| File musicali sul disco | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360 | CHD, cue/bin, gdi, ISO, CSO/ZSO, RVZ/WIA/GCZ/WBFS, XISO |
-| | Wii U | .wua; .wud/.wux e titoli scaricati con la loro chiave accanto |
-| | PS3, PS Vita | cartelle estratte e decifrate |
 | L'archivio sonoro | Nintendo DS (musica in streaming e sequenziata), Nintendo 3DS (solo immagini decifrate) | .nds, .3ds/.cci |
-| Il motore sonoro del gioco | Game Boy Advance: giochi fatti con il motore standard di Nintendo (circa la metà) | .gba |
-| Formati audio originali | NES e Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System e Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum e Amstrad CPC (AY), Atari a 8 bit (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket e Virtual Boy (VGM) | nella cartella del gioco o nella libreria audio originale, sciolti o in zip |
 
-- La libreria audio originale (Impostazioni › Audio) abbina i set NSF, NSFE, GBS, SPC, HES, KSS e SGC alle
-  tue ROM in base al contenuto: lo stesso set suona per tutte le regioni di un gioco, qualunque sia
-  il nome.
-- I file PlayStation e PlayStation 2 richiedono un BIOS PS2 nella tua collezione; senza, vengono
-  saltati.
 - Le immagini disco dentro zip o 7z non vengono ancora lette. Le immagini cifrate non vengono lette.
+- La musica dei giochi su cartuccia e dei file musicali su disco è ancora in lavorazione.
 
 ## Scheda RetroAchievements
 

@@ -52,16 +52,8 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   optimieren“ ist von Jobs und Daten › DB hierher umgezogen.
 
 **ROM-Audio**
-- Titelseiten können die Musik in Ihren ROMs abspielen (nur unterstützte Plattformen und
-  Medientypen).
+- Titelseiten können die Musik in Ihren ROMs abspielen (CD-Audiotracks von Disc-Spielen sowie Soundarchive von Nintendo DS und 3DS).
 - In den Einstellungen wird festgelegt, welche Tracks spielen.
-- NES- und Famicom-Musik spielt direkt aus dem ROM, über den eigenen Soundcode des Spiels: keine Original-Audiodateien nötig. Famicom-Soundchips (VRC6, Namco 163, Sunsoft 5B, MMC5) inklusive.
-- Musik von Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance und Neo Geo Pocket spielt ebenso direkt aus dem ROM, FM-Sound des japanischen Master System inklusive.
-- Original-Audioformate (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP und Game-Gear-SGC, einzeln
-  oder gezippt) werden unterstützt.
-- Eine Original-Audio-Bibliothek: Tragen Sie unter Einstellungen › Audio die Ordner Ihrer Sets ein, und
-  „ROM-Audio indizieren“ ordnet jedes Set anhand des Inhalts Ihren ROMs zu. Ein Set spielt so für jede
-  Region des Spiels, egal wie es heißt.
 - Der Player auf Titelseiten hat eine Schaltfläche „diesen Track nicht spielen“. Ausgeblendete
   Tracks stehen unter der Playlist: Ein Klick spielt einen ab, „Wiederherstellen“ holt ihn zurück.
 - Zum Abspielen dekodierte ROM-Musik wird im Arbeitsspeicher zwischengespeichert (Einstellungen ›
@@ -73,7 +65,6 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   misst der Audio-Scan, wo der Ton endet (für früher gescannte Dateien erneut ausführen).
 - Musik auf Titelseiten ist standardmäßig an, und der erste Start fragt direkt nach der Sprache, ob
   Sie sie möchten. Ein Titel ohne eigenes Audio spielt standardmäßig zufällige Tracks.
-- PSF- und PSF2-Dateien nutzen ein PS2-BIOS aus Ihrer Sammlung und werden ohne eines übersprungen.
 
 **Zusammenführungen prüfen und zusammengeführte Titel**
 - Releases auf einer Karte lassen sich auf den Titel ziehen, zu dem sie gehören, oder auf „+“ für

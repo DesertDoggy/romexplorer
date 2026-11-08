@@ -110,8 +110,7 @@ chdlite é publicado em separado: consulte [docs/chdlite_release_notes.md](docs/
 
 ### Ferramenta de linha de comandos (rommusic)
 
-Largue no `rommusic` uma ROM, uma imagem de disco, uma pasta extraída ou um conjunto de ficheiros de
-música e ele escreve a música de fundo do jogo em FLAC numa pasta ao lado. Todas as opções existem
+Largue no `rommusic` uma ROM, uma imagem de disco ou uma pasta extraída e ele escreve a música de fundo do jogo em FLAC numa pasta ao lado. Todas as opções existem
 também como parâmetro (`--help`). Os sistemas suportados estão em
 [Áudio das ROM](#áudio-das-rom). O rommusic é publicado em separado: consulte
 [docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
@@ -277,20 +276,11 @@ o mesmo.
 | música de | plataformas | ficheiros |
 |---|---|---|
 | Faixas de áudio CD | Qualquer jogo em CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast e outros | CHD, cue/bin, gdi |
-| Ficheiros de música no disco | PlayStation, PlayStation 2, PSP, Saturn, Dreamcast, GameCube, Wii, Xbox, Xbox 360 | CHD, cue/bin, gdi, ISO, CSO/ZSO, RVZ/WIA/GCZ/WBFS, XISO |
-| | Wii U | .wua; .wud/.wux e títulos descarregados com a chave ao lado |
-| | PS3, PS Vita | pastas extraídas e desencriptadas |
 | O arquivo de som | Nintendo DS (música em streaming e sequenciada), Nintendo 3DS (só imagens desencriptadas) | .nds, .3ds/.cci |
-| O motor de som do jogo | Game Boy Advance: jogos feitos com o motor padrão da Nintendo (cerca de metade) | .gba |
-| Formatos de áudio originais | NES e Famicom Disk System (NSF, NSFE), Super Nintendo (SPC), Game Boy (GBS), PC Engine (HES), MSX (KSS), Master System e Game Gear (SGC, VGM), Mega Drive (VGM, GYM), ZX Spectrum e Amstrad CPC (AY), Atari de 8 bits (SAP), Nintendo 64 (USF), PlayStation (PSF), PlayStation 2 (PSF2), Saturn (SSF), Dreamcast (DSF), Game Boy Advance (GSF), WonderSwan (WSR), Neo Geo Pocket e Virtual Boy (VGM) | na pasta do jogo ou na biblioteca de áudio original, soltos ou em zip |
 
-- A biblioteca de áudio original (Definições › Áudio) associa os conjuntos NSF, NSFE, GBS, SPC, HES, KSS e
-  SGC às suas ROM pelo conteúdo: o mesmo conjunto toca em todas as regiões de um jogo, seja qual
-  for o nome.
-- Os ficheiros de PlayStation e PlayStation 2 precisam de uma BIOS da PS2 na sua coleção; sem ela são
-  saltados.
 - As imagens de disco dentro de zip ou 7z ainda não são lidas. As imagens encriptadas não são
   lidas.
+- A música dos jogos em cartucho e dos ficheiros de música nos discos ainda está em desenvolvimento.
 
 ## Separador RetroAchievements
 

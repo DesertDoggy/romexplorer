@@ -1,13 +1,16 @@
 //! Developer tool: the cartridge music search (`rom::music_search`) over ROMs on this PC, to
 //! see how many games it finds music in and why not in the rest.
 //!
-//!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
+//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck]] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
 //! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy, Game Boy Advance or Neo Geo Pocket/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
-//! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
-//! ends the run.
+//! writes the first N seconds (default 20) of every song as a WAV, to listen to. `--originals`
+//! (or `--nsf`) matches each NES/Famicom/Disk System and Game Boy/Color ROM to the original
+//! audio format files (NSF, GBS) under a folder, and points the search at the sound code the
+//! matched file names (the music still plays from the ROM). A summary ends the
+//! run.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +26,8 @@ use romexplorer::rom::gba_music::GameBoyAdvance;
 use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
-use romexplorer::rom::{nes_cart, rom_songs};
+use romexplorer::common::models::Platform;
+use romexplorer::rom::{gb_gbs, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -167,20 +171,263 @@ struct Tally {
     with_music: usize,
     songs: usize,
     reasons: std::collections::BTreeMap<String, usize>,
+    /// Against the matched NSF's tracks: games checked, their songs, songs like a track,
+    /// tracks, tracks some song is like.
+    checked: [usize; 5],
+    /// Games whose songs are like none of the file's tracks (kept, unchecked), and their songs.
+    unchecked: [usize; 2],
+}
+
+/// Frames of a song and of a track compared by melody.
+const CHECK_FRAMES: usize = 600;
+/// A song this alike a track (see `nes_nsf::alike`) is that track.
+const CHECK_ALIKE: f64 = 0.5;
+
+type Melody = std::collections::HashSet<u64>;
+type Writes = Vec<Vec<music_search::Write>>;
+
+/// The known answer found songs are checked against: the melodies of an NSF's or GBS's
+/// tracks (song count at `count_at`), and how a song's melody is taken.
+struct Answers {
+    tracks: Vec<Melody>,
+    melody: fn(&[Vec<music_search::Write>]) -> Melody,
+}
+
+fn answers(
+    file: &[u8],
+    count_at: usize,
+    track: fn(&[u8], u8, usize) -> Option<Writes>,
+    melody: fn(&[Vec<music_search::Write>]) -> Melody,
+) -> Answers {
+    let songs = file.get(count_at).copied().unwrap_or(0);
+    let tracks = (0..songs)
+        .map(|t| track(file, t, CHECK_FRAMES).map(|f| melody(&f)).unwrap_or_default())
+        .collect();
+    Answers { tracks, melody }
 }
 
 struct Options {
     render: Option<PathBuf>,
     seconds: u32,
     verbose: bool,
+    /// `--probe N`: instead of searching, boot N seconds under each input pattern and print
+    /// when steady sound first starts.
+    probe: Option<u32>,
+    /// `--originals <folder>`: original audio format files (NSF, GBS) to match ROMs to and
+    /// take the sound code's addresses from.
+    nsf: Option<PathBuf>,
+    /// `--layout`: with `--originals`, instead of searching, lay each matched NSF's bytes its
+    /// tracks read over the ROM and print how much of it is found where (a music map's first
+    /// part).
+    layout: bool,
+    /// `--mapcheck`: with `--originals`, build each NES ROM's music map from its matched NSF and
+    /// play every track from the ROM by it, against the NSF's own.
+    mapcheck: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
+    run_hinted::<M>(path, rom, what, None, None, o, t)
+}
+
+/// The search hint for a ROM from the `--originals` library: the best-matching set's first
+/// file starting with `magic`, read by `read`.
+fn original_hint(
+    lib: Option<&rip_match::Library>,
+    path: &Path,
+    platform: Platform,
+    magic: &[u8],
+    read: fn(&[u8]) -> Option<music_search::Hint>,
+    verbose: bool,
+) -> Option<(music_search::Hint, Vec<u8>)> {
+    let lib = lib?;
+    let matches = lib
+        .match_rom(path, platform as u16)
+        .map_err(|e| println!("    match failed: {e}"))
+        .ok()?;
+    // Sets that match equally well (games sharing a sound engine): the one whose name
+    // shares most words with the ROM's.
+    let words = |p: &Path| -> std::collections::HashSet<String> {
+        p.file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1)
+            .map(str::to_string)
+            .collect()
+    };
+    let mine = words(path);
+    let top = matches.first()?.1;
+    let (set, share) = matches
+        .iter()
+        .filter(|m| m.1 >= top - 0.005)
+        .max_by(|a, b| {
+            let n = |m: &(PathBuf, f32)| words(&m.0).intersection(&mine).count();
+            // On equal names the better match, and among those the first listed.
+            n(a).cmp(&n(b)).then(a.1.total_cmp(&b.1)).then(std::cmp::Ordering::Greater)
+        })?;
+    let hint = rip_sets::first_with_magic(set, magic).and_then(|d| Some((read(&d)?, d)));
+    if verbose {
+        println!(
+            "    matched set: {} ({:.0}% matched){}",
+            set.display(),
+            share * 100.0,
+            if hint.is_some() { "" } else { ", no NSF/GBS in it" }
+        );
+    }
+    hint
+}
+
+/// `--layout` for a NES/Famicom ROM and its matched NSF.
+fn print_layout(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
+    let Ok(h) = nes_cart::parse(rom) else { return };
+    let Some(used) = nes_nsf::used_bytes(nsf, CHECK_FRAMES) else {
+        println!("{name}: layout: the NSF doesn't run");
+        return;
+    };
+    let l = music_map::layout(&nsf[0x80..], &used, &h.prg);
+    let missing: usize = l.missing.iter().map(|m| m.1).sum();
+    let biggest = l.missing.iter().map(|m| m.1).max().unwrap_or(0);
+    let banks: std::collections::BTreeSet<usize> = l.runs.iter().map(|r| r.rom / 0x2000).collect();
+    let share = l.placed as f64 * 100.0 / l.needed.max(1) as f64;
+    println!(
+        "{name}: layout: {:.1}% of {} needed bytes in the ROM ({} runs, {} 8 KB banks); missing {} bytes in {} stretches, biggest {}",
+        share,
+        l.needed,
+        l.runs.len(),
+        banks.len(),
+        missing,
+        l.missing.len(),
+        biggest
+    );
+    if share >= 99.0 {
+        t.with_music += 1;
+    }
+    let bucket = match share {
+        s if s >= 99.0 => "99-100%",
+        s if s >= 95.0 => "95-99%",
+        s if s >= 80.0 => "80-95%",
+        s if s >= 50.0 => "50-80%",
+        _ => "under 50%",
+    };
+    *t.reasons.entry(format!("needed bytes in the ROM: {bucket}")).or_default() += 1;
+}
+
+/// A track the map plays this alike the NSF's own is played right.
+const MAP_RIGHT: f64 = 0.9;
+
+/// `--mapcheck` for a NES/Famicom ROM and its matched NSF.
+fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let Ok(h) = nes_cart::parse(rom) else { return };
+    let started = std::time::Instant::now();
+    let Some(m) = nes_nsf::map(nsf, &h.prg) else {
+        println!("{name}: map: the NSF doesn't run");
+        *t.reasons.entry("the NSF doesn't run".into()).or_default() += 1;
+        return;
+    };
+    let check = nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, nes_nsf::Fill::Zeros);
+    // Why tracks play wrong: the gaps filled with the game's own bytes, or with the file's.
+    let right_with = |fill| {
+        nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, fill)
+            .iter()
+            .flatten()
+            .filter(|&&a| a >= MAP_RIGHT)
+            .count()
+    };
+    let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
+    let with_melody = check.iter().flatten().count();
+    let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let no_script = m.tracks.iter().filter(|s| s.is_none()).count();
+    let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, nes_nsf::Op::Call { .. })).count()).max().unwrap_or(0);
+    let pokes = m.tracks.iter().flatten().map(|s| s.len()).max().unwrap_or(0);
+    let wrong: Vec<String> = check
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}")))
+        .take(12)
+        .collect();
+    println!(
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
+        started.elapsed().as_secs_f32(),
+        m.header.songs,
+        m.runs.len(),
+        pokes,
+        calls,
+        no_script,
+        m.play.len(),
+        match m.tried {
+            Some((d, before, after)) => format!(
+                "; moved {d:+} tried: {before:.1} -> {after:.1}{}",
+                if m.moved.is_some() { ", taken" } else { "" }
+            ),
+            None => String::new(),
+        },
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += right;
+    if with_melody > 0 && right == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match right as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+fn run_hinted<M: Machine>(
+    path: &Path,
+    rom: &[u8],
+    what: &str,
+    hint: Option<&music_search::Hint>,
+    answers: Option<&Answers>,
+    o: &Options,
+    t: &mut Tally,
+) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    if let Some(secs) = o.probe {
+        let started = std::time::Instant::now();
+        let mut parts = Vec::new();
+        let mut any = false;
+        for (input, held) in music_search::INPUTS {
+            match music_search::probe::<M>(rom, *held, secs * 60) {
+                Ok(Some(f)) => {
+                    any = true;
+                    parts.push(format!("{input}:{:.1}s", f as f32 / 60.0));
+                }
+                Ok(None) => parts.push(format!("{input}:-")),
+                Err(e) => {
+                    println!("{name}: {what}: {e}");
+                    return;
+                }
+            }
+        }
+        if any {
+            t.with_music += 1;
+        }
+        println!(
+            "{name}: {what}, {:.1} s: probe {}",
+            started.elapsed().as_secs_f32(),
+            parts.join(" ")
+        );
+        return;
+    }
     let started = std::time::Instant::now();
     let mut notes = Vec::new();
-    let found = music_search::search_logged::<M>(rom, &mut |n| notes.push(n));
+    let found = music_search::search_hinted::<M>(rom, hint, &mut |n| notes.push(n));
+    let what = if hint.is_some() { format!("{what}, NSF") } else { what.to_string() };
     let took = started.elapsed().as_secs_f32();
     match found {
         Ok(f) if !f.songs.is_empty() => {
@@ -192,6 +439,53 @@ fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tal
                 f.songs,
                 f.recipe.encode()
             );
+            // Each song against the known answer: the track whose melody it shares.
+            if let Some(Answers { tracks: answers, melody }) = answers.filter(|a| !a.tracks.is_empty()) {
+                let mut found_tracks = std::collections::BTreeSet::new();
+                let mut like = 0;
+                let mut lines = Vec::new();
+                for &v in &f.songs {
+                    let Ok(mut song) = Song::<M>::open(rom, &f.recipe, v, 8000) else {
+                        continue;
+                    };
+                    let mut pcm = Vec::new();
+                    let frames: Vec<_> = (0..CHECK_FRAMES).map_while(|_| song.frame(&mut pcm).ok()).collect();
+                    pcm.clear();
+                    let mine = melody(&frames);
+                    let best = answers
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| (i, music_search::alike(&mine, a)))
+                        .max_by(|a, b| a.1.total_cmp(&b.1));
+                    if let Some((track, score)) = best {
+                        if score >= CHECK_ALIKE {
+                            like += 1;
+                            found_tracks.insert(track);
+                        }
+                        lines.push(format!("{v}->{track}:{score:.2}"));
+                    }
+                }
+                let unchecked = f.checked.is_some_and(|c| c.0 == 0);
+                println!(
+                    "    check: {like} of {} songs are like a track; {} of {} tracks found{}",
+                    f.songs.len(),
+                    found_tracks.len(),
+                    answers.len(),
+                    if unchecked { " (unchecked: no song like a track in the search)" } else { "" }
+                );
+                if unchecked {
+                    t.unchecked[0] += 1;
+                    t.unchecked[1] += f.songs.len();
+                }
+                if o.verbose {
+                    println!("    check songs: {}", lines.join(" "));
+                }
+                t.checked[0] += 1;
+                t.checked[1] += f.songs.len();
+                t.checked[2] += like;
+                t.checked[3] += answers.len();
+                t.checked[4] += found_tracks.len();
+            }
             if let Some(dir) = &o.render {
                 let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
                 let dir = dir.join(&stem);
@@ -248,10 +542,23 @@ fn main() {
         render: None,
         seconds: 20,
         verbose: args.iter().any(|a| a == "--verbose"),
+        probe: None,
+        nsf: None,
+        layout: args.iter().any(|a| a == "--layout"),
+        mapcheck: args.iter().any(|a| a == "--mapcheck"),
     };
+    args.retain(|a| a != "--layout" && a != "--mapcheck");
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
         o.render = args.get(i + 1).map(PathBuf::from);
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--probe") {
+        o.probe = Some(args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(60));
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--originals" || a == "--nsf") {
+        o.nsf = args.get(i + 1).map(PathBuf::from);
         args.drain(i..(i + 2).min(args.len()));
     }
     if let Some(i) = args.iter().position(|a| a == "--seconds") {
@@ -260,7 +567,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck]] <rom or folder>..."
         );
         std::process::exit(2);
     }
@@ -275,6 +582,12 @@ fn main() {
     for a in &args {
         collect(Path::new(a), &mut files);
     }
+    let nsf_lib = o.nsf.as_ref().map(|dir| {
+        let cache = std::env::temp_dir().join("cart_music_original_fingerprints.json");
+        let lib = rip_match::Library::build(&[dir.clone()], Some(&cache), |_, _| {});
+        eprintln!("{} sets read from {}", lib.len(), dir.display());
+        lib
+    });
     let mut tally: std::collections::BTreeMap<&str, Tally> = Default::default();
     for path in files {
         let rom = match rom_songs::read_rom(&path) {
@@ -293,7 +606,20 @@ fn main() {
                     "mapper {}",
                     nes_cart::parse(&rom).map(|h| h.mapper).unwrap_or(0)
                 );
-                run::<Nes>(&path, &rom, &what, &o, tally.entry("NES").or_default());
+                let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                if o.layout || o.mapcheck {
+                    if let Some(h) = &hint {
+                        let t = tally.entry("NES").or_default();
+                        if o.layout {
+                            print_layout(&path, &rom, &h.1, t);
+                        } else {
+                            print_mapcheck(&path, &rom, &h.1, t);
+                        }
+                    }
+                    continue;
+                }
+                let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
+                run_hinted::<Nes>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry("NES").or_default());
             }
             Some("SMS") => run::<MasterSystem>(
                 &path,
@@ -310,10 +636,14 @@ fn main() {
                 tally.entry("Mega Drive").or_default(),
             ),
             Some("FDS") => {
-                run::<Nes>(
+                let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
+                run_hinted::<Nes>(
                     &path,
                     &rom,
                     "Disk System",
+                    hint.as_ref().map(|h| &h.0),
+                    answers.as_ref(),
                     &o,
                     tally.entry("Disk System").or_default(),
                 );
@@ -421,7 +751,10 @@ fn main() {
             Some(c) => {
                 let what = format!("{c}, cartridge ${:02X}", rom[0x147]);
                 let console = if c == "GBC" { "Game Boy Color" } else { "Game Boy" };
-                run::<GameBoy>(&path, &rom, &what, &o, tally.entry(console).or_default());
+                let platform = if c == "GBC" { Platform::GameBoyColor } else { Platform::GameBoy };
+                let hint = original_hint(nsf_lib.as_ref(), &path, platform, b"GBS", gb_gbs::hint, o.verbose);
+                let answers = hint.as_ref().map(|h| answers(&h.1, 4, gb_gbs::track_writes, gb_gbs::melody));
+                run_hinted::<GameBoy>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry(console).or_default());
             }
             None => {
                 println!("{}: console not recognised: skipped", path.display());
@@ -444,6 +777,21 @@ fn main() {
             t.with_music as f64 * 100.0 / t.games.max(1) as f64,
             t.songs
         );
+        if t.checked[0] > 0 && o.mapcheck {
+            println!(
+                "  map check in {} games: {} of {} tracks played right from the ROM; with the gaps from the ROM {}, from the file {}",
+                t.checked[0], t.checked[4], t.checked[3], t.checked[1], t.checked[2]
+            );
+        } else if t.checked[0] > 0 {
+            println!(
+                "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found",
+                t.checked[0], t.checked[2], t.checked[1], t.checked[4], t.checked[3]
+            );
+            println!(
+                "  unchecked (kept, no song like any track): {} games, {} songs",
+                t.unchecked[0], t.unchecked[1]
+            );
+        }
         for (why, n) in t.reasons {
             println!("  {n}: {why}");
         }

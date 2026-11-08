@@ -58,6 +58,18 @@ pub trait Machine: Clone + Sized {
     fn set_trace(&mut self, on: bool);
     /// Holds Start (or the console's equivalent) on the controller, or nothing.
     fn press_start(&mut self, held: bool);
+    /// Holds the buttons in `buttons` ([`START`], [`BUTTON_A`], ...). Consoles that only
+    /// know Start hold just that.
+    fn press(&mut self, buttons: u8) {
+        self.press_start(buttons & START != 0);
+    }
+    /// [`Self::press`] holds more than Start (the A button patterns are worth a boot).
+    const BUTTONS: bool = false;
+    /// Games may take most of a minute to load (a disk), worth a minute-long boot when
+    /// nothing else found music.
+    fn slow_loading(&self) -> bool {
+        false
+    }
     /// The routine the CPU just entered, as an [`Self::Entry`].
     fn entry(&self) -> Self::Entry;
     /// One frame of the sound routine alone, called at its usual moment. None when it
@@ -66,6 +78,17 @@ pub trait Machine: Clone + Sized {
     /// Calls the routine of `entry` with register `reg` set to `v`, then puts the CPU and
     /// banks back as they were; its sound writes count at the current moment.
     fn call_with(&mut self, entry: &Self::Entry, reg: u8, v: u8) -> bool;
+    /// Calls the routine at `addr` as [`Self::call_with`] does, from the moment of `ctx` (its
+    /// banks and registers). For a song-start routine known from an original audio format
+    /// file that the game itself may never be seen calling. False where unsupported.
+    fn call_at(&mut self, _ctx: &Self::Entry, _addr: u32, _reg: u8, _v: u8) -> bool {
+        false
+    }
+    /// `len` code bytes at `addr`, as the CPU sees them at the moment of `entry`; empty where
+    /// unsupported.
+    fn code_at(&mut self, _entry: &Self::Entry, _addr: u32, _len: usize) -> Vec<u8> {
+        Vec::new()
+    }
     /// Registers a song number can be passed in.
     const REGISTERS: u8;
     /// Writes a byte of RAM.
@@ -86,6 +109,108 @@ pub trait Machine: Clone + Sized {
     fn frame_length(&self) -> u32;
 }
 
+/// What a matched original audio format file (an NSF) says about where a game's sound code is: its play routine and its
+/// song-start routine (each with the routines they call), by address with their first code
+/// bytes, and its song count. Only addresses are taken from it; the music still plays
+/// from the ROM.
+#[derive(Debug, Clone, Default)]
+pub struct Hint {
+    pub play: Vec<(u32, Vec<u8>)>,
+    pub start: Vec<(u32, Vec<u8>)>,
+    pub songs: u8,
+    /// Song-start routines (address, register) and the number each of the file's tracks
+    /// passes them, in track order: the game's own song ids, where the file's init looks
+    /// them up in a table of its own.
+    pub ids: Vec<(u32, u8, Vec<u8>)>,
+    /// The known answer: each track's [`melody`] over its first [`HINT_TRACK_FRAMES`]
+    /// frames, as the file plays it, and how a song's melody is taken on this console.
+    pub tracks: Vec<HashSet<u64>>,
+    pub melody: Option<fn(&[Vec<Write>]) -> HashSet<u64>>,
+}
+
+/// Frames of each track a [`Hint`]'s known answer covers: as long as the search listens.
+pub const HINT_TRACK_FRAMES: usize = SONG_FRAMES;
+
+/// A melody's fingerprint: the runs of four pitches in a row on each tone channel, a channel
+/// being the ports of its period's low byte and its high bits (the low 3 bits), as the writes
+/// set them. Two plays of one song share most of theirs whatever their timing or volume, two
+/// songs few. For checking found songs against an original audio format file's tracks.
+pub fn melody(frames: &[Vec<Write>], channels: &[(u32, u32)]) -> HashSet<u64> {
+    let mut lo = vec![0u16; channels.len()];
+    let mut hi = vec![0u16; channels.len()];
+    let mut last = vec![u16::MAX; channels.len()];
+    let mut runs: Vec<Vec<u16>> = vec![Vec::new(); channels.len()];
+    let mut out = HashSet::new();
+    for f in frames {
+        for w in f {
+            let Some(ch) = channels.iter().position(|c| c.0 == w.port || c.1 == w.port) else {
+                continue;
+            };
+            if channels[ch].0 == w.port {
+                lo[ch] = w.value & 0xFF;
+            } else {
+                hi[ch] = w.value & 7;
+            }
+            let period = hi[ch] << 8 | lo[ch];
+            if period == last[ch] || period < 8 {
+                continue;
+            }
+            last[ch] = period;
+            let run = &mut runs[ch];
+            run.push(period);
+            if run.len() >= 4 {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (ch, &run[run.len() - 4..]).hash(&mut h);
+                out.insert(h.finish());
+            }
+        }
+    }
+    out
+}
+
+/// Fewest steps a [`melody`] fingerprint needs to be compared: a few notes (an ending, a
+/// near-silent track) are alike almost anything.
+pub const MIN_MELODY: usize = 8;
+
+/// How alike two [`melody`] fingerprints are: the share of the smaller one found in the
+/// other (0 when either has fewer than [`MIN_MELODY`] steps).
+pub fn alike(a: &HashSet<u64>, b: &HashSet<u64>) -> f64 {
+    let small = a.len().min(b.len());
+    if small < MIN_MELODY {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / small as f64
+}
+
+/// Most routines a [`Hint`] takes from each of play and init.
+const HINT_ROUTINES: usize = 8;
+
+/// `from`, then the routines it calls (as `calls_in` reads them), two levels down, each with
+/// its code bytes (`code`; routines whose bytes aren't known are left out). For building a
+/// [`Hint`] from an original audio format file's play and init addresses.
+pub(crate) fn hint_routines(
+    from: u16,
+    calls_in: impl Fn(u16) -> Vec<u16>,
+    code: impl Fn(u16) -> Option<Vec<u8>>,
+) -> Vec<(u32, Vec<u8>)> {
+    let mut out: Vec<(u16, u8)> = vec![(from, 0)];
+    let mut i = 0;
+    while i < out.len() && out.len() < HINT_ROUTINES {
+        let (addr, level) = out[i];
+        if level < 2 {
+            for t in calls_in(addr) {
+                if !out.iter().any(|o| o.0 == t) && out.len() < HINT_ROUTINES {
+                    out.push((t, level + 1));
+                }
+            }
+        }
+        i += 1;
+    }
+    out.into_iter()
+        .filter_map(|(a, _)| Some((a as u32, code(a)?)))
+        .collect()
+}
+
 /// How the game is handed a song number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
@@ -94,6 +219,9 @@ pub enum Trigger {
     /// Passed in a register to the routine at this address, as called the `nth` time during
     /// boot.
     Call { addr: u32, reg: u8, nth: u32 },
+    /// Passed in a register to the routine at this address, called from the sound routine's
+    /// moment (an address an original audio format file gives).
+    Jump { addr: u32, reg: u8 },
 }
 
 impl Trigger {
@@ -101,12 +229,20 @@ impl Trigger {
         match self {
             Trigger::Byte(a) => format!("m{a:04x}"),
             Trigger::Call { addr, reg, nth } => format!("c{addr:04x}.{reg}.{nth}"),
+            Trigger::Jump { addr, reg } => format!("j{addr:04x}.{reg}"),
         }
     }
 
     fn decode(s: &str) -> Option<Self> {
         if let Some(a) = s.strip_prefix('m') {
             return u32::from_str_radix(a, 16).ok().map(Trigger::Byte);
+        }
+        if let Some(j) = s.strip_prefix('j') {
+            let (a, r) = j.split_once('.')?;
+            return Some(Trigger::Jump {
+                addr: u32::from_str_radix(a, 16).ok()?,
+                reg: r.parse().ok()?,
+            });
         }
         let mut p = s.strip_prefix('c')?.split('.');
         let addr = u32::from_str_radix(p.next()?, 16).ok()?;
@@ -149,7 +285,7 @@ impl Recipe {
     pub fn decode(s: &str) -> Option<Self> {
         let mut p = s.split('@');
         let boot_frames = p.next()?.parse().ok()?;
-        let press_start = p.next()?.parse().ok().filter(|&s| s <= 2)?;
+        let press_start = p.next()?.parse().ok().filter(|&s| s <= LAST_INPUT)?;
         let play = u32::from_str_radix(p.next()?, 16).ok()?;
         let trigger = Trigger::decode(p.next()?)?;
         let calls = match p.next() {
@@ -166,17 +302,83 @@ impl Recipe {
     }
 }
 
-/// Whether Start is held in frame `frame` of boot, in start pattern `press_start`: 0 never;
-/// 1 a few frames at the 3, 5 and 7 second marks (enough for most title screens, and no
-/// presses after that to pause a game that is playing); 2 every two seconds from the third
-/// on (games that need more presses to start their music).
-fn start_held(press_start: u8, frame: u32) -> bool {
-    let pressing = match press_start {
-        0 => false,
-        1 => (180..=420).contains(&frame),
-        _ => frame >= 180,
-    };
-    pressing && frame % 120 < 6
+/// The buttons held in frame `frame` of boot under input pattern `input` (a recipe's
+/// `press_start`), from the PC probe of when games start their music:
+/// - 0: nothing;
+/// - 1: Start a few frames at the 3, 5 and 7 second marks (enough for most title screens, and
+///   no presses after that to pause a game that is playing);
+/// - 2: Start every two seconds from the third on;
+/// - 3: Start, then A half a second later, every second from the third (with 4, the two that
+///   start nearly every game that starts its music for some input);
+/// - 4: A every second from the third;
+/// - 5: nothing, for a longer boot (Disk System games loading from disk).
+///
+/// 0-2 boot 15 seconds, 3-4 30 seconds, 5 a minute (see [`boot_len`]).
+fn held(input: u8, frame: u32) -> u8 {
+    let every = |period: u32| frame >= 180 && frame % period < 6;
+    match input {
+        1 if (180..=420).contains(&frame) && every(120) => START,
+        2 if every(120) => START,
+        3 if every(60) => START,
+        3 if frame >= 180 && (30..36).contains(&(frame % 60)) => BUTTON_A,
+        4 if every(60) => BUTTON_A,
+        _ => 0,
+    }
+}
+
+/// How many frames boot runs under input pattern `input` (see [`held`]).
+pub fn boot_len(input: u8) -> u32 {
+    match input {
+        0..=2 => BOOT_FRAMES,
+        3 | 4 => 2 * BOOT_FRAMES,
+        _ => 4 * BOOT_FRAMES,
+    }
+}
+
+/// The last input pattern [`held`] knows.
+const LAST_INPUT: u8 = 5;
+
+/// Buttons for [`Machine::press`], in the Famicom's and Game Boy's order.
+pub const BUTTON_A: u8 = 0x01;
+pub const BUTTON_B: u8 = 0x02;
+pub const SELECT: u8 = 0x04;
+pub const START: u8 = 0x08;
+
+/// Input patterns the probe tries: a name, and the buttons held in each frame.
+pub const INPUTS: &[(&str, fn(u32) -> u8)] = &[
+    ("none", |_| 0),
+    ("start3", |f| if (180..=420).contains(&f) && f % 120 < 6 { START } else { 0 }),
+    ("start2s", |f| if f >= 180 && f % 120 < 6 { START } else { 0 }),
+    ("start1s", |f| if f >= 180 && f % 60 < 6 { START } else { 0 }),
+    ("start+a", |f| match (f >= 180, f % 60) {
+        (true, 0..=5) => START,
+        (true, 30..=35) => BUTTON_A,
+        _ => 0,
+    }),
+    ("a1s", |f| if f >= 180 && f % 60 < 6 { BUTTON_A } else { 0 }),
+];
+
+/// What a game does with sound under one input pattern: the first frame of steady sound
+/// (sound writes in at least half the frames of a second), or None in `frames` frames.
+pub fn probe<M: Machine>(rom: &[u8], input: fn(u32) -> u8, frames: u32) -> Result<Option<u32>, String> {
+    let mut m = M::boot(rom)?;
+    let window = 60usize;
+    let mut busy: std::collections::VecDeque<bool> = std::collections::VecDeque::new();
+    let mut count = 0usize;
+    for f in 0..frames {
+        m.press(input(f));
+        m.run_frame(None, None);
+        let any = m.take_sound().iter().any(|w| !M::incidental(w));
+        busy.push_back(any);
+        count += any as usize;
+        if busy.len() > window {
+            count -= busy.pop_front().unwrap() as usize;
+        }
+        if busy.len() == window && count * 2 >= window {
+            return Ok(Some(f + 1 - window as u32));
+        }
+    }
+    Ok(None)
 }
 
 /// How long boot runs while the search looks for the sound routine.
@@ -197,11 +399,13 @@ const SONG_TAIL_FRAMES: usize = 60;
 /// Song numbers past a run of this many that play nothing are not taken: games read
 /// numbers past the end of their song table as garbage that often still makes noise.
 const SONG_GAP: usize = 16;
-/// How a way of starting songs ranks: songs that last, not so many numbers sounding
-/// different that its songs themselves are past its table ([`CORE_SONGS`]), at least
-/// [`GOOD_SONGS`] songs, a table that ends counting what sounds past its last song, then the
-/// number of songs.
-type Rank = (bool, bool, bool, bool, usize);
+/// How a way of starting songs ranks: the known answer's tracks it plays (when the search has
+/// one, see [`Hint::tracks`]), songs that last, not so many numbers sounding different that
+/// its songs themselves are past its table ([`CORE_SONGS`]), at least [`GOOD_SONGS`] songs, a
+/// table that ends counting what sounds past its last song, then the number of songs.
+type Rank = (usize, bool, bool, bool, bool, usize);
+/// A song this alike a track of the known answer (see [`alike`]) is that track.
+const TRACK_ALIKE: f64 = 0.5;
 /// Numbers sounding different past which a way of starting songs is taken to read past
 /// its song table.
 const UNBOUNDED_SONGS: usize = 128;
@@ -255,7 +459,7 @@ struct BootLog {
 fn boot<M: Machine>(rom: &[u8], press_start: u8, frames: u32) -> Result<M, String> {
     let mut m = M::boot(rom)?;
     for f in 0..frames {
-        m.press_start(start_held(press_start, f));
+        m.press(held(press_start, f));
         m.run_frame(None, None);
     }
     m.take_sound();
@@ -271,8 +475,8 @@ fn boot_log<M: Machine>(rom: &[u8], press_start: u8) -> Result<BootLog, String> 
         depth: HashMap::new(),
         entered_frames: HashMap::new(),
     };
-    for f in 0..BOOT_FRAMES {
-        m.press_start(start_held(press_start, f));
+    for f in 0..boot_len(press_start) {
+        m.press(held(press_start, f));
         let mut watch = |s: &Step| {
             for &(r, _) in s.entered {
                 let e = log.entered_frames.entry(r).or_default();
@@ -310,7 +514,7 @@ fn entry_at<M: Machine>(
     routine: u32,
 ) -> Result<Option<(M, M::Entry)>, String> {
     let mut m = boot::<M>(rom, press_start, frame)?;
-    m.press_start(start_held(press_start, frame));
+    m.press(held(press_start, frame));
     Ok(enter_in_frame(
         &mut m,
         |s| s.entered.iter().any(|e| e.0 == routine),
@@ -376,6 +580,8 @@ fn run_alone<M: Machine>(
     (0..frames).map(|_| play_frame(m, play, calls)).collect()
 }
 
+/// Fewest boot frames an NSF-named routine must run in to be taken as the sound routine.
+const HINT_MIN_FRAMES: usize = 30;
 /// Verified sound routines tried in turn, per boot.
 const MAX_PLAYS: usize = 3;
 /// Most times a frame a sound routine is taken to run.
@@ -389,6 +595,11 @@ pub struct Found {
     pub songs: Vec<u8>,
     /// Why nothing was found, when nothing was.
     pub why: Option<String>,
+    /// Against a matched file's tracks (NSF, GBS): how many of them the songs play, and of
+    /// how many. Some with 0 found: the songs are kept but unchecked (no song is like any of
+    /// the file's tracks; often the file is from another version of the game). None: no
+    /// file to check against.
+    pub checked: Option<(usize, usize)>,
 }
 
 /// Finds the sound routine of a game that played music during boot: the routines that
@@ -397,10 +608,53 @@ fn find_play<M: Machine>(
     rom: &[u8],
     press_start: u8,
     log: &BootLog,
+    hint: Option<&Hint>,
     note: &mut dyn FnMut(String),
 ) -> Result<Vec<(u32, u32, u8)>, String> {
     let mut found = Vec::new();
-    if log.total_writes < 50 {
+    let first_sound = log
+        .frames
+        .iter()
+        .position(|f| f.iter().any(|w| !M::incidental(w)))
+        .unwrap_or(0) as u32;
+    let latest = boot_len(press_start) - VERIFY_FRAMES as u32 - 1;
+    // Routines a matched NSF names: the game's code at the same address, byte for byte, is
+    // its sound routine even when it plays nothing yet (or its music can't be told apart
+    // from the rest of the boot's sound).
+    for (routine, code) in hint.map(|h| h.play.as_slice()).unwrap_or_default() {
+        if found.len() == MAX_PLAYS {
+            break;
+        }
+        let Some((frames, total)) = log.entered_frames.get(routine) else {
+            continue;
+        };
+        if frames.len() < HINT_MIN_FRAMES {
+            note(format!("  NSF routine {routine:04x}: entered in only {} frames", frames.len()));
+            continue;
+        }
+        let calls = (*total as f64 / frames.len() as f64).round().clamp(1.0, MAX_CALLS) as u8;
+        let mut at = (first_sound + 60).min(latest);
+        while at <= latest && !frames.contains(&at) {
+            at += 1;
+        }
+        if at > latest {
+            at = (0..=latest).rev().find(|f| frames.contains(f)).unwrap_or(0);
+        }
+        let Some((mut m, entry)) = entry_at::<M>(rom, press_start, at, *routine)? else {
+            continue;
+        };
+        if m.code_at(&entry, *routine, code.len()) != *code {
+            note(format!("  NSF routine {routine:04x}: the game's code there differs"));
+            continue;
+        }
+        if run_alone(&mut m, &entry, VERIFY_FRAMES, calls).is_none() {
+            note(format!("  NSF routine {routine:04x}: crashed when run alone"));
+            continue;
+        }
+        note(format!("  NSF routine {routine:04x}: the game's own, {calls} a frame"));
+        found.push((at, *routine, calls));
+    }
+    if log.total_writes < 50 || found.len() == MAX_PLAYS {
         return Ok(found);
     }
     // Routines most writes happened inside, innermost first.
@@ -414,11 +668,7 @@ fn find_play<M: Machine>(
         })
         .collect();
     candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let first_sound = log
-        .frames
-        .iter()
-        .position(|f| f.iter().any(|w| !M::incidental(w)))
-        .unwrap_or(0) as u32;
+    candidates.retain(|c| !found.iter().any(|f| f.1 == c.0));
     // Routines run once a frame first: a routine entered a few times a frame is often a
     // helper of the real one (a channel's update), which plays the boot music alone but not
     // a new song. Timer-driven routines get their turn after.
@@ -433,7 +683,7 @@ fn find_play<M: Machine>(
             continue;
         }
         // Called about once a frame from the start of the music on.
-        let span = BOOT_FRAMES.saturating_sub(first_sound).max(1);
+        let span = boot_len(press_start).saturating_sub(first_sound).max(1);
         // Run a steady number of times a frame: once, or a timer's few times.
         let calls = per_frame.round();
         if (frames.len() as f64) < 0.5 * span as f64
@@ -446,7 +696,6 @@ fn find_play<M: Machine>(
             ));
             continue;
         }
-        let latest = BOOT_FRAMES - VERIFY_FRAMES as u32 - 1;
         let mut at = (first_sound + 60).min(latest);
         while at <= latest && !frames.contains(&at) {
             at += 1;
@@ -506,8 +755,8 @@ fn trigger_candidates<M: Machine>(
     let mut calls: HashMap<u32, u32> = HashMap::new();
     let mut writes_inside: HashMap<u32, HashSet<u32>> = HashMap::new();
     let mut handlers: HashSet<u32> = HashSet::new();
-    for f in 0..BOOT_FRAMES {
-        m.press_start(start_held(press_start, f));
+    for f in 0..boot_len(press_start) {
+        m.press(held(press_start, f));
         let stack = m.clone();
         let mut watch = |s: &Step| {
             let in_play = s.calls.iter().any(|c| c.0 == play);
@@ -551,7 +800,7 @@ fn trigger_candidates<M: Machine>(
     out.extend(
         bytes
             .into_iter()
-            .filter(|&(_, n)| n < BOOT_FRAMES / 2)
+            .filter(|&(_, n)| n < boot_len(press_start) / 2)
             .take(24)
             .map(|(a, _)| Trigger::Byte(a)),
     );
@@ -588,8 +837,8 @@ fn call_entry<M: Machine>(
 ) -> Result<Option<M::Entry>, String> {
     let mut m = M::boot(rom)?;
     let mut seen = 0;
-    for f in 0..BOOT_FRAMES {
-        m.press_start(start_held(press_start, f));
+    for f in 0..boot_len(press_start) {
+        m.press(held(press_start, f));
         let mut probe = m.clone();
         let mut in_frame = 0;
         let mut watch = |s: &Step| {
@@ -620,6 +869,7 @@ fn apply<M: Machine>(m: &mut M, trigger: &Trigger, call: Option<&M::Entry>, v: u
             true
         }
         Trigger::Call { reg, .. } => call.is_some_and(|e| m.call_with(e, *reg, v)),
+        Trigger::Jump { addr, reg } => call.is_some_and(|e| m.call_at(e, *addr, *reg, v)),
     }
 }
 
@@ -644,6 +894,8 @@ struct Listening<M: Machine> {
     /// Where each frame's samples start.
     starts: Vec<usize>,
     calls: u8,
+    /// Each frame's sound writes.
+    writes: Vec<Vec<Write>>,
 }
 
 impl<M: Machine> Listening<M> {
@@ -662,6 +914,7 @@ impl<M: Machine> Listening<M> {
             samples: Vec::new(),
             starts: Vec::new(),
             calls,
+            writes: Vec::new(),
         })
     }
 
@@ -676,6 +929,7 @@ impl<M: Machine> Listening<M> {
                 writes = std::mem::take(&mut self.pre);
             }
             self.m.feed(&mut self.chip, &writes, &mut self.samples);
+            self.writes.push(writes);
         }
         Some(())
     }
@@ -736,13 +990,41 @@ pub fn search_logged<M: Machine>(
     rom: &[u8],
     note: &mut dyn FnMut(String),
 ) -> Result<Found, String> {
+    search_hinted::<M>(rom, None, note)
+}
+
+/// [`search_logged`], pointed at the game's sound code by `hint` (from an original audio
+/// format file that matched the ROM) when there is one.
+pub fn search_hinted<M: Machine>(
+    rom: &[u8],
+    hint: Option<&Hint>,
+    note: &mut dyn FnMut(String),
+) -> Result<Found, String> {
     // The furthest the search got, over both boots.
     let mut why = (0, "the game played no music in its first 15 seconds");
     let started = std::time::Instant::now();
     let timed_out = || started.elapsed() > SEARCH_TIME_LIMIT;
     // The best result so far, ranked as songs that last first, then by count.
     let mut found: Option<(Rank, Found)> = None;
-    'boots: for press_start in [0u8, 1, 2] {
+    let slow = M::boot(rom).map(|m| m.slow_loading()).unwrap_or(false);
+    'boots: for press_start in 0..=LAST_INPUT {
+        // Longer boots with other buttons only while nothing was found: the probe found
+        // they start the music of most games still silent after the first three.
+        let longer = match press_start {
+            3 | 4 => M::BUTTONS,
+            5 => slow,
+            _ => true,
+        };
+        if !longer || (press_start >= 3 && found.is_some()) {
+            continue;
+        }
+        if press_start >= 3 && why.0 == 0 {
+            why.1 = if press_start == 5 {
+                "the game played no music in its first minute"
+            } else {
+                "the game played no music in its first 30 seconds"
+            };
+        }
         if timed_out() {
             note("search took too long; stopped".into());
             why = (why.0.max(3), "the search took too long");
@@ -759,11 +1041,18 @@ pub fn search_logged<M: Machine>(
         };
         note(format!(
             "boot{}: {} sound writes; routines {}",
-            ["", " (Start)", " (Start, steady)"][press_start as usize],
+            [
+                "",
+                " (Start)",
+                " (Start, steady)",
+                " (Start and A, 30 s)",
+                " (A, 30 s)",
+                " (a minute)"
+            ][press_start as usize],
             log.total_writes,
             busiest.join(" ")
         ));
-        let plays = find_play::<M>(rom, press_start, &log, note)?;
+        let plays = find_play::<M>(rom, press_start, &log, hint, note)?;
         if plays.is_empty() && log.total_writes >= 50 && why.0 < 1 {
             why = (1, "the routine that plays the music wasn't found");
         }
@@ -775,7 +1064,24 @@ pub fn search_logged<M: Machine>(
             let Some((base, entry)) = entry_at::<M>(rom, press_start, at, play)? else {
                 continue;
             };
-            let candidates = trigger_candidates::<M>(rom, press_start, play)?;
+            let mut candidates = trigger_candidates::<M>(rom, press_start, play)?;
+            // The NSF's song-start routines that are the game's own code, tried first.
+            if let Some(h) = hint {
+                let mut probe = base.clone();
+                let jumps: Vec<Trigger> = h
+                    .start
+                    .iter()
+                    .filter(|(a, code)| probe.code_at(&entry, *a, code.len()) == *code)
+                    .flat_map(|(a, _)| (0..M::REGISTERS).map(move |reg| Trigger::Jump { addr: *a, reg }))
+                    .collect();
+                note(format!(
+                    "NSF ({} songs): {} of {} song-start routines are the game's own code",
+                    h.songs,
+                    jumps.len() / M::REGISTERS.max(1) as usize,
+                    h.start.len()
+                ));
+                candidates.splice(0..0, jumps);
+            }
             note(format!(
                 "sound routine {play:04x} (frame {at}); {} ways to start a song to try",
                 candidates.len()
@@ -791,6 +1097,18 @@ pub fn search_logged<M: Machine>(
                 calls,
             )
             .map(|r| r.sound);
+            // The exact song ids a Jump way takes, when the file's tracks give them.
+            let ids_of = |t: &Trigger| -> Option<Vec<u8>> {
+                let Trigger::Jump { addr, reg } = t else { return None };
+                let (_, _, v) = hint?.ids.iter().find(|i| i.0 == *addr && i.1 == *reg)?;
+                let mut out: Vec<u8> = Vec::new();
+                for &x in v {
+                    if !out.contains(&x) {
+                        out.push(x);
+                    }
+                }
+                Some(out)
+            };
             let mut screened: Vec<(usize, Trigger, Option<M::Entry>)> = Vec::new();
             for t in candidates {
                 if timed_out() {
@@ -803,10 +1121,15 @@ pub fn search_logged<M: Machine>(
                             None => continue,
                         }
                     }
+                    Trigger::Jump { .. } => Some(entry.clone()),
                     Trigger::Byte(_) => None,
                 };
                 let mut seen = HashSet::new();
-                for v in 1..=8u8 {
+                let tries: Vec<u8> = match ids_of(&t) {
+                    Some(ids) => ids.into_iter().take(8).collect(),
+                    None => (1..=8).collect(),
+                };
+                for v in tries {
                     if let Some(h) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES / 2, calls) {
                         if h.audible && Some(h.sound) != baseline {
                             seen.insert(h.sound);
@@ -823,10 +1146,10 @@ pub fn search_logged<M: Machine>(
             }
             screened.sort_by_key(|s| std::cmp::Reverse(s.0));
             // The best way, as [`Rank`] orders them.
-            let mut best: Option<(Rank, Trigger, Vec<u8>)> = None;
+            let mut best: Option<(Rank, Trigger, Vec<u8>, Option<usize>)> = None;
             for (i, (_, t, call)) in screened.into_iter().enumerate() {
                 // The best few; more while none has a song table that ends.
-                let settled = best.as_ref().is_some_and(|b| b.0 .1 && b.0 .2 && b.0 .3);
+                let settled = best.as_ref().is_some_and(|b| b.0 .2 && b.0 .3 && b.0 .4);
                 if i >= SCREENED_TRIED_MORE || (i >= SCREENED_TRIED && settled) || timed_out() {
                     break;
                 }
@@ -850,13 +1173,18 @@ pub fn search_logged<M: Machine>(
                 let mut dropped = [0usize; 4];
                 let mut short = Vec::new();
                 let mut gap_at = None;
-                for v in 0..=255u8 {
+                // Each song's melody, to check against the known answer.
+                let melody_of = hint.and_then(|h| h.melody).filter(|_| hint.is_some_and(|h| !h.tracks.is_empty()));
+                let mut melodies: Vec<(u8, HashSet<u64>)> = Vec::new();
+                let ids = ids_of(&t);
+                let numbers: Vec<u8> = ids.clone().unwrap_or_else(|| (0..=255).collect());
+                for v in numbers {
                     if timed_out() {
                         break;
                     }
                     // Songs end at the first long gap (see `song_run`): past it, nothing
-                    // more can count.
-                    if played.last().is_some_and(|&l: &u8| (v - l) as usize > SONG_GAP) {
+                    // more can count. (Not for ids from the file: they are the songs.)
+                    if ids.is_none() && played.last().is_some_and(|&l: &u8| (v - l) as usize > SONG_GAP) {
                         gap_at = Some(v);
                         break;
                     }
@@ -881,10 +1209,13 @@ pub fn search_logged<M: Machine>(
                         Some(h) if !(h.audible && h.lasts) => short.push(v),
                         Some(_) => played.push(v),
                     }
+                    if let (Some(f), true) = (melody_of, played.last() == Some(&v) || short.last() == Some(&v)) {
+                        melodies.push((v, f(&l.writes)));
+                    }
                     // Past this many songs that last, the way reads past its song table (see
                     // `core`): the rest would only be more of the same. Jingles don't count: a
                     // way still finding its first song that lasts may yet beat others.
-                    if played.len() >= CORE_SONGS {
+                    if ids.is_none() && played.len() >= CORE_SONGS {
                         break;
                     }
                 }
@@ -905,7 +1236,10 @@ pub fn search_logged<M: Machine>(
                 }
                 // A game whose every tune is a few seconds long (older games are mostly
                 // jingles): its short ones are its music.
-                let songs = if played.is_empty() {
+                let songs = if let Some(ids) = &ids {
+                    // The file's tracks, in its order: jingles too, since it lists them.
+                    ids.iter().copied().filter(|v| played.contains(v) || short.contains(v)).collect()
+                } else if played.is_empty() {
                     song_run(&short)
                 } else {
                     song_run(&played)
@@ -930,12 +1264,39 @@ pub fn search_logged<M: Machine>(
                 // game's songs are often its sound effects, which sound different too.
                 let list = played.len() >= GOOD_SONGS;
                 let core = played.len() < CORE_SONGS;
-                let rank = (!played.is_empty(), core, list, bounded, songs.len());
+                // Against the known answer: each track once, by the song most like it; songs
+                // like no track (variants of one, sound effects, junk) are left out.
+                let checked = hint.filter(|h| !h.tracks.is_empty() && !melodies.is_empty()).map(|h| h.tracks.len());
+                let (songs, tracks_found) = match hint.filter(|h| !h.tracks.is_empty()) {
+                    Some(h) if !melodies.is_empty() => {
+                        let mut by_track: Vec<Option<(f64, u8)>> = vec![None; h.tracks.len()];
+                        for (v, mine) in &melodies {
+                            for (i, track) in h.tracks.iter().enumerate() {
+                                let a = alike(mine, track);
+                                if a >= TRACK_ALIKE && by_track[i].is_none_or(|b| a > b.0) {
+                                    by_track[i] = Some((a, *v));
+                                }
+                            }
+                        }
+                        let mut kept: Vec<u8> = Vec::new();
+                        for (_, v) in by_track.iter().flatten() {
+                            if !kept.contains(v) {
+                                kept.push(*v);
+                            }
+                        }
+                        let n = by_track.iter().flatten().count();
+                        note(format!("    like the known answer: {n} of {} tracks, by {} songs", h.tracks.len(), kept.len()));
+                        // None like a track: kept, as unchecked (see `Found::checked`).
+                        if kept.is_empty() { (songs, 0) } else { (kept, n) }
+                    }
+                    _ => (songs, 0),
+                };
+                let rank = (tracks_found, !played.is_empty(), core, list, bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
-                    best = Some((rank, t, songs));
+                    best = Some((rank, t, songs, checked));
                 }
             }
-            if let Some((rank, trigger, songs)) = best.filter(|b| !b.2.is_empty()) {
+            if let Some((rank, trigger, songs, checked)) = best.filter(|b| !b.2.is_empty()) {
                 let recipe = Recipe {
                     boot_frames: at,
                     press_start,
@@ -943,7 +1304,7 @@ pub fn search_logged<M: Machine>(
                     trigger,
                     calls,
                 };
-                let good = rank.1 && rank.2 && rank.3;
+                let good = rank.2 && rank.3 && rank.4;
                 if found.as_ref().is_none_or(|f: &(Rank, Found)| rank > f.0) {
                     found = Some((
                         rank,
@@ -951,6 +1312,7 @@ pub fn search_logged<M: Machine>(
                             recipe,
                             songs,
                             why: None,
+                            checked: checked.map(|of| (rank.0, of)),
                         },
                     ));
                 }
@@ -982,6 +1344,7 @@ pub fn search_logged<M: Machine>(
         },
         songs: Vec::new(),
         why: Some(why.1.to_string()),
+        checked: None,
     })
 }
 
@@ -1005,6 +1368,7 @@ impl<M: Machine> Song<M> {
                 call_entry::<M>(rom, recipe.press_start, *addr, *nth)?
                     .ok_or("the game no longer calls its song routine")?,
             ),
+            Trigger::Jump { .. } => Some(play.clone()),
             Trigger::Byte(_) => None,
         };
         if !apply(&mut m, &recipe.trigger, call.as_ref(), v) {
@@ -1120,6 +1484,15 @@ mod tests {
             calls: 6,
         };
         assert_eq!(r.encode(), "5@0@8000@m07f0@6");
+        assert_eq!(Recipe::decode(&r.encode()), Some(r));
+        let r = Recipe {
+            boot_frames: 60,
+            press_start: 1,
+            play: 0xC081,
+            trigger: Trigger::Jump { addr: 0xA06B, reg: 0 },
+            calls: 1,
+        };
+        assert_eq!(r.encode(), "60@1@c081@ja06b.0");
         assert_eq!(Recipe::decode(&r.encode()), Some(r));
     }
 }
