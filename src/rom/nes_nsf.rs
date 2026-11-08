@@ -173,6 +173,8 @@ struct Player {
     pad: usize,
     /// When set, marks each data byte read ([`used_bytes`]).
     used: Option<Vec<bool>>,
+    /// When set, the writes made (but the stack's), for a start script ([`record`]).
+    log: Option<Vec<(u16, u8)>>,
 }
 
 impl Bus for Player {
@@ -193,6 +195,11 @@ impl Bus for Player {
     }
 
     fn write(&mut self, addr: u16, v: u8) {
+        if let Some(log) = self.log.as_mut() {
+            if !(0x100..0x200).contains(&addr) {
+                log.push((addr, v));
+            }
+        }
         match addr {
             0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF] = v,
             0x4000..=0x4013 | 0x4015 | 0x4040..=0x408A => self.writes.push(Write {
@@ -322,14 +329,43 @@ fn entries(nsf: &[u8], songs: u8, routines: &[u16]) -> Vec<Vec<Option<[u8; 3]>>>
 
 /// An NSF's player, loaded and banked as at start, with its init and play addresses.
 fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
-    if nsf.len() < 0x80 || &nsf[..5] != b"NESM\x1a" {
-        return None;
+    let h = Header::read(nsf)?;
+    Some((player(&h, &nsf[0x80..])?, h.init, h.play))
+}
+
+/// What a map keeps of an NSF's header: where its data loads, its starting banks, whether it
+/// is for the Disk System, its song count (and its init and play, for building the map).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Header {
+    pub load: u16,
+    pub init: u16,
+    pub play: u16,
+    pub banks: [u8; 8],
+    pub fds: bool,
+    pub songs: u8,
+}
+
+impl Header {
+    fn read(nsf: &[u8]) -> Option<Self> {
+        if nsf.len() < 0x80 || &nsf[..5] != b"NESM\x1a" {
+            return None;
+        }
+        let word = |at: usize| u16::from_le_bytes([nsf[at], nsf[at + 1]]);
+        Some(Self {
+            load: word(0x08),
+            init: word(0x0A),
+            play: word(0x0C),
+            banks: nsf[0x70..0x78].try_into().ok()?,
+            fds: nsf[0x7B] & 4 != 0,
+            songs: nsf[6],
+        })
     }
-    let word = |at: usize| u16::from_le_bytes([nsf[at], nsf[at + 1]]);
-    let (load, init, play) = (word(0x08), word(0x0A), word(0x0C));
-    let banks: [u8; 8] = nsf[0x70..0x78].try_into().ok()?;
+}
+
+/// A player for `data` laid out as header `h` says.
+fn player(h: &Header, data: &[u8]) -> Option<Player> {
+    let (load, banks, fds) = (h.load, h.banks, h.fds);
     let banked = banks.iter().any(|&b| b != 0);
-    let fds = nsf[0x7B] & 4 != 0;
     let mut p = Player {
         ram: [0; 0x800],
         mem: vec![0; 0xA000],
@@ -340,10 +376,11 @@ fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
         src: vec![0; 0xA000],
         pad: (load & 0xFFF) as usize,
         used: None,
+        log: None,
     };
     if banked {
         p.data = vec![0; (load & 0xFFF) as usize];
-        p.data.extend_from_slice(&nsf[0x80..]);
+        p.data.extend_from_slice(data);
         for (i, &b) in banks.iter().enumerate() {
             p.bank(i + 2, b);
         }
@@ -353,14 +390,14 @@ fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
         }
     } else {
         let at = (load as usize).checked_sub(0x6000)?;
-        for (i, &b) in nsf[0x80..].iter().enumerate() {
+        for (i, &b) in data.iter().enumerate() {
             if let Some(m) = p.mem.get_mut(at + i) {
                 *m = b;
                 p.src[at + i] = i as u32 + 1;
             }
         }
     }
-    Some((p, init, play))
+    Some(p)
 }
 
 /// A melody's fingerprint (see [`music_search::melody`]) on the NES's tone channels: pulse 1
@@ -370,6 +407,155 @@ pub fn melody(frames: &[Vec<Write>]) -> HashSet<u64> {
 }
 
 pub use music_search::alike;
+
+/// One step of a start script: what the file's own init (or play) does, in terms of the
+/// game's code: a write it makes itself, or a call into the game's routine at `addr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    Poke(u16, u8),
+    Call { addr: u16, a: u8, x: u8, y: u8 },
+}
+
+/// A game's music map, from a matched NSF and the ROM: the NSF's needed data as ROM ranges,
+/// and per track the start script that replaces the file's own init (play's when play isn't
+/// the game's own routine). Only numbers: no byte of the game or of the file.
+#[derive(Debug, Clone)]
+pub struct Map {
+    pub header: Header,
+    /// Bytes of the file's data, and where its runs are in the ROM's program data.
+    pub data_len: usize,
+    pub runs: Vec<super::music_map::Run>,
+    pub play: Vec<Op>,
+    pub tracks: Vec<Option<Vec<Op>>>,
+}
+
+/// Runs the routine at `pc` and records it as a start script: while the code running isn't
+/// in `placed` (the bytes the ROM holds), its writes are pokes; a jump into placed code is a
+/// call, run through without recording. None when it doesn't return.
+fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool]) -> Option<Vec<Op>> {
+    p.ram[0x1FF] = 0x5F;
+    p.ram[0x1FE] = 0xF5;
+    cpu.s = 0xFD;
+    cpu.pc = pc;
+    cpu.a = a;
+    cpu.x = x;
+    cpu.calls = vec![(pc, 0xFF)];
+    let mut ops = Vec::new();
+    let mut in_game: Option<usize> = None;
+    let mut used = 0u32;
+    while !cpu.calls.is_empty() {
+        if used > 400_000 || cpu.jammed {
+            return None;
+        }
+        if in_game.is_some_and(|d| cpu.calls.len() < d) {
+            in_game = None;
+        }
+        let i = cpu.pc.checked_sub(0x6000).map(usize::from);
+        let here = i.and_then(|i| p.src.get(i)).copied().unwrap_or(0);
+        let game = here > 0 && placed.get(here as usize - 1).copied().unwrap_or(false);
+        if in_game.is_none() && game {
+            ops.push(Op::Call { addr: cpu.pc, a: cpu.a, x: cpu.x, y: cpu.y });
+            in_game = Some(cpu.calls.len());
+        }
+        p.log = in_game.is_none().then(Vec::new);
+        used += cpu.step(p);
+        if let Some(log) = p.log.take() {
+            ops.extend(log.into_iter().map(|(a, v)| Op::Poke(a, v)));
+        }
+    }
+    Some(ops)
+}
+
+/// Plays a start script.
+fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op]) -> bool {
+    for op in ops {
+        match *op {
+            Op::Poke(a, v) => p.write(a, v),
+            Op::Call { addr, a, x, y } => {
+                cpu.y = y;
+                if !p.call(cpu, addr, a, x) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The music map of a ROM (`prg`, its program data) for the NSF it matches. None when the
+/// NSF doesn't run.
+pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
+    let h = Header::read(nsf)?;
+    let data = &nsf[0x80..];
+    let used = used_bytes(nsf, music_search::HINT_TRACK_FRAMES)?;
+    let layout = super::music_map::layout(data, &used, prg);
+    let mut placed = vec![false; data.len()];
+    for r in &layout.runs {
+        placed[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true);
+    }
+    let mut tracks = Vec::new();
+    let mut play = None;
+    for t in 0..h.songs {
+        let mut p = player(&h, data)?;
+        let mut cpu = Cpu::with(h.init, 0xFD);
+        p.write(0x4015, 0x0F);
+        let script = record(&mut p, &mut cpu, h.init, t, 0, &placed);
+        if play.is_none() && script.is_some() {
+            play = record(&mut p, &mut cpu, h.play, 0, 0, &placed);
+        }
+        tracks.push(script);
+    }
+    Some(Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks })
+}
+
+/// The file's data as a map rebuilds it from the ROM: its runs, and nothing elsewhere.
+fn rebuilt(m: &Map, prg: &[u8]) -> Vec<u8> {
+    let mut data = vec![0u8; m.data_len];
+    for r in &m.runs {
+        if let Some(src) = prg.get(r.rom..r.rom + r.len) {
+            data[r.data..r.data + r.len].copy_from_slice(src);
+        }
+    }
+    data
+}
+
+/// Track `song` played from the ROM by its map: each frame's sound writes.
+pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+    let script = m.tracks.get(song as usize)?.as_ref()?;
+    let data = rebuilt(m, prg);
+    let mut p = player(&m.header, &data)?;
+    let mut cpu = Cpu::with(0, 0xFD);
+    p.write(0x4015, 0x0F);
+    if !replay(&mut p, &mut cpu, script) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(frames);
+    let mut first = std::mem::take(&mut p.writes);
+    for _ in 0..frames {
+        if !replay(&mut p, &mut cpu, &m.play) {
+            break;
+        }
+        let mut f = std::mem::take(&mut first);
+        f.append(&mut p.writes);
+        out.push(f);
+    }
+    Some(out)
+}
+
+/// How a map plays the NSF's tracks: per track, how alike its melody is to the NSF's own
+/// (None for a track whose script didn't record, or that has no melody in the NSF either).
+pub fn map_check(nsf: &[u8], m: &Map, prg: &[u8], frames: usize) -> Vec<Option<f64>> {
+    (0..m.header.songs)
+        .map(|t| {
+            let real = melody(&track_writes(nsf, t, frames)?);
+            if real.is_empty() {
+                return None;
+            }
+            let mine = map_track_writes(m, prg, t, frames).map(|w| melody(&w)).unwrap_or_default();
+            Some(alike(&real, &mine))
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -431,6 +617,33 @@ mod tests {
         // Another song number shifts every pitch: a different melody.
         let mb = melody(&track_writes(&f, 1, 60).unwrap());
         assert!(alike(&ma, &mb) < 0.5);
+    }
+
+    #[test]
+    fn a_map_plays_the_tracks_from_the_rom_without_the_files_init() {
+        // The game's routines: start ($8040: STA $00; RTS) and play ($8050: LDX $01; INX; INX;
+        // STX $01; TXA; ADC $00; STA $4002; LDA #0; STA $4003; RTS).
+        let start: &[u8] = &[0x85, 0x00, 0x60];
+        let play: &[u8] = &[
+            0xA6, 0x01, 0xE8, 0xE8, 0x86, 0x01, 0x8A, 0x65, 0x00, 0x8D, 0x02, 0x40, 0xA9, 0x00,
+            0x8D, 0x03, 0x40, 0x60,
+        ];
+        // The file's own init: ASL A; JSR $8040; RTS (doubles the track into the game's id).
+        let f = nsf(&[(0x8000, &[0x0A, 0x20, 0x40, 0x80, 0x60]), (0x8040, start), (0x8010, &[0x20, 0x50, 0x80, 0x60]), (0x8050, play)]);
+        // A ROM holding the game's routines elsewhere, around other bytes.
+        let mut x = 7u32;
+        let mut prg: Vec<u8> = (0..0x4000).map(|_| { x = x.wrapping_mul(1_103_515_245).wrapping_add(12345); (x >> 16) as u8 }).collect();
+        prg[0x1040..0x1043].copy_from_slice(start);
+        prg[0x1050..0x1050 + play.len()].copy_from_slice(play);
+        // Pad the routines out so the runs are long enough to place.
+        let data = &f[0x80..];
+        prg[0x1000 + 0x40 + 3..0x1000 + 0x50].copy_from_slice(&data[0x43..0x50]);
+        prg[0x1050 + play.len()..0x1100].copy_from_slice(&data[0x50 + play.len()..0x100]);
+        let m = map(&f, &prg).unwrap();
+        // Track 1's script calls the game's start routine with A = 2, as the file's init does.
+        assert!(m.tracks[1].as_ref().unwrap().iter().any(|o| *o == Op::Call { addr: 0x8040, a: 2, x: 0, y: 0 }));
+        let check = map_check(&f, &m, &prg, 60);
+        assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
     }
 
     #[test]

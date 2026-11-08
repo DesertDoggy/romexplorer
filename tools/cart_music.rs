@@ -1,7 +1,7 @@
 //! Developer tool: the cartridge music search (`rom::music_search`) over ROMs on this PC, to
 //! see how many games it finds music in and why not in the rest.
 //!
-//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout]] <rom or folder>...
+//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck]] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
 //! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy, Game Boy Advance or Neo Geo Pocket/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
@@ -218,6 +218,9 @@ struct Options {
     /// tracks read over the ROM and print how much of it is found where (a music map's first
     /// part).
     layout: bool,
+    /// `--mapcheck`: with `--originals`, build each NES ROM's music map from its matched NSF and
+    /// play every track from the ROM by it, against the NSF's own.
+    mapcheck: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -307,6 +310,60 @@ fn print_layout(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         _ => "under 50%",
     };
     *t.reasons.entry(format!("needed bytes in the ROM: {bucket}")).or_default() += 1;
+}
+
+/// A track the map plays this alike the NSF's own is played right.
+const MAP_RIGHT: f64 = 0.9;
+
+/// `--mapcheck` for a NES/Famicom ROM and its matched NSF.
+fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let Ok(h) = nes_cart::parse(rom) else { return };
+    let started = std::time::Instant::now();
+    let Some(m) = nes_nsf::map(nsf, &h.prg) else {
+        println!("{name}: map: the NSF doesn't run");
+        *t.reasons.entry("the NSF doesn't run".into()).or_default() += 1;
+        return;
+    };
+    let check = nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES);
+    let with_melody = check.iter().flatten().count();
+    let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let no_script = m.tracks.iter().filter(|s| s.is_none()).count();
+    let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, nes_nsf::Op::Call { .. })).count()).max().unwrap_or(0);
+    let pokes = m.tracks.iter().flatten().map(|s| s.len()).max().unwrap_or(0);
+    let wrong: Vec<String> = check
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}")))
+        .take(12)
+        .collect();
+    println!(
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps){}",
+        started.elapsed().as_secs_f32(),
+        m.header.songs,
+        m.runs.len(),
+        pokes,
+        calls,
+        no_script,
+        m.play.len(),
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[3] += with_melody;
+    t.checked[4] += right;
+    if with_melody > 0 && right == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match right as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
 fn run_hinted<M: Machine>(
@@ -462,8 +519,9 @@ fn main() {
         probe: None,
         nsf: None,
         layout: args.iter().any(|a| a == "--layout"),
+        mapcheck: args.iter().any(|a| a == "--mapcheck"),
     };
-    args.retain(|a| a != "--layout");
+    args.retain(|a| a != "--layout" && a != "--mapcheck");
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
         o.render = args.get(i + 1).map(PathBuf::from);
@@ -483,7 +541,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout]] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck]] <rom or folder>..."
         );
         std::process::exit(2);
     }
@@ -523,9 +581,14 @@ fn main() {
                     nes_cart::parse(&rom).map(|h| h.mapper).unwrap_or(0)
                 );
                 let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
-                if o.layout {
+                if o.layout || o.mapcheck {
                     if let Some(h) = &hint {
-                        print_layout(&path, &rom, &h.1, tally.entry("NES").or_default());
+                        let t = tally.entry("NES").or_default();
+                        if o.layout {
+                            print_layout(&path, &rom, &h.1, t);
+                        } else {
+                            print_mapcheck(&path, &rom, &h.1, t);
+                        }
                     }
                     continue;
                 }
@@ -690,7 +753,7 @@ fn main() {
         );
         if t.checked[0] > 0 {
             println!(
-                "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found",
+                "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found (map check: tracks right)",
                 t.checked[0], t.checked[2], t.checked[1], t.checked[4], t.checked[3]
             );
         }
