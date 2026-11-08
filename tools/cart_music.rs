@@ -178,6 +178,8 @@ struct Tally {
     unchecked: [usize; 2],
     /// `--mapcheck`: tracks played right on the game's own board.
     board: usize,
+    /// `--mapcheck`: tracks the saved maps play right (each by its chosen player).
+    saved: usize,
 }
 
 /// Frames of a song and of a track compared by melody.
@@ -364,6 +366,12 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     nes_nsf::choose_board(nsf, &mut m, rom);
     let board = nes_nsf::cart_check(nsf, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     t.board += board;
+    // The map as the app keeps it: each track's way chosen, written down and read back.
+    nes_nsf::choose_ways(nsf, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
+    let saved = nes_nsf::Map::decode(&m.encode()).map_or(0, |back| {
+        nes_nsf::saved_check(nsf, &back, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count()
+    });
+    t.saved += saved;
     let with_melody = check.iter().flatten().count();
     let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     let no_script = m.tracks.iter().filter(|s| s.is_none()).count();
@@ -376,7 +384,7 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         .take(12)
         .collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board} {:?}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board} {:?}; saved map: {saved}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
         started.elapsed().as_secs_f32(),
         m.board,
         m.header.songs,
@@ -806,8 +814,8 @@ fn main() {
         );
         if t.checked[0] > 0 && o.mapcheck {
             println!(
-                "  map check in {} games: {} of {} tracks played right from the ROM; with the gaps from the ROM {}, from the file {}; on the game's board {}",
-                t.checked[0], t.checked[4], t.checked[3], t.checked[1], t.checked[2], t.board
+                "  map check in {} games: {} of {} tracks played right from the ROM; with the gaps from the ROM {}, from the file {}; on the game's board {}; by the saved maps {}",
+                t.checked[0], t.checked[4], t.checked[3], t.checked[1], t.checked[2], t.board, t.saved
             );
         } else if t.checked[0] > 0 {
             println!(

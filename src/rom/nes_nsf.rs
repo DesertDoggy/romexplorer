@@ -770,41 +770,64 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
     data
 }
 
+/// A track playing from the ROM by its map, through the file's layout rebuilt from the ROM.
+pub struct LayoutSong {
+    p: Player,
+    cpu: Cpu,
+    shift: i32,
+    play: Vec<Op>,
+    first: Vec<Write>,
+}
+
+impl LayoutSong {
+    /// Track `song`, started. None when its script doesn't run.
+    pub fn open(m: &Map, prg: &[u8], song: u8, fill: Fill) -> Option<Self> {
+        let script = m.tracks.get(song as usize)?.as_ref()?;
+        let (mut p, shift) = match (&m.moved, fill) {
+            // The game's code where the game has it: the ROM's own windows, no file layout.
+            (Some((d, windows)), Fill::Zeros | Fill::Bridged) => {
+                let mut h = m.header;
+                h.banks = [0; 8];
+                h.load = 0x8000;
+                let mut p = player(&h, &[])?;
+                for &(base, rom) in windows {
+                    for i in 0..0x2000 {
+                        p.mem[base as usize - 0x6000 + i] = prg.get(rom + i).copied().unwrap_or(0);
+                    }
+                }
+                (p, *d)
+            }
+            _ => (player(&m.header, &rebuilt(m, prg, fill))?, 0),
+        };
+        let mut cpu = Cpu::with(0, 0xFD);
+        p.write(0x4015, 0x0F);
+        if !replay(&mut p, &mut cpu, script, shift) {
+            return None;
+        }
+        let first = std::mem::take(&mut p.writes);
+        Some(Self { p, cpu, shift, play: m.play_of(song).to_vec(), first })
+    }
+
+    /// The next frame's sound writes; None once the play routine stops returning.
+    pub fn frame(&mut self) -> Option<Vec<Write>> {
+        if !replay(&mut self.p, &mut self.cpu, &self.play, self.shift) {
+            return None;
+        }
+        let mut f = std::mem::take(&mut self.first);
+        f.append(&mut self.p.writes);
+        Some(f)
+    }
+
+    /// The byte the CPU sees at `addr` ($6000-$FFFF), for the DMC channel's samples.
+    fn peek(&self, addr: u16) -> u8 {
+        addr.checked_sub(0x6000).and_then(|i| self.p.mem.get(i as usize)).copied().unwrap_or(0)
+    }
+}
+
 /// Track `song` played from the ROM by its map: each frame's sound writes.
 pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize, fill: Fill) -> Option<Vec<Vec<Write>>> {
-    let script = m.tracks.get(song as usize)?.as_ref()?;
-    let (mut p, shift) = match (&m.moved, fill) {
-        // The game's code where the game has it: the ROM's own windows, no file layout.
-        (Some((d, windows)), Fill::Zeros | Fill::Bridged) => {
-            let mut h = m.header;
-            h.banks = [0; 8];
-            h.load = 0x8000;
-            let mut p = player(&h, &[])?;
-            for &(base, rom) in windows {
-                for i in 0..0x2000 {
-                    p.mem[base as usize - 0x6000 + i] = prg.get(rom + i).copied().unwrap_or(0);
-                }
-            }
-            (p, *d)
-        }
-        _ => (player(&m.header, &rebuilt(m, prg, fill))?, 0),
-    };
-    let mut cpu = Cpu::with(0, 0xFD);
-    p.write(0x4015, 0x0F);
-    if !replay(&mut p, &mut cpu, script, shift) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(frames);
-    let mut first = std::mem::take(&mut p.writes);
-    for _ in 0..frames {
-        if !replay(&mut p, &mut cpu, m.play_of(song), shift) {
-            break;
-        }
-        let mut f = std::mem::take(&mut first);
-        f.append(&mut p.writes);
-        out.push(f);
-    }
-    Some(out)
+    let mut s = LayoutSong::open(m, prg, song, fill)?;
+    Some((0..frames).map_while(|_| s.frame()).collect())
 }
 
 /// How a map plays the NSF's tracks: per track, how alike its melody is to the NSF's own
@@ -886,56 +909,87 @@ fn game_place(m: &Map, prg_len: usize, data: usize, addr: u16) -> Option<(u16, u
 /// where the game has each routine. For a file made from another version of the game, whose
 /// addresses differ area by area. None when the board isn't supported or the script fails.
 pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
-    use super::music_search::Machine;
-    let script = m.tracks.get(song as usize)?.as_ref()?;
-    let mut nes = super::nes_music::Nes::boot(rom).ok()?;
-    let prg_len = super::nes_cart::parse(rom).ok()?.prg.len();
-    // A bank the board puts in a window from power on (a fixed bank) stays there, wherever
-    // the file has it.
-    let boot = nes.windows();
-    let place = |d: usize, a: u16| {
-        let (g, w, base) = game_place(m, prg_len, d, a)?;
-        match (1..5).find(|&k| m.board.fixed && boot[k] == base) {
+    let mut s = BoardSong::open(m, rom, song)?;
+    Some((0..frames).map_while(|_| s.frame()).collect())
+}
+
+/// A track playing on the game's own board ([`cart_track_writes`]).
+pub struct BoardSong {
+    nes: super::nes_music::Nes,
+    m: Map,
+    play: Vec<Op>,
+    prg_len: usize,
+    boot: [usize; 5],
+    pinned: [Option<usize>; 5],
+    first: Vec<Write>,
+}
+
+impl BoardSong {
+    /// Track `song` of the whole iNES file `rom`, started. None when the board isn't
+    /// supported or the script fails.
+    pub fn open(m: &Map, rom: &[u8], song: u8) -> Option<Self> {
+        use super::music_search::Machine;
+        let script = m.tracks.get(song as usize)?.as_ref()?.clone();
+        let nes = super::nes_music::Nes::boot(rom).ok()?;
+        let prg_len = super::nes_cart::parse(rom).ok()?.prg.len();
+        let boot = nes.windows();
+        let mut s = Self { nes, m: m.clone(), play: m.play_of(song).to_vec(), prg_len, boot, pinned: [None; 5], first: Vec::new() };
+        // The windows the runs ask for, the longest first; the rest as the board starts.
+        let mut windows = boot;
+        let mut set = [false; 5];
+        let mut runs: Vec<_> = m.runs.iter().collect();
+        runs.sort_by_key(|r| std::cmp::Reverse(r.len));
+        for r in runs {
+            // Every 8 KB window the run covers, from where each part of it starts.
+            let mut d = r.data;
+            while d < r.data + r.len {
+                let Some(a) = cpu_of(&m.header, d) else { break };
+                if let Some((_, w, base)) = s.place(d, a) {
+                    if w > 0 && !set[w] {
+                        windows[w] = base;
+                        set[w] = true;
+                    }
+                }
+                d += 0x2000 - (a as usize & 0x1FFF);
+            }
+        }
+        s.nes.set_windows(windows);
+        if m.board.pin != Pin::Off {
+            (1..5).filter(|&k| set[k]).for_each(|k| s.pinned[k] = Some(windows[k]));
+        }
+        s.nes.write_bus(0x4015, 0x0F);
+        if !s.run(&script) {
+            return None;
+        }
+        s.first = s.nes.take_sound();
+        Some(s)
+    }
+
+    /// Where the game has the file's byte at data offset `d` (CPU address `a` in the file), as
+    /// [`game_place`] says; a bank the board maps from power on (a fixed bank) stays in its
+    /// window when the way says so.
+    fn place(&self, d: usize, a: u16) -> Option<(u16, usize, usize)> {
+        let (g, w, base) = game_place(&self.m, self.prg_len, d, a)?;
+        match (1..5).find(|&k| self.m.board.fixed && self.boot[k] == base) {
             Some(k) if k != w => Some(((0x6000 + k * 0x2000) as u16 | (g & 0x1FFF), k, base)),
             _ => Some((g, w, base)),
         }
-    };
-    // The windows the runs ask for, the longest first; the rest as the board starts.
-    let mut windows = boot;
-    let mut set = [false; 5];
-    let mut runs: Vec<_> = m.runs.iter().collect();
-    runs.sort_by_key(|r| std::cmp::Reverse(r.len));
-    for r in runs {
-        // Every 8 KB window the run covers, from where each part of it starts.
-        let mut d = r.data;
-        while d < r.data + r.len {
-            let Some(a) = cpu_of(&m.header, d) else { break };
-            if let Some((_, w, base)) = place(d, a) {
-                if w > 0 && !set[w] {
-                    windows[w] = base;
-                    set[w] = true;
-                }
-            }
-            d += 0x2000 - (a as usize & 0x1FFF);
-        }
     }
-    nes.set_windows(windows);
-    let mut pinned: [Option<usize>; 5] = [None; 5];
-    if m.board.pin != Pin::Off {
-        (1..5).filter(|&k| set[k]).for_each(|k| pinned[k] = Some(windows[k]));
-    }
-    let budget = 400_000;
-    let banked = m.header.banks.iter().any(|&b| b != 0);
-    let mut run = |nes: &mut super::nes_music::Nes, ops: &[Op]| -> bool {
+
+    fn run(&mut self, ops: &[Op]) -> bool {
+        let budget = 400_000;
+        let banked = self.m.header.banks.iter().any(|&b| b != 0);
+        let pin = self.m.board.pin;
         for op in ops {
             match *op {
                 // The file's own bank registers: the board's window where the game has
                 // that bank (through the run holding most of it).
                 Op::Poke(r @ 0x5FF8..=0x5FFF, b) if banked => {
                     let slot = r as usize - 0x5FF8;
-                    let d0 = (b as usize * 0x1000).checked_sub((m.header.load & 0xFFF) as usize);
+                    let d0 = (b as usize * 0x1000).checked_sub((self.m.header.load & 0xFFF) as usize);
                     let Some(d0) = d0 else { continue };
-                    let best = m
+                    let best = self
+                        .m
                         .runs
                         .iter()
                         .filter_map(|r| {
@@ -946,61 +1000,63 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                         .max();
                     if let Some((_, d)) = best {
                         let a = (0x8000 + slot * 0x1000 + (d - d0)) as u16;
-                        if let Some((_, w, base)) = place(d, a) {
-                            let mut win = nes.windows();
+                        if let Some((_, w, base)) = self.place(d, a) {
+                            let mut win = self.nes.windows();
                             win[w] = base;
-                            nes.set_windows(win);
-                            if m.board.pin != Pin::Off && w > 0 {
-                                pinned[w] = Some(base);
+                            self.nes.set_windows(win);
+                            if pin != Pin::Off && w > 0 {
+                                self.pinned[w] = Some(base);
                             }
                         }
                     }
                 }
                 Op::Poke(0x5FF6..=0x5FFF, _) => {}
-                Op::Poke(a @ (0x0000..=0x1FFF | 0x4000..=0x4017), v) => nes.write_bus(a, v),
-                Op::Poke(a @ 0x6000..=0x7FFF, v) => nes.poke(a as u32, v),
+                Op::Poke(a @ (0x0000..=0x1FFF | 0x4000..=0x4017), v) => self.nes.write_bus(a, v),
+                Op::Poke(a @ 0x6000..=0x7FFF, v) => {
+                    use super::music_search::Machine;
+                    self.nes.poke(a as u32, v)
+                }
                 Op::Poke(..) => {}
                 // Bytes the file's own code pushed: the game's code didn't (its routine
                 // is entered where the game enters it).
                 Op::Push(_) => {}
                 Op::Call { addr, a, x, y, src } => {
-                    let at = match src.checked_sub(1).and_then(|d| place(d as usize, addr)) {
+                    let at = match src.checked_sub(1).and_then(|d| self.place(d as usize, addr)) {
                         Some((g, w, base)) => {
-                            let mut win = nes.windows();
+                            let mut win = self.nes.windows();
                             if w > 0 {
                                 win[w] = base;
-                                if m.board.pin != Pin::Off {
-                                    pinned[w] = Some(base);
+                                if pin != Pin::Off {
+                                    self.pinned[w] = Some(base);
                                 }
                             }
-                            nes.set_windows(win);
+                            self.nes.set_windows(win);
                             g
                         }
                         None => addr,
                     };
-                    if !nes.run_routine(at, [a, x, y], &[], budget, &pinned, m.board.pin == Pin::Code) {
+                    if !self.nes.run_routine(at, [a, x, y], &[], budget, &self.pinned, pin == Pin::Code) {
                         return false;
                     }
                 }
             }
         }
         true
-    };
-    nes.write_bus(0x4015, 0x0F);
-    if !run(&mut nes, script) {
-        return None;
     }
-    let mut out = Vec::with_capacity(frames);
-    let mut first = nes.take_sound();
-    for _ in 0..frames {
-        if !run(&mut nes, m.play_of(song)) {
-            break;
+
+    /// The next frame's sound writes; None once the play routine stops returning.
+    pub fn frame(&mut self) -> Option<Vec<Write>> {
+        use super::music_search::Machine;
+        let play = std::mem::take(&mut self.play);
+        let ran = self.run(&play);
+        self.play = play;
+        if !ran {
+            return None;
         }
-        let mut f = std::mem::take(&mut first);
-        f.append(&mut nes.take_sound());
-        out.push(f);
+        let mut f = std::mem::take(&mut self.first);
+        f.append(&mut self.nes.take_sound());
+        Some(f)
     }
-    Some(out)
 }
 
 /// A [`melody`] by notes rather than periods: each tone channel's period turned into the
@@ -1050,13 +1106,23 @@ pub fn note_melody(frames: &[Vec<Write>], pal: bool, per_write: bool) -> HashSet
 /// [`map_check`] on the game's own board ([`cart_track_writes`]): the best of the periods
 /// as written and by notes ([`note_melody`]) at the NTSC or PAL clock.
 pub fn cart_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<f64>> {
-    (0..m.header.songs)
+    played_check(nsf, m.header.songs, frames, |t| cart_track_writes(m, rom, t, frames))
+}
+
+/// How a saved map plays the NSF's tracks from the ROM, each by its chosen way ([`play_map`]),
+/// compared as [`cart_check`] does.
+pub fn saved_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<f64>> {
+    played_check(nsf, m.header.songs, frames, |t| play_map(m, rom, t, frames))
+}
+
+fn played_check(nsf: &[u8], songs: u8, frames: usize, play: impl Fn(u8) -> Option<Vec<Vec<Write>>>) -> Vec<Option<f64>> {
+    (0..songs)
         .map(|t| {
             let real = melody(&track_writes(nsf, t, frames)?);
             if real.len() < music_search::MIN_MELODY {
                 return None;
             }
-            let Some(mine) = cart_track_writes(m, rom, t, frames) else { return Some(0.0) };
+            let Some(mine) = play(t) else { return Some(0.0) };
             // The periods as written, and by notes at either clock: a PAL release may keep
             // the NTSC period table or have its own (the header doesn't always say PAL).
             let raw = alike(&real, &melody(&mine));
@@ -1103,6 +1169,21 @@ pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f6
         .collect();
 }
 
+/// How alike to the file a track must play to count as right.
+pub const MAP_RIGHT: f64 = 0.9;
+/// Frames each track plays when [`build_map`] chooses its way.
+const WAY_FRAMES: usize = 600;
+
+/// The map of `rom` (a whole iNES file) for the NSF it matches, its board way and each
+/// track's player chosen. None when the NSF doesn't run.
+pub fn build_map(nsf: &[u8], rom: &[u8]) -> Option<Map> {
+    let prg = super::nes_cart::parse(rom).ok()?.prg;
+    let mut m = map(nsf, &prg)?;
+    choose_board(nsf, &mut m, rom);
+    choose_ways(nsf, &mut m, rom, WAY_FRAMES, MAP_RIGHT);
+    Some(m)
+}
+
 /// Track `song` from the user's ROM (a whole iNES file) by its map and chosen way: each
 /// frame's sound writes. None for a track no way plays right.
 pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
@@ -1110,6 +1191,77 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
         Way::Board => cart_track_writes(m, rom, song, frames),
         Way::Layout => map_track_writes(m, &super::nes_cart::parse(rom).ok()?.prg, song, frames, Fill::Bridged),
         Way::None => None,
+    }
+}
+
+/// A track from the user's ROM by its map, as sound: the player its way names, and the
+/// console's sound chip.
+pub struct MapSong {
+    player: MapPlayer,
+    rate: f64,
+}
+
+enum MapPlayer {
+    Board(BoardSong, super::nes_music::Chip),
+    Layout(LayoutSong, super::nes_apu::Apu, u32),
+}
+
+impl MapSong {
+    /// Track `song` of the whole iNES file `rom`, rendered at `rate`.
+    pub fn open(m: &Map, rom: &[u8], song: u8, rate: u32) -> Result<Self, String> {
+        use super::music_search::Machine;
+        let nes = super::nes_music::Nes::boot(rom)?;
+        let frame_rate = nes.frame_rate();
+        let player = match m.ways.get(song as usize) {
+            Some(Way::Board) => {
+                let s = BoardSong::open(m, rom, song).ok_or("the song didn't start")?;
+                MapPlayer::Board(s, nes.new_chip(rate)?)
+            }
+            Some(Way::Layout) => {
+                let prg = super::nes_cart::parse(rom)?.prg;
+                let s = LayoutSong::open(m, &prg, song, Fill::Bridged).ok_or("the song didn't start")?;
+                let chips = if m.header.fds { super::nes_apu::CHIP_FDS } else { 0 };
+                MapPlayer::Layout(s, super::nes_apu::Apu::new(rate, nes.pal(), chips)?, nes.frame_length())
+            }
+            _ => return Err("the map has no way to play this song".into()),
+        };
+        Ok(Self { player, rate: frame_rate })
+    }
+
+    pub fn frame_rate(&self) -> f64 {
+        self.rate
+    }
+
+    /// One frame: its samples appended to `out`, and its sound writes. None once the song's
+    /// code stops returning.
+    pub fn frame(&mut self, out: &mut Vec<i16>) -> Option<Vec<Write>> {
+        use super::music_search::Machine;
+        match &mut self.player {
+            MapPlayer::Board(s, chip) => {
+                let w = s.frame()?;
+                s.nes.feed(chip, &w, out);
+                Some(w)
+            }
+            MapPlayer::Layout(s, apu, cycles) => {
+                let w = s.frame()?;
+                extern "C" fn read(data: *mut std::ffi::c_void, addr: std::ffi::c_uint) -> std::ffi::c_int {
+                    // SAFETY: set to a live LayoutSong for the writes and end of one frame.
+                    let s = unsafe { &*(data as *const LayoutSong) };
+                    s.peek(addr as u16) as std::ffi::c_int
+                }
+                apu.set_reader(Some(read), &*s as *const LayoutSong as *mut std::ffi::c_void);
+                for x in &w {
+                    let t = match x.port {
+                        0x4040..=0x40FF => super::nes_apu::Target::Fds,
+                        _ => super::nes_apu::Target::Apu,
+                    };
+                    apu.write(x.at.min(*cycles), t, x.port as u16, x.value as u8);
+                }
+                apu.end_frame(*cycles, out);
+                apu.set_reader(None, std::ptr::null_mut());
+                Some(w)
+            }
+        }
     }
 }
 
@@ -1381,6 +1533,16 @@ mod tests {
         assert_eq!(back.encode(), text);
         for t in 0..3 {
             assert_eq!(play_map(&back, &ines, t, 60), play_map(&m, &ines, t, 60));
+        }
+        // As sound: the same writes, frame by frame.
+        if super::super::nes_apu::available() {
+            for t in 0..3 {
+                let mut song = MapSong::open(&back, &ines, t, 8000).unwrap();
+                let mut pcm = Vec::new();
+                let frames: Vec<_> = (0..60).map_while(|_| song.frame(&mut pcm)).collect();
+                assert_eq!(Some(frames), play_map(&m, &ines, t, 60));
+                assert!(!pcm.is_empty());
+            }
         }
     }
 

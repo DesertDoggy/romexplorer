@@ -111,6 +111,8 @@ impl App {
         let vault = Vault::load_or_create(&paths.master_key_path())?;
         let http = database::providers::build_http_client()?;
         let providers = std::sync::Arc::new(ProviderState::load(paths.api_env(), vault.clone(), http.clone())?);
+        // Where each game's music map is kept (built from a matched original audio format file).
+        crate::rom::rom_songs::set_maps_dir(paths.media_dir().join("_music_maps"));
         Ok(Self { pool, paths, config, providers, http, vault })
     }
 
