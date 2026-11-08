@@ -49,17 +49,8 @@ zapasową przed podmianą wersji.
   Optymalizacja DB została tu przeniesiona z Zadania i dane › DB.
 
 **Dźwięk z ROM-ów**
-- Strony tytułów mogą odtwarzać muzykę zapisaną w twoich ROM-ach (tylko obsługiwane platformy i
-  rodzaje nośników).
+- Strony tytułów mogą odtwarzać muzykę zapisaną w twoich ROM-ach (ścieżki audio CD z gier na płytach oraz archiwa dźwięku z Nintendo DS i 3DS).
 - W ustawieniach wybiera się, które utwory są odtwarzane.
-- Muzyka z NES i Famicom gra prosto z ROM-u, przez własny kod dźwiękowy gry: pliki oryginalnego audio nie są potrzebne. Także układy dźwiękowe Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5).
-- Limiter łagodzi nagłe głośne skoki w muzyce z układu dźwiękowego (Ustawienia › Audio, domyślnie włączony).
-- Muzyka z Disk System, Game Boya, Game Boya Color, Master System, Game Geara, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance i Neo Geo Pocket również gra prosto z ROM-u, także dźwięk FM japońskiego Master System.
-- Obsługiwane są oryginalne formaty audio (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP i SGC z
-  Game Gear, luzem lub w zip).
-- Biblioteka oryginalnego audio: wskaż w Ustawienia › Audio foldery z zestawami, a „Indeksuj dźwięk z ROM-ów” dopasuje
-  każdy zestaw do twoich ROM-ów po zawartości. Jeden zestaw gra dla każdego regionu gry, niezależnie
-  od nazwy.
 - Odtwarzacz na stronach tytułów ma przycisk „nie odtwarzaj tego utworu”. Ukryte utwory są pod
   listą odtwarzania: kliknięcie odtwarza utwór, a Przywróć go przywraca.
 - Muzyka z ROM-ów zdekodowana do odtwarzania trafia do pamięci podręcznej w RAM (Ustawienia › Audio,
@@ -71,7 +62,6 @@ zapasową przed podmianą wersji.
   mierzy, gdzie kończy się dźwięk (uruchom go ponownie dla plików zeskanowanych wcześniej).
 - Muzyka na stronach tytułów jest domyślnie włączona, a pierwsze uruchomienie pyta o nią zaraz po
   wyborze języka. Tytuł bez własnego dźwięku domyślnie odtwarza losowe utwory.
-- Pliki PSF i PSF2 używają BIOS-u PS2 z twojej kolekcji i są pomijane, gdy go brak.
 
 **Przegląd scaleń i Połączone tytuły**
 - Wydania z karty można przeciągnąć do tytułu, do którego należą, albo na „+”, aby utworzyć nowy
