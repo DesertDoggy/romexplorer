@@ -438,8 +438,8 @@ pub async fn link_contents_bulk(pool: &MySqlPool, items: &[(u64, Provider, Strin
 /// `platform` when given). Fuzzy by construction. Returns the title id linked, if any.
 pub async fn link_by_name(pool: &MySqlPool, provider: Provider, provider_id: &str, name: &str, platform: Option<Platform>) -> Result<Option<u64>, DatabaseError> {
     let candidates = lookup::search_releases_by_name(pool, name, platform, 5).await?;
-    let key = matching::util::norm_key(name);
-    let exact = candidates.iter().find(|c| c.norm_name == key);
+    let key = matching::util::loose_key(name);
+    let exact = candidates.iter().find(|c| matching::util::join_word_hyphens(&c.norm_name) == key);
     let confidence = if exact.is_some() { Confidence::Name } else { Confidence::Fuzzy };
     // Without an exact name, only a candidate that names the same game (`names_close`).
     let Some(best) = exact.or_else(|| candidates.iter().find(|c| matching::names_close(name, &c.name))) else { return Ok(None) };
@@ -809,6 +809,24 @@ pub fn sibling_igdb_platforms(id: u16) -> Vec<u16> {
     }
 }
 
+/// The IGDB platforms a per-platform sync of app platform `id` pages through: its first
+/// sibling (what a scoped search uses) and, where IGDB files one machine's regional releases
+/// apart, the other region's id -- a Japan-only SNES game is on the Super Famicom (58), a
+/// Japan-only NES game on the Famicom (99). Other siblings (Game Boy Color for Game Boy, ...)
+/// are different hardware with their own games and stay out. Empty: no IGDB platform.
+pub fn igdb_sync_platforms(id: u16) -> Vec<u16> {
+    let first = sibling_igdb_platforms(id)[0];
+    match first {
+        0 => Vec::new(),
+        f if f >= 2048 => Vec::new(),
+        19 => vec![19, 58],
+        58 => vec![58, 19],
+        18 => vec![18, 99],
+        99 => vec![99, 18],
+        f => vec![f],
+    }
+}
+
 /// Keeps the search hits whose provider entry is for `platform` (or a sibling). Only
 /// IGDB carries a platform list in its cached game; other providers pass through
 /// unchanged. No platform -> unchanged.
@@ -829,14 +847,14 @@ pub async fn platform_compatible(pool: &MySqlPool, provider: Provider, entries: 
 
 /// Only a hit whose normalized name equals the query's (for unscoped fallbacks, where
 /// "first result" could be a different platform's game).
+/// Names compare by `loose_key`, so a DAT's "Fu-Ga" is the provider's "FuGa".
 pub fn exact_hit<'a>(entries: &'a [CachedEntry], name: &str) -> Option<&'a CachedEntry> {
-    let key = matching::util::norm_key(name);
-    entries.iter().find(|e| e.title.as_deref().map(matching::util::norm_key).as_deref() == Some(key.as_str()))
+    let key = matching::util::loose_key(name);
+    entries.iter().find(|e| e.title.as_deref().map(matching::util::loose_key).as_deref() == Some(key.as_str()))
 }
 
 pub fn best_hit<'a>(entries: &'a [CachedEntry], name: &str) -> Option<&'a CachedEntry> {
-    let key = matching::util::norm_key(name);
-    entries.iter().find(|e| e.title.as_deref().map(matching::util::norm_key).as_deref() == Some(key.as_str())).or(entries.first())
+    exact_hit(entries, name).or(entries.first())
 }
 
 pub async fn igdb_search(clients: &ProviderClients, pool: &MySqlPool, store: &RawStore, name: &str, platform: Option<Platform>) -> Result<Vec<CachedEntry>, DatabaseError> {
@@ -846,19 +864,28 @@ pub async fn igdb_search(clients: &ProviderClients, pool: &MySqlPool, store: &Ra
     // search of 19 alone missed such games and found only others sharing a word. App-only ids
     // search under their IGDB siblings (Famicom Disk System -> 51, ...).
     let scoped: Vec<u16> = platform.filter(|p| p.igdb_id() != 0).map(|p| sibling_igdb_platforms(p.igdb_id()).into_iter().filter(|id| *id < 2048).collect()).unwrap_or_default();
-    let games = if scoped.is_empty() {
-        client.search_game_by_name(name).await?
-    } else {
-        let mut all = Vec::new();
-        for id in scoped {
-            for game in client.search_game_by_name_and_platform(name, id as i32).await? {
-                if !all.iter().any(|g: &playmatch_deredis::providers::igdb::model::Game| g.id == game.id) {
-                    all.push(game);
-                }
+    // A name with a hyphen inside a word ("Hoge Fu-Ga") is searched as written and joined
+    // ("Hoge FuGa"): IGDB's search splits the word at the hyphen and does not find the game
+    // under its own spelling.
+    let joined = matching::util::join_word_hyphens(name);
+    let spellings: Vec<&str> = if joined != name { vec![name, joined.as_str()] } else { vec![name] };
+    let mut games: Vec<playmatch_deredis::providers::igdb::model::Game> = Vec::new();
+    for spelling in spellings {
+        let found = if scoped.is_empty() {
+            client.search_game_by_name(spelling).await?
+        } else {
+            let mut all = Vec::new();
+            for id in &scoped {
+                all.extend(client.search_game_by_name_and_platform(spelling, *id as i32).await?);
+            }
+            all
+        };
+        for game in found {
+            if !games.iter().any(|g| g.id == game.id) {
+                games.push(game);
             }
         }
-        all
-    };
+    }
     let mut out = Vec::with_capacity(games.len());
     for game in &games {
         let raw = serde_json::to_value(game)?;
