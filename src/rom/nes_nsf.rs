@@ -173,7 +173,7 @@ struct Player {
     pad: usize,
     /// When set, marks each data byte read ([`used_bytes`]).
     used: Option<Vec<bool>>,
-    /// When set, the writes made (but the stack's), for a start script ([`record`]).
+    /// When set, the writes made, for a start script ([`record`]).
     log: Option<Vec<(u16, u8)>>,
 }
 
@@ -196,9 +196,7 @@ impl Bus for Player {
 
     fn write(&mut self, addr: u16, v: u8) {
         if let Some(log) = self.log.as_mut() {
-            if !(0x100..0x200).contains(&addr) {
-                log.push((addr, v));
-            }
+            log.push((addr, v));
         }
         match addr {
             0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF] = v,
@@ -464,7 +462,11 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
         p.log = in_game.is_none().then(Vec::new);
         used += cpu.step(p);
         if let Some(log) = p.log.take() {
-            ops.extend(log.into_iter().map(|(a, v)| Op::Poke(a, v)));
+            // Pushes (JSR, PHA) land in the live stack, at or above S; a store into the rest
+            // of the stack page is the file's own variable (some games keep a song request
+            // there).
+            let live = 0x100 + cpu.s as u16;
+            ops.extend(log.into_iter().filter(|&(a, _)| !(a > live && a < 0x200)).map(|(a, v)| Op::Poke(a, v)));
         }
     }
     Some(ops)
@@ -486,6 +488,10 @@ fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], shift: i32) -> bool {
     true
 }
 
+/// Frames of play recorded per track: a file's play often takes the start request on its
+/// first frame or two, then settles into the same steps every frame.
+const PLAY_FRAMES: usize = 6;
+
 /// The music map of a ROM (`prg`, its program data) for the NSF it matches. None when the
 /// NSF doesn't run.
 pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
@@ -498,19 +504,64 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
         placed[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true);
     }
     let mut tracks = Vec::new();
-    let mut play = None;
+    let mut play: Option<Vec<Op>> = None;
     for t in 0..h.songs {
         let mut p = player(&h, data)?;
         let mut cpu = Cpu::with(h.init, 0xFD);
         p.write(0x4015, 0x0F);
-        let script = record(&mut p, &mut cpu, h.init, t, 0, &placed);
-        if play.is_none() && script.is_some() {
-            play = record(&mut p, &mut cpu, h.play, 0, 0, &placed);
+        let Some(mut script) = record(&mut p, &mut cpu, h.init, t, 0, &placed) else {
+            tracks.push(None);
+            continue;
+        };
+        let mut frames = Vec::new();
+        for _ in 0..PLAY_FRAMES {
+            match record(&mut p, &mut cpu, h.play, 0, 0, &placed) {
+                Some(f) => frames.push(f),
+                None => break,
+            }
         }
-        tracks.push(script);
+        // The steps play repeats (the last frame's); the frames before that differ are this
+        // track's one-off start, played once after its init.
+        if let Some(steady) = frames.last().cloned() {
+            let settled = frames.iter().rposition(|f| *f != steady).map_or(0, |i| i + 1);
+            frames[..settled].iter().for_each(|f| script.extend(f.iter().cloned()));
+            play.get_or_insert(steady);
+        }
+        tracks.push(Some(script));
     }
-    let moved = moved(&h, &layout.runs, prg.len());
-    Some(Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks, moved })
+    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks, moved: None };
+    // A moved driver only where it plays more of the file's tracks than the file's layout.
+    if let Some(mv) = moved(&h, &m.runs, prg.len(), &calls(&m)) {
+        let score = |m: &Map| map_check(nsf, m, prg, MOVED_CHECK_FRAMES, Fill::Bridged).iter().flatten().sum::<f64>();
+        let before = score(&m);
+        let mut with = m.clone();
+        with.moved = Some(mv);
+        if score(&with) > before {
+            m = with;
+        }
+    }
+    Some(m)
+}
+
+/// Frames each track plays when a map is checked for a moved driver.
+const MOVED_CHECK_FRAMES: usize = 120;
+
+/// The game routines a map's scripts call (in the file's view).
+fn calls(m: &Map) -> Vec<u16> {
+    let mut out: Vec<u16> = m
+        .tracks
+        .iter()
+        .flatten()
+        .chain(std::iter::once(&m.play))
+        .flatten()
+        .filter_map(|o| match *o {
+            Op::Call { addr, .. } => Some(addr),
+            Op::Poke(..) => None,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// The CPU address data byte `i` sits at when the file starts (its first banks).
@@ -527,20 +578,34 @@ fn cpu_of(h: &Header, i: usize) -> Option<u16> {
 /// Where the game's own code sits if the file's runs lie at one distance from it in the CPU's
 /// view (see [`Map::moved`]): the distance, taken in 8 KB banks (each ROM byte sits at the
 /// CPU address nearest the file's with the same place in its bank), and the windows.
-fn moved(h: &Header, runs: &[super::music_map::Run], prg_len: usize) -> Option<(i32, Vec<(u16, usize)>)> {
+fn moved(h: &Header, runs: &[super::music_map::Run], prg_len: usize, calls: &[u16]) -> Option<(i32, Vec<(u16, usize)>)> {
     if h.fds || prg_len < 0x2000 {
         return None;
     }
+    let dist = |r: &super::music_map::Run, a: u16| {
+        let d = (r.rom as i64 - a as i64).rem_euclid(0x2000) as i32;
+        if d >= 0x1000 { d - 0x2000 } else { d }
+    };
+    // The vote: the runs holding the routines the scripts call (the driver's code; its song
+    // data may well sit where the other version has it), else every run by its length.
     let mut by: HashMap<i32, usize> = HashMap::new();
     let mut total = 0;
     for r in runs {
         let Some(a) = cpu_of(h, r.data) else { continue };
-        let d = (r.rom as i64 - a as i64).rem_euclid(0x2000) as i32;
-        let d = if d >= 0x1000 { d - 0x2000 } else { d };
-        *by.entry(d).or_default() += r.len;
-        total += r.len;
+        let holds = calls.iter().filter(|&&c| c >= a && (c as usize) < a as usize + r.len).count();
+        if holds > 0 {
+            *by.entry(dist(r, a)).or_default() += holds;
+            total += holds;
+        }
     }
-    let (&d, &n) = by.iter().max_by_key(|e| e.1)?;
+    if total == 0 {
+        for r in runs {
+            let Some(a) = cpu_of(h, r.data) else { continue };
+            *by.entry(dist(r, a)).or_default() += r.len;
+            total += r.len;
+        }
+    }
+    let (&d, &n) = by.iter().max_by_key(|e| (*e.1, *e.0 == 0, -e.0.abs()))?;
     if d == 0 || n * 10 < total * 8 {
         return None;
     }
@@ -737,17 +802,26 @@ mod tests {
 
     #[test]
     fn a_map_plays_the_tracks_from_the_rom_without_the_files_init() {
-        // The game's routines: start ($8040: STA $00; RTS) and play ($8050: LDX $01; INX; INX;
-        // STX $01; TXA; ADC $00; STA $4002; LDA #0; STA $4003; RTS).
-        let start: &[u8] = &[0x85, 0x00, 0x60];
+        // The game's routines: start ($8040: STA $00; CLC; SEC; ...; JSR $8060; RTS), a
+        // subroutine ($8060: RTS) and play ($8070: LDX $01; INX; INX; STX $01; TXA; ADC $00;
+        // STA $4002; LDA #0; STA $4003; RTS).
+        let mut start = vec![0x85, 0x00];
+        (0..7).for_each(|_| start.extend([0x18, 0x38]));
+        start.extend([0x20, 0x60, 0x80, 0x60]);
         let play: &[u8] = &[
             0xA6, 0x01, 0xE8, 0xE8, 0x86, 0x01, 0x8A, 0x65, 0x00, 0x8D, 0x02, 0x40, 0xA9, 0x00,
             0x8D, 0x03, 0x40, 0x60,
         ];
         // The file's own init: ASL A; JSR $8040; RTS (doubles the track into the game's id).
-        let f = nsf(&[(0x8000, &[0x0A, 0x20, 0x40, 0x80, 0x60]), (0x8040, start), (0x8010, &[0x20, 0x50, 0x80, 0x60]), (0x8050, play)]);
+        let f = nsf(&[
+            (0x8000, &[0x0A, 0x20, 0x40, 0x80, 0x60]),
+            (0x8040, &start),
+            (0x8060, &[0x60]),
+            (0x8010, &[0x20, 0x70, 0x80, 0x60]),
+            (0x8070, play),
+        ]);
         // A ROM holding the game's routines, around other bytes; `shift` moves them (another
-        // version of the game, its sound code a little further on).
+        // version of the game, its sound code a little further on, its own addresses in it).
         let rom = |shift: usize| {
             let mut x = 7u32;
             let mut prg: Vec<u8> = (0..0x4000)
@@ -758,6 +832,7 @@ mod tests {
                 .collect();
             let data = &f[0x80..];
             prg[0x40 + shift..0x100 + shift].copy_from_slice(&data[0x40..0x100]);
+            prg[0x51 + shift..0x53 + shift].copy_from_slice(&(0x8060 + shift as u16).to_le_bytes());
             prg
         };
         let prg = rom(0);
@@ -772,6 +847,29 @@ mod tests {
         assert_eq!(m.moved.as_ref().map(|m| m.0), Some(0x2C));
         let check = map_check(&f, &m, &prg, 60, Fill::Zeros);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
+    }
+
+    #[test]
+    fn a_script_keeps_stack_page_requests_and_moves_one_off_play_steps_into_the_track() {
+        let play: &[u8] = &[
+            0xA6, 0x01, 0xE8, 0xE8, 0x86, 0x01, 0x8A, 0x65, 0x00, 0x8D, 0x02, 0x40, 0xA9, 0x00,
+            0x8D, 0x03, 0x40, 0x60,
+        ];
+        let f = nsf(&[
+            // init: STA $0110; PHA; PLA; RTS (a request kept in the stack page)
+            (0x8000, &[0x8D, 0x10, 0x01, 0x48, 0x68, 0x60]),
+            // play: LDA $02; BNE +7; LDA #1; STA $02; STA $00 (once); JMP $8070
+            (0x8010, &[0xA5, 0x02, 0xD0, 0x06, 0xA9, 0x01, 0x85, 0x02, 0x85, 0x00, 0x4C, 0x70, 0x80]),
+            (0x8070, play),
+        ]);
+        let mut prg = vec![0u8; 0x4000];
+        prg[0x1000..0x1000 + 0x90].copy_from_slice(&f[0x80 + 0x70..0x80 + 0x100]);
+        let m = map(&f, &prg).unwrap();
+        assert_eq!(m.play, vec![Op::Call { addr: 0x8070, a: 1, x: 0, y: 0 }]);
+        let t = m.tracks[2].as_ref().unwrap();
+        assert_eq!(t[0], Op::Poke(0x110, 2));
+        assert!(t.contains(&Op::Poke(0x02, 1)) && t.contains(&Op::Poke(0x00, 1)), "{t:?}");
+        assert!(!t.iter().any(|o| matches!(o, Op::Poke(a, _) if *a >= 0x1F0 && *a < 0x200)), "{t:?}");
     }
 
     #[test]
