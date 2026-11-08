@@ -6,7 +6,8 @@
 //! game's sound routine and the routine that starts a song, so it no longer has to find them
 //! in the boot alone. The music still plays from the ROM: the NSF is only read for addresses.
 
-use super::music_search::{hint_routines, Hint};
+use super::m6502::{Bus, Cpu};
+use super::music_search::{hint_routines, Hint, Write};
 
 /// Code bytes compared at each address, in the NSF and in the game.
 const CODE_BYTES: usize = 12;
@@ -133,6 +134,181 @@ pub fn hint(nsf: &[u8]) -> Option<Hint> {
     })
 }
 
+/// An NSF, run on its own (a bare 6502 with RAM, the NSF's banks and nothing else), for the
+/// sound writes of its tracks: the known answer a ROM's found songs are checked against.
+struct Player {
+    ram: [u8; 0x800],
+    /// $6000-$FFFF.
+    mem: Vec<u8>,
+    data: Vec<u8>,
+    banked: bool,
+    fds: bool,
+    writes: Vec<Write>,
+}
+
+impl Bus for Player {
+    fn read(&mut self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF],
+            0x6000..=0xFFFF => self.mem[addr as usize - 0x6000],
+            _ => 0,
+        }
+    }
+
+    fn write(&mut self, addr: u16, v: u8) {
+        match addr {
+            0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF] = v,
+            0x4000..=0x4013 | 0x4015 | 0x4040..=0x408A => self.writes.push(Write {
+                at: 0,
+                port: addr as u32,
+                value: v as u16,
+            }),
+            0x5FF6..=0x5FFF if self.banked => {
+                let slot = addr as usize - 0x5FF6;
+                // $5FF6/7 bank $6000/$7000 (Disk System NSFs only); $5FF8-F bank $8000-$F000.
+                if slot >= 2 || self.fds {
+                    self.bank(slot, v);
+                }
+            }
+            0x6000..=0x7FFF => self.mem[addr as usize - 0x6000] = v,
+            0x8000..=0xFFFF if self.fds => self.mem[addr as usize - 0x6000] = v,
+            _ => {}
+        }
+    }
+}
+
+impl Player {
+    /// Puts 4 KB bank `bank` of the (padded) data at slot `slot` ($6000 + slot * 4 KB).
+    fn bank(&mut self, slot: usize, bank: u8) {
+        let from = bank as usize * 0x1000;
+        for i in 0..0x1000 {
+            self.mem[slot * 0x1000 + i] = self.data.get(from + i).copied().unwrap_or(0);
+        }
+    }
+
+    /// Runs the routine at `pc` with A and X until it returns; false when it doesn't.
+    fn call(&mut self, cpu: &mut Cpu, pc: u16, a: u8, x: u8) -> bool {
+        // A return address on the stack the routine's RTS takes (never run).
+        self.ram[0x1FF] = 0x5F;
+        self.ram[0x1FE] = 0xF5;
+        cpu.s = 0xFD;
+        cpu.pc = pc;
+        cpu.a = a;
+        cpu.x = x;
+        cpu.calls = vec![(pc, 0xFF)];
+        let mut used = 0u32;
+        while !cpu.calls.is_empty() {
+            if used > 400_000 || cpu.jammed {
+                return false;
+            }
+            used += cpu.step(self);
+        }
+        true
+    }
+}
+
+/// Track `song` (from 0) of an NSF, played `frames` frames: each frame's sound writes. `None`
+/// when it isn't an NSF or its code doesn't return.
+pub fn track_writes(nsf: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+    if nsf.len() < 0x80 || &nsf[..5] != b"NESM\x1a" {
+        return None;
+    }
+    let word = |at: usize| u16::from_le_bytes([nsf[at], nsf[at + 1]]);
+    let (load, init, play) = (word(0x08), word(0x0A), word(0x0C));
+    let banks: [u8; 8] = nsf[0x70..0x78].try_into().ok()?;
+    let banked = banks.iter().any(|&b| b != 0);
+    let fds = nsf[0x7B] & 4 != 0;
+    let mut p = Player {
+        ram: [0; 0x800],
+        mem: vec![0; 0xA000],
+        data: Vec::new(),
+        banked,
+        fds,
+        writes: Vec::new(),
+    };
+    if banked {
+        p.data = vec![0; (load & 0xFFF) as usize];
+        p.data.extend_from_slice(&nsf[0x80..]);
+        for (i, &b) in banks.iter().enumerate() {
+            p.bank(i + 2, b);
+        }
+        if fds {
+            p.bank(0, banks[6]);
+            p.bank(1, banks[7]);
+        }
+    } else {
+        let at = (load as usize).checked_sub(0x6000)?;
+        for (i, &b) in nsf[0x80..].iter().enumerate() {
+            if let Some(m) = p.mem.get_mut(at + i) {
+                *m = b;
+            }
+        }
+    }
+    let mut cpu = Cpu::with(init, 0xFD);
+    p.write(0x4015, 0x0F);
+    if !p.call(&mut cpu, init, song, 0) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(frames);
+    let mut first = std::mem::take(&mut p.writes);
+    for _ in 0..frames {
+        if !p.call(&mut cpu, play, 0, 0) {
+            break;
+        }
+        let mut f = std::mem::take(&mut first);
+        f.append(&mut p.writes);
+        out.push(f);
+    }
+    Some(out)
+}
+
+/// A melody's fingerprint: the runs of four pitches in a row on each of the NES's tone
+/// channels (pulse 1 and 2, triangle), as the writes set them. Two plays of one song share
+/// most of theirs whatever the timing or volume, two songs few.
+pub fn melody(frames: &[Vec<Write>]) -> std::collections::HashSet<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut regs = [0u8; 12];
+    let mut last = [u16::MAX; 3];
+    let mut runs: [Vec<u16>; 3] = Default::default();
+    let mut out = std::collections::HashSet::new();
+    for f in frames {
+        for w in f {
+            let a = w.port;
+            if !(0x4000..0x400C).contains(&a) {
+                continue;
+            }
+            regs[(a - 0x4000) as usize] = w.value as u8;
+            let ch = ((a - 0x4000) / 4) as usize;
+            if a & 3 < 2 {
+                continue;
+            }
+            let period = (regs[ch * 4 + 3] as u16 & 7) << 8 | regs[ch * 4 + 2] as u16;
+            if period == last[ch] || period < 8 {
+                continue;
+            }
+            last[ch] = period;
+            let run = &mut runs[ch];
+            run.push(period);
+            if run.len() >= 4 {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (ch, &run[run.len() - 4..]).hash(&mut h);
+                out.insert(h.finish());
+            }
+        }
+    }
+    out
+}
+
+/// How alike two [`melody`] fingerprints are: the share of the smaller one found in the
+/// other (0 when either is empty).
+pub fn alike(a: &std::collections::HashSet<u64>, b: &std::collections::HashSet<u64>) -> f64 {
+    let small = a.len().min(b.len());
+    if small == 0 {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / small as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +345,28 @@ mod tests {
         assert_eq!(addrs(&h.start), vec![0x8000, 0x8040]);
         assert_eq!(addrs(&h.play), vec![0x8010, 0x8080]);
         assert_eq!(h.play[0].1[..3], [0xA9, 0x00, 0x4C]);
+    }
+
+    #[test]
+    fn a_track_plays_on_its_own_and_matches_itself() {
+        let f = nsf(&[
+            // init: STA $00; RTS
+            (0x8000, &[0x85, 0x00, 0x60]),
+            // play: LDX $01; INX; INX; STX $01; TXA; ADC $00; STA $4002; LDA #0; STA $4003; RTS
+            (0x8010, &[
+                0xA6, 0x01, 0xE8, 0xE8, 0x86, 0x01, 0x8A, 0x65, 0x00, 0x8D, 0x02, 0x40, 0xA9,
+                0x00, 0x8D, 0x03, 0x40, 0x60,
+            ]),
+        ]);
+        let a = track_writes(&f, 0, 60).unwrap();
+        assert_eq!(a.len(), 60);
+        assert!(a[5].iter().any(|w| w.port == 0x4002));
+        let ma = melody(&a);
+        assert!(ma.len() > 20);
+        assert_eq!(alike(&ma, &ma), 1.0);
+        // Another song number shifts every pitch: a different melody.
+        let mb = melody(&track_writes(&f, 1, 60).unwrap());
+        assert!(alike(&ma, &mb) < 0.5);
     }
 
     #[test]
