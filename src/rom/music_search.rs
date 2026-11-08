@@ -865,9 +865,10 @@ pub fn search_logged<M: Machine>(
                         Some(h) if !(h.audible && h.lasts) => short.push(v),
                         Some(_) => played.push(v),
                     }
-                    // Past this many, the way reads past its song table (see `bounded`):
-                    // the rest would only be more of the same.
-                    if played.len() + short.len() >= UNBOUNDED_SONGS {
+                    // Past this many songs that last, the way reads past its song table (see
+                    // `bounded`): the rest would only be more of the same. Jingles don't count:
+                    // a way still finding its first song that lasts may yet beat others.
+                    if played.len() >= UNBOUNDED_SONGS {
                         break;
                     }
                 }
