@@ -197,9 +197,9 @@ const SONG_TAIL_FRAMES: usize = 60;
 /// Song numbers past a run of this many that play nothing are not taken: games read
 /// numbers past the end of their song table as garbage that often still makes noise.
 const SONG_GAP: usize = 16;
-/// How a way of starting songs ranks: songs that last, a song table that ends, then the
-/// number of songs.
-type Rank = (bool, bool, usize);
+/// How a way of starting songs ranks: songs that last, at least [`GOOD_SONGS`] of them, a
+/// song table that ends, then the number of songs.
+type Rank = (bool, bool, bool, usize);
 /// Numbers sounding different past which a way of starting songs is taken to read past
 /// its song table.
 const UNBOUNDED_SONGS: usize = 128;
@@ -820,7 +820,7 @@ pub fn search_logged<M: Machine>(
             let mut best: Option<(Rank, Trigger, Vec<u8>)> = None;
             for (i, (_, t, call)) in screened.into_iter().enumerate() {
                 // The best few; more while none has a song table that ends.
-                let settled = best.as_ref().is_some_and(|b| b.0 .0 && b.0 .1);
+                let settled = best.as_ref().is_some_and(|b| b.0 .1 && b.0 .2);
                 if i >= SCREENED_TRIED_MORE || (i >= SCREENED_TRIED && settled) || timed_out() {
                     break;
                 }
@@ -920,7 +920,10 @@ pub fn search_logged<M: Machine>(
                 // table (or isn't a song number at all): its "songs" are noise from whatever
                 // follows. A way with a table that ends beats it.
                 let bounded = played.len() + short.len() + past_gap < UNBOUNDED_SONGS;
-                let rank = (!played.is_empty(), bounded, songs.len());
+                // ... but only between ways that both have a real song list: numbers past a
+                // game's songs are often its sound effects, which sound different too.
+                let list = played.len() >= GOOD_SONGS;
+                let rank = (!played.is_empty(), list, bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
                     best = Some((rank, t, songs));
                 }
@@ -933,7 +936,7 @@ pub fn search_logged<M: Machine>(
                     trigger,
                     calls,
                 };
-                let good = rank.0 && rank.1 && songs.len() >= GOOD_SONGS;
+                let good = rank.1 && rank.2;
                 if found.as_ref().is_none_or(|f: &(Rank, Found)| rank > f.0) {
                     found = Some((
                         rank,
