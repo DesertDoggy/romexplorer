@@ -197,10 +197,18 @@ const SONG_TAIL_FRAMES: usize = 60;
 /// Song numbers past a run of this many that play nothing are not taken: games read
 /// numbers past the end of their song table as garbage that often still makes noise.
 const SONG_GAP: usize = 16;
+/// How a way of starting songs ranks: songs that last, a song table that ends, then the
+/// number of songs.
+type Rank = (bool, bool, usize);
+/// Numbers sounding different past which a way of starting songs is taken to read past
+/// its song table.
+const UNBOUNDED_SONGS: usize = 128;
 /// Songs that last a search stops at; with fewer it tries the other routines and boots.
 const GOOD_SONGS: usize = 4;
 /// Ways to start a song that are tried with every number, best screened first.
 const SCREENED_TRIED: usize = 3;
+/// Ways tried at most, while none tried has songs that last from a song table that ends.
+const SCREENED_TRIED_MORE: usize = 6;
 /// Frames left out of a song's sound fingerprint: where songs that sound alike still differ
 /// as their channels are set up.
 const SOUND_SKIP_FRAMES: usize = 8;
@@ -696,7 +704,7 @@ pub fn search_logged<M: Machine>(
     let started = std::time::Instant::now();
     let timed_out = || started.elapsed() > SEARCH_TIME_LIMIT;
     // The best result so far, ranked as songs that last first, then by count.
-    let mut found: Option<((bool, usize), Found)> = None;
+    let mut found: Option<(Rank, Found)> = None;
     'boots: for press_start in [0u8, 1, 2] {
         if timed_out() {
             note("search took too long; stopped".into());
@@ -777,9 +785,14 @@ pub fn search_logged<M: Machine>(
                 }
             }
             screened.sort_by_key(|s| std::cmp::Reverse(s.0));
-            // The way with the most songs, songs that last beating jingles.
-            let mut best: Option<((bool, usize), Trigger, Vec<u8>)> = None;
-            for (_, t, call) in screened.into_iter().take(SCREENED_TRIED) {
+            // The best way, as [`Rank`] orders them.
+            let mut best: Option<(Rank, Trigger, Vec<u8>)> = None;
+            for (i, (_, t, call)) in screened.into_iter().enumerate() {
+                // The best few; more while none has a song table that ends.
+                let settled = best.as_ref().is_some_and(|b| b.0 .0 && b.0 .1);
+                if i >= SCREENED_TRIED_MORE || (i >= SCREENED_TRIED && settled) || timed_out() {
+                    break;
+                }
                 // A number the game ignores leaves the boot music playing on.
                 let mut seen: HashSet<u64> = listen(
                     &base,
@@ -840,7 +853,11 @@ pub fn search_logged<M: Machine>(
                     dropped[2],
                     dropped[3],
                 ));
-                let rank = (!played.is_empty(), songs.len());
+                // A way where most numbers sound different reads past the end of its song
+                // table (or isn't a song number at all): its "songs" are noise from whatever
+                // follows. A way with a table that ends beats it.
+                let bounded = played.len() + short.len() < UNBOUNDED_SONGS;
+                let rank = (!played.is_empty(), bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
                     best = Some((rank, t, songs));
                 }
@@ -853,8 +870,8 @@ pub fn search_logged<M: Machine>(
                     trigger,
                     calls,
                 };
-                let good = rank.0 && songs.len() >= GOOD_SONGS;
-                if found.as_ref().is_none_or(|f: &((bool, usize), Found)| rank > f.0) {
+                let good = rank.0 && rank.1 && songs.len() >= GOOD_SONGS;
+                if found.as_ref().is_none_or(|f: &(Rank, Found)| rank > f.0) {
                     found = Some((
                         rank,
                         Found {
