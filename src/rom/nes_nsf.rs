@@ -149,6 +149,10 @@ pub fn hint(nsf: &[u8]) -> Option<Hint> {
         start,
         songs: n.songs,
         ids,
+        tracks: (0..n.songs)
+            .map(|t| track_writes(nsf, t, music_search::HINT_TRACK_FRAMES).map(|f| melody(&f)).unwrap_or_default())
+            .collect(),
+        melody: Some(melody),
     })
 }
 
