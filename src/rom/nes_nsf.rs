@@ -435,11 +435,13 @@ pub struct Map {
 }
 
 /// Runs the routine at `pc` and records it as a start script: while the code running isn't
-/// the game's, its writes are pokes; a jump into the game's code is a call, run through
-/// without recording. The game's code is what the ROM holds (`placed`), entered by a jump, a
-/// call or a return (the file's own code may run on into bytes that happen to match the ROM:
-/// that is still the file's), or a hole of a few bytes inside it. None when it doesn't return.
-fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool]) -> Option<Vec<Op>> {
+/// the game's, its writes are pokes; an entry into the game's code is a call, run through
+/// without recording. The game's code is what the ROM holds (`placed`): entered by a jump, a
+/// call or a return, or a hole of a few bytes inside it; entered any other way (running on
+/// into it, a branch) only where it lies as the game's banks have it (`aligned`): the file's
+/// own code may run on into bytes that happen to match the ROM elsewhere. None when it
+/// doesn't return.
+fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool], aligned: &[bool]) -> Option<Vec<Op>> {
     p.ram[0x1FF] = 0x5F;
     p.ram[0x1FE] = 0xF5;
     cpu.s = 0xFD;
@@ -447,10 +449,11 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
     cpu.a = a;
     cpu.x = x;
     cpu.calls = vec![(pc, 0xFF)];
-    let held = |p: &Player, addr: u16| {
+    let of = |p: &Player, addr: u16, set: &[bool]| {
         let s = addr.checked_sub(0x6000).and_then(|i| p.src.get(i as usize)).copied().unwrap_or(0);
-        s > 0 && placed.get(s as usize - 1).copied().unwrap_or(false)
+        s > 0 && set.get(s as usize - 1).copied().unwrap_or(false)
     };
+    let held = |p: &Player, addr: u16| of(p, addr, placed);
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
     let mut used = 0u32;
@@ -463,12 +466,13 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
             in_game = None;
         }
         let at = cpu.pc;
-        if in_game.is_none() && jumped {
+        if in_game.is_none() {
             let hole = || {
                 (1..=GAME_HOLE).any(|k| held(p, at.wrapping_add(k)))
                     && (1..=GAME_HOLE * 8).any(|k| held(p, at.wrapping_sub(k)))
             };
-            if held(p, at) || hole() {
+            let entered = if jumped { held(p, at) || hole() } else { of(p, at, aligned) };
+            if entered {
                 ops.push(Op::Call { addr: at, a: cpu.a, x: cpu.x, y: cpu.y });
                 in_game = Some(cpu.calls.len());
             }
@@ -523,19 +527,33 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
     for r in &layout.runs {
         placed[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true);
     }
+    // Runs where the game's banks put them: at the distance (within a 4 KB bank) most of the
+    // runs' bytes share.
+    let dist = |r: &super::music_map::Run| cpu_of(&h, r.data).map(|a| (r.rom as i64 - a as i64).rem_euclid(0x1000));
+    let mut by: HashMap<i64, usize> = HashMap::new();
+    layout.runs.iter().for_each(|r| {
+        if let Some(d) = dist(r) {
+            *by.entry(d).or_default() += r.len;
+        }
+    });
+    let main = by.iter().max_by_key(|e| (*e.1, -*e.0)).map(|e| *e.0);
+    let mut aligned = vec![false; data.len()];
+    for r in layout.runs.iter().filter(|r| main.is_some() && dist(r) == main) {
+        aligned[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true);
+    }
     let mut tracks = Vec::new();
     let mut play: Option<Vec<Op>> = None;
     for t in 0..h.songs {
         let mut p = player(&h, data)?;
         let mut cpu = Cpu::with(h.init, 0xFD);
         p.write(0x4015, 0x0F);
-        let Some(mut script) = record(&mut p, &mut cpu, h.init, t, 0, &placed) else {
+        let Some(mut script) = record(&mut p, &mut cpu, h.init, t, 0, &placed, &aligned) else {
             tracks.push(None);
             continue;
         };
         let mut frames = Vec::new();
         for _ in 0..PLAY_FRAMES {
-            match record(&mut p, &mut cpu, h.play, 0, 0, &placed) {
+            match record(&mut p, &mut cpu, h.play, 0, 0, &placed, &aligned) {
                 Some(f) => frames.push(f),
                 None => break,
             }
