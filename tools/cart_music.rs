@@ -1,13 +1,15 @@
 //! Developer tool: the cartridge music search (`rom::music_search`) over ROMs on this PC, to
 //! see how many games it finds music in and why not in the rest.
 //!
-//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] <rom or folder>...
+//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--nsf <folder>] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
 //! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy, Game Boy Advance or Neo Geo Pocket/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
 //! console, how long the search took, the song numbers it found, or why none. `--render` also
-//! writes the first N seconds (default 20) of every song as a WAV, to listen to. A summary
-//! ends the run.
+//! writes the first N seconds (default 20) of every song as a WAV, to listen to. `--nsf` matches
+//! each NES/Famicom/Disk System ROM to the NSFs under a folder and points the search at the
+//! sound code the matched NSF names (the music still plays from the ROM). A summary ends the
+//! run.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +25,8 @@ use romexplorer::rom::gba_music::GameBoyAdvance;
 use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
-use romexplorer::rom::{nes_cart, rom_songs};
+use romexplorer::common::models::Platform;
+use romexplorer::rom::{nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -176,9 +179,42 @@ struct Options {
     /// `--probe N`: instead of searching, boot N seconds under each input pattern and print
     /// when steady sound first starts.
     probe: Option<u32>,
+    /// `--nsf <folder>`: NSFs to match ROMs to and take the sound code's addresses from.
+    nsf: Option<PathBuf>,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
+    run_hinted::<M>(path, rom, what, None, o, t)
+}
+
+/// The NSF hint for a NES/Famicom/Disk System ROM, from the `--nsf` library.
+fn nsf_hint(lib: Option<&rip_match::Library>, path: &Path, verbose: bool) -> Option<music_search::Hint> {
+    let lib = lib?;
+    let matches = lib
+        .match_rom(path, Platform::Famicom as u16)
+        .map_err(|e| println!("    NSF match failed: {e}"))
+        .ok()?;
+    let (set, share) = matches.first()?;
+    let hint = rip_sets::nsf_of(set).and_then(|d| nes_nsf::hint(&d));
+    if verbose {
+        println!(
+            "    NSF: {} ({:.0}% matched){}",
+            set.display(),
+            share * 100.0,
+            if hint.is_some() { "" } else { ", unreadable" }
+        );
+    }
+    hint
+}
+
+fn run_hinted<M: Machine>(
+    path: &Path,
+    rom: &[u8],
+    what: &str,
+    hint: Option<&music_search::Hint>,
+    o: &Options,
+    t: &mut Tally,
+) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
     if let Some(secs) = o.probe {
@@ -210,7 +246,8 @@ fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tal
     }
     let started = std::time::Instant::now();
     let mut notes = Vec::new();
-    let found = music_search::search_logged::<M>(rom, &mut |n| notes.push(n));
+    let found = music_search::search_hinted::<M>(rom, hint, &mut |n| notes.push(n));
+    let what = if hint.is_some() { format!("{what}, NSF") } else { what.to_string() };
     let took = started.elapsed().as_secs_f32();
     match found {
         Ok(f) if !f.songs.is_empty() => {
@@ -279,6 +316,7 @@ fn main() {
         seconds: 20,
         verbose: args.iter().any(|a| a == "--verbose"),
         probe: None,
+        nsf: None,
     };
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
@@ -289,13 +327,17 @@ fn main() {
         o.probe = Some(args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(60));
         args.drain(i..(i + 2).min(args.len()));
     }
+    if let Some(i) = args.iter().position(|a| a == "--nsf") {
+        o.nsf = args.get(i + 1).map(PathBuf::from);
+        args.drain(i..(i + 2).min(args.len()));
+    }
     if let Some(i) = args.iter().position(|a| a == "--seconds") {
         o.seconds = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
         args.drain(i..(i + 2).min(args.len()));
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--nsf <folder>] <rom or folder>..."
         );
         std::process::exit(2);
     }
@@ -310,6 +352,12 @@ fn main() {
     for a in &args {
         collect(Path::new(a), &mut files);
     }
+    let nsf_lib = o.nsf.as_ref().map(|dir| {
+        let cache = std::env::temp_dir().join("cart_music_nsf_fingerprints.json");
+        let lib = rip_match::Library::build(&[dir.clone()], Some(&cache), |_, _| {});
+        eprintln!("{} NSF sets read from {}", lib.len(), dir.display());
+        lib
+    });
     let mut tally: std::collections::BTreeMap<&str, Tally> = Default::default();
     for path in files {
         let rom = match rom_songs::read_rom(&path) {
@@ -328,7 +376,8 @@ fn main() {
                     "mapper {}",
                     nes_cart::parse(&rom).map(|h| h.mapper).unwrap_or(0)
                 );
-                run::<Nes>(&path, &rom, &what, &o, tally.entry("NES").or_default());
+                let hint = nsf_hint(nsf_lib.as_ref(), &path, o.verbose);
+                run_hinted::<Nes>(&path, &rom, &what, hint.as_ref(), &o, tally.entry("NES").or_default());
             }
             Some("SMS") => run::<MasterSystem>(
                 &path,
@@ -345,10 +394,12 @@ fn main() {
                 tally.entry("Mega Drive").or_default(),
             ),
             Some("FDS") => {
-                run::<Nes>(
+                let hint = nsf_hint(nsf_lib.as_ref(), &path, o.verbose);
+                run_hinted::<Nes>(
                     &path,
                     &rom,
                     "Disk System",
+                    hint.as_ref(),
                     &o,
                     tally.entry("Disk System").or_default(),
                 );

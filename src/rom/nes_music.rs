@@ -652,6 +652,32 @@ impl Machine for Nes {
         ok
     }
 
+    fn call_at(&mut self, ctx: &Entry, addr: u32, reg: u8, v: u8) -> bool {
+        let mut e = ctx.clone();
+        e.cpu.pc = addr as u16;
+        // A plain call: the routine returns with RTS. X = 0 says NTSC to an NSF's init.
+        e.interrupt = false;
+        e.cpu.x = 0;
+        self.call_with(&e, reg, v)
+    }
+
+    fn code_at(&mut self, entry: &Entry, addr: u32, len: usize) -> Vec<u8> {
+        let windows = self.board.cart.windows();
+        self.board.cart.set_windows(entry.windows);
+        let out = (0..len as u32)
+            .map(|i| {
+                let a = (addr + i) as u16;
+                if a < 0x2000 {
+                    self.board.ram[a as usize & 0x7FF]
+                } else {
+                    self.board.cart.peek(a)
+                }
+            })
+            .collect();
+        self.board.cart.set_windows(windows);
+        out
+    }
+
     fn poke(&mut self, addr: u32, v: u8) {
         match addr {
             0x0000..=0x07FF => self.board.ram[addr as usize] = v,
