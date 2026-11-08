@@ -449,6 +449,8 @@ pub struct Map {
     pub moved: Option<(i32, Vec<(u16, usize)>)>,
     /// How the map plays on the game's own board ([`cart_track_writes`]).
     pub board: BoardWay,
+    /// Per track, which player plays it right ([`choose_ways`]); empty until chosen.
+    pub ways: Vec<Way>,
     /// The moved driver tried, if any: its distance, and the file's tracks' summed likeness
     /// without and with it.
     pub tried: Option<(i32, f64, f64)>,
@@ -613,7 +615,7 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
     }
     let play = play?;
     let plays = steadies.into_iter().map(|s| s.filter(|s| *s != play)).collect();
-    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play, tracks, plays, moved: None, tried: None, board: BoardWay::default() };
+    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play, tracks, plays, moved: None, tried: None, board: BoardWay::default(), ways: Vec::new() };
     // A moved driver only where it plays more of the file's tracks than the file's layout.
     if let Some(mv) = moved(&h, &m.runs, prg.len(), &calls(&m)) {
         let score = |m: &Map| map_check(nsf, m, prg, MOVED_CHECK_FRAMES, Fill::Bridged).iter().flatten().sum::<f64>();
@@ -1059,6 +1061,179 @@ pub fn cart_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<
         .collect()
 }
 
+/// Which player plays a track from the ROM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    /// The file's layout rebuilt from the ROM (gaps between runs from the ROM too).
+    Layout,
+    /// The game's own board ([`cart_track_writes`]).
+    Board,
+    /// Neither plays it right.
+    None,
+}
+
+/// Picks, per track, the player that plays it most like the file (at least `right`).
+pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f64) {
+    let Ok(h) = super::nes_cart::parse(rom) else { return };
+    let layout = map_check(nsf, m, &h.prg, frames, Fill::Bridged);
+    let board = cart_check(nsf, m, rom, frames);
+    m.ways = layout
+        .iter()
+        .zip(&board)
+        .map(|(l, b)| {
+            let (l, b) = (l.unwrap_or(0.0), b.unwrap_or(0.0));
+            match (l >= right, b >= right) {
+                (false, false) => Way::None,
+                _ if b > l => Way::Board,
+                _ => Way::Layout,
+            }
+        })
+        .collect();
+}
+
+/// Track `song` from the user's ROM (a whole iNES file) by its map and chosen way: each
+/// frame's sound writes. None for a track no way plays right.
+pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+    match m.ways.get(song as usize)? {
+        Way::Board => cart_track_writes(m, rom, song, frames),
+        Way::Layout => map_track_writes(m, &super::nes_cart::parse(rom).ok()?.prg, song, frames, Fill::Bridged),
+        Way::None => None,
+    }
+}
+
+/// A map as text: numbers only (addresses, lengths, offsets, register values), nothing of
+/// the game or of the file. One line per part; see [`Map::decode`].
+impl Map {
+    pub fn encode(&self) -> String {
+        let h = &self.header;
+        let hex = |v: &[u8]| v.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let ops = |ops: &[Op]| {
+            ops.iter()
+                .map(|o| match *o {
+                    Op::Poke(a, v) => format!("P{a:x}:{v:x}"),
+                    Op::Push(v) => format!("U{v:x}"),
+                    Op::Call { addr, a, x, y, src } => format!("C{addr:x}:{a:x}:{x:x}:{y:x}:{src:x}"),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut out = vec![
+            "nesmap 1".to_string(),
+            format!("h {:x} {:x} {:x} {} {} {}", h.load, h.init, h.play, hex(&h.banks), h.fds as u8, h.songs),
+            format!("d {:x}", self.data_len),
+            format!("r {}", self.runs.iter().map(|r| format!("{:x}:{:x}:{:x}", r.data, r.len, r.rom)).collect::<Vec<_>>().join(" ")),
+            format!("w {} {}", self.board.fixed as u8, self.board.pin as u8),
+            format!("p {}", ops(&self.play)),
+        ];
+        if let Some((d, windows)) = &self.moved {
+            out.push(format!("m {d} {}", windows.iter().map(|(b, r)| format!("{b:x}:{r:x}")).collect::<Vec<_>>().join(" ")));
+        }
+        for (i, t) in self.tracks.iter().enumerate() {
+            if let Some(t) = t {
+                out.push(format!("t {i} {}", ops(t)));
+            }
+        }
+        for (i, p) in self.plays.iter().enumerate() {
+            if let Some(p) = p {
+                out.push(format!("q {i} {}", ops(p)));
+            }
+        }
+        out.push(format!(
+            "s {}",
+            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Board => 'b', Way::None => '-' }).collect::<String>()
+        ));
+        out.join("\n")
+    }
+
+    /// The map [`Self::encode`] wrote. None when the text isn't one.
+    pub fn decode(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != "nesmap 1" {
+            return None;
+        }
+        let num = |t: &str| u32::from_str_radix(t, 16).ok();
+        let ops = |rest: &[&str]| -> Option<Vec<Op>> {
+            rest.iter()
+                .map(|t| {
+                    let (k, v) = t.split_at(1);
+                    let f: Vec<u32> = v.split(':').map(num).collect::<Option<_>>()?;
+                    Some(match (k, f.as_slice()) {
+                        ("P", [a, v]) => Op::Poke(*a as u16, *v as u8),
+                        ("U", [v]) => Op::Push(*v as u8),
+                        ("C", [addr, a, x, y, src]) => Op::Call { addr: *addr as u16, a: *a as u8, x: *x as u8, y: *y as u8, src: *src },
+                        _ => return None,
+                    })
+                })
+                .collect()
+        };
+        let mut m = Map {
+            header: Header { load: 0, init: 0, play: 0, banks: [0; 8], fds: false, songs: 0 },
+            data_len: 0,
+            runs: Vec::new(),
+            play: Vec::new(),
+            tracks: Vec::new(),
+            plays: Vec::new(),
+            moved: None,
+            tried: None,
+            board: BoardWay::default(),
+            ways: Vec::new(),
+        };
+        for line in lines {
+            let f: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
+            match f.first().copied() {
+                Some("h") if f.len() == 7 => {
+                    let b = f[4].as_bytes();
+                    let mut banks = [0u8; 8];
+                    for (i, c) in b.chunks(2).enumerate().take(8) {
+                        banks[i] = u8::from_str_radix(std::str::from_utf8(c).ok()?, 16).ok()?;
+                    }
+                    m.header = Header {
+                        load: num(f[1])? as u16,
+                        init: num(f[2])? as u16,
+                        play: num(f[3])? as u16,
+                        banks,
+                        fds: f[5] == "1",
+                        songs: f[6].parse().ok()?,
+                    };
+                    m.tracks = vec![None; m.header.songs as usize];
+                    m.plays = vec![None; m.header.songs as usize];
+                }
+                Some("d") => m.data_len = num(f.get(1)?)? as usize,
+                Some("r") => {
+                    for t in &f[1..] {
+                        let v: Vec<u32> = t.split(':').map(num).collect::<Option<_>>()?;
+                        let [data, len, rom] = v[..] else { return None };
+                        m.runs.push(super::music_map::Run { data: data as usize, len: len as usize, rom: rom as usize });
+                    }
+                }
+                Some("w") => m.board = BoardWay { fixed: f.get(1) == Some(&"1"), pin: f.get(2) == Some(&"1") },
+                Some("p") => m.play = ops(&f[1..])?,
+                Some("m") => {
+                    let d: i32 = f.get(1)?.parse().ok()?;
+                    let w = f[2..]
+                        .iter()
+                        .map(|t| {
+                            let (b, r) = t.split_once(':')?;
+                            Some((num(b)? as u16, num(r)? as usize))
+                        })
+                        .collect::<Option<_>>()?;
+                    m.moved = Some((d, w));
+                }
+                Some(k @ ("t" | "q")) => {
+                    let i: usize = f.get(1)?.parse().ok()?;
+                    let list = if k == "t" { &mut m.tracks } else { &mut m.plays };
+                    *list.get_mut(i)? = Some(ops(&f[2..])?);
+                }
+                Some("s") => {
+                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'b' => Way::Board, _ => Way::None }).collect();
+                }
+                _ => {}
+            }
+        }
+        Some(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1181,6 +1356,16 @@ mod tests {
         ines.extend_from_slice(&prg);
         let check = cart_check(&f, &m, &ines, 60);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
+        // Written down as numbers and read back, the map plays the same.
+        let mut m = m;
+        choose_ways(&f, &mut m, &ines, 60, 0.9);
+        assert!(m.ways.iter().all(|w| *w != Way::None), "{:?}", m.ways);
+        let text = m.encode();
+        let back = Map::decode(&text).unwrap();
+        assert_eq!(back.encode(), text);
+        for t in 0..3 {
+            assert_eq!(play_map(&back, &ines, t, 60), play_map(&m, &ines, t, 60));
+        }
     }
 
     #[test]
