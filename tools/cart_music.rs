@@ -1,7 +1,7 @@
 //! Developer tool: the cartridge music search (`rom::music_search`) over ROMs on this PC, to
 //! see how many games it finds music in and why not in the rest.
 //!
-//!   cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>...
+//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
 //! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy, Game Boy Advance or Neo Geo Pocket/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
@@ -173,11 +173,41 @@ struct Options {
     render: Option<PathBuf>,
     seconds: u32,
     verbose: bool,
+    /// `--probe N`: instead of searching, boot N seconds under each input pattern and print
+    /// when steady sound first starts.
+    probe: Option<u32>,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
+    if let Some(secs) = o.probe {
+        let started = std::time::Instant::now();
+        let mut parts = Vec::new();
+        let mut any = false;
+        for (input, held) in music_search::INPUTS {
+            match music_search::probe::<M>(rom, *held, secs * 60) {
+                Ok(Some(f)) => {
+                    any = true;
+                    parts.push(format!("{input}:{:.1}s", f as f32 / 60.0));
+                }
+                Ok(None) => parts.push(format!("{input}:-")),
+                Err(e) => {
+                    println!("{name}: {what}: {e}");
+                    return;
+                }
+            }
+        }
+        if any {
+            t.with_music += 1;
+        }
+        println!(
+            "{name}: {what}, {:.1} s: probe {}",
+            started.elapsed().as_secs_f32(),
+            parts.join(" ")
+        );
+        return;
+    }
     let started = std::time::Instant::now();
     let mut notes = Vec::new();
     let found = music_search::search_logged::<M>(rom, &mut |n| notes.push(n));
@@ -248,10 +278,15 @@ fn main() {
         render: None,
         seconds: 20,
         verbose: args.iter().any(|a| a == "--verbose"),
+        probe: None,
     };
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
         o.render = args.get(i + 1).map(PathBuf::from);
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--probe") {
+        o.probe = Some(args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(60));
         args.drain(i..(i + 2).min(args.len()));
     }
     if let Some(i) = args.iter().position(|a| a == "--seconds") {
@@ -260,7 +295,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] <rom or folder>..."
         );
         std::process::exit(2);
     }

@@ -58,6 +58,11 @@ pub trait Machine: Clone + Sized {
     fn set_trace(&mut self, on: bool);
     /// Holds Start (or the console's equivalent) on the controller, or nothing.
     fn press_start(&mut self, held: bool);
+    /// Holds the buttons in `buttons` ([`START`], [`BUTTON_A`], ...). Consoles that only
+    /// know Start hold just that.
+    fn press(&mut self, buttons: u8) {
+        self.press_start(buttons & START != 0);
+    }
     /// The routine the CPU just entered, as an [`Self::Entry`].
     fn entry(&self) -> Self::Entry;
     /// One frame of the sound routine alone, called at its usual moment. None when it
@@ -177,6 +182,49 @@ fn start_held(press_start: u8, frame: u32) -> bool {
         _ => frame >= 180,
     };
     pressing && frame % 120 < 6
+}
+
+/// Buttons for [`Machine::press`], in the Famicom's and Game Boy's order.
+pub const BUTTON_A: u8 = 0x01;
+pub const BUTTON_B: u8 = 0x02;
+pub const SELECT: u8 = 0x04;
+pub const START: u8 = 0x08;
+
+/// Input patterns the probe tries: a name, and the buttons held in each frame.
+pub const INPUTS: &[(&str, fn(u32) -> u8)] = &[
+    ("none", |_| 0),
+    ("start3", |f| if (180..=420).contains(&f) && f % 120 < 6 { START } else { 0 }),
+    ("start2s", |f| if f >= 180 && f % 120 < 6 { START } else { 0 }),
+    ("start1s", |f| if f >= 180 && f % 60 < 6 { START } else { 0 }),
+    ("start+a", |f| match (f >= 180, f % 60) {
+        (true, 0..=5) => START,
+        (true, 30..=35) => BUTTON_A,
+        _ => 0,
+    }),
+    ("a1s", |f| if f >= 180 && f % 60 < 6 { BUTTON_A } else { 0 }),
+];
+
+/// What a game does with sound under one input pattern: the first frame of steady sound
+/// (sound writes in at least half the frames of a second), or None in `frames` frames.
+pub fn probe<M: Machine>(rom: &[u8], input: fn(u32) -> u8, frames: u32) -> Result<Option<u32>, String> {
+    let mut m = M::boot(rom)?;
+    let window = 60usize;
+    let mut busy: std::collections::VecDeque<bool> = std::collections::VecDeque::new();
+    let mut count = 0usize;
+    for f in 0..frames {
+        m.press(input(f));
+        m.run_frame(None, None);
+        let any = m.take_sound().iter().any(|w| !M::incidental(w));
+        busy.push_back(any);
+        count += any as usize;
+        if busy.len() > window {
+            count -= busy.pop_front().unwrap() as usize;
+        }
+        if busy.len() == window && count * 2 >= window {
+            return Ok(Some(f + 1 - window as u32));
+        }
+    }
+    Ok(None)
 }
 
 /// How long boot runs while the search looks for the sound routine.

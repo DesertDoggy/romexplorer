@@ -601,6 +601,11 @@ impl Machine for Nes {
         self.board.buttons = if held { 0x08 } else { 0 };
     }
 
+    fn press(&mut self, buttons: u8) {
+        // A, B, Select, Start: the controller's own order.
+        self.board.buttons = buttons & 0x0F;
+    }
+
     fn entry(&self) -> Entry {
         let (_, s_before) = *self.cpu.calls.last().expect("inside a routine");
         let interrupt = s_before.wrapping_sub(self.cpu.s) == 3;
