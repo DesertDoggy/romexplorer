@@ -181,16 +181,27 @@ const CHECK_FRAMES: usize = 600;
 /// A song this alike a track (see `nes_nsf::alike`) is that track.
 const CHECK_ALIKE: f64 = 0.5;
 
-/// The melodies of an NSF's tracks: the known answer found songs are checked against.
-fn nsf_answers(nsf: &[u8]) -> Vec<std::collections::HashSet<u64>> {
-    let songs = nsf.get(6).copied().unwrap_or(0);
-    (0..songs)
-        .map(|t| {
-            nes_nsf::track_writes(nsf, t, CHECK_FRAMES)
-                .map(|f| nes_nsf::melody(&f))
-                .unwrap_or_default()
-        })
-        .collect()
+type Melody = std::collections::HashSet<u64>;
+type Writes = Vec<Vec<music_search::Write>>;
+
+/// The known answer found songs are checked against: the melodies of an NSF's or GBS's
+/// tracks (song count at `count_at`), and how a song's melody is taken.
+struct Answers {
+    tracks: Vec<Melody>,
+    melody: fn(&[Vec<music_search::Write>]) -> Melody,
+}
+
+fn answers(
+    file: &[u8],
+    count_at: usize,
+    track: fn(&[u8], u8, usize) -> Option<Writes>,
+    melody: fn(&[Vec<music_search::Write>]) -> Melody,
+) -> Answers {
+    let songs = file.get(count_at).copied().unwrap_or(0);
+    let tracks = (0..songs)
+        .map(|t| track(file, t, CHECK_FRAMES).map(|f| melody(&f)).unwrap_or_default())
+        .collect();
+    Answers { tracks, melody }
 }
 
 struct Options {
@@ -262,7 +273,7 @@ fn run_hinted<M: Machine>(
     rom: &[u8],
     what: &str,
     hint: Option<&music_search::Hint>,
-    answers: Option<&[std::collections::HashSet<u64>]>,
+    answers: Option<&Answers>,
     o: &Options,
     t: &mut Tally,
 ) {
@@ -311,7 +322,7 @@ fn run_hinted<M: Machine>(
                 f.recipe.encode()
             );
             // Each song against the known answer: the track whose melody it shares.
-            if let Some(answers) = answers.filter(|a| !a.is_empty()) {
+            if let Some(Answers { tracks: answers, melody }) = answers.filter(|a| !a.tracks.is_empty()) {
                 let mut found_tracks = std::collections::BTreeSet::new();
                 let mut like = 0;
                 let mut lines = Vec::new();
@@ -322,11 +333,11 @@ fn run_hinted<M: Machine>(
                     let mut pcm = Vec::new();
                     let frames: Vec<_> = (0..CHECK_FRAMES).map_while(|_| song.frame(&mut pcm).ok()).collect();
                     pcm.clear();
-                    let mine = nes_nsf::melody(&frames);
+                    let mine = melody(&frames);
                     let best = answers
                         .iter()
                         .enumerate()
-                        .map(|(i, a)| (i, nes_nsf::alike(&mine, a)))
+                        .map(|(i, a)| (i, music_search::alike(&mine, a)))
                         .max_by(|a, b| a.1.total_cmp(&b.1));
                     if let Some((track, score)) = best {
                         if score >= CHECK_ALIKE {
@@ -469,8 +480,8 @@ fn main() {
                     nes_cart::parse(&rom).map(|h| h.mapper).unwrap_or(0)
                 );
                 let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
-                let answers = hint.as_ref().map(|h| nsf_answers(&h.1));
-                run_hinted::<Nes>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_deref(), &o, tally.entry("NES").or_default());
+                let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
+                run_hinted::<Nes>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry("NES").or_default());
             }
             Some("SMS") => run::<MasterSystem>(
                 &path,
@@ -488,13 +499,13 @@ fn main() {
             ),
             Some("FDS") => {
                 let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
-                let answers = hint.as_ref().map(|h| nsf_answers(&h.1));
+                let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
                 run_hinted::<Nes>(
                     &path,
                     &rom,
                     "Disk System",
                     hint.as_ref().map(|h| &h.0),
-                    answers.as_deref(),
+                    answers.as_ref(),
                     &o,
                     tally.entry("Disk System").or_default(),
                 );
@@ -604,7 +615,8 @@ fn main() {
                 let console = if c == "GBC" { "Game Boy Color" } else { "Game Boy" };
                 let platform = if c == "GBC" { Platform::GameBoyColor } else { Platform::GameBoy };
                 let hint = original_hint(nsf_lib.as_ref(), &path, platform, b"GBS", gb_gbs::hint, o.verbose);
-                run_hinted::<GameBoy>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), None, &o, tally.entry(console).or_default());
+                let answers = hint.as_ref().map(|h| answers(&h.1, 4, gb_gbs::track_writes, gb_gbs::melody));
+                run_hinted::<GameBoy>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry(console).or_default());
             }
             None => {
                 println!("{}: console not recognised: skipped", path.display());
@@ -629,7 +641,7 @@ fn main() {
         );
         if t.checked[0] > 0 {
             println!(
-                "  checked against NSF tracks in {} games: {} of {} songs like a track, {} of {} tracks found",
+                "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found",
                 t.checked[0], t.checked[2], t.checked[1], t.checked[4], t.checked[3]
             );
         }

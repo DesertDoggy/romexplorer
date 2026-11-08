@@ -124,6 +124,53 @@ pub struct Hint {
     pub ids: Vec<(u32, u8, Vec<u8>)>,
 }
 
+/// A melody's fingerprint: the runs of four pitches in a row on each tone channel, a channel
+/// being the ports of its period's low byte and its high bits (the low 3 bits), as the writes
+/// set them. Two plays of one song share most of theirs whatever their timing or volume, two
+/// songs few. For checking found songs against an original audio format file's tracks.
+pub fn melody(frames: &[Vec<Write>], channels: &[(u32, u32)]) -> HashSet<u64> {
+    let mut lo = vec![0u16; channels.len()];
+    let mut hi = vec![0u16; channels.len()];
+    let mut last = vec![u16::MAX; channels.len()];
+    let mut runs: Vec<Vec<u16>> = vec![Vec::new(); channels.len()];
+    let mut out = HashSet::new();
+    for f in frames {
+        for w in f {
+            let Some(ch) = channels.iter().position(|c| c.0 == w.port || c.1 == w.port) else {
+                continue;
+            };
+            if channels[ch].0 == w.port {
+                lo[ch] = w.value & 0xFF;
+            } else {
+                hi[ch] = w.value & 7;
+            }
+            let period = hi[ch] << 8 | lo[ch];
+            if period == last[ch] || period < 8 {
+                continue;
+            }
+            last[ch] = period;
+            let run = &mut runs[ch];
+            run.push(period);
+            if run.len() >= 4 {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (ch, &run[run.len() - 4..]).hash(&mut h);
+                out.insert(h.finish());
+            }
+        }
+    }
+    out
+}
+
+/// How alike two [`melody`] fingerprints are: the share of the smaller one found in the
+/// other (0 when either is empty).
+pub fn alike(a: &HashSet<u64>, b: &HashSet<u64>) -> f64 {
+    let small = a.len().min(b.len());
+    if small == 0 {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / small as f64
+}
+
 /// Most routines a [`Hint`] takes from each of play and init.
 const HINT_ROUTINES: usize = 8;
 
