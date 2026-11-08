@@ -830,7 +830,19 @@ pub struct BoardWay {
     pub fixed: bool,
     /// The windows the map sets keep their banks while the game's code runs (a routine that
     /// switches banks from a register the file doesn't set).
-    pub pin: bool,
+    pub pin: Pin,
+}
+
+/// Which windows [`BoardWay::pin`] holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Pin {
+    /// None: the game's code switches banks as it likes.
+    #[default]
+    Off,
+    /// Every window the map sets.
+    All,
+    /// Only the window the code being run sits in, so the code switches its data banks itself.
+    Code,
 }
 
 /// Frames each track plays when [`choose_board`] tries the ways.
@@ -840,7 +852,7 @@ const BOARD_CHOICE_FRAMES: usize = 120;
 pub fn choose_board(nsf: &[u8], m: &mut Map, rom: &[u8]) {
     let mut best = (-1.0, BoardWay::default());
     for fixed in [false, true] {
-        for pin in [false, true] {
+        for pin in [Pin::Off, Pin::All, Pin::Code] {
             m.board = BoardWay { fixed, pin };
             let score: f64 = cart_check(nsf, m, rom, BOARD_CHOICE_FRAMES).iter().flatten().sum();
             if score > best.0 {
@@ -909,7 +921,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
     }
     nes.set_windows(windows);
     let mut pinned: [Option<usize>; 5] = [None; 5];
-    if m.board.pin {
+    if m.board.pin != Pin::Off {
         (1..5).filter(|&k| set[k]).for_each(|k| pinned[k] = Some(windows[k]));
     }
     let budget = 400_000;
@@ -938,7 +950,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                             let mut win = nes.windows();
                             win[w] = base;
                             nes.set_windows(win);
-                            if m.board.pin && w > 0 {
+                            if m.board.pin != Pin::Off && w > 0 {
                                 pinned[w] = Some(base);
                             }
                         }
@@ -957,7 +969,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                             let mut win = nes.windows();
                             if w > 0 {
                                 win[w] = base;
-                                if m.board.pin {
+                                if m.board.pin != Pin::Off {
                                     pinned[w] = Some(base);
                                 }
                             }
@@ -966,7 +978,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
                         }
                         None => addr,
                     };
-                    if !nes.run_routine(at, [a, x, y], &[], budget, &pinned) {
+                    if !nes.run_routine(at, [a, x, y], &[], budget, &pinned, m.board.pin == Pin::Code) {
                         return false;
                     }
                 }
@@ -1206,7 +1218,11 @@ impl Map {
                         m.runs.push(super::music_map::Run { data: data as usize, len: len as usize, rom: rom as usize });
                     }
                 }
-                Some("w") => m.board = BoardWay { fixed: f.get(1) == Some(&"1"), pin: f.get(2) == Some(&"1") },
+                Some("w") => m.board = BoardWay { fixed: f.get(1) == Some(&"1"), pin: match f.get(2) {
+                    Some(&"1") => Pin::All,
+                    Some(&"2") => Pin::Code,
+                    _ => Pin::Off,
+                } },
                 Some("p") => m.play = ops(&f[1..])?,
                 Some("m") => {
                     let d: i32 = f.get(1)?.parse().ok()?;

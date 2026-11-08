@@ -395,8 +395,9 @@ impl Nes {
     /// Runs the routine at `addr` with A, X, Y = `regs` and `pushed` on the stack above its
     /// return address (in the order pushed), as the banks are now, until it returns. False
     /// when it doesn't within `budget` cycles. Its sound writes wait in the board.
-    /// Windows `pinned` (Some) keep their bank whatever the routine writes to the board.
-    pub fn run_routine(&mut self, addr: u16, regs: [u8; 3], pushed: &[u8], budget: u32, pinned: &[Option<usize>; 5]) -> bool {
+    /// Windows `pinned` (Some) keep their bank whatever the routine writes to the board; with
+    /// `code_only`, only while the code being run sits in them (data windows switch freely).
+    pub fn run_routine(&mut self, addr: u16, regs: [u8; 3], pushed: &[u8], budget: u32, pinned: &[Option<usize>; 5], code_only: bool) -> bool {
         let pin = pinned.iter().any(Option::is_some);
         self.board.ram[0x1FF] = 0x5F;
         self.board.ram[0x1FE] = 0xF5;
@@ -421,7 +422,11 @@ impl Nes {
             used += c;
             if pin {
                 let mut w = self.board.cart.windows();
+                let at = if self.cpu.pc >= 0x6000 { (self.cpu.pc as usize - 0x6000) >> 13 } else { usize::MAX };
                 for (k, p) in pinned.iter().enumerate() {
+                    if code_only && k != at {
+                        continue;
+                    }
                     if let Some(b) = *p {
                         w[k] = b;
                     }
