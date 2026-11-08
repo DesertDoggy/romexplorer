@@ -948,18 +948,22 @@ pub fn note_melody(frames: &[Vec<Write>], pal: bool) -> HashSet<u64> {
     melody(&notes)
 }
 
-/// [`map_check`] on the game's own board ([`cart_track_writes`]), by notes ([`note_melody`]).
+/// [`map_check`] on the game's own board ([`cart_track_writes`]): the best of the periods
+/// as written and by notes ([`note_melody`]) at the NTSC or PAL clock.
 pub fn cart_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<f64>> {
-    let pal = super::nes_cart::parse(rom).is_ok_and(|h| h.pal);
     (0..m.header.songs)
         .map(|t| {
             let real = melody(&track_writes(nsf, t, frames)?);
             if real.len() < music_search::MIN_MELODY {
                 return None;
             }
-            let real = note_melody(&track_writes(nsf, t, frames)?, false);
-            let mine = cart_track_writes(m, rom, t, frames).map(|w| note_melody(&w, pal)).unwrap_or_default();
-            Some(alike(&real, &mine))
+            let Some(mine) = cart_track_writes(m, rom, t, frames) else { return Some(0.0) };
+            // The periods as written, and by notes at either clock: a PAL release may keep
+            // the NTSC period table or have its own (the header doesn't always say PAL).
+            let raw = alike(&real, &melody(&mine));
+            let notes = note_melody(&track_writes(nsf, t, frames)?, false);
+            let by_note = [false, true].map(|pal| alike(&notes, &note_melody(&mine, pal)));
+            Some(raw.max(by_note[0]).max(by_note[1]))
         })
         .collect()
 }
