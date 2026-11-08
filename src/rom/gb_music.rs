@@ -698,6 +698,26 @@ impl Machine for GameBoy {
         ok
     }
 
+    fn call_at(&mut self, ctx: &Entry, addr: u32, reg: u8, v: u8) -> bool {
+        let mut e = ctx.clone();
+        e.cpu.pc = addr as u16;
+        self.call_with(&e, reg, v)
+    }
+
+    fn code_at(&mut self, entry: &Entry, addr: u32, len: usize) -> Vec<u8> {
+        let b = &self.board;
+        (0..len as u32)
+            .map(|i| {
+                let a = (addr + i) as u16;
+                match a {
+                    0x0000..=0x3FFF => b.rom_at(entry.mbc.rom0_bank(), a),
+                    0x4000..=0x7FFF => b.rom_at(entry.mbc.rom_bank(), a - 0x4000),
+                    _ => b.peek(a),
+                }
+            })
+            .collect()
+    }
+
     fn poke(&mut self, addr: u32, v: u8) {
         let addr = addr as u16;
         match addr {

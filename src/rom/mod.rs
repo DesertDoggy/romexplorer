@@ -43,6 +43,7 @@ pub mod nes_cart;
 pub mod music_search;
 pub mod nes_music;
 pub mod nes_nsf;
+pub mod gb_gbs;
 pub mod sm83;
 pub mod z80;
 pub mod huc6280;
