@@ -546,7 +546,7 @@ pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
 fn index_map(rom: &[u8], key: &str, m: &super::nes_nsf::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
     for v in 0..m.header.songs {
-        if m.ways.get(v as usize) != Some(&super::nes_nsf::Way::Layout) && m.ways.get(v as usize) != Some(&super::nes_nsf::Way::Board) {
+        if matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) {
             continue;
         }
         let Ok(mut song) = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
