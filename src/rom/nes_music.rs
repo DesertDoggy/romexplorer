@@ -378,6 +378,50 @@ impl Nes {
         self.board.pal
     }
 
+    /// The program windows ($6000-$E000: offsets into the program ROM; see `nes_cart`).
+    pub fn windows(&self) -> [usize; 5] {
+        self.board.cart.windows()
+    }
+
+    pub fn set_windows(&mut self, windows: [usize; 5]) {
+        self.board.cart.set_windows(windows);
+    }
+
+    /// A write as the CPU makes it (RAM, sound registers, the board).
+    pub fn write_bus(&mut self, addr: u16, v: u8) {
+        self.board.write(addr, v);
+    }
+
+    /// Runs the routine at `addr` with A, X, Y = `regs` and `pushed` on the stack above its
+    /// return address (in the order pushed), as the banks are now, until it returns. False
+    /// when it doesn't within `budget` cycles. Its sound writes wait in the board.
+    pub fn run_routine(&mut self, addr: u16, regs: [u8; 3], pushed: &[u8], budget: u32) -> bool {
+        self.board.ram[0x1FF] = 0x5F;
+        self.board.ram[0x1FE] = 0xF5;
+        let mut s = 0xFDu8;
+        for &v in pushed {
+            self.board.ram[0x100 | s as usize] = v;
+            s = s.wrapping_sub(1);
+        }
+        self.cpu.pc = addr;
+        [self.cpu.a, self.cpu.x, self.cpu.y] = regs;
+        self.cpu.s = s;
+        self.cpu.jammed = false;
+        self.cpu.calls = vec![(addr, 0xFF)];
+        let mut used = 0;
+        while !self.cpu.calls.is_empty() {
+            if used > budget || self.cpu.jammed {
+                return false;
+            }
+            self.board.instr += 1;
+            let c = self.exec() + std::mem::take(&mut self.board.stall);
+            self.board.cycle += c;
+            used += c;
+        }
+        self.board.cycle = 0;
+        true
+    }
+
     /// BIOS addresses a Disk System game reached that the stand-in doesn't know.
     pub fn unknown_bios_calls(&self) -> Vec<u16> {
         self.board
