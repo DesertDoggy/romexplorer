@@ -440,6 +440,9 @@ pub struct Map {
     pub runs: Vec<super::music_map::Run>,
     pub play: Vec<Op>,
     pub tracks: Vec<Option<Vec<Op>>>,
+    /// Per track, its play steps where they differ from `play` (a file's play that sets the
+    /// banks of the track playing).
+    pub plays: Vec<Option<Vec<Op>>>,
     /// When the file was made from another version of the game whose sound code sits at
     /// other addresses (most runs at one distance in the CPU's view, not 0): that distance,
     /// and the game's own 8 KB windows ($6000-$FFFF base, offset in the ROM) to run it in.
@@ -447,6 +450,13 @@ pub struct Map {
     /// The moved driver tried, if any: its distance, and the file's tracks' summed likeness
     /// without and with it.
     pub tried: Option<(i32, f64, f64)>,
+}
+
+impl Map {
+    /// The play steps of track `song`.
+    pub fn play_of(&self, song: u8) -> &[Op] {
+        self.plays.get(song as usize).and_then(|p| p.as_deref()).unwrap_or(&self.play)
+    }
 }
 
 /// Runs the routine at `pc` and records it as a start script: while the code running isn't
@@ -569,6 +579,7 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
         aligned[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true);
     }
     let mut tracks = Vec::new();
+    let mut steadies: Vec<Option<Vec<Op>>> = Vec::new();
     let mut play: Option<Vec<Op>> = None;
     for t in 0..h.songs {
         let mut p = player(&h, data)?;
@@ -576,6 +587,7 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
         p.write(0x4015, 0x0F);
         let Some(mut script) = record(&mut p, &mut cpu, h.init, t, 0, &placed, &aligned) else {
             tracks.push(None);
+            steadies.push(None);
             continue;
         };
         let mut frames = Vec::new();
@@ -590,11 +602,16 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
         if let Some(steady) = frames.last().cloned() {
             let settled = frames.iter().rposition(|f| *f != steady).map_or(0, |i| i + 1);
             frames[..settled].iter().for_each(|f| script.extend(f.iter().cloned()));
-            play.get_or_insert(steady);
+            play.get_or_insert(steady.clone());
+            steadies.push(Some(steady));
+        } else {
+            steadies.push(None);
         }
         tracks.push(Some(script));
     }
-    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks, moved: None, tried: None };
+    let play = play?;
+    let plays = steadies.into_iter().map(|s| s.filter(|s| *s != play)).collect();
+    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play, tracks, plays, moved: None, tried: None };
     // A moved driver only where it plays more of the file's tracks than the file's layout.
     if let Some(mv) = moved(&h, &m.runs, prg.len(), &calls(&m)) {
         let score = |m: &Map| map_check(nsf, m, prg, MOVED_CHECK_FRAMES, Fill::Bridged).iter().flatten().sum::<f64>();
@@ -621,6 +638,7 @@ fn calls(m: &Map) -> Vec<u16> {
         .tracks
         .iter()
         .flatten()
+        .chain(m.plays.iter().flatten())
         .chain(std::iter::once(&m.play))
         .flatten()
         .filter_map(|o| match *o {
@@ -775,7 +793,7 @@ pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize, fill: Fill
     let mut out = Vec::with_capacity(frames);
     let mut first = std::mem::take(&mut p.writes);
     for _ in 0..frames {
-        if !replay(&mut p, &mut cpu, &m.play, shift) {
+        if !replay(&mut p, &mut cpu, m.play_of(song), shift) {
             break;
         }
         let mut f = std::mem::take(&mut first);
@@ -906,7 +924,7 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
     let mut out = Vec::with_capacity(frames);
     let mut first = nes.take_sound();
     for _ in 0..frames {
-        if !run(&mut nes, &m.play) {
+        if !run(&mut nes, m.play_of(song)) {
             break;
         }
         let mut f = std::mem::take(&mut first);
@@ -924,10 +942,13 @@ pub fn note_melody(frames: &[Vec<Write>], pal: bool) -> HashSet<u64> {
     let pairs = [(0x4002u32, 0x4003u32), (0x4006, 0x4007), (0x400A, 0x400B)];
     let mut lo = [0u16; 3];
     let mut hi = [0u16; 3];
+    // Each channel's note as the frame ends: the low and high period bytes are written one
+    // after the other, and the period between the two writes (another table, other bytes)
+    // is no note.
     let notes: Vec<Vec<Write>> = frames
         .iter()
         .map(|f| {
-            let mut out = Vec::new();
+            let mut touched = [false; 3];
             for w in f {
                 let Some(ch) = pairs.iter().position(|p| p.0 == w.port || p.1 == w.port) else { continue };
                 if pairs[ch].0 == w.port {
@@ -935,12 +956,16 @@ pub fn note_melody(frames: &[Vec<Write>], pal: bool) -> HashSet<u64> {
                 } else {
                     hi[ch] = w.value & 7;
                 }
+                touched[ch] = true;
+            }
+            let mut out = Vec::new();
+            for ch in (0..3).filter(|&c| touched[c]) {
                 let period = (hi[ch] << 8 | lo[ch]) as f64;
                 // The note number, written as a period the fingerprint takes (8 and up).
                 let note = (12.0 * (clock / (16.0 * (period + 1.0)) / 27.5).log2()).round();
                 let n = (note.clamp(-100.0, 400.0) + 108.0) as u16;
-                out.push(Write { at: w.at, port: pairs[ch].0, value: n & 0xFF });
-                out.push(Write { at: w.at, port: pairs[ch].1, value: n >> 8 });
+                out.push(Write { at: 0, port: pairs[ch].0, value: n & 0xFF });
+                out.push(Write { at: 0, port: pairs[ch].1, value: n >> 8 });
             }
             out
         })
