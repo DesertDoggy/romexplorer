@@ -1,7 +1,7 @@
 //! Developer tool: the cartridge music search (`rom::music_search`) over ROMs on this PC, to
 //! see how many games it finds music in and why not in the rest.
 //!
-//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder>] <rom or folder>...
+//!   cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout]] <rom or folder>...
 //!
 //! For each NES/Famicom (cartridge or Disk System), Game Boy/Color, Master System, Game Gear,
 //! Mega Drive, PC Engine, MSX, WonderSwan/Color, Virtual Boy, Game Boy Advance or Neo Geo Pocket/Color ROM (loose, or the first one in a `.zip`/`.7z`): the
@@ -27,7 +27,7 @@ use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::common::models::Platform;
-use romexplorer::rom::{gb_gbs, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
+use romexplorer::rom::{gb_gbs, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -214,6 +214,10 @@ struct Options {
     /// `--originals <folder>`: original audio format files (NSF, GBS) to match ROMs to and
     /// take the sound code's addresses from.
     nsf: Option<PathBuf>,
+    /// `--layout`: with `--originals`, instead of searching, lay each matched NSF's bytes its
+    /// tracks read over the ROM and print how much of it is found where (a music map's first
+    /// part).
+    layout: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -266,6 +270,43 @@ fn original_hint(
         );
     }
     hint
+}
+
+/// `--layout` for a NES/Famicom ROM and its matched NSF.
+fn print_layout(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let Ok(h) = nes_cart::parse(rom) else { return };
+    let Some(used) = nes_nsf::used_bytes(nsf, CHECK_FRAMES) else {
+        println!("{name}: layout: the NSF doesn't run");
+        return;
+    };
+    let l = music_map::layout(&nsf[0x80..], &used, &h.prg);
+    let missing: usize = l.missing.iter().map(|m| m.1).sum();
+    let biggest = l.missing.iter().map(|m| m.1).max().unwrap_or(0);
+    let banks: std::collections::BTreeSet<usize> = l.runs.iter().map(|r| r.rom / 0x2000).collect();
+    let share = l.placed as f64 * 100.0 / l.needed.max(1) as f64;
+    println!(
+        "{name}: layout: {:.1}% of {} needed bytes in the ROM ({} runs, {} 8 KB banks); missing {} bytes in {} stretches, biggest {}",
+        share,
+        l.needed,
+        l.runs.len(),
+        banks.len(),
+        missing,
+        l.missing.len(),
+        biggest
+    );
+    if share >= 99.0 {
+        t.with_music += 1;
+    }
+    let bucket = match share {
+        s if s >= 99.0 => "99-100%",
+        s if s >= 95.0 => "95-99%",
+        s if s >= 80.0 => "80-95%",
+        s if s >= 50.0 => "50-80%",
+        _ => "under 50%",
+    };
+    *t.reasons.entry(format!("needed bytes in the ROM: {bucket}")).or_default() += 1;
 }
 
 fn run_hinted<M: Machine>(
@@ -420,7 +461,9 @@ fn main() {
         verbose: args.iter().any(|a| a == "--verbose"),
         probe: None,
         nsf: None,
+        layout: args.iter().any(|a| a == "--layout"),
     };
+    args.retain(|a| a != "--layout");
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
         o.render = args.get(i + 1).map(PathBuf::from);
@@ -440,7 +483,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder>] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout]] <rom or folder>..."
         );
         std::process::exit(2);
     }
@@ -480,6 +523,12 @@ fn main() {
                     nes_cart::parse(&rom).map(|h| h.mapper).unwrap_or(0)
                 );
                 let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                if o.layout {
+                    if let Some(h) = &hint {
+                        print_layout(&path, &rom, &h.1, tally.entry("NES").or_default());
+                    }
+                    continue;
+                }
                 let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
                 run_hinted::<Nes>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry("NES").or_default());
             }
