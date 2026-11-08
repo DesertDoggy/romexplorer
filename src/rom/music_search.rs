@@ -205,8 +205,9 @@ type Rank = (bool, bool, bool, bool, usize);
 /// Numbers sounding different past which a way of starting songs is taken to read past
 /// its song table.
 const UNBOUNDED_SONGS: usize = 128;
-/// Songs and jingles past which a way's song list itself reads past its table: more than
-/// any cartridge of these consoles has tunes.
+/// Songs that last past which a way's song list itself reads past its table: more than any
+/// cartridge of these consoles has tunes. (Jingles don't count: games put their sound
+/// effects in the same table.)
 const CORE_SONGS: usize = 100;
 /// Past the gap that ends a way's songs, one number in this many is listened to, to tell
 /// whether the way's numbers run out.
@@ -928,7 +929,7 @@ pub fn search_logged<M: Machine>(
                 // ... but only between ways that both have a real song list: numbers past a
                 // game's songs are often its sound effects, which sound different too.
                 let list = played.len() >= GOOD_SONGS;
-                let core = played.len() + short.len() < CORE_SONGS;
+                let core = played.len() < CORE_SONGS;
                 let rank = (!played.is_empty(), core, list, bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
                     best = Some((rank, t, songs));
