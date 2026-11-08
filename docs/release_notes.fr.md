@@ -55,6 +55,7 @@ Faites une sauvegarde avant de remplacer une version.
   support pris en charge uniquement).
 - Les réglages permettent de choisir quelles pistes sont jouées.
 - La musique NES et Famicom est jouée directement depuis la ROM, par le code sonore du jeu lui-même : aucun fichier audio d'origine n'est nécessaire. Puces sonores Famicom (VRC6, Namco 163, Sunsoft 5B, MMC5) comprises.
+- Un limiteur adoucit les pics de volume soudains dans la musique jouée par la puce sonore (Paramètres › Audio, activé par défaut).
 - La musique Disk System, Game Boy, Game Boy Color, Master System, Game Gear, Mega Drive, PC Engine, MSX, WonderSwan, Virtual Boy, Game Boy Advance et Neo Geo Pocket est elle aussi jouée directement depuis la ROM, son FM de la Master System japonaise compris.
 - Les formats audio d'origine (NSF, SPC, GBS, VGM, HES, KSS, AY, SAP et SGC de la
   Game Gear, seuls ou en zip) sont pris en charge.
