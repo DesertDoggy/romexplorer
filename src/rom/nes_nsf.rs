@@ -127,10 +127,26 @@ fn length(op: u8) -> u16 {
 /// its song count. `None` when it isn't an NSF.
 pub fn hint(nsf: &[u8]) -> Option<Hint> {
     let n = parse(nsf)?;
+    let start = n.routines(n.init);
+    // The number each track hands the routines init calls: where init looks the game's song
+    // id up in a table of its own, the ids differ from the track numbers.
+    let mut ids = vec![(n.init as u32, 0, (0..n.songs).collect())];
+    let inner: Vec<u16> = start.iter().skip(1).map(|r| r.0 as u16).collect();
+    for (addr, seen) in inner.iter().zip(entries(nsf, n.songs, &inner)) {
+        let got: Vec<[u8; 3]> = seen.into_iter().flatten().collect();
+        if got.len() * 2 < n.songs as usize {
+            continue;
+        }
+        // The first register that changes with the track carries the id.
+        if let Some(reg) = (0..3).find(|&r| got.iter().any(|g| g[r] != got[0][r])) {
+            ids.push((*addr as u32, reg as u8, got.iter().map(|g| g[reg]).collect()));
+        }
+    }
     Some(Hint {
         play: n.routines(n.play),
-        start: n.routines(n.init),
+        start,
         songs: n.songs,
+        ids,
     })
 }
 
@@ -188,6 +204,11 @@ impl Player {
 
     /// Runs the routine at `pc` with A and X until it returns; false when it doesn't.
     fn call(&mut self, cpu: &mut Cpu, pc: u16, a: u8, x: u8) -> bool {
+        self.call_watched(cpu, pc, a, x, &mut |_| {})
+    }
+
+    /// [`Self::call`], showing `watch` the CPU before each instruction.
+    fn call_watched(&mut self, cpu: &mut Cpu, pc: u16, a: u8, x: u8, watch: &mut dyn FnMut(&Cpu)) -> bool {
         // A return address on the stack the routine's RTS takes (never run).
         self.ram[0x1FF] = 0x5F;
         self.ram[0x1FE] = 0xF5;
@@ -201,6 +222,7 @@ impl Player {
             if used > 400_000 || cpu.jammed {
                 return false;
             }
+            watch(cpu);
             used += cpu.step(self);
         }
         true
@@ -210,6 +232,43 @@ impl Player {
 /// Track `song` (from 0) of an NSF, played `frames` frames: each frame's sound writes. `None`
 /// when it isn't an NSF or its code doesn't return.
 pub fn track_writes(nsf: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+    let (mut p, init, play) = load(nsf)?;
+    let mut cpu = Cpu::with(init, 0xFD);
+    p.write(0x4015, 0x0F);
+    if !p.call(&mut cpu, init, song, 0) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(frames);
+    let mut first = std::mem::take(&mut p.writes);
+    for _ in 0..frames {
+        if !p.call(&mut cpu, play, 0, 0) {
+            break;
+        }
+        let mut f = std::mem::take(&mut first);
+        f.append(&mut p.writes);
+        out.push(f);
+    }
+    Some(out)
+}
+
+/// For each routine in `routines`, the registers (A, X, Y) it is first entered with while the
+/// NSF's init starts each track: `None` for a track that never enters it.
+fn entries(nsf: &[u8], songs: u8, routines: &[u16]) -> Vec<Vec<Option<[u8; 3]>>> {
+    let mut out = vec![vec![None; songs as usize]; routines.len()];
+    for t in 0..songs {
+        let Some((mut p, init, _)) = load(nsf) else { break };
+        let mut cpu = Cpu::with(init, 0xFD);
+        p.call_watched(&mut cpu, init, t, 0, &mut |c| {
+            if let Some(i) = routines.iter().position(|&r| r == c.pc) {
+                out[i][t as usize].get_or_insert([c.a, c.x, c.y]);
+            }
+        });
+    }
+    out
+}
+
+/// An NSF's player, loaded and banked as at start, with its init and play addresses.
+fn load(nsf: &[u8]) -> Option<(Player, u16, u16)> {
     if nsf.len() < 0x80 || &nsf[..5] != b"NESM\x1a" {
         return None;
     }
@@ -244,22 +303,7 @@ pub fn track_writes(nsf: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write
             }
         }
     }
-    let mut cpu = Cpu::with(init, 0xFD);
-    p.write(0x4015, 0x0F);
-    if !p.call(&mut cpu, init, song, 0) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(frames);
-    let mut first = std::mem::take(&mut p.writes);
-    for _ in 0..frames {
-        if !p.call(&mut cpu, play, 0, 0) {
-            break;
-        }
-        let mut f = std::mem::take(&mut first);
-        f.append(&mut p.writes);
-        out.push(f);
-    }
-    Some(out)
+    Some((p, init, play))
 }
 
 /// A melody's fingerprint: the runs of four pitches in a row on each of the NES's tone
@@ -345,6 +389,8 @@ mod tests {
         assert_eq!(addrs(&h.start), vec![0x8000, 0x8040]);
         assert_eq!(addrs(&h.play), vec![0x8010, 0x8080]);
         assert_eq!(h.play[0].1[..3], [0xA9, 0x00, 0x4C]);
+        // init hands its routine the track number in A unchanged.
+        assert!(h.ids.iter().any(|i| i.0 == 0x8040 && i.1 == 0 && i.2 == vec![0, 1, 2]));
     }
 
     #[test]

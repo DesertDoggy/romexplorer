@@ -94,6 +94,7 @@ pub fn hint(gbs: &[u8]) -> Option<Hint> {
         play: hint_routines(g.play, |a| g.calls_in(a), |a| g.code(a)),
         start: hint_routines(g.init, |a| g.calls_in(a), |a| g.code(a)),
         songs: g.songs,
+        ids: Vec::new(),
     })
 }
 
