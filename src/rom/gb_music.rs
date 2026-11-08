@@ -651,6 +651,8 @@ impl Machine for GameBoy {
         self.board.buttons = if held { 0x08 } else { 0 };
     }
 
+    const BUTTONS: bool = true;
+
     fn press(&mut self, buttons: u8) {
         // A, B, Select, Start: the button group's own bits.
         self.board.buttons = buttons & 0x0F;

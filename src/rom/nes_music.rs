@@ -601,6 +601,12 @@ impl Machine for Nes {
         self.board.buttons = if held { 0x08 } else { 0 };
     }
 
+    const BUTTONS: bool = true;
+
+    fn slow_loading(&self) -> bool {
+        self.board.fds.is_some()
+    }
+
     fn press(&mut self, buttons: u8) {
         // A, B, Select, Start: the controller's own order.
         self.board.buttons = buttons & 0x0F;
