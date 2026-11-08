@@ -118,6 +118,10 @@ pub struct Hint {
     pub play: Vec<(u32, Vec<u8>)>,
     pub start: Vec<(u32, Vec<u8>)>,
     pub songs: u8,
+    /// Song-start routines (address, register) and the number each of the file's tracks
+    /// passes them, in track order: the game's own song ids, where the file's init looks
+    /// them up in a table of its own.
+    pub ids: Vec<(u32, u8, Vec<u8>)>,
 }
 
 /// Most routines a [`Hint`] takes from each of play and init.
@@ -1024,6 +1028,18 @@ pub fn search_hinted<M: Machine>(
                 calls,
             )
             .map(|r| r.sound);
+            // The exact song ids a Jump way takes, when the file's tracks give them.
+            let ids_of = |t: &Trigger| -> Option<Vec<u8>> {
+                let Trigger::Jump { addr, reg } = t else { return None };
+                let (_, _, v) = hint?.ids.iter().find(|i| i.0 == *addr && i.1 == *reg)?;
+                let mut out: Vec<u8> = Vec::new();
+                for &x in v {
+                    if !out.contains(&x) {
+                        out.push(x);
+                    }
+                }
+                Some(out)
+            };
             let mut screened: Vec<(usize, Trigger, Option<M::Entry>)> = Vec::new();
             for t in candidates {
                 if timed_out() {
@@ -1040,7 +1056,11 @@ pub fn search_hinted<M: Machine>(
                     Trigger::Byte(_) => None,
                 };
                 let mut seen = HashSet::new();
-                for v in 1..=8u8 {
+                let tries: Vec<u8> = match ids_of(&t) {
+                    Some(ids) => ids.into_iter().take(8).collect(),
+                    None => (1..=8).collect(),
+                };
+                for v in tries {
                     if let Some(h) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES / 2, calls) {
                         if h.audible && Some(h.sound) != baseline {
                             seen.insert(h.sound);
@@ -1084,13 +1104,15 @@ pub fn search_hinted<M: Machine>(
                 let mut dropped = [0usize; 4];
                 let mut short = Vec::new();
                 let mut gap_at = None;
-                for v in 0..=255u8 {
+                let ids = ids_of(&t);
+                let numbers: Vec<u8> = ids.clone().unwrap_or_else(|| (0..=255).collect());
+                for v in numbers {
                     if timed_out() {
                         break;
                     }
                     // Songs end at the first long gap (see `song_run`): past it, nothing
-                    // more can count.
-                    if played.last().is_some_and(|&l: &u8| (v - l) as usize > SONG_GAP) {
+                    // more can count. (Not for ids from the file: they are the songs.)
+                    if ids.is_none() && played.last().is_some_and(|&l: &u8| (v - l) as usize > SONG_GAP) {
                         gap_at = Some(v);
                         break;
                     }
@@ -1118,7 +1140,7 @@ pub fn search_hinted<M: Machine>(
                     // Past this many songs that last, the way reads past its song table (see
                     // `core`): the rest would only be more of the same. Jingles don't count: a
                     // way still finding its first song that lasts may yet beat others.
-                    if played.len() >= CORE_SONGS {
+                    if ids.is_none() && played.len() >= CORE_SONGS {
                         break;
                     }
                 }
@@ -1139,7 +1161,10 @@ pub fn search_hinted<M: Machine>(
                 }
                 // A game whose every tune is a few seconds long (older games are mostly
                 // jingles): its short ones are its music.
-                let songs = if played.is_empty() {
+                let songs = if let Some(ids) = &ids {
+                    // The file's tracks, in its order: jingles too, since it lists them.
+                    ids.iter().copied().filter(|v| played.contains(v) || short.contains(v)).collect()
+                } else if played.is_empty() {
                     song_run(&short)
                 } else {
                     song_run(&played)

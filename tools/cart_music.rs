@@ -224,7 +224,27 @@ fn original_hint(
         .match_rom(path, platform as u16)
         .map_err(|e| println!("    match failed: {e}"))
         .ok()?;
-    let (set, share) = matches.first()?;
+    // Sets that match equally well (games sharing a sound engine): the one whose name
+    // shares most words with the ROM's.
+    let words = |p: &Path| -> std::collections::HashSet<String> {
+        p.file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1)
+            .map(str::to_string)
+            .collect()
+    };
+    let mine = words(path);
+    let top = matches.first()?.1;
+    let (set, share) = matches
+        .iter()
+        .filter(|m| m.1 >= top - 0.005)
+        .max_by(|a, b| {
+            let n = |m: &(PathBuf, f32)| words(&m.0).intersection(&mine).count();
+            // On equal names the better match, and among those the first listed.
+            n(a).cmp(&n(b)).then(a.1.total_cmp(&b.1)).then(std::cmp::Ordering::Greater)
+        })?;
     let hint = rip_sets::first_with_magic(set, magic).and_then(|d| Some((read(&d)?, d)));
     if verbose {
         println!(
