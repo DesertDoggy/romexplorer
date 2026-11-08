@@ -174,6 +174,8 @@ struct Tally {
     /// Against the matched NSF's tracks: games checked, their songs, songs like a track,
     /// tracks, tracks some song is like.
     checked: [usize; 5],
+    /// Games whose songs are like none of the file's tracks (kept, unchecked), and their songs.
+    unchecked: [usize; 2],
 }
 
 /// Frames of a song and of a track compared by melody.
@@ -348,7 +350,7 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         .take(12)
         .collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
         started.elapsed().as_secs_f32(),
         m.header.songs,
         m.runs.len(),
@@ -356,6 +358,13 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         calls,
         no_script,
         m.play.len(),
+        match m.tried {
+            Some((d, before, after)) => format!(
+                "; moved {d:+} tried: {before:.1} -> {after:.1}{}",
+                if m.moved.is_some() { ", taken" } else { "" }
+            ),
+            None => String::new(),
+        },
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
     );
     t.checked[0] += 1;
@@ -456,12 +465,18 @@ fn run_hinted<M: Machine>(
                         lines.push(format!("{v}->{track}:{score:.2}"));
                     }
                 }
+                let unchecked = f.checked.is_some_and(|c| c.0 == 0);
                 println!(
-                    "    check: {like} of {} songs are like a track; {} of {} tracks found",
+                    "    check: {like} of {} songs are like a track; {} of {} tracks found{}",
                     f.songs.len(),
                     found_tracks.len(),
-                    answers.len()
+                    answers.len(),
+                    if unchecked { " (unchecked: no song like a track in the search)" } else { "" }
                 );
+                if unchecked {
+                    t.unchecked[0] += 1;
+                    t.unchecked[1] += f.songs.len();
+                }
                 if o.verbose {
                     println!("    check songs: {}", lines.join(" "));
                 }
@@ -771,6 +786,10 @@ fn main() {
             println!(
                 "  checked against NSF/GBS tracks in {} games: {} of {} songs like a track, {} of {} tracks found",
                 t.checked[0], t.checked[2], t.checked[1], t.checked[4], t.checked[3]
+            );
+            println!(
+                "  unchecked (kept, no song like any track): {} games, {} songs",
+                t.unchecked[0], t.unchecked[1]
             );
         }
         for (why, n) in t.reasons {
