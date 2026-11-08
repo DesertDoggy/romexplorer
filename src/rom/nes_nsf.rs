@@ -936,36 +936,41 @@ pub fn cart_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option
 
 /// A [`melody`] by notes rather than periods: each tone channel's period turned into the
 /// nearest semitone at the console's clock (`pal`), so a PAL release (its own period table,
-/// about 7% lower) matches the NTSC file it was made from.
-pub fn note_melody(frames: &[Vec<Write>], pal: bool) -> HashSet<u64> {
+/// about 7% lower) matches the NTSC file it was made from. Notes are taken at each write
+/// (`per_write`) or as each frame ends: the low and high period bytes are written one after
+/// the other, and the period between the two (other bytes in another table) is no note.
+pub fn note_melody(frames: &[Vec<Write>], pal: bool, per_write: bool) -> HashSet<u64> {
+    const PAIRS: [(u32, u32); 3] = [(0x4002, 0x4003), (0x4006, 0x4007), (0x400A, 0x400B)];
     let clock = if pal { 1_662_607.0 } else { 1_789_773.0 };
-    let pairs = [(0x4002u32, 0x4003u32), (0x4006, 0x4007), (0x400A, 0x400B)];
     let mut lo = [0u16; 3];
     let mut hi = [0u16; 3];
-    // Each channel's note as the frame ends: the low and high period bytes are written one
-    // after the other, and the period between the two writes (another table, other bytes)
-    // is no note.
+    let note = |ch: usize, lo: &[u16; 3], hi: &[u16; 3], out: &mut Vec<Write>| {
+        let period = (hi[ch] << 8 | lo[ch]) as f64;
+        // The note number, written as a period the fingerprint takes (8 and up).
+        let note = (12.0 * (clock / (16.0 * (period + 1.0)) / 27.5).log2()).round();
+        let n = (note.clamp(-100.0, 400.0) + 108.0) as u16;
+        out.push(Write { at: 0, port: PAIRS[ch].0, value: n & 0xFF });
+        out.push(Write { at: 0, port: PAIRS[ch].1, value: n >> 8 });
+    };
     let notes: Vec<Vec<Write>> = frames
         .iter()
         .map(|f| {
+            let mut out = Vec::new();
             let mut touched = [false; 3];
             for w in f {
-                let Some(ch) = pairs.iter().position(|p| p.0 == w.port || p.1 == w.port) else { continue };
-                if pairs[ch].0 == w.port {
+                let Some(ch) = PAIRS.iter().position(|p| p.0 == w.port || p.1 == w.port) else { continue };
+                if PAIRS[ch].0 == w.port {
                     lo[ch] = w.value & 0xFF;
                 } else {
                     hi[ch] = w.value & 7;
                 }
                 touched[ch] = true;
+                if per_write {
+                    note(ch, &lo, &hi, &mut out);
+                }
             }
-            let mut out = Vec::new();
-            for ch in (0..3).filter(|&c| touched[c]) {
-                let period = (hi[ch] << 8 | lo[ch]) as f64;
-                // The note number, written as a period the fingerprint takes (8 and up).
-                let note = (12.0 * (clock / (16.0 * (period + 1.0)) / 27.5).log2()).round();
-                let n = (note.clamp(-100.0, 400.0) + 108.0) as u16;
-                out.push(Write { at: 0, port: pairs[ch].0, value: n & 0xFF });
-                out.push(Write { at: 0, port: pairs[ch].1, value: n >> 8 });
+            if !per_write {
+                (0..3).filter(|&c| touched[c]).for_each(|ch| note(ch, &lo, &hi, &mut out));
             }
             out
         })
@@ -986,9 +991,15 @@ pub fn cart_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<
             // The periods as written, and by notes at either clock: a PAL release may keep
             // the NTSC period table or have its own (the header doesn't always say PAL).
             let raw = alike(&real, &melody(&mine));
-            let notes = note_melody(&track_writes(nsf, t, frames)?, false);
-            let by_note = [false, true].map(|pal| alike(&notes, &note_melody(&mine, pal)));
-            Some(raw.max(by_note[0]).max(by_note[1]))
+            let real_writes = track_writes(nsf, t, frames)?;
+            let mut best = raw;
+            for per_write in [false, true] {
+                let notes = note_melody(&real_writes, false, per_write);
+                for pal in [false, true] {
+                    best = best.max(alike(&notes, &note_melody(&mine, pal, per_write)));
+                }
+            }
+            Some(best)
         })
         .collect()
 }
