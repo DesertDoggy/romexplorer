@@ -63,6 +63,13 @@ pub trait Machine: Clone + Sized {
     fn press(&mut self, buttons: u8) {
         self.press_start(buttons & START != 0);
     }
+    /// [`Self::press`] holds more than Start (the A button patterns are worth a boot).
+    const BUTTONS: bool = false;
+    /// Games may take most of a minute to load (a disk), worth a minute-long boot when
+    /// nothing else found music.
+    fn slow_loading(&self) -> bool {
+        false
+    }
     /// The routine the CPU just entered, as an [`Self::Entry`].
     fn entry(&self) -> Self::Entry;
     /// One frame of the sound routine alone, called at its usual moment. None when it
@@ -216,7 +223,7 @@ impl Recipe {
     pub fn decode(s: &str) -> Option<Self> {
         let mut p = s.split('@');
         let boot_frames = p.next()?.parse().ok()?;
-        let press_start = p.next()?.parse().ok().filter(|&s| s <= 2)?;
+        let press_start = p.next()?.parse().ok().filter(|&s| s <= LAST_INPUT)?;
         let play = u32::from_str_radix(p.next()?, 16).ok()?;
         let trigger = Trigger::decode(p.next()?)?;
         let calls = match p.next() {
@@ -233,18 +240,41 @@ impl Recipe {
     }
 }
 
-/// Whether Start is held in frame `frame` of boot, in start pattern `press_start`: 0 never;
-/// 1 a few frames at the 3, 5 and 7 second marks (enough for most title screens, and no
-/// presses after that to pause a game that is playing); 2 every two seconds from the third
-/// on (games that need more presses to start their music).
-fn start_held(press_start: u8, frame: u32) -> bool {
-    let pressing = match press_start {
-        0 => false,
-        1 => (180..=420).contains(&frame),
-        _ => frame >= 180,
-    };
-    pressing && frame % 120 < 6
+/// The buttons held in frame `frame` of boot under input pattern `input` (a recipe's
+/// `press_start`), from the PC probe of when games start their music:
+/// - 0: nothing;
+/// - 1: Start a few frames at the 3, 5 and 7 second marks (enough for most title screens, and
+///   no presses after that to pause a game that is playing);
+/// - 2: Start every two seconds from the third on;
+/// - 3: Start, then A half a second later, every second from the third (with 4, the two that
+///   start nearly every game that starts its music for some input);
+/// - 4: A every second from the third;
+/// - 5: nothing, for a longer boot (Disk System games loading from disk).
+///
+/// 0-2 boot 15 seconds, 3-4 30 seconds, 5 a minute (see [`boot_len`]).
+fn held(input: u8, frame: u32) -> u8 {
+    let every = |period: u32| frame >= 180 && frame % period < 6;
+    match input {
+        1 if (180..=420).contains(&frame) && every(120) => START,
+        2 if every(120) => START,
+        3 if every(60) => START,
+        3 if frame >= 180 && (30..36).contains(&(frame % 60)) => BUTTON_A,
+        4 if every(60) => BUTTON_A,
+        _ => 0,
+    }
 }
+
+/// How many frames boot runs under input pattern `input` (see [`held`]).
+pub fn boot_len(input: u8) -> u32 {
+    match input {
+        0..=2 => BOOT_FRAMES,
+        3 | 4 => 2 * BOOT_FRAMES,
+        _ => 4 * BOOT_FRAMES,
+    }
+}
+
+/// The last input pattern [`held`] knows.
+const LAST_INPUT: u8 = 5;
 
 /// Buttons for [`Machine::press`], in the Famicom's and Game Boy's order.
 pub const BUTTON_A: u8 = 0x01;
@@ -365,7 +395,7 @@ struct BootLog {
 fn boot<M: Machine>(rom: &[u8], press_start: u8, frames: u32) -> Result<M, String> {
     let mut m = M::boot(rom)?;
     for f in 0..frames {
-        m.press_start(start_held(press_start, f));
+        m.press(held(press_start, f));
         m.run_frame(None, None);
     }
     m.take_sound();
@@ -381,8 +411,8 @@ fn boot_log<M: Machine>(rom: &[u8], press_start: u8) -> Result<BootLog, String> 
         depth: HashMap::new(),
         entered_frames: HashMap::new(),
     };
-    for f in 0..BOOT_FRAMES {
-        m.press_start(start_held(press_start, f));
+    for f in 0..boot_len(press_start) {
+        m.press(held(press_start, f));
         let mut watch = |s: &Step| {
             for &(r, _) in s.entered {
                 let e = log.entered_frames.entry(r).or_default();
@@ -420,7 +450,7 @@ fn entry_at<M: Machine>(
     routine: u32,
 ) -> Result<Option<(M, M::Entry)>, String> {
     let mut m = boot::<M>(rom, press_start, frame)?;
-    m.press_start(start_held(press_start, frame));
+    m.press(held(press_start, frame));
     Ok(enter_in_frame(
         &mut m,
         |s| s.entered.iter().any(|e| e.0 == routine),
@@ -518,7 +548,7 @@ fn find_play<M: Machine>(
         .iter()
         .position(|f| f.iter().any(|w| !M::incidental(w)))
         .unwrap_or(0) as u32;
-    let latest = BOOT_FRAMES - VERIFY_FRAMES as u32 - 1;
+    let latest = boot_len(press_start) - VERIFY_FRAMES as u32 - 1;
     // Routines a matched NSF names: the game's code at the same address, byte for byte, is
     // its sound routine even when it plays nothing yet (or its music can't be told apart
     // from the rest of the boot's sound).
@@ -584,7 +614,7 @@ fn find_play<M: Machine>(
             continue;
         }
         // Called about once a frame from the start of the music on.
-        let span = BOOT_FRAMES.saturating_sub(first_sound).max(1);
+        let span = boot_len(press_start).saturating_sub(first_sound).max(1);
         // Run a steady number of times a frame: once, or a timer's few times.
         let calls = per_frame.round();
         if (frames.len() as f64) < 0.5 * span as f64
@@ -656,8 +686,8 @@ fn trigger_candidates<M: Machine>(
     let mut calls: HashMap<u32, u32> = HashMap::new();
     let mut writes_inside: HashMap<u32, HashSet<u32>> = HashMap::new();
     let mut handlers: HashSet<u32> = HashSet::new();
-    for f in 0..BOOT_FRAMES {
-        m.press_start(start_held(press_start, f));
+    for f in 0..boot_len(press_start) {
+        m.press(held(press_start, f));
         let stack = m.clone();
         let mut watch = |s: &Step| {
             let in_play = s.calls.iter().any(|c| c.0 == play);
@@ -701,7 +731,7 @@ fn trigger_candidates<M: Machine>(
     out.extend(
         bytes
             .into_iter()
-            .filter(|&(_, n)| n < BOOT_FRAMES / 2)
+            .filter(|&(_, n)| n < boot_len(press_start) / 2)
             .take(24)
             .map(|(a, _)| Trigger::Byte(a)),
     );
@@ -738,8 +768,8 @@ fn call_entry<M: Machine>(
 ) -> Result<Option<M::Entry>, String> {
     let mut m = M::boot(rom)?;
     let mut seen = 0;
-    for f in 0..BOOT_FRAMES {
-        m.press_start(start_held(press_start, f));
+    for f in 0..boot_len(press_start) {
+        m.press(held(press_start, f));
         let mut probe = m.clone();
         let mut in_frame = 0;
         let mut watch = |s: &Step| {
@@ -903,7 +933,25 @@ pub fn search_hinted<M: Machine>(
     let timed_out = || started.elapsed() > SEARCH_TIME_LIMIT;
     // The best result so far, ranked as songs that last first, then by count.
     let mut found: Option<(Rank, Found)> = None;
-    'boots: for press_start in [0u8, 1, 2] {
+    let slow = M::boot(rom).map(|m| m.slow_loading()).unwrap_or(false);
+    'boots: for press_start in 0..=LAST_INPUT {
+        // Longer boots with other buttons only while nothing was found: the probe found
+        // they start the music of most games still silent after the first three.
+        let longer = match press_start {
+            3 | 4 => M::BUTTONS,
+            5 => slow,
+            _ => true,
+        };
+        if !longer || (press_start >= 3 && found.is_some()) {
+            continue;
+        }
+        if press_start >= 3 && why.0 == 0 {
+            why.1 = if press_start == 5 {
+                "the game played no music in its first minute"
+            } else {
+                "the game played no music in its first 30 seconds"
+            };
+        }
         if timed_out() {
             note("search took too long; stopped".into());
             why = (why.0.max(3), "the search took too long");
@@ -920,7 +968,14 @@ pub fn search_hinted<M: Machine>(
         };
         note(format!(
             "boot{}: {} sound writes; routines {}",
-            ["", " (Start)", " (Start, steady)"][press_start as usize],
+            [
+                "",
+                " (Start)",
+                " (Start, steady)",
+                " (Start and A, 30 s)",
+                " (A, 30 s)",
+                " (a minute)"
+            ][press_start as usize],
             log.total_writes,
             busiest.join(" ")
         ));
