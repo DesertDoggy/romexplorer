@@ -83,6 +83,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Correcciones
 
+- Algunos juegos no encontraban coincidencia en IGDB: un nombre con un guion dentro de una palabra no coincidía con la grafía de IGDB, y la sincronización de IGDB para SNES y NES omitía los juegos lanzados solo en Japón.
 - Un título conservaba los títulos alternativos de IGDB tras quitar su vínculo con IGDB, y no se podían borrar. Ahora se quitan con el vínculo, y cualquier título alternativo se puede quitar con ✕.
 - «Actualizar metadatos» volvía a vincular con IGDB un título cuyo vínculo se había quitado a mano. Ahora sigue sin vincular hasta que lo vincules tú.
 - Los subsets de RetroAchievements (desafío, speedrun y similares) entraban en el título de su juego y podían unir dos versiones de un juego en un título. Cada subset es ahora un título propio; la auditoría de fusiones separa los que ya estaban.

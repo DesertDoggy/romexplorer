@@ -83,6 +83,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Correzioni
 
+- Alcuni giochi non trovavano corrispondenza su IGDB: un nome con un trattino dentro una parola non corrispondeva alla grafia di IGDB, e la sincronizzazione IGDB di SNES e NES saltava i giochi usciti solo in Giappone.
 - Un titolo conservava i titoli alternativi di IGDB dopo la rimozione del collegamento a IGDB, e non si potevano eliminare. Ora vengono rimossi con il collegamento, e ogni titolo alternativo si può rimuovere con ✕.
 - «Aggiorna metadati» ricollegava a IGDB un titolo il cui collegamento era stato rimosso a mano. Ora resta scollegato finché non lo colleghi tu.
 - I subset di RetroAchievements (sfida, speedrun e simili) finivano nel titolo del loro gioco e potevano unire due versioni di un gioco in un solo titolo. Ogni subset è ora un titolo a sé; la verifica delle unioni separa quelli già presenti.

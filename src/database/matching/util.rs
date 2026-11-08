@@ -52,13 +52,37 @@ pub fn norm_key(input: &str) -> String {
     normalize_title(&clean_name(input)).to_lowercase()
 }
 
-/// The significant words of a name: [`norm_key`] split on anything not a letter / digit,
+/// Drops a hyphen or middle dot that joins two letters inside a word, keeping case: DATs
+/// write "Fu-Ga" (and Japanese titles "フ・ガ") where providers write "FuGa", and the two
+/// spellings never compared equal. Between digits ("2-3") or around spaces (" - ") nothing
+/// changes.
+pub fn join_word_hyphens(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in chars.iter().enumerate() {
+        let joiner = matches!(c, '-' | '\u{2010}' | '\u{2011}' | '\u{00b7}' | '\u{30fb}' | '\u{ff65}');
+        if joiner && i > 0 && i + 1 < chars.len() && chars[i - 1].is_alphabetic() && chars[i + 1].is_alphabetic() {
+            continue;
+        }
+        out.push(*c);
+    }
+    out
+}
+
+/// [`norm_key`] with [`join_word_hyphens`] applied: the key to compare a catalog name with a
+/// provider's, so "Hoge Fu-Ga" and "Hoge FuGa" are one name. Not what `norm_name` stores
+/// (titles are grouped by that), only a comparison form.
+pub fn loose_key(input: &str) -> String {
+    join_word_hyphens(&norm_key(input))
+}
+
+/// The significant words of a name: [`loose_key`] split on anything not a letter / digit,
 /// minus glue words and edition words that don't tell games apart.
 fn significant_words(name: &str) -> Vec<String> {
     const SKIP: [&str; 22] = [
         "of", "the", "and", "a", "an", "to", "in", "on", "no", "wa", "ga", "de", "for", "edition", "version", "international", "collection", "special", "complete", "deluxe", "remastered", "hd",
     ];
-    norm_key(name)
+    loose_key(name)
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty() && !SKIP.contains(w))
         .map(str::to_string)
@@ -250,6 +274,18 @@ mod tests {
         assert!(!names_related("Robot PD 16103", "Escape from the Planet of the Robot Monsters"));
         assert!(!names_related("Jet Grind Radio", "Garou: Mark of the Wolves"));
         assert!(!names_related("Iron Maiden Unfinished", "Iron Lord"));    }
+
+    #[test]
+    fn a_hyphen_inside_a_word_is_the_same_name() {
+        assert_eq!(loose_key("Hoge Fu-Ga 3 (Japan)"), loose_key("Hoge FuGa 3"));
+        assert_eq!(loose_key("ほげ フ・ガ"), loose_key("ほげ フガ"));
+        assert_eq!(join_word_hyphens("Hoge 2-3 - Fuga"), "Hoge 2-3 - Fuga", "digits and separators stay");
+        assert!(names_close("Hoge Fu-Ga", "Hoge FuGa"));
+        assert!(names_close("Hoge Fu-Ga 3", "Hoge FuGa 3"));
+        assert!(!names_close("Hoge Fu-Ga 2", "Hoge FuGa 3"));
+        assert!(names_close("Spider Hoge 2", "Spider-Hoge 2"), "split and hyphenated spellings still agree");
+        assert!(names_related("Hoge Fu-Ga", "Hoge FuGa"));
+    }
 
     #[test]
     fn norm_key_strips_tags_and_lowercases() {
