@@ -7,7 +7,7 @@
 //! in the boot alone. The music still plays from the ROM: the NSF is only read for addresses.
 
 use super::m6502::{Bus, Cpu};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::music_search::{self, hint_routines, Hint, Write};
 
@@ -427,6 +427,10 @@ pub struct Map {
     pub runs: Vec<super::music_map::Run>,
     pub play: Vec<Op>,
     pub tracks: Vec<Option<Vec<Op>>>,
+    /// When the file was made from another version of the game whose sound code sits at
+    /// other addresses (most runs at one distance in the CPU's view, not 0): that distance,
+    /// and the game's own 8 KB windows ($6000-$FFFF base, offset in the ROM) to run it in.
+    pub moved: Option<(i32, Vec<(u16, usize)>)>,
 }
 
 /// Runs the routine at `pc` and records it as a start script: while the code running isn't
@@ -467,13 +471,13 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool])
 }
 
 /// Plays a start script.
-fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op]) -> bool {
+fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], shift: i32) -> bool {
     for op in ops {
         match *op {
             Op::Poke(a, v) => p.write(a, v),
             Op::Call { addr, a, x, y } => {
                 cpu.y = y;
-                if !p.call(cpu, addr, a, x) {
+                if !p.call(cpu, (addr as i32 + shift) as u16, a, x) {
                     return false;
                 }
             }
@@ -505,7 +509,70 @@ pub fn map(nsf: &[u8], prg: &[u8]) -> Option<Map> {
         }
         tracks.push(script);
     }
-    Some(Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks })
+    let moved = moved(&h, &layout.runs, prg.len());
+    Some(Map { header: h, data_len: data.len(), runs: layout.runs, play: play?, tracks, moved })
+}
+
+/// The CPU address data byte `i` sits at when the file starts (its first banks).
+fn cpu_of(h: &Header, i: usize) -> Option<u16> {
+    if h.banks.iter().all(|&b| b == 0) {
+        return u16::try_from(h.load as usize + i).ok();
+    }
+    let padded = i + (h.load & 0xFFF) as usize;
+    let bank = (padded / 0x1000) as u8;
+    let slot = h.banks.iter().position(|&b| b == bank)?;
+    Some(0x8000 + (slot * 0x1000 + padded % 0x1000) as u16)
+}
+
+/// Where the game's own code sits if the file's runs lie at one distance from it in the CPU's
+/// view (see [`Map::moved`]): the distance, taken in 8 KB banks (each ROM byte sits at the
+/// CPU address nearest the file's with the same place in its bank), and the windows.
+fn moved(h: &Header, runs: &[super::music_map::Run], prg_len: usize) -> Option<(i32, Vec<(u16, usize)>)> {
+    if h.fds || prg_len < 0x2000 {
+        return None;
+    }
+    let mut by: HashMap<i32, usize> = HashMap::new();
+    let mut total = 0;
+    for r in runs {
+        let Some(a) = cpu_of(h, r.data) else { continue };
+        let d = (r.rom as i64 - a as i64).rem_euclid(0x2000) as i32;
+        let d = if d >= 0x1000 { d - 0x2000 } else { d };
+        *by.entry(d).or_default() += r.len;
+        total += r.len;
+    }
+    let (&d, &n) = by.iter().max_by_key(|e| e.1)?;
+    if d == 0 || n * 10 < total * 8 {
+        return None;
+    }
+    // The game's windows the runs fall in, then the rest of $8000-$FFFF as the ROM goes on
+    // from the nearest (a fixed last bank, a small ROM mirrored).
+    let mut windows: Vec<(u16, usize)> = Vec::new();
+    for r in runs {
+        let Some(a) = cpu_of(h, r.data) else { continue };
+        let rd = (r.rom as i64 - a as i64).rem_euclid(0x2000) as i32;
+        if rd != d.rem_euclid(0x2000) {
+            continue;
+        }
+        let g = a as i64 + d as i64;
+        if !(0x6000..0x10000).contains(&g) {
+            continue;
+        }
+        let base = (g as u16) & 0xE000;
+        let Some(rom) = r.rom.checked_sub((g as usize) & 0x1FFF) else { continue };
+        if !windows.iter().any(|w| w.0 == base) {
+            windows.push((base, rom));
+        }
+    }
+    let known = windows.clone();
+    for base in (0x8000u32..0x10000).step_by(0x2000) {
+        if windows.iter().any(|w| w.0 as u32 == base) {
+            continue;
+        }
+        let near = known.iter().min_by_key(|w| (w.0 as i64 - base as i64).abs())?;
+        let rom = (near.1 as i64 + base as i64 - near.0 as i64).rem_euclid(prg_len as i64) as usize;
+        windows.push((base as u16, rom - rom % 0x2000 + near.1 % 0x2000));
+    }
+    Some((d, windows))
 }
 
 /// How a map fills the file's data between its runs (for finding why a track plays wrong).
@@ -550,17 +617,31 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
 /// Track `song` played from the ROM by its map: each frame's sound writes.
 pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize, fill: Fill) -> Option<Vec<Vec<Write>>> {
     let script = m.tracks.get(song as usize)?.as_ref()?;
-    let data = rebuilt(m, prg, fill);
-    let mut p = player(&m.header, &data)?;
+    let (mut p, shift) = match (&m.moved, fill) {
+        // The game's code where the game has it: the ROM's own windows, no file layout.
+        (Some((d, windows)), Fill::Zeros | Fill::Bridged) => {
+            let mut h = m.header;
+            h.banks = [0; 8];
+            h.load = 0x8000;
+            let mut p = player(&h, &[])?;
+            for &(base, rom) in windows {
+                for i in 0..0x2000 {
+                    p.mem[base as usize - 0x6000 + i] = prg.get(rom + i).copied().unwrap_or(0);
+                }
+            }
+            (p, *d)
+        }
+        _ => (player(&m.header, &rebuilt(m, prg, fill))?, 0),
+    };
     let mut cpu = Cpu::with(0, 0xFD);
     p.write(0x4015, 0x0F);
-    if !replay(&mut p, &mut cpu, script) {
+    if !replay(&mut p, &mut cpu, script, shift) {
         return None;
     }
     let mut out = Vec::with_capacity(frames);
     let mut first = std::mem::take(&mut p.writes);
     for _ in 0..frames {
-        if !replay(&mut p, &mut cpu, &m.play) {
+        if !replay(&mut p, &mut cpu, &m.play, shift) {
             break;
         }
         let mut f = std::mem::take(&mut first);
@@ -596,7 +677,14 @@ mod tests {
         f[8..10].copy_from_slice(&0x8000u16.to_le_bytes());
         f[0x0A..0x0C].copy_from_slice(&0x8000u16.to_le_bytes());
         f[0x0C..0x0E].copy_from_slice(&0x8010u16.to_le_bytes());
-        let mut data = vec![0xEAu8; 0x100];
+        // Code in a sea of other bytes, as in a game.
+        let mut x = 99u32;
+        let mut data: Vec<u8> = (0..0x100)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                (x >> 16) as u8
+            })
+            .collect();
         for (at, bytes) in code {
             let o = (*at - 0x8000) as usize;
             data[o..o + bytes.len()].copy_from_slice(bytes);
@@ -658,18 +746,30 @@ mod tests {
         ];
         // The file's own init: ASL A; JSR $8040; RTS (doubles the track into the game's id).
         let f = nsf(&[(0x8000, &[0x0A, 0x20, 0x40, 0x80, 0x60]), (0x8040, start), (0x8010, &[0x20, 0x50, 0x80, 0x60]), (0x8050, play)]);
-        // A ROM holding the game's routines elsewhere, around other bytes.
-        let mut x = 7u32;
-        let mut prg: Vec<u8> = (0..0x4000).map(|_| { x = x.wrapping_mul(1_103_515_245).wrapping_add(12345); (x >> 16) as u8 }).collect();
-        prg[0x1040..0x1043].copy_from_slice(start);
-        prg[0x1050..0x1050 + play.len()].copy_from_slice(play);
-        // Pad the routines out so the runs are long enough to place.
-        let data = &f[0x80..];
-        prg[0x1000 + 0x40 + 3..0x1000 + 0x50].copy_from_slice(&data[0x43..0x50]);
-        prg[0x1050 + play.len()..0x1100].copy_from_slice(&data[0x50 + play.len()..0x100]);
+        // A ROM holding the game's routines, around other bytes; `shift` moves them (another
+        // version of the game, its sound code a little further on).
+        let rom = |shift: usize| {
+            let mut x = 7u32;
+            let mut prg: Vec<u8> = (0..0x4000)
+                .map(|_| {
+                    x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    (x >> 16) as u8
+                })
+                .collect();
+            let data = &f[0x80..];
+            prg[0x40 + shift..0x100 + shift].copy_from_slice(&data[0x40..0x100]);
+            prg
+        };
+        let prg = rom(0);
         let m = map(&f, &prg).unwrap();
         // Track 1's script calls the game's start routine with A = 2, as the file's init does.
         assert!(m.tracks[1].as_ref().unwrap().iter().any(|o| *o == Op::Call { addr: 0x8040, a: 2, x: 0, y: 0 }));
+        let check = map_check(&f, &m, &prg, 60, Fill::Zeros);
+        assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
+        // The same from a version with the sound code $2C further on: run where it sits.
+        let prg = rom(0x2C);
+        let m = map(&f, &prg).unwrap();
+        assert_eq!(m.moved.as_ref().map(|m| m.0), Some(0x2C));
         let check = map_check(&f, &m, &prg, 60, Fill::Zeros);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
     }

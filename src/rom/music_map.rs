@@ -31,6 +31,13 @@ pub struct Layout {
     pub missing: Vec<(usize, usize)>,
 }
 
+/// Whether a key is mostly one byte (padding, a run of NOPs): three quarters of it or more.
+fn is_filler(key: &[u8]) -> bool {
+    let mut counts = [0u8; 256];
+    key.iter().for_each(|&b| counts[b as usize] += 1);
+    counts.iter().any(|&n| n as usize * 4 >= key.len() * 3)
+}
+
 /// Lays `data` over `rom`: greedy longest runs of at least [`MIN_RUN`] bytes, preferring one
 /// that continues the previous run's place in the ROM. Only bytes `used` marks are counted
 /// (all when it is shorter than the data).
@@ -39,8 +46,8 @@ pub fn layout(data: &[u8], used: &[bool], rom: &[u8]) -> Layout {
     if rom.len() >= MIN_RUN {
         for i in 0..=rom.len() - MIN_RUN {
             let key = &rom[i..i + MIN_RUN];
-            // Filler (one byte repeated) places anywhere: not a match.
-            if key.iter().all(|&b| b == key[0]) {
+            // Filler (mostly one byte repeated) places anywhere: not a match.
+            if is_filler(key) {
                 continue;
             }
             let v = index.entry(key).or_default();
