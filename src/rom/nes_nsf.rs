@@ -1144,6 +1144,8 @@ fn played_check(nsf: &[u8], songs: u8, frames: usize, play: impl Fn(u8) -> Optio
 pub enum Way {
     /// The file's layout rebuilt from the ROM (gaps between runs from the ROM too).
     Layout,
+    /// The same with the gaps left empty (a gap the ROM fills with other bytes).
+    Zeros,
     /// The game's own board ([`cart_track_writes`]).
     Board,
     /// Neither plays it right.
@@ -1155,15 +1157,24 @@ pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f6
     let Ok(h) = super::nes_cart::parse(rom) else { return };
     let layout = map_check(nsf, m, &h.prg, frames, Fill::Bridged);
     let board = cart_check(nsf, m, rom, frames);
-    m.ways = layout
-        .iter()
-        .zip(&board)
-        .map(|(l, b)| {
-            let (l, b) = (l.unwrap_or(0.0), b.unwrap_or(0.0));
-            match (l >= right, b >= right) {
-                (false, false) => Way::None,
-                _ if b > l => Way::Board,
-                _ => Way::Layout,
+    // The empty-gap layout only where neither of the others plays a track right.
+    let zeros = if layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right) {
+        map_check(nsf, m, &h.prg, frames, Fill::Zeros)
+    } else {
+        Vec::new()
+    };
+    m.ways = (0..layout.len())
+        .map(|i| {
+            let score = |v: &Vec<Option<f64>>| v.get(i).copied().flatten().unwrap_or(0.0);
+            let (l, b, z) = (score(&layout), score(&board), score(&zeros));
+            if l >= right && l >= b {
+                Way::Layout
+            } else if b >= right {
+                Way::Board
+            } else if z >= right {
+                Way::Zeros
+            } else {
+                Way::None
             }
         })
         .collect();
@@ -1190,6 +1201,7 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
     match m.ways.get(song as usize)? {
         Way::Board => cart_track_writes(m, rom, song, frames),
         Way::Layout => map_track_writes(m, &super::nes_cart::parse(rom).ok()?.prg, song, frames, Fill::Bridged),
+        Way::Zeros => map_track_writes(m, &super::nes_cart::parse(rom).ok()?.prg, song, frames, Fill::Zeros),
         Way::None => None,
     }
 }
@@ -1217,9 +1229,10 @@ impl MapSong {
                 let s = BoardSong::open(m, rom, song).ok_or("the song didn't start")?;
                 MapPlayer::Board(s, nes.new_chip(rate)?)
             }
-            Some(Way::Layout) => {
+            Some(way @ (Way::Layout | Way::Zeros)) => {
                 let prg = super::nes_cart::parse(rom)?.prg;
-                let s = LayoutSong::open(m, &prg, song, Fill::Bridged).ok_or("the song didn't start")?;
+                let fill = if *way == Way::Zeros { Fill::Zeros } else { Fill::Bridged };
+                let s = LayoutSong::open(m, &prg, song, fill).ok_or("the song didn't start")?;
                 let chips = if m.header.fds { super::nes_apu::CHIP_FDS } else { 0 };
                 MapPlayer::Layout(s, super::nes_apu::Apu::new(rate, nes.pal(), chips)?, nes.frame_length())
             }
@@ -1304,7 +1317,7 @@ impl Map {
         }
         out.push(format!(
             "s {}",
-            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Board => 'b', Way::None => '-' }).collect::<String>()
+            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::Board => 'b', Way::None => '-' }).collect::<String>()
         ));
         out.join("\n")
     }
@@ -1393,7 +1406,7 @@ impl Map {
                     *list.get_mut(i)? = Some(ops(&f[2..])?);
                 }
                 Some("s") => {
-                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'b' => Way::Board, _ => Way::None }).collect();
+                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'b' => Way::Board, _ => Way::None }).collect();
                 }
                 _ => {}
             }
