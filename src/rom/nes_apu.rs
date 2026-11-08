@@ -123,7 +123,7 @@ impl Apu {
     /// A register write at CPU clock `time` of the current frame.
     pub fn write(&mut self, time: u32, target: Target, addr: u16, value: u8) {
         let (t, a) = target.code();
-        let addr = if matches!(target, Target::Apu | Target::Mmc5) {
+        let addr = if matches!(target, Target::Apu | Target::Mmc5 | Target::Fds) {
             addr as c_int
         } else {
             a

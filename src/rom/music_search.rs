@@ -1412,14 +1412,21 @@ pub struct Timing {
 /// Listens to a song to time it: until it falls silent, repeats itself, or runs five minutes.
 pub fn measure<M: Machine>(rom: &[u8], recipe: &Recipe, v: u8) -> Result<Timing, String> {
     let mut song = Song::<M>::open(rom, recipe, v, 8000)?;
-    let max_frames = (MEASURE_FRAMES as f64 * song.frame_rate() / 60.0) as usize;
+    let rate = song.frame_rate();
+    measure_frames(rate, |samples| song.frame(samples))
+}
+
+/// [`measure`] for any song given frame by frame (`next` appends a frame's samples, at 8 kHz,
+/// and gives its sound writes), at `frame_rate` frames a second.
+pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Result<Vec<Write>, String>) -> Result<Timing, String> {
+    let max_frames = (MEASURE_FRAMES as f64 * frame_rate / 60.0) as usize;
     let mut hashes: Vec<u64> = Vec::new();
     let mut last_loud = 0usize;
     let mut samples = Vec::new();
     let mut windows: HashMap<u64, usize> = HashMap::new();
     for f in 0..max_frames {
         samples.clear();
-        let writes = song.frame(&mut samples)?;
+        let writes = next(&mut samples)?;
         hashes.push(frame_hash(&writes));
         if samples.iter().any(|s| s.unsigned_abs() > AUDIBLE) {
             last_loud = f;
