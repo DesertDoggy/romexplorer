@@ -122,7 +122,14 @@ pub struct Hint {
     /// passes them, in track order: the game's own song ids, where the file's init looks
     /// them up in a table of its own.
     pub ids: Vec<(u32, u8, Vec<u8>)>,
+    /// The known answer: each track's [`melody`] over its first [`HINT_TRACK_FRAMES`]
+    /// frames, as the file plays it, and how a song's melody is taken on this console.
+    pub tracks: Vec<HashSet<u64>>,
+    pub melody: Option<fn(&[Vec<Write>]) -> HashSet<u64>>,
 }
+
+/// Frames of each track a [`Hint`]'s known answer covers: as long as the search listens.
+pub const HINT_TRACK_FRAMES: usize = SONG_FRAMES;
 
 /// A melody's fingerprint: the runs of four pitches in a row on each tone channel, a channel
 /// being the ports of its period's low byte and its high bits (the low 3 bits), as the writes
@@ -388,11 +395,13 @@ const SONG_TAIL_FRAMES: usize = 60;
 /// Song numbers past a run of this many that play nothing are not taken: games read
 /// numbers past the end of their song table as garbage that often still makes noise.
 const SONG_GAP: usize = 16;
-/// How a way of starting songs ranks: songs that last, not so many numbers sounding
-/// different that its songs themselves are past its table ([`CORE_SONGS`]), at least
-/// [`GOOD_SONGS`] songs, a table that ends counting what sounds past its last song, then the
-/// number of songs.
-type Rank = (bool, bool, bool, bool, usize);
+/// How a way of starting songs ranks: the known answer's tracks it plays (when the search has
+/// one, see [`Hint::tracks`]), songs that last, not so many numbers sounding different that
+/// its songs themselves are past its table ([`CORE_SONGS`]), at least [`GOOD_SONGS`] songs, a
+/// table that ends counting what sounds past its last song, then the number of songs.
+type Rank = (usize, bool, bool, bool, bool, usize);
+/// A song this alike a track of the known answer (see [`alike`]) is that track.
+const TRACK_ALIKE: f64 = 0.5;
 /// Numbers sounding different past which a way of starting songs is taken to read past
 /// its song table.
 const UNBOUNDED_SONGS: usize = 128;
@@ -876,6 +885,8 @@ struct Listening<M: Machine> {
     /// Where each frame's samples start.
     starts: Vec<usize>,
     calls: u8,
+    /// Each frame's sound writes.
+    writes: Vec<Vec<Write>>,
 }
 
 impl<M: Machine> Listening<M> {
@@ -894,6 +905,7 @@ impl<M: Machine> Listening<M> {
             samples: Vec::new(),
             starts: Vec::new(),
             calls,
+            writes: Vec::new(),
         })
     }
 
@@ -908,6 +920,7 @@ impl<M: Machine> Listening<M> {
                 writes = std::mem::take(&mut self.pre);
             }
             self.m.feed(&mut self.chip, &writes, &mut self.samples);
+            self.writes.push(writes);
         }
         Some(())
     }
@@ -1127,7 +1140,7 @@ pub fn search_hinted<M: Machine>(
             let mut best: Option<(Rank, Trigger, Vec<u8>)> = None;
             for (i, (_, t, call)) in screened.into_iter().enumerate() {
                 // The best few; more while none has a song table that ends.
-                let settled = best.as_ref().is_some_and(|b| b.0 .1 && b.0 .2 && b.0 .3);
+                let settled = best.as_ref().is_some_and(|b| b.0 .2 && b.0 .3 && b.0 .4);
                 if i >= SCREENED_TRIED_MORE || (i >= SCREENED_TRIED && settled) || timed_out() {
                     break;
                 }
@@ -1151,6 +1164,9 @@ pub fn search_hinted<M: Machine>(
                 let mut dropped = [0usize; 4];
                 let mut short = Vec::new();
                 let mut gap_at = None;
+                // Each song's melody, to check against the known answer.
+                let melody_of = hint.and_then(|h| h.melody).filter(|_| hint.is_some_and(|h| !h.tracks.is_empty()));
+                let mut melodies: Vec<(u8, HashSet<u64>)> = Vec::new();
                 let ids = ids_of(&t);
                 let numbers: Vec<u8> = ids.clone().unwrap_or_else(|| (0..=255).collect());
                 for v in numbers {
@@ -1183,6 +1199,9 @@ pub fn search_hinted<M: Machine>(
                         None => dropped[3] += 1,
                         Some(h) if !(h.audible && h.lasts) => short.push(v),
                         Some(_) => played.push(v),
+                    }
+                    if let (Some(f), true) = (melody_of, played.last() == Some(&v) || short.last() == Some(&v)) {
+                        melodies.push((v, f(&l.writes)));
                     }
                     // Past this many songs that last, the way reads past its song table (see
                     // `core`): the rest would only be more of the same. Jingles don't count: a
@@ -1236,7 +1255,32 @@ pub fn search_hinted<M: Machine>(
                 // game's songs are often its sound effects, which sound different too.
                 let list = played.len() >= GOOD_SONGS;
                 let core = played.len() < CORE_SONGS;
-                let rank = (!played.is_empty(), core, list, bounded, songs.len());
+                // Against the known answer: each track once, by the song most like it; songs
+                // like no track (variants of one, sound effects, junk) are left out.
+                let (songs, tracks_found) = match hint.filter(|h| !h.tracks.is_empty()) {
+                    Some(h) if !melodies.is_empty() => {
+                        let mut by_track: Vec<Option<(f64, u8)>> = vec![None; h.tracks.len()];
+                        for (v, mine) in &melodies {
+                            for (i, track) in h.tracks.iter().enumerate() {
+                                let a = alike(mine, track);
+                                if a >= TRACK_ALIKE && by_track[i].is_none_or(|b| a > b.0) {
+                                    by_track[i] = Some((a, *v));
+                                }
+                            }
+                        }
+                        let mut kept: Vec<u8> = Vec::new();
+                        for (_, v) in by_track.iter().flatten() {
+                            if !kept.contains(v) {
+                                kept.push(*v);
+                            }
+                        }
+                        let n = by_track.iter().flatten().count();
+                        note(format!("    like the known answer: {n} of {} tracks, by {} songs", h.tracks.len(), kept.len()));
+                        if kept.is_empty() { (songs, 0) } else { (kept, n) }
+                    }
+                    _ => (songs, 0),
+                };
+                let rank = (tracks_found, !played.is_empty(), core, list, bounded, songs.len());
                 if best.as_ref().is_none_or(|b| rank > b.0) {
                     best = Some((rank, t, songs));
                 }
@@ -1249,7 +1293,7 @@ pub fn search_hinted<M: Machine>(
                     trigger,
                     calls,
                 };
-                let good = rank.1 && rank.2 && rank.3;
+                let good = rank.2 && rank.3 && rank.4;
                 if found.as_ref().is_none_or(|f: &(Rank, Found)| rank > f.0) {
                     found = Some((
                         rank,

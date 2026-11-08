@@ -111,6 +111,10 @@ pub fn hint(gbs: &[u8]) -> Option<Hint> {
         start,
         songs: g.songs,
         ids,
+        tracks: (0..g.songs)
+            .map(|t| track_writes(gbs, t, music_search::HINT_TRACK_FRAMES).map(|f| melody(&f)).unwrap_or_default())
+            .collect(),
+        melody: Some(melody),
     })
 }
 
