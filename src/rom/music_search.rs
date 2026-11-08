@@ -626,6 +626,69 @@ struct Heard {
     lasts: bool,
 }
 
+/// Song `v` being listened to: the machine, the chip and what it has played so far.
+struct Listening<M: Machine> {
+    m: M,
+    chip: M::Chip,
+    pre: Vec<Write>,
+    samples: Vec<i16>,
+    /// Where each frame's samples start.
+    starts: Vec<usize>,
+    calls: u8,
+}
+
+impl<M: Machine> Listening<M> {
+    fn start(base: &M, trigger: &Trigger, call: Option<&M::Entry>, v: u8, calls: u8) -> Option<Self> {
+        let mut m = base.clone();
+        if !apply(&mut m, trigger, call, v) {
+            return None;
+        }
+        let mut pre = m.restore_writes();
+        pre.extend(m.take_sound().into_iter().map(|w| Write { at: 0, ..w }));
+        let chip = m.new_chip(8000).ok()?;
+        Some(Self {
+            m,
+            chip,
+            pre,
+            samples: Vec::new(),
+            starts: Vec::new(),
+            calls,
+        })
+    }
+
+    /// Plays on until `frames` frames have played. None when the sound routine stopped
+    /// returning.
+    fn until(&mut self, play: &M::Entry, frames: usize) -> Option<()> {
+        while self.starts.len() < frames {
+            self.starts.push(self.samples.len());
+            let mut writes = play_frame(&mut self.m, play, self.calls)?;
+            if !self.pre.is_empty() {
+                self.pre.append(&mut writes);
+                writes = std::mem::take(&mut self.pre);
+            }
+            self.m.feed(&mut self.chip, &writes, &mut self.samples);
+        }
+        Some(())
+    }
+
+    /// How what has played so far sounds.
+    fn heard(&self) -> Heard {
+        let frames = self.starts.len();
+        let at = |f: usize| self.starts.get(f).copied().unwrap_or(self.samples.len());
+        let loud = |s: &[i16]| s.iter().filter(|s| s.unsigned_abs() > AUDIBLE).count();
+        let tail = &self.samples[at(frames.saturating_sub(SONG_TAIL_FRAMES))..];
+        let mut sh = std::collections::hash_map::DefaultHasher::new();
+        for s in &self.samples[at(SOUND_SKIP_FRAMES.min(frames / 2))..] {
+            (s >> 6).hash(&mut sh);
+        }
+        Heard {
+            sound: sh.finish(),
+            audible: loud(&self.samples) > self.samples.len() / 10,
+            lasts: loud(tail) > tail.len() / 10,
+        }
+    }
+}
+
 /// Listens to song `v` for `frames` frames.
 fn listen<M: Machine>(
     base: &M,
@@ -636,45 +699,10 @@ fn listen<M: Machine>(
     frames: usize,
     calls: u8,
 ) -> Option<Heard> {
-    let mut m = base.clone();
-    if !apply(&mut m, trigger, call, v) {
-        return None;
-    }
-    let mut pre = m.restore_writes();
-    pre.extend(m.take_sound().into_iter().map(|w| Write { at: 0, ..w }));
-    let mut chip = m.new_chip(8000).ok()?;
-    let mut samples = Vec::new();
-    let mut first = true;
-    let mut tail_from = 0;
-    let mut heard_from = 0;
-    for f in 0..frames {
-        if f + SONG_TAIL_FRAMES == frames {
-            tail_from = samples.len();
-        }
-        if f == SOUND_SKIP_FRAMES.min(frames / 2) {
-            heard_from = samples.len();
-        }
-        let mut writes = play_frame(&mut m, play, calls)?;
-        if first {
-            pre.append(&mut writes);
-            writes = std::mem::take(&mut pre);
-            first = false;
-        }
-        m.feed(&mut chip, &writes, &mut samples);
-    }
-    let loud = |s: &[i16]| s.iter().filter(|s| s.unsigned_abs() > AUDIBLE).count();
-    let tail = &samples[tail_from..];
-    let mut sh = std::collections::hash_map::DefaultHasher::new();
-    for s in &samples[heard_from..] {
-        (s >> 6).hash(&mut sh);
-    }
-    Some(Heard {
-        sound: sh.finish(),
-        audible: loud(&samples) > samples.len() / 10,
-        lasts: loud(tail) > tail.len() / 10,
-    })
+    let mut l = Listening::start(base, trigger, call, v, calls)?;
+    l.until(play, frames)?;
+    Some(l.heard())
 }
-
 
 /// The song numbers worth keeping out of everything that played: up to the first run of
 /// [`SONG_GAP`] numbers that played nothing.
@@ -816,10 +844,13 @@ pub fn search_logged<M: Machine>(
                     if timed_out() {
                         break;
                     }
-                    let Some(quick) = listen(&base, &entry, &t, call.as_ref(), v, TRY_FRAMES, calls) else {
+                    let Some(mut l) = Listening::start(&base, &t, call.as_ref(), v, calls)
+                        .and_then(|mut l| l.until(&entry, TRY_FRAMES).map(|_| l))
+                    else {
                         dropped[0] += 1;
                         continue;
                     };
+                    let quick = l.heard();
                     if !quick.audible {
                         dropped[1] += 1;
                         continue;
@@ -829,10 +860,15 @@ pub fn search_logged<M: Machine>(
                         continue;
                     }
                     // Music still sounds seconds later; a sound effect has stopped.
-                    match listen(&base, &entry, &t, call.as_ref(), v, SONG_FRAMES, calls) {
+                    match l.until(&entry, SONG_FRAMES).map(|_| l.heard()) {
                         None => dropped[3] += 1,
                         Some(h) if !(h.audible && h.lasts) => short.push(v),
                         Some(_) => played.push(v),
+                    }
+                    // Past this many, the way reads past its song table (see `bounded`):
+                    // the rest would only be more of the same.
+                    if played.len() + short.len() >= UNBOUNDED_SONGS {
+                        break;
                     }
                 }
                 // A game whose every tune is a few seconds long (older games are mostly
