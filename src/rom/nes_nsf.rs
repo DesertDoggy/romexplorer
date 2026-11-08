@@ -6,14 +6,12 @@
 //! game's sound routine and the routine that starts a song, so it no longer has to find them
 //! in the boot alone. The music still plays from the ROM: the NSF is only read for addresses.
 
-use super::music_search::Hint;
+use super::music_search::{hint_routines, Hint};
 
 /// Code bytes compared at each address, in the NSF and in the game.
 const CODE_BYTES: usize = 12;
 /// How far a routine is read for the routines it calls.
 const SCAN_BYTES: usize = 96;
-/// Most routines taken from each of init and play.
-const MAX_ROUTINES: usize = 8;
 
 /// An NSF's header and its program, laid out as the 6502 sees it at start.
 struct Nsf {
@@ -72,26 +70,10 @@ impl Nsf {
         (0..CODE_BYTES as u16).map(|i| self.byte(addr.wrapping_add(i))).collect()
     }
 
-    /// `from`, then the routines it calls or jumps to (two levels down), as far as straight-line
-    /// reading finds them.
+    /// `from`, then the routines it calls or jumps to, as far as straight-line reading finds
+    /// them.
     fn routines(&self, from: u16) -> Vec<(u32, Vec<u8>)> {
-        let mut out: Vec<u16> = vec![from];
-        let mut i = 0;
-        let mut level = vec![0u8];
-        while i < out.len() && out.len() < MAX_ROUTINES {
-            if level[i] < 2 {
-                for t in self.calls_in(out[i]) {
-                    if !out.contains(&t) && out.len() < MAX_ROUTINES {
-                        out.push(t);
-                        level.push(level[i] + 1);
-                    }
-                }
-            }
-            i += 1;
-        }
-        out.into_iter()
-            .filter_map(|a| Some((a as u32, self.code(a)?)))
-            .collect()
+        hint_routines(from, |a| self.calls_in(a), |a| self.code(a))
     }
 
     /// The JSR and JMP targets in the straight-line code from `addr`, in ROM space.

@@ -314,9 +314,10 @@ pub fn set_fingerprint(set: &Path) -> Option<super::rip_match::Fingerprint> {
     super::rip_match::fingerprint(files.iter().map(|f| f.data.as_slice()))
 }
 
-/// A set's first NSF, read whole (the music search takes its sound code's addresses).
-pub fn nsf_of(set: &Path) -> Option<Vec<u8>> {
-    collect_set(set).into_iter().map(|f| f.data).find(|d| d.starts_with(b"NESM\x1a"))
+/// A set's first file starting with `magic` (an NSF's "NESM\x1a", a GBS's "GBS"), read whole:
+/// the music search takes its sound code's addresses.
+pub fn first_with_magic(set: &Path, magic: &[u8]) -> Option<Vec<u8>> {
+    collect_set(set).into_iter().map(|f| f.data).find(|d| d.starts_with(magic))
 }
 
 /// Reads one rip-set file again, by its place, with its playlist.

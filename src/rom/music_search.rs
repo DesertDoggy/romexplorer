@@ -113,6 +113,35 @@ pub struct Hint {
     pub songs: u8,
 }
 
+/// Most routines a [`Hint`] takes from each of play and init.
+const HINT_ROUTINES: usize = 8;
+
+/// `from`, then the routines it calls (as `calls_in` reads them), two levels down, each with
+/// its code bytes (`code`; routines whose bytes aren't known are left out). For building a
+/// [`Hint`] from an original audio format file's play and init addresses.
+pub(crate) fn hint_routines(
+    from: u16,
+    calls_in: impl Fn(u16) -> Vec<u16>,
+    code: impl Fn(u16) -> Option<Vec<u8>>,
+) -> Vec<(u32, Vec<u8>)> {
+    let mut out: Vec<(u16, u8)> = vec![(from, 0)];
+    let mut i = 0;
+    while i < out.len() && out.len() < HINT_ROUTINES {
+        let (addr, level) = out[i];
+        if level < 2 {
+            for t in calls_in(addr) {
+                if !out.iter().any(|o| o.0 == t) && out.len() < HINT_ROUTINES {
+                    out.push((t, level + 1));
+                }
+            }
+        }
+        i += 1;
+    }
+    out.into_iter()
+        .filter_map(|(a, _)| Some((a as u32, code(a)?)))
+        .collect()
+}
+
 /// How the game is handed a song number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
