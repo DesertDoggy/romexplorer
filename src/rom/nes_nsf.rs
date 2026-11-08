@@ -437,10 +437,11 @@ pub struct Map {
 /// Runs the routine at `pc` and records it as a start script: while the code running isn't
 /// the game's, its writes are pokes; an entry into the game's code is a call, run through
 /// without recording. The game's code is what the ROM holds (`placed`): entered by a jump, a
-/// call or a return, or a hole of a few bytes inside it; entered any other way (running on
-/// into it, a branch) only where it lies as the game's banks have it (`aligned`): the file's
-/// own code may run on into bytes that happen to match the ROM elsewhere. None when it
-/// doesn't return.
+/// call or a return, or by running on from a jump target a few bytes before it (a byte the
+/// file's author patched there runs as the file's); entered any other way (running on, a
+/// branch) only where it lies as the game's banks have it (`aligned`): the file's own code
+/// may run on into bytes that happen to match the ROM elsewhere. None when it doesn't
+/// return.
 fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool], aligned: &[bool]) -> Option<Vec<Op>> {
     p.ram[0x1FF] = 0x5F;
     p.ram[0x1FE] = 0xF5;
@@ -458,6 +459,8 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
     let mut in_game: Option<usize> = None;
     let mut used = 0u32;
     let mut jumped = true;
+    // Where the last jump (call, return) outside the game's code landed.
+    let mut target: Option<u16> = None;
     while !cpu.calls.is_empty() {
         if used > 400_000 || cpu.jammed {
             return None;
@@ -467,11 +470,8 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
         }
         let at = cpu.pc;
         if in_game.is_none() {
-            let hole = || {
-                (1..=GAME_HOLE).any(|k| held(p, at.wrapping_add(k)))
-                    && (1..=GAME_HOLE * 8).any(|k| held(p, at.wrapping_sub(k)))
-            };
-            let entered = if jumped { held(p, at) || hole() } else { of(p, at, aligned) };
+            let near = target.is_some_and(|t| at > t && at - t <= PATCHED_BYTES);
+            let entered = if jumped || near { held(p, at) } else { of(p, at, aligned) };
             if entered {
                 ops.push(Op::Call { addr: at, a: cpu.a, x: cpu.x, y: cpu.y });
                 in_game = Some(cpu.calls.len());
@@ -481,6 +481,9 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
         jumped = matches!(op, 0x20 | 0x4C | 0x6C | 0x60 | 0x40);
         p.log = in_game.is_none().then(Vec::new);
         used += cpu.step(p);
+        if jumped && in_game.is_none() {
+            target = Some(cpu.pc);
+        }
         if let Some(log) = p.log.take() {
             // Pushes (JSR, PHA) land in the live stack, at or above S; a store into the rest
             // of the stack page is the file's own variable (some games keep a song request
@@ -492,9 +495,10 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, x: u8, placed: &[bool],
     Some(ops)
 }
 
-/// Bytes after a jump target within which the game's code must go on for an unplaced target
-/// to count as the game's (a byte the file's author patched at a routine's start).
-const GAME_HOLE: u16 = 8;
+/// Bytes after a jump target within which running on into the game's code still counts as
+/// entering it: the target's own instruction patched by the file's author (it runs as the
+/// file's, then the game's code goes on).
+const PATCHED_BYTES: u16 = 3;
 
 /// Plays a start script.
 fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], shift: i32) -> bool {
@@ -912,6 +916,27 @@ mod tests {
         assert_eq!(t[0], Op::Poke(0x110, 2));
         assert!(t.contains(&Op::Poke(0x02, 1)) && t.contains(&Op::Poke(0x00, 1)), "{t:?}");
         assert!(!t.iter().any(|o| matches!(o, Op::Poke(a, _) if *a >= 0x1F0 && *a < 0x200)), "{t:?}");
+    }
+
+    #[test]
+    fn a_patched_first_byte_runs_as_the_files_and_the_call_starts_after_it() {
+        // The game's routine at $8040 (CLC; SEC; ...; STA $4002; RTS), its first byte
+        // patched by the file's author into STA $00 (85 00 in place of 18 38).
+        let mut game = vec![0x18, 0x38];
+        (0..10).for_each(|_| game.extend([0xE8, 0xC8]));
+        game.extend([0x8D, 0x02, 0x40, 0x60]);
+        let mut patched = game.clone();
+        patched[..2].copy_from_slice(&[0x85, 0x00]);
+        // init: JMP $8040; play: RTS.
+        let f = nsf(&[(0x8000, &[0x4C, 0x40, 0x80]), (0x8010, &[0x60]), (0x8040, &patched)]);
+        let mut prg = vec![0u8; 0x4000];
+        let data = &f[0x80..];
+        prg[0x40..0x100].copy_from_slice(&data[0x40..0x100]);
+        prg[0x40..0x40 + game.len()].copy_from_slice(&game);
+        let m = map(&f, &prg).unwrap();
+        let t = m.tracks[1].as_ref().unwrap();
+        assert_eq!(t[0], Op::Poke(0x00, 1), "{t:?}");
+        assert!(matches!(t[1], Op::Call { addr: 0x8042, .. }), "{t:?}");
     }
 
     #[test]
