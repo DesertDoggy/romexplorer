@@ -183,16 +183,20 @@ fn record(
     frames: usize,
     table: &mut Vec<Script>,
     index: &mut HashMap<Script, u32>,
+    mut events: Option<&mut Vec<String>>,
 ) -> (Vec<Vec<Write>>, Vec<(u32, Vec<u32>)>) {
     let mut ws = console(image_of(data), song);
     let mut seqs: Vec<(u32, Vec<u32>)> = Vec::new();
     let mut out = Vec::with_capacity(frames);
     // The script being recorded: where it was entered, its writes, its cycles.
     let mut cur: Option<(u32, Vec<Op>, u32)> = None;
-    let mut finish = |ws: &mut WonderSwan, cur: &mut Option<(u32, Vec<Op>, u32)>| {
+    let mut finish = |ws: &mut WonderSwan, cur: &mut Option<(u32, Vec<Op>, u32)>, events: &mut Option<&mut Vec<String>>, frame: usize| {
         let Some((key, ops, cycles)) = cur.take() else { return };
         ws.log(false);
         let s = Script { ops, end: regs(ws), halt: ws.cpu().halted, cycles };
+        if let Some(e) = events.as_deref_mut() {
+            e.push(format!("f{frame} c{} script at {key:X}: {}", ws.cycle(), describe(&s)));
+        }
         let n = *index.entry(s.clone()).or_insert_with(|| {
             table.push(s);
             table.len() as u32 - 1
@@ -202,12 +206,15 @@ fn record(
             None => seqs.push((key, vec![n])),
         }
     };
-    for _ in 0..frames {
+    for frame in 0..frames {
         ws.begin_frame();
         while !ws.frame_over() {
             if ws.interrupt_due() {
                 // Interrupted in the file's code: the script so far ends here.
-                finish(&mut ws, &mut cur);
+                finish(&mut ws, &mut cur, &mut events, frame);
+                if let Some(e) = events.as_deref_mut() {
+                    e.push(format!("f{frame} c{} interrupt at {:X}", ws.cycle(), ws.cpu().pc()));
+                }
             }
             interrupts(&mut ws);
             if ws.cpu().halted {
@@ -229,13 +236,13 @@ fn record(
                 ops.extend(outs.into_iter().map(|(p, v)| Op::Out(p, v)));
                 *cycles += t;
                 if ws.cpu().halted || !is_own(&ws, own) || *cycles > MAX_SCRIPT_CYCLES {
-                    finish(&mut ws, &mut cur);
+                    finish(&mut ws, &mut cur, &mut events, frame);
                 }
             }
         }
         out.push(ws.sound_writes());
     }
-    finish(&mut ws, &mut cur);
+    finish(&mut ws, &mut cur, &mut events, frames);
     (out, seqs)
 }
 
@@ -268,7 +275,7 @@ pub fn map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Ma
     let mut m = Map { data_len: wsr.len(), runs: layout.runs, ..Default::default() };
     let mut index = HashMap::new();
     for song in songs {
-        let (frames, seqs) = record(wsr, &own, song, RECORD_FRAMES, &mut m.scripts, &mut index);
+        let (frames, seqs) = record(wsr, &own, song, RECORD_FRAMES, &mut m.scripts, &mut index, None);
         if melody(&frames).len() < music_search::MIN_MELODY {
             continue;
         }
@@ -284,21 +291,39 @@ pub fn map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Ma
 /// The file's own sound writes for song `song`: the known answer.
 pub fn track_writes(wsr: &[u8], song: u8, frames: usize) -> Vec<Vec<Write>> {
     let own = vec![false; image_size(wsr.len())];
-    record(wsr, &own, song, frames, &mut Vec::new(), &mut HashMap::new()).0
+    record(wsr, &own, song, frames, &mut Vec::new(), &mut HashMap::new(), None).0
 }
 
 /// Song `song` played by the map from the ROM: each frame's sound writes. Stops early where
 /// the CPU enters the file's code somewhere the map never saw it.
 pub fn map_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill) -> Option<Vec<Vec<Write>>> {
+    replay(m, rom, song, frames, fill, None)
+}
+
+fn replay(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill, mut events: Option<&mut Vec<String>>) -> Option<Vec<Vec<Write>>> {
     let entries = &m.songs.iter().find(|s| s.0 == song)?.1;
     let data = rebuilt(m.data_len, &m.runs, rom, fill);
     let own = own_bytes(m.data_len, &m.runs, Fill::Bridged);
     let mut ws = console(image_of(&data), song);
     let mut count: HashMap<u32, usize> = HashMap::new();
     let mut out = Vec::with_capacity(frames);
-    'frames: for _ in 0..frames {
+    // Cycles a script took that are still to pass, a scanline at a time: the time it ran,
+    // over which nothing interrupted it.
+    let mut idle = 0u32;
+    'frames: for frame in 0..frames {
         ws.begin_frame();
         while !ws.frame_over() {
+            if idle > 0 {
+                let t = idle.min(ws.to_next_line());
+                ws.advance(t);
+                idle -= t;
+                continue;
+            }
+            if let Some(e) = events.as_deref_mut() {
+                if ws.interrupt_due() {
+                    e.push(format!("f{frame} c{} interrupt at {:X}", ws.cycle(), ws.cpu().pc()));
+                }
+            }
             interrupts(&mut ws);
             if ws.cpu().halted {
                 ws.exec();
@@ -306,7 +331,12 @@ pub fn map_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill
             }
             if is_own(&ws, &own) {
                 let key = ws.rom_offset(ws.cpu().pc()).unwrap_or(0) as u32;
-                let Some((_, head, cycle)) = entries.at.iter().find(|e| e.0 == key) else { break 'frames };
+                let Some((_, head, cycle)) = entries.at.iter().find(|e| e.0 == key) else {
+                    if let Some(e) = events.as_deref_mut() {
+                        e.push(format!("f{frame} c{} entered at {key:X}, never seen", ws.cycle()));
+                    }
+                    break 'frames;
+                };
                 let n = count.entry(key).or_default();
                 let i = match head.get(*n) {
                     Some(&i) => i,
@@ -327,7 +357,10 @@ pub fn map_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill
                 c.ip = s.end.ip;
                 c.flags = s.end.flags;
                 c.halted = s.halt;
-                ws.advance(s.cycles);
+                idle = s.cycles;
+                if let Some(e) = events.as_deref_mut() {
+                    e.push(format!("f{frame} c{} script at {key:X}: {}", ws.cycle() + s.cycles, describe(s)));
+                }
                 continue;
             }
             ws.exec();
@@ -335,6 +368,45 @@ pub fn map_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill
         out.push(ws.sound_writes());
     }
     Some(out)
+}
+
+/// A script in a line, for traces.
+fn describe(s: &Script) -> String {
+    let outs: Vec<String> = s.ops.iter().filter_map(|o| if let Op::Out(p, v) = o { Some(format!("{p:02X}={v:02X}")) } else { None }).take(12).collect();
+    let pokes = s.ops.iter().filter(|o| matches!(o, Op::Poke(..))).count();
+    format!(
+        "{} cycles, {pokes} pokes, outs [{}], to {:04X}:{:04X}{}",
+        s.cycles,
+        outs.join(" "),
+        s.end.seg[1],
+        s.end.ip,
+        if s.halt { " halted" } else { "" }
+    )
+}
+
+/// For diagnosis: song `song` as the file plays it and as the map plays it (gaps from the
+/// file), the first frame their sound writes differ, and both runs' events up to it.
+pub fn trace(wsr: &[u8], m: &Map, rom: &[u8], song: u8, frames: usize) -> Vec<String> {
+    let own = own_bytes(m.data_len, &m.runs, Fill::Bridged);
+    let mut rec = Vec::new();
+    let (want, _) = record(wsr, &own, song, frames, &mut Vec::new(), &mut HashMap::new(), Some(&mut rec));
+    let mut rep = Vec::new();
+    let got = replay(m, rom, song, frames, Fill::File(wsr), Some(&mut rep)).unwrap_or_default();
+    let key = |f: &Vec<Write>| f.iter().map(|w| (w.port, w.value)).collect::<Vec<_>>();
+    let first = (0..want.len()).find(|&i| got.get(i).map(key) != Some(key(&want[i])));
+    let mut out = vec![format!("song {song}: {} frames from the file, {} from the map; first differing frame {first:?}", want.len(), got.len())];
+    if let Some(f) = first {
+        let show = |ws: Option<&Vec<Write>>| ws.map(|ws| ws.iter().take(16).map(|w| format!("{:X}={:02X}@{}", w.port, w.value, w.at)).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+        out.push(format!("  file: {}", show(want.get(f))));
+        out.push(format!("  map:  {}", show(got.get(f))));
+    }
+    let upto = first.unwrap_or(2) + 1;
+    let before = |e: &String| e[1..].split(' ').next().and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| n <= upto);
+    out.push("  file's events:".into());
+    out.extend(rec.iter().filter(|e| before(e)).rev().take(40).collect::<Vec<_>>().into_iter().rev().map(|e| format!("    {e}")));
+    out.push("  map's events:".into());
+    out.extend(rep.iter().filter(|e| before(e)).rev().take(40).collect::<Vec<_>>().into_iter().rev().map(|e| format!("    {e}")));
+    out
 }
 
 /// How alike each kept song plays from the ROM to the file's own, over `frames` frames.

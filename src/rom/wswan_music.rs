@@ -528,6 +528,16 @@ impl WonderSwan {
         self.board.advance(cycles);
     }
 
+    /// CPU cycles into the frame.
+    pub(super) fn cycle(&self) -> u32 {
+        self.board.cycle
+    }
+
+    /// Cycles to the next scanline.
+    pub(super) fn to_next_line(&self) -> u32 {
+        LINE - self.board.cycle % LINE
+    }
+
     /// Logs RAM writes and port writes from now on (or stops).
     pub(super) fn log(&mut self, on: bool) {
         self.board.trace = on.then(Vec::new);

@@ -243,6 +243,9 @@ struct Options {
     spcsearch: bool,
     /// `--spcpoke <hex address>`: play values 0-127 through that work RAM byte, for diagnosis.
     spcpoke: Option<u32>,
+    /// `--wstrace <song>`: with `--mapcheck`, a WonderSwan song as the file and the map play it,
+    /// up to where they first differ.
+    wstrace: Option<u8>,
     /// `--spcbank`: boot each SNES ROM, lay each track's song and samples in from the ROM,
     /// send the driver the track's command, and count the tracks heard.
     spcbank: bool,
@@ -427,7 +430,7 @@ fn print_ws_layout(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
 /// `--mapcheck` for a WonderSwan ROM and its matched set's WSR: the map built, and each song
 /// played from the ROM by it against the file's own, with the file's unplaced bytes zeroed,
 /// bridged from the ROM, and (an oracle) the file's own.
-fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, t: &mut Tally) {
     use romexplorer::rom::ws_map;
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
@@ -449,6 +452,12 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         return;
     };
     let built = started.elapsed().as_secs_f32();
+    if let Some(song) = trace {
+        for line in ws_map::trace(&wsr, &m, rom, song, CHECK_FRAMES) {
+            println!("{line}");
+        }
+        return;
+    }
     let right = |fill| ws_map::map_check(&wsr, &m, rom, CHECK_FRAMES, fill).iter().filter(|s| s.1 >= MAP_RIGHT).count();
     let zeros = ws_map::map_check(&wsr, &m, rom, CHECK_FRAMES, ws_map::Fill::Zeros);
     let right_zeros = zeros.iter().filter(|s| s.1 >= MAP_RIGHT).count();
@@ -1344,9 +1353,14 @@ fn main() {
         spcprobe: args.iter().any(|a| a == "--spcprobe"),
         spcsearch: args.iter().any(|a| a == "--spcsearch"),
         spcpoke: None,
+        wstrace: None,
         spcbank: args.iter().any(|a| a == "--spcbank"),
     };
     args.retain(|a| a != "--spcbank");
+    if let Some(i) = args.iter().position(|a| a == "--wstrace") {
+        o.wstrace = args.get(i + 1).and_then(|a| a.parse().ok());
+        args.drain(i..(i + 2).min(args.len()));
+    }
     if let Some(i) = args.iter().position(|a| a == "--spcpoke") {
         o.spcpoke = args.get(i + 1).and_then(|a| u32::from_str_radix(a.trim_start_matches('$'), 16).ok());
         args.drain(i..(i + 2).min(args.len()));
@@ -1541,7 +1555,7 @@ fn main() {
                         if o.layout {
                             print_ws_layout(&path, &rom, &set, tally.entry(what).or_default());
                         } else {
-                            print_ws_mapcheck(&path, &rom, &set, tally.entry(what).or_default());
+                            print_ws_mapcheck(&path, &rom, &set, o.wstrace, tally.entry(what).or_default());
                         }
                     }
                     continue;
