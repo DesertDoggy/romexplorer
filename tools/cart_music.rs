@@ -719,7 +719,15 @@ fn print_spc_search(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         *t.reasons.entry("no .spc with a melody".into()).or_default() += 1;
         return;
     }
-    let found = match romexplorer::rom::snes_songs::find(rom, 0..=0x7Fu8, CHECK_FRAMES) {
+    let track_of = |m: &std::collections::HashSet<u64>| {
+        real.iter()
+            .enumerate()
+            .map(|(i, r)| (i, music_search::alike(r, m)))
+            .filter(|&(_, a)| a >= MAP_RIGHT)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    };
+    let found = match romexplorer::rom::snes_songs::find(rom, 0..=0x7Fu8, CHECK_FRAMES, &track_of) {
         Ok(f) => f,
         Err(e) => {
             println!("{name}: search, {:.1} s: {e}", started.elapsed().as_secs_f32());

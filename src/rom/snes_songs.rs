@@ -15,12 +15,15 @@ use super::spc_map;
 
 /// How long the game runs before the search: past its title, Start pressed now and then.
 pub const BOOT_SECONDS: f64 = 30.0;
-/// How long a song request has to make the game send the driver a command.
-const ANSWER_SECONDS: f64 = 1.0;
 /// How long the game gets to upload a song before it is listened to.
 const UPLOAD_SECONDS: f64 = 1.5;
 /// Candidates tried at most.
-const MAX_CANDIDATES: usize = 24;
+const MAX_CANDIDATES: usize = 64;
+/// Values each candidate is tried with, and how long each is listened to, to rank them.
+const SCREEN_VALUES: u8 = 12;
+const SCREEN_FRAMES: usize = 300;
+/// Frames a poked request is held for, against code that rewrites it from its own copy.
+const HOLD_FRAMES: usize = 6;
 
 /// The song request found, and what each value of it plays.
 pub struct Found {
@@ -32,12 +35,14 @@ pub struct Found {
     pub tried: usize,
 }
 
-/// The candidates for the song request: work RAM bytes written, in the half second before a
-/// command to the driver, with the value the command carried. Most often first.
+/// The candidates for the song request: work RAM bytes written in the half second before a
+/// command to the driver. Those written with the value the command carried come first (a
+/// driver that takes the song number as is), then the others, each by how often.
 fn candidates(s: &Session, after: f64) -> Vec<u32> {
     let ports = s.port_writes();
     let writes = s.ram_writes();
-    let mut count: std::collections::HashMap<u32, usize> = Default::default();
+    let mut same: std::collections::HashMap<u32, usize> = Default::default();
+    let mut near: std::collections::HashMap<u32, usize> = Default::default();
     // A command: a port write whose value changed, after the driver was running.
     let mut last = [None::<u8>; 4];
     for &(port, value, at) in &ports {
@@ -46,32 +51,54 @@ fn candidates(s: &Session, after: f64) -> Vec<u32> {
             continue;
         }
         last[p] = Some(value);
-        if at < after || value == 0 {
+        if at < after {
             continue;
         }
         let from = writes.partition_point(|w| w.2 < at - 0.5);
         let to = writes.partition_point(|w| w.2 <= at);
         let mut seen = HashSet::new();
         for &(addr, v, _) in &writes[from..to] {
-            if v == value && seen.insert(addr) {
-                *count.entry(addr).or_default() += 1;
+            // The stack and the direct page's scratch bytes are written all the time.
+            if (0x0100..0x0200).contains(&addr) || !seen.insert((addr, v == value && value != 0)) {
+                continue;
+            }
+            if v == value && value != 0 {
+                *same.entry(addr).or_default() += 1;
+            } else {
+                *near.entry(addr).or_default() += 1;
             }
         }
     }
-    let mut c: Vec<(u32, usize)> = count.into_iter().collect();
-    c.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    c.into_iter().map(|(a, _)| a).take(MAX_CANDIDATES).collect()
+    let ranked = |m: std::collections::HashMap<u32, usize>| {
+        let mut c: Vec<(u32, usize)> = m.into_iter().collect();
+        c.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        c.into_iter().map(|(a, _)| a).collect::<Vec<_>>()
+    };
+    let mut out = ranked(same);
+    for a in ranked(near) {
+        if !out.contains(&a) {
+            out.push(a);
+        }
+    }
+    out.truncate(MAX_CANDIDATES);
+    out
 }
 
-/// The port commands the game sends in `seconds` from `saved`, with `poke` made first.
-fn commands<'a>(s: &mut Session<'a>, saved: &Saved<'a>, poke: Option<(u32, u8)>, seconds: f64) -> Option<Vec<(u8, u8)>> {
-    s.restore(saved).ok()?;
-    let before = s.port_writes().len();
-    if let Some((at, v)) = poke {
-        s.poke(at as usize, v);
+/// The melody the game plays after `value` is put in `var` (and held a moment) from `saved`.
+fn heard<'a>(s: &mut Session<'a>, saved: &Saved<'a>, var: u32, value: u8, frames: usize) -> HashSet<u64> {
+    if s.restore(saved).is_err() {
+        return HashSet::new();
     }
-    s.run(seconds).ok()?;
-    Some(s.port_writes()[before..].iter().map(|&(p, v, _)| (p, v)).collect())
+    for _ in 0..HOLD_FRAMES {
+        s.poke(var as usize, value);
+        if s.run(1.0 / 60.0).is_err() {
+            return HashSet::new();
+        }
+    }
+    if s.run(UPLOAD_SECONDS).is_err() {
+        return HashSet::new();
+    }
+    listen(s, frames)
 }
 
 /// The melody the game plays `frames` 1/60 s frames long, from where `s` is.
@@ -89,9 +116,16 @@ pub fn listen(s: &mut Session, frames: usize) -> HashSet<u64> {
     spc_map::melody(&out)
 }
 
-/// Runs `file` and finds its song request; then plays each value of `values` through it for
-/// `frames` frames.
-pub fn find(file: &[u8], values: impl Iterator<Item = u8> + Clone, frames: usize) -> Result<Found, String> {
+/// Runs `file` and finds its song request: of the candidates, the one whose values play the
+/// most different tracks (`track_of` tells which track a melody is, from the known answer),
+/// besides the one playing anyway. Then plays each of `values` through it for `frames`
+/// frames.
+pub fn find(
+    file: &[u8],
+    values: impl Iterator<Item = u8> + Clone,
+    frames: usize,
+    track_of: &dyn Fn(&HashSet<u64>) -> Option<usize>,
+) -> Result<Found, String> {
     let mut s = Session::boot(file, true)?;
     s.log_ram(true);
     s.run(BOOT_SECONDS)?;
@@ -102,37 +136,36 @@ pub fn find(file: &[u8], values: impl Iterator<Item = u8> + Clone, frames: usize
     let cands = candidates(&s, driver_at);
     s.log_ram(false);
     let saved = s.save();
-    let quiet = commands(&mut s, &saved, None, ANSWER_SECONDS).unwrap_or_default();
-    let mut tried = 0;
-    for &var in &cands {
-        tried += 1;
+    // The track playing anyway, poke or not.
+    let playing = {
         s.restore(&saved)?;
-        let now = s.wram().get(var as usize).copied().unwrap_or(0);
-        // Live when a changed request makes the game send something it otherwise wouldn't.
-        let live = [now.wrapping_add(1), now.wrapping_add(2), 1]
-            .iter()
-            .filter(|&&v| v != now)
-            .any(|&v| commands(&mut s, &saved, Some((var, v)), ANSWER_SECONDS).is_some_and(|c| c != quiet));
-        if !live {
-            continue;
-        }
-        let mut songs = Vec::new();
-        for v in values.clone() {
-            if s.restore(&saved).is_err() {
-                break;
-            }
-            s.poke(var as usize, v);
-            if s.run(UPLOAD_SECONDS).is_err() {
-                continue;
-            }
-            let m = listen(&mut s, frames);
-            if m.len() >= music_search::MIN_MELODY {
-                songs.push((v, m));
+        s.run(UPLOAD_SECONDS)?;
+        track_of(&listen(&mut s, SCREEN_FRAMES))
+    };
+    let mut best: Option<(usize, u32)> = None;
+    for &var in &cands {
+        let mut tracks = HashSet::new();
+        for v in 0..SCREEN_VALUES {
+            if let Some(t) = track_of(&heard(&mut s, &saved, var, v, SCREEN_FRAMES)) {
+                if Some(t) != playing {
+                    tracks.insert(t);
+                }
             }
         }
-        if !songs.is_empty() {
-            return Ok(Found { var, songs, tried });
+        if !tracks.is_empty() && best.is_none_or(|(n, _)| tracks.len() > n) {
+            best = Some((tracks.len(), var));
         }
     }
-    Err(format!("no song request found ({} candidates)", cands.len()))
+    let Some((_, var)) = best else {
+        return Err(format!("no song request found ({} candidates)", cands.len()));
+    };
+    let tried = cands.iter().position(|&c| c == var).map_or(0, |i| i + 1);
+    let mut songs = Vec::new();
+    for v in values {
+        let m = heard(&mut s, &saved, var, v, frames);
+        if m.len() >= music_search::MIN_MELODY {
+            songs.push((v, m));
+        }
+    }
+    Ok(Found { var, songs, tried })
 }
