@@ -1019,8 +1019,16 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
     let ms = |frames: usize| (frames as f64 * 1000.0 / rate) as u64;
     let recipe = found.recipe.encode();
     let mut out = Vec::with_capacity(found.songs.len());
+    let mut failed = None;
     for (i, &v) in found.songs.iter().enumerate() {
-        let timing = music_search::measure::<M>(&rom, &found.recipe, v)?;
+        // A song that breaks off is left out, not the game.
+        let timing = match music_search::measure::<M>(&rom, &found.recipe, v) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.get_or_insert(e);
+                continue;
+            }
+        };
         let (looping, intro, lp) = match timing.looping {
             Some((start, len)) => (true, ms(start), ms(len)),
             None => (false, ms(timing.frames), 0),
@@ -1048,7 +1056,8 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
             video: false,
         });
     }
-    Ok((out, None))
+    let why = if out.is_empty() { failed } else { None };
+    Ok((out, why))
 }
 
 /// A song from the game's own code, played for `left` more sample frames, the last `fade` of
