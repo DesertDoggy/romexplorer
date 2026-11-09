@@ -462,6 +462,10 @@ impl MapSong {
     }
 }
 
+/// Most bytes of the file's own a map keeps: a few bank numbers and pointers its author
+/// changed are numbers; more is the author's own code, and the game gets no map.
+pub const MAX_PATCH_BYTES: usize = 256;
+
 /// How alike a song plays from the ROM to the file's own for it to be kept.
 pub const MAP_RIGHT: f64 = 0.9;
 
@@ -469,6 +473,9 @@ pub const MAP_RIGHT: f64 = 0.9;
 /// the frames recorded. None when it plays none.
 pub fn build_map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Map> {
     let mut m = map(wsr, rom, songs)?;
+    if m.patches.len() > MAX_PATCH_BYTES {
+        return None;
+    }
     let right: Vec<u8> = m
         .songs
         .iter()
