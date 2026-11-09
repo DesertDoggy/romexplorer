@@ -1465,9 +1465,106 @@ pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Re
     })
 }
 
+/// [`measure_frames`] for a player whose play routine runs at its own timer's rate, so one
+/// frame holds one call and the next two: the frames never repeat even when the song does.
+/// The loop is found in the stream of writes instead, with the frames left out of it.
+pub fn measure_frames_by_writes(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Result<Vec<Write>, String>) -> Result<Timing, String> {
+    const BASE: u64 = 0x100_0000_01B3;
+    let max_frames = (MEASURE_FRAMES as f64 * frame_rate / 60.0) as usize;
+    let mut last_loud = 0usize;
+    let mut samples = Vec::new();
+    // Each write as one token, and the frame it came in.
+    let mut tokens: Vec<u64> = Vec::new();
+    let mut frame_of: Vec<usize> = Vec::new();
+    let mut seen: HashMap<u64, usize> = HashMap::new();
+    // How many writes a window holds: those of the first LOOP_WINDOW frames.
+    let mut window = 0usize;
+    let mut drop = 1u64;
+    let mut rolling = 0u64;
+    for f in 0..max_frames {
+        samples.clear();
+        let writes = next(&mut samples)?;
+        if samples.iter().any(|s| s.unsigned_abs() > AUDIBLE) {
+            last_loud = f;
+        }
+        if f > last_loud + SILENT_END_FRAMES {
+            return Ok(Timing { frames: last_loud + 1, looping: None });
+        }
+        for w in &writes {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (w.port, w.value).hash(&mut h);
+            tokens.push(h.finish());
+            frame_of.push(f);
+            if window == 0 {
+                continue;
+            }
+            let end = tokens.len();
+            rolling = rolling.wrapping_mul(BASE).wrapping_add(tokens[end - 1]);
+            if end > window {
+                rolling = rolling.wrapping_sub(tokens[end - 1 - window].wrapping_mul(drop));
+            }
+            if end < window {
+                continue;
+            }
+            let start = end - window;
+            match seen.get(&rolling) {
+                Some(&first) if frame_of[start] - frame_of[first] >= MIN_LOOP_FRAMES && tokens[first..first + window] == tokens[start..end] => {
+                    let (a, b) = (frame_of[first], frame_of[start]);
+                    return Ok(Timing { frames: b, looping: Some((a, b - a)) });
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(rolling, start);
+                }
+            }
+        }
+        if window == 0 && f + 1 >= LOOP_WINDOW && tokens.len() >= 16 {
+            window = tokens.len();
+            drop = (0..window).fold(1u64, |d, _| d.wrapping_mul(BASE));
+            // The windows so far, now that their length is known.
+            rolling = 0;
+            for (i, &t) in tokens.iter().enumerate() {
+                rolling = rolling.wrapping_mul(BASE).wrapping_add(t);
+                if i >= window {
+                    rolling = rolling.wrapping_sub(tokens[i - window].wrapping_mul(drop));
+                }
+            }
+            seen.insert(rolling, 0);
+        }
+    }
+    Ok(Timing { frames: max_frames, looping: None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loop_is_found_in_the_writes_when_the_frames_never_repeat() {
+        // A 100-call tune, after a 30-call intro, played 1.37 calls a frame.
+        let call = |n: usize| -> Vec<Write> {
+            let note = if n < 30 { 900 + n as u16 } else { ((n - 30) % 100) as u16 * 7 % 61 };
+            vec![Write { at: 0, port: 0x10, value: note & 0xFF }, Write { at: 0, port: 0x11, value: note >> 8 }]
+        };
+        let (mut due, mut n) = (0.0f64, 0usize);
+        let t = measure_frames_by_writes(60.0, |out| {
+            out.clear();
+            out.resize(10, 1000);
+            due += 1.37;
+            let mut w = Vec::new();
+            while due >= 1.0 {
+                due -= 1.0;
+                w.extend(call(n));
+                n += 1;
+            }
+            Ok(w)
+        })
+        .unwrap();
+        let (start, len) = t.looping.expect("a loop");
+        // 100 calls at 1.37 a frame, give or take a frame.
+        assert!((72..=74).contains(&len), "{len}");
+        assert!(start <= 30, "{start}");
+    }
 
     #[test]
     fn recipes_round_trip() {
