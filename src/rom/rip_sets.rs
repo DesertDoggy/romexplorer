@@ -320,6 +320,12 @@ pub fn first_with_magic(set: &Path, magic: &[u8]) -> Option<Vec<u8>> {
     collect_set(set).into_iter().map(|f| f.data).find(|d| d.starts_with(magic))
 }
 
+/// Every file of the set starting with `magic` (a SNES set's `.spc` per track), in the set's
+/// order.
+pub fn all_with_magic(set: &Path, magic: &[u8]) -> Vec<Vec<u8>> {
+    collect_set(set).into_iter().map(|f| f.data).filter(|d| d.starts_with(magic)).collect()
+}
+
 /// Reads one rip-set file again, by its place, with its playlist.
 fn read_one(folder: &Path, rel: &str) -> Result<RipFile, String> {
     let psf_track = psf::is_track_file(rel);
