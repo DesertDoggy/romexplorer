@@ -717,8 +717,8 @@ fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
     let started = std::time::Instant::now();
     let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
     let options = romexplorer::rom::snes_capture::Options { seconds: 30.0, keep_audio: false, press_start: true, watch_register: None };
-    let boot = match romexplorer::rom::snes_capture::capture(file, &options) {
-        Ok(c) if !c.driver_starts.is_empty() => c.spc,
+    let capture = match romexplorer::rom::snes_capture::capture(file, &options) {
+        Ok(c) if !c.driver_starts.is_empty() => c,
         Ok(_) => {
             println!("{name}: bank: no sound driver started");
             *t.reasons.entry("no sound driver started".into()).or_default() += 1;
@@ -730,11 +730,40 @@ fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
             return;
         }
     };
+    let boot = &capture.spc;
+    // The game's own commands after its driver started: bursts of port writes, each write
+    // with its wait in sound clocks. Long ones are uploads.
+    let bursts: Vec<Vec<(i32, usize, u8)>> = {
+        let from = capture.driver_starts.last().map_or(0, |d| d.at);
+        let clocks = |master: u64| (master as f64 * 1_024_000.0 / 21_477_272.0) as i32;
+        let mut out: Vec<Vec<(i32, usize, u8)>> = Vec::new();
+        let mut last_at = 0u64;
+        for w in capture.port_writes.iter().filter(|w| w.at >= from) {
+            let gap = w.at.saturating_sub(last_at);
+            if out.is_empty() || gap > 21_477_272 / 20 {
+                out.push(Vec::new());
+            }
+            let wait = if out.last().unwrap().is_empty() { 1 } else { clocks(gap) };
+            out.last_mut().unwrap().push((wait, w.port as usize, w.value));
+            last_at = w.at;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut kept: Vec<_> = out
+            .into_iter()
+            .filter(|b| b.len() <= 32)
+            .filter(|b| seen.insert(b.iter().map(|&(_, p, v)| (p, v)).collect::<Vec<_>>()))
+            .collect();
+        let n = kept.len();
+        kept.drain(..n.saturating_sub(8));
+        kept
+    };
     let rom = snes_sound::rom_image(file);
     let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
     let maps = spc_map::tracks(&refs, rom);
-    let (mut tracks, mut heard, mut by) = (0usize, 0usize, [0usize; 3]);
+    let (mut tracks, mut heard, mut by) = (0usize, 0usize, [0usize; 5]);
     let (mut searched, mut learned) = (0usize, Vec::new());
+    // Which burst, and which of its writes, carries the song number, once learned.
+    let mut rule: Option<(usize, usize)> = None;
     for (i, (spc, m)) in spcs.iter().zip(&maps).enumerate() {
         let Some(m) = m else { continue };
         let real = spc_map::melody(&spc_map::frames(spc, CHECK_FRAMES).unwrap_or_default());
@@ -756,33 +785,56 @@ fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
                 break;
             }
         }
-        // For the first tracks no command started: every value on each port, to learn how
-        // the driver takes one.
-        if !ok && searched < 3 {
+        // The game's own commands, as it sent them.
+        if !ok {
+            if bursts.iter().any(|b| music_search::alike(&real, &spc_map::replay(&state, b, CHECK_FRAMES)) >= MAP_RIGHT) {
+                heard += 1;
+                by[3] += 1;
+                ok = true;
+            }
+        }
+        // One write of one of them varied: learned on the first tracks, then used for all.
+        if !ok && rule.is_none() && searched < 3 {
             searched += 1;
-            let mut hit = None;
-            'probe: for p in 0..4 {
-                for v in 0..=0xFFu8 {
-                    let mut w = all.clone();
-                    w[p].1 = v;
-                    if music_search::alike(&real, &spc_map::command(&state, &w, 300)) >= MAP_RIGHT {
-                        hit = Some((p, v));
-                        break 'probe;
+            'learn: for (b, burst) in bursts.iter().enumerate() {
+                for j in 0..burst.len().min(8) {
+                    for v in 0..=0x7Fu8 {
+                        let mut w = burst.clone();
+                        w[j].2 = v;
+                        if music_search::alike(&real, &spc_map::replay(&state, &w, 300)) >= MAP_RIGHT {
+                            rule = Some((b, j));
+                            learned.push(format!("learned on track {i}: write {j} of command {b} ({:02X?}) = {v:02X}", burst.iter().map(|w| (w.1, w.2)).collect::<Vec<_>>()));
+                            break 'learn;
+                        }
                     }
                 }
             }
-            learned.push(match hit {
-                Some((p, v)) => format!("track {i}: port {p} = {v:02X} (its .spc has {:02X?})", ports),
-                None => format!("track {i}: no single port value ({:02X?})", ports),
-            });
+            if rule.is_none() {
+                learned.push(format!("track {i}: no command learned ({} commands)", bursts.len()));
+            }
+        }
+        if !ok {
+            if let Some((b, j)) = rule {
+                for v in 0..=0x7Fu8 {
+                    let mut w = bursts[b].clone();
+                    w[j].2 = v;
+                    if music_search::alike(&real, &spc_map::replay(&state, &w, CHECK_FRAMES)) >= MAP_RIGHT {
+                        heard += 1;
+                        by[4] += 1;
+                        break;
+                    }
+                }
+            }
         }
     }
     println!(
-        "{name}: bank, {:.1} s: {heard} of {tracks} tracks heard (by all four ports {}, one port {}, the bank alone {}){}",
+        "{name}: bank, {:.1} s: {heard} of {tracks} tracks heard (by all four ports {}, one port {}, the bank alone {}, the game's own command {}, a learned command {}){}",
         started.elapsed().as_secs_f32(),
         by[0],
         by[1],
         by[2],
+        by[3],
+        by[4],
         if learned.is_empty() { String::new() } else { format!("; {}", learned.join("; ")) }
     );
     t.checked[0] += 1;

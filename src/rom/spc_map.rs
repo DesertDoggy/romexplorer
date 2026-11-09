@@ -211,6 +211,18 @@ pub fn command(state: &[u8], writes: &[(usize, u8)], count: usize) -> HashSet<u6
     frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
 }
 
+/// The melody the chip `state` plays once the main CPU's `writes` reach it, each after its
+/// wait (sound clocks since the one before): a command replayed as the game sent it.
+pub fn replay(state: &[u8], writes: &[(i32, usize, u8)], count: usize) -> HashSet<u64> {
+    let Ok(mut apu) = Apu::from_spc(state) else { return HashSet::new() };
+    for &(wait, port, value) in writes {
+        apu.advance(wait.max(1));
+        apu.write_port_now(port, value);
+    }
+    apu.advance(FRAME_CLOCKS * 4);
+    frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
+}
+
 /// The four ports' values as the main CPU last wrote them, in an `.spc`.
 pub fn ports_of(spc: &[u8]) -> [u8; 4] {
     [spc[ARAM + 0xF4], spc[ARAM + 0xF5], spc[ARAM + 0xF6], spc[ARAM + 0xF7]]
