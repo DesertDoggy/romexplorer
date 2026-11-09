@@ -543,7 +543,7 @@ pub fn has_map(rom: &[u8]) -> bool {
 /// Builds the map of the NES ROM `rom` from the NSF it matches (only to find and check where
 /// its music is; nothing of the file is kept) and keeps it. False when none plays any track.
 pub fn build_nes_map(rom: &[u8], nsf: &[u8]) -> Result<bool, String> {
-    let key = map_key(rom).ok_or("not an iNES cartridge")?;
+    let key = map_key(rom).ok_or("not a NES cartridge or Disk System image")?;
     let path = map_path(&key).ok_or("no folder for music maps")?;
     let Some(m) = super::nes_nsf::build_map(nsf, rom) else { return Ok(false) };
     if m.ways.iter().all(|w| *w == super::nes_nsf::Way::None) {
@@ -798,27 +798,34 @@ fn open_gb_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
 /// a Game Boy ROM), unless one is kept already.
 pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
     let rom = read_rom(path)?;
-    if super::nes_nsf::program(&rom).is_none() {
-        // A Game Boy ROM carries the Nintendo logo at $104.
-        if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
-            return gb_map_from_sets(path, sets);
-        }
-        if hes_map_from_sets(&rom, sets)? {
+    // A Game Boy ROM carries the Nintendo logo at $104.
+    if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
+        return gb_map_from_sets(path, sets);
+    }
+    // A headerless NES dump has nothing to tell it from other consoles' ROMs but the NSF it
+    // matches.
+    let headerless = super::nes_nsf::is_headerless(&rom);
+    if super::nes_nsf::program(&rom).is_some() {
+        if has_map(&rom) {
             return Ok(());
         }
-        return sgc_map_from_sets(&rom, sets);
-    }
-    if map_key(&rom).is_none() || has_map(&rom) {
-        return Ok(());
-    }
-    for set in sets {
-        if let Some(nsf) = super::rip_sets::first_with_magic(set, b"NESM\x1a") {
-            if build_nes_map(&rom, &nsf)? {
-                return Ok(());
+        let mut any = false;
+        for set in sets {
+            if let Some(nsf) = super::rip_sets::first_with_magic(set, b"NESM\x1a") {
+                any = true;
+                if build_nes_map(&rom, &nsf)? {
+                    return Ok(());
+                }
             }
         }
+        if any || !headerless {
+            return Ok(());
+        }
     }
-    Ok(())
+    if hes_map_from_sets(&rom, sets)? {
+        return Ok(());
+    }
+    sgc_map_from_sets(&rom, sets)
 }
 
 /// The songs a map plays, measured and classified like [`index_machine`]'s.

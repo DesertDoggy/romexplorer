@@ -152,7 +152,7 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if name.ends_with(".ws") || name.contains("wonderswan") {
         return Some("WS");
     }
-    if name.ends_with(".nes") {
+    if (name.ends_with(".nes") || name.ends_with(".unh")) && nes_nsf::is_headerless(rom) {
         return Some("NES?");
     }
     if name.ends_with(".gg") || name.contains("game gear") || name.contains("gamegear") {
@@ -345,7 +345,9 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
     let Some(prg) = nes_nsf::program(rom) else { return };
-    let disk = romexplorer::rom::fds::is_disk(rom);
+    // (A Disk System game has no board: its files load into RAM. A headerless dump's mapper
+    // is unknown.)
+    let disk = nes_cart::parse(rom).is_err();
     let started = std::time::Instant::now();
     let Some(m) = nes_nsf::map(nsf, &prg) else {
         println!("{name}: map: the NSF doesn't run");
@@ -364,7 +366,6 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
     // On the game's own board: its code where the ROM has it, the calls moved there.
     let mut m = m;
-    // (A Disk System game has no board: its files load into RAM.)
     let board = if disk {
         0
     } else {
@@ -964,6 +965,12 @@ fn main() {
                 &o,
                 tally.entry("PC Engine").or_default(),
             ),
+            Some("NES?") if o.mapcheck => {
+                let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                if let Some(h) = &hint {
+                    print_mapcheck(&path, &rom, &h.1, tally.entry("NES (headerless)").or_default());
+                }
+            }
             Some("NES?") => {
                 println!(
                     "{}: no iNES header (headerless dump): skipped",
