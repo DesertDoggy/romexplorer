@@ -694,7 +694,7 @@ fn index_sgc_map(rom: &[u8], key: &str, m: &super::sgc_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, |_| true, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(SGC_MAP, key, v, out.len(), rate, timing, 2, codec, t) {
             out.push(track);
         }
@@ -758,7 +758,7 @@ fn index_hes_map(rom: &[u8], key: &str, m: &super::hes_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, |_| true, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(HES_MAP, key, v, out.len(), rate, timing, 2, "PC Engine", t) {
             out.push(track);
         }
@@ -781,13 +781,32 @@ fn open_hes_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStrea
     Ok(Box::new(MapPcm { song: AnyMapSong::Hes(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
-/// Whether a Game Boy sound write carries a note: all but a pitch change on its own (a
-/// frequency write that doesn't start a note), which is how a driver plays vibrato.
-fn gb_note_write(w: &music_search::Write) -> bool {
-    match w.port {
-        0xFF13 | 0xFF18 | 0xFF1D => false,
-        0xFF14 | 0xFF19 | 0xFF1E => w.value & 0x80 != 0,
-        _ => true,
+/// A Game Boy track's notes as a loop is found in them: each note started (its channel and
+/// pitch to the semitone) and each volume envelope set. Pitch moves within a note (vibrato,
+/// slides), duty and length, panning and wave memory are left out: drivers run those on
+/// counts that don't restart with the loop.
+fn gb_notes() -> impl FnMut(&music_search::Write) -> Option<u64> {
+    let mut low = [0u8; 3];
+    move |w| {
+        let ch = match w.port {
+            0xFF13 | 0xFF14 => 0,
+            0xFF18 | 0xFF19 => 1,
+            0xFF1D | 0xFF1E => 2,
+            0xFF12 | 0xFF17 | 0xFF1C | 0xFF21 => return Some(u64::from(w.port) << 16 | u64::from(w.value)),
+            0xFF23 => return (w.value & 0x80 != 0).then_some(0xFF23 << 16),
+            _ => return None,
+        };
+        if matches!(w.port, 0xFF13 | 0xFF18 | 0xFF1D) {
+            low[ch] = w.value as u8;
+            return None;
+        }
+        if w.value & 0x80 == 0 {
+            return None;
+        }
+        let x = (u32::from(w.value & 7) << 8) | u32::from(low[ch]);
+        let hz = 131_072.0 / f64::from(2048 - x.min(2047));
+        let semitone = (12.0 * hz.log2()).round() as i64;
+        Some(u64::from(w.port) << 16 | (semitone as u64 & 0xFFFF))
     }
 }
 
@@ -839,7 +858,7 @@ fn index_gb_map(rom: &[u8], key: &str, m: &super::gb_map::Map, t: &Thresholds) -
         }
         let Ok(mut song) = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, gb_note_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, gb_notes(), |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(GB_MAP, key, v, out.len(), rate, timing, 2, "Game Boy", t) {
             out.push(track);
         }
