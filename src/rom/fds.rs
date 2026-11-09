@@ -28,6 +28,8 @@ pub struct File {
     /// 0 program (CPU memory), 1 pattern table, 2 name table (both picture memory).
     pub kind: u8,
     pub data: Vec<u8>,
+    /// Where its data starts in the image (without the image's header).
+    pub at: usize,
 }
 
 impl Side {
@@ -70,7 +72,7 @@ pub fn strip_header(image: &[u8]) -> &[u8] {
 pub fn parse(image: &[u8]) -> Result<Disk, String> {
     let body = strip_header(image);
     let mut sides = Vec::new();
-    for raw in body.chunks(SIDE_BYTES) {
+    for (side, raw) in body.chunks(SIDE_BYTES).enumerate() {
         if raw.len() < 58 || raw[0] != 1 || &raw[1..15] != MAGIC {
             break;
         }
@@ -103,6 +105,7 @@ pub fn parse(image: &[u8]) -> Result<Disk, String> {
                 addr: u16::from_le_bytes([h[11], h[12]]),
                 kind: h[15],
                 data: d[1..].to_vec(),
+                at: side * SIDE_BYTES + at + 17,
             });
             at += 17 + size;
         }
