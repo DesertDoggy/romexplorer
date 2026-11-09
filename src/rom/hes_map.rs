@@ -108,7 +108,9 @@ impl Player {
     /// Runs the routine at `pc` with A X Y and the banks of `regs`, entered as a call or (with
     /// `irq`) as an interrupt, with `pushed` on the stack; false when it doesn't return.
     fn call_with(&mut self, cpu: &mut Cpu, pc: u16, regs: &Regs, irq: bool, pushed: &[u8]) -> bool {
-        self.call_within(cpu, pc, regs, irq, pushed, budget(irq))
+        // The file's own code: it is what the map is checked against, so it gets the init's
+        // allowance even in an interrupt.
+        self.call_within(cpu, pc, regs, irq, pushed, budget(false))
     }
 
     /// [`Self::call_with`] given up after `limit` cycles.
@@ -119,7 +121,7 @@ impl Player {
         // call the game's interrupt routine as a subroutine) pops whatever was on the stack.
         cpu.p = 0x04;
         let s0 = cpu.s;
-        let mut push = |cpu: &mut Cpu, p: &mut Player, v: u8| {
+        let push = |cpu: &mut Cpu, p: &mut Player, v: u8| {
             let at = cpu.physical(0x2100 | cpu.s as u16);
             p.write(at, v);
             cpu.s = cpu.s.wrapping_sub(1);
@@ -281,9 +283,9 @@ pub struct Map {
 
 const PATCHED_BYTES: u16 = 3;
 
-/// Cycles a routine may take before it counts as stuck: an init can unpack a lot, an
-/// interrupt handler is a fraction of a frame's 119,000 (a game's own banks can send one
-/// into a loop the file's never takes).
+/// Cycles a routine may take before it counts as stuck: an init can unpack a lot. On the
+/// map's side an interrupt's call gets far less: a game's own banks can send one into a
+/// loop the file's never takes.
 fn budget(irq: bool) -> u32 {
     if irq {
         400_000
@@ -324,7 +326,7 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, irq: bool, placed: &[bo
     let mut target: Option<(u16, u8)> = None;
     let mut first = true;
     while !cpu.calls.is_empty() {
-        if used > budget(irq) {
+        if used > budget(false) {
             return None;
         }
         if in_game.is_some_and(|d| cpu.calls.len() < d) {
