@@ -12,8 +12,8 @@ use super::nes_apu::{Apu, Target};
 use super::nes_cart::{self, Cart};
 
 /// CPU cycles per frame and scanlines per frame.
-const NTSC_FRAME: u32 = 29_781;
-const PAL_FRAME: u32 = 33_248;
+pub const NTSC_FRAME: u32 = 29_781;
+pub const PAL_FRAME: u32 = 33_248;
 const NTSC_LINES: u32 = 262;
 const PAL_LINES: u32 = 312;
 const VBLANK_LINE: u32 = 241;
@@ -376,6 +376,66 @@ fn generic(w: &SoundWrite) -> Write {
 impl Nes {
     pub fn pal(&self) -> bool {
         self.board.pal
+    }
+
+    /// The program windows ($6000-$E000: offsets into the program ROM; see `nes_cart`).
+    pub fn windows(&self) -> [usize; 5] {
+        self.board.cart.windows()
+    }
+
+    pub fn set_windows(&mut self, windows: [usize; 5]) {
+        self.board.cart.set_windows(windows);
+    }
+
+    /// A write as the CPU makes it (RAM, sound registers, the board).
+    pub fn write_bus(&mut self, addr: u16, v: u8) {
+        self.board.write(addr, v);
+    }
+
+    /// Runs the routine at `addr` with A, X, Y = `regs` and `pushed` on the stack above its
+    /// return address (in the order pushed), as the banks are now, until it returns. False
+    /// when it doesn't within `budget` cycles. Its sound writes wait in the board.
+    /// Windows `pinned` (Some) keep their bank whatever the routine writes to the board; with
+    /// `code_only`, only while the code being run sits in them (data windows switch freely).
+    pub fn run_routine(&mut self, addr: u16, regs: [u8; 3], pushed: &[u8], budget: u32, pinned: &[Option<usize>; 5], code_only: bool) -> bool {
+        let pin = pinned.iter().any(Option::is_some);
+        self.board.ram[0x1FF] = 0x5F;
+        self.board.ram[0x1FE] = 0xF5;
+        let mut s = 0xFDu8;
+        for &v in pushed {
+            self.board.ram[0x100 | s as usize] = v;
+            s = s.wrapping_sub(1);
+        }
+        self.cpu.pc = addr;
+        [self.cpu.a, self.cpu.x, self.cpu.y] = regs;
+        self.cpu.s = s;
+        self.cpu.jammed = false;
+        self.cpu.calls = vec![(addr, 0xFF)];
+        let mut used = 0;
+        while !self.cpu.calls.is_empty() {
+            if used > budget || self.cpu.jammed {
+                return false;
+            }
+            self.board.instr += 1;
+            let c = self.exec() + std::mem::take(&mut self.board.stall);
+            self.board.cycle += c;
+            used += c;
+            if pin {
+                let mut w = self.board.cart.windows();
+                let at = if self.cpu.pc >= 0x6000 { (self.cpu.pc as usize - 0x6000) >> 13 } else { usize::MAX };
+                for (k, p) in pinned.iter().enumerate() {
+                    if code_only && k != at {
+                        continue;
+                    }
+                    if let Some(b) = *p {
+                        w[k] = b;
+                    }
+                }
+                self.board.cart.set_windows(w);
+            }
+        }
+        self.board.cycle = 0;
+        true
     }
 
     /// BIOS addresses a Disk System game reached that the stand-in doesn't know.

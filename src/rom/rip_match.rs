@@ -367,6 +367,11 @@ impl Library {
         file.ancestors().find_map(|a| self.sets.iter().find(|(p, _)| p == a).map(|(p, _)| p.as_path()))
     }
 
+    /// Every set in the library, by path.
+    pub fn set_paths(&self) -> impl Iterator<Item = &Path> {
+        self.sets.iter().map(|(p, _)| p.as_path())
+    }
+
     /// Whether any set could belong to a ROM of `platform` (`platforms.id`).
     pub fn covers(&self, platform: u16) -> bool {
         !self.systems_for(platform).is_empty()

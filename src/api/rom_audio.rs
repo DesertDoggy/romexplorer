@@ -495,15 +495,25 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let open = disc.clone();
         let matched = chosen.remove(&rom_id).unwrap_or(Ok(Vec::new()));
         let rom_file = PathBuf::from(&main_path);
+        // A NES ROM matched to a set with an NSF: its music map, built once, so the songs play
+        // straight from the ROM with no boot.
+        let map_sets: Vec<PathBuf> = match (&matched, rom_songs::builds_maps(platform)) {
+            (Ok(sets), true) => sets.clone(),
+            _ => Vec::new(),
+        };
         let found = tokio::task::spawn_blocking(move || {
+            let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets(&rom_file, &map_sets)).and_then(|r| r.err());
             let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |_| {})).unwrap_or_default();
             let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |_| {}));
             let songs = if songs && rom_file.is_file() { rom_songs::index(&rom_file, platform, &thresholds) } else { Ok(Vec::new()) };
-            (rips, disc, songs)
+            (rips, disc, songs, map_error)
         })
         .await
         .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
-        let (mut rips, disc_found, songs_found) = found;
+        let (mut rips, disc_found, songs_found, map_error) = found;
+        if let Some(e) = map_error {
+            summary.errors.push(format!("{main_path}: music map: {e}"));
+        }
         let mut song_count = 0;
         match songs_found {
             Ok(songs) => {

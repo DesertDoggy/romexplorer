@@ -27,7 +27,7 @@ use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::common::models::Platform;
-use romexplorer::rom::{gb_gbs, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
+use romexplorer::rom::{gb_gbs, gb_map, sgc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -176,6 +176,10 @@ struct Tally {
     checked: [usize; 5],
     /// Games whose songs are like none of the file's tracks (kept, unchecked), and their songs.
     unchecked: [usize; 2],
+    /// `--mapcheck`: tracks played right on the game's own board.
+    board: usize,
+    /// `--mapcheck`: tracks the saved maps play right (each by its chosen player).
+    saved: usize,
 }
 
 /// Frames of a song and of a track compared by melody.
@@ -265,6 +269,25 @@ fn original_hint(
             // On equal names the better match, and among those the first listed.
             n(a).cmp(&n(b)).then(a.1.total_cmp(&b.1)).then(std::cmp::Ordering::Greater)
         })?;
+    // A set of the game's sound effects alone ("(SFX)") gives way to the same game's music
+    // set, however much less of the ROM that one matched.
+    let sfx = |p: &Path| p.to_string_lossy().to_lowercase().contains("(sfx)");
+    let title = |p: &Path| {
+        let mut w = words(p);
+        w.retain(|w| !matches!(w.as_str(), "sfx" | "emu"));
+        w
+    };
+    let (set, share) = match sfx(set) {
+        true => matches
+            .iter()
+            .filter(|m| !sfx(&m.0) && title(&m.0) == title(set))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|m| (m.0.as_path(), &m.1))
+            // Matched too little to be listed: still the same game's music.
+            .or_else(|| lib.set_paths().find(|p| !sfx(p) && title(p) == title(set) && p.parent() == set.parent()).map(|p| (p, &0.0)))
+            .unwrap_or((set.as_path(), share)),
+        false => (set.as_path(), share),
+    };
     let hint = rip_sets::first_with_magic(set, magic).and_then(|d| Some((read(&d)?, d)));
     if verbose {
         println!(
@@ -321,23 +344,40 @@ const MAP_RIGHT: f64 = 0.9;
 fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
-    let Ok(h) = nes_cart::parse(rom) else { return };
+    let Some(prg) = nes_nsf::program(rom) else { return };
+    let disk = romexplorer::rom::fds::is_disk(rom);
     let started = std::time::Instant::now();
-    let Some(m) = nes_nsf::map(nsf, &h.prg) else {
+    let Some(m) = nes_nsf::map(nsf, &prg) else {
         println!("{name}: map: the NSF doesn't run");
         *t.reasons.entry("the NSF doesn't run".into()).or_default() += 1;
         return;
     };
-    let check = nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, nes_nsf::Fill::Zeros);
+    let check = nes_nsf::map_check(nsf, &m, &prg, CHECK_FRAMES, nes_nsf::Fill::Zeros);
     // Why tracks play wrong: the gaps filled with the game's own bytes, or with the file's.
     let right_with = |fill| {
-        nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, fill)
+        nes_nsf::map_check(nsf, &m, &prg, CHECK_FRAMES, fill)
             .iter()
             .flatten()
             .filter(|&&a| a >= MAP_RIGHT)
             .count()
     };
     let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
+    // On the game's own board: its code where the ROM has it, the calls moved there.
+    let mut m = m;
+    // (A Disk System game has no board: its files load into RAM.)
+    let board = if disk {
+        0
+    } else {
+        nes_nsf::choose_board(nsf, &mut m, rom);
+        nes_nsf::cart_check(nsf, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count()
+    };
+    t.board += board;
+    // The map as the app keeps it: each track's way chosen, written down and read back.
+    nes_nsf::choose_ways(nsf, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
+    let saved = nes_nsf::Map::decode(&m.encode()).map_or(0, |back| {
+        nes_nsf::saved_check(nsf, &back, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count()
+    });
+    t.saved += saved;
     let with_melody = check.iter().flatten().count();
     let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     let no_script = m.tracks.iter().filter(|s| s.is_none()).count();
@@ -350,8 +390,9 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         .take(12)
         .collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board} {:?}; saved map: {saved}) ({} songs; {} runs; scripts up to {} steps, {} calls; {} tracks unscripted; play {} steps{}){}",
         started.elapsed().as_secs_f32(),
+        m.board,
         m.header.songs,
         m.runs.len(),
         pokes,
@@ -376,6 +417,120 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         t.with_music += 1;
     }
     let bucket = match right as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--mapcheck` for a Game Boy ROM and its matched GBS.
+fn print_gb_mapcheck(path: &Path, rom: &[u8], gbs: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let Some(mut m) = gb_map::map(gbs, rom) else {
+        println!("{name}: map: the GBS doesn't run");
+        *t.reasons.entry("the GBS doesn't run".into()).or_default() += 1;
+        return;
+    };
+    let right_with = |m: &gb_map::Map, fill| gb_map::map_check(gbs, m, rom, CHECK_FRAMES, fill).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let check = gb_map::map_check(gbs, &m, rom, CHECK_FRAMES, gb_map::Fill::Zeros);
+    let with_melody = check.iter().flatten().count();
+    let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let bridged = right_with(&m, gb_map::Fill::Bridged);
+    let oracle = right_with(&m, gb_map::Fill::File(&gbs[0x70..]));
+    gb_map::choose_ways(gbs, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
+    let saved = gb_map::Map::decode(&m.encode()).map_or(0, |back| {
+        (0..back.header.songs)
+            .filter(|&s| {
+                let Some(real) = gb_gbs::track_writes(gbs, s, CHECK_FRAMES).map(|w| gb_gbs::melody(&w)) else { return false };
+                let mine = gb_map::play_map(&back, rom, s, CHECK_FRAMES).map(|w| gb_gbs::melody(&w)).unwrap_or_default();
+                real.len() >= music_search::MIN_MELODY && music_search::alike(&real, &mine) >= MAP_RIGHT
+            })
+            .count()
+    });
+    t.saved += saved;
+    let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, gb_map::Op::Call { .. })).count()).max().unwrap_or(0);
+    let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
+    println!(
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
+        started.elapsed().as_secs_f32(),
+        m.header.songs,
+        m.runs.len(),
+        m.tracks.iter().filter(|s| s.is_none()).count(),
+        m.play.len(),
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += right;
+    if with_melody > 0 && right == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match right.max(saved) as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--mapcheck` for a Master System or Game Gear ROM and its matched SGC.
+fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let Some(mut m) = sgc_map::map(sgc, rom) else {
+        println!("{name}: map: the SGC doesn't run");
+        *t.reasons.entry("the SGC doesn't run".into()).or_default() += 1;
+        return;
+    };
+    let right_with = |m: &sgc_map::Map, fill| sgc_map::map_check(sgc, m, rom, CHECK_FRAMES, fill).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let check = sgc_map::map_check(sgc, &m, rom, CHECK_FRAMES, sgc_map::Fill::Zeros);
+    let with_melody = check.iter().flatten().count();
+    let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let bridged = right_with(&m, sgc_map::Fill::Bridged);
+    let oracle = right_with(&m, sgc_map::Fill::File(&sgc[0xA0..]));
+    sgc_map::choose_ways(sgc, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
+    let saved = sgc_map::Map::decode(&m.encode()).map_or(0, |back| {
+        (0..back.header.songs)
+            .filter(|&s| {
+                let Some(real) = sgc_map::track_writes(sgc, s, CHECK_FRAMES).map(|w| sgc_map::melody(&w)) else { return false };
+                let mine = sgc_map::play_map(&back, rom, s, CHECK_FRAMES).map(|w| sgc_map::melody(&w)).unwrap_or_default();
+                real.len() >= music_search::MIN_MELODY && music_search::alike(&real, &mine) >= MAP_RIGHT
+            })
+            .count()
+    });
+    t.saved += saved;
+    let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, sgc_map::Op::Call { .. })).count()).max().unwrap_or(0);
+    let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
+    println!(
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
+        started.elapsed().as_secs_f32(),
+        m.header.songs,
+        m.runs.len(),
+        m.tracks.iter().filter(|s| s.is_none()).count(),
+        m.play.len(),
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += right;
+    if with_melody > 0 && right == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match right.max(saved) as f64 / with_melody.max(1) as f64 {
         _ if with_melody == 0 => "no track with a melody",
         s if s >= 1.0 => "all tracks right",
         s if s >= 0.9 => "90-99% right",
@@ -621,13 +776,16 @@ fn main() {
                 let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
                 run_hinted::<Nes>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry("NES").or_default());
             }
-            Some("SMS") => run::<MasterSystem>(
-                &path,
-                &rom,
-                "Master System",
-                &o,
-                tally.entry("Master System").or_default(),
-            ),
+            Some("SMS") => {
+                if o.mapcheck {
+                    let sgc = original_hint(nsf_lib.as_ref(), &path, Platform::SegaMasterSystem, b"SGC\x1a", |_| Some(Default::default()), o.verbose);
+                    if let Some(h) = &sgc {
+                        print_sgc_mapcheck(&path, &rom, &h.1, tally.entry("Master System").or_default());
+                    }
+                    continue;
+                }
+                run::<MasterSystem>(&path, &rom, "Master System", &o, tally.entry("Master System").or_default())
+            }
             Some("MD") => run::<MegaDrive>(
                 &path,
                 &rom,
@@ -637,6 +795,12 @@ fn main() {
             ),
             Some("FDS") => {
                 let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                if o.mapcheck {
+                    if let Some(h) = &hint {
+                        print_mapcheck(&path, &rom, &h.1, tally.entry("Disk System").or_default());
+                    }
+                    continue;
+                }
                 let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
                 run_hinted::<Nes>(
                     &path,
@@ -741,18 +905,27 @@ fn main() {
                     .or_default() += 1;
                 tally.entry("NES").or_default().games += 1;
             }
-            Some("GG") => run::<GameGear>(
-                &path,
-                &rom,
-                "Game Gear",
-                &o,
-                tally.entry("Game Gear").or_default(),
-            ),
+            Some("GG") => {
+                if o.mapcheck {
+                    let sgc = original_hint(nsf_lib.as_ref(), &path, Platform::SegaGameGear, b"SGC\x1a", |_| Some(Default::default()), o.verbose);
+                    if let Some(h) = &sgc {
+                        print_sgc_mapcheck(&path, &rom, &h.1, tally.entry("Game Gear").or_default());
+                    }
+                    continue;
+                }
+                run::<GameGear>(&path, &rom, "Game Gear", &o, tally.entry("Game Gear").or_default())
+            }
             Some(c) => {
                 let what = format!("{c}, cartridge ${:02X}", rom[0x147]);
                 let console = if c == "GBC" { "Game Boy Color" } else { "Game Boy" };
                 let platform = if c == "GBC" { Platform::GameBoyColor } else { Platform::GameBoy };
                 let hint = original_hint(nsf_lib.as_ref(), &path, platform, b"GBS", gb_gbs::hint, o.verbose);
+                if o.mapcheck {
+                    if let Some(h) = &hint {
+                        print_gb_mapcheck(&path, &rom, &h.1, tally.entry(console).or_default());
+                    }
+                    continue;
+                }
                 let answers = hint.as_ref().map(|h| answers(&h.1, 4, gb_gbs::track_writes, gb_gbs::melody));
                 run_hinted::<GameBoy>(&path, &rom, &what, hint.as_ref().map(|h| &h.0), answers.as_ref(), &o, tally.entry(console).or_default());
             }
@@ -779,8 +952,8 @@ fn main() {
         );
         if t.checked[0] > 0 && o.mapcheck {
             println!(
-                "  map check in {} games: {} of {} tracks played right from the ROM; with the gaps from the ROM {}, from the file {}",
-                t.checked[0], t.checked[4], t.checked[3], t.checked[1], t.checked[2]
+                "  map check in {} games: {} of {} tracks played right from the ROM; with the gaps from the ROM {}, from the file {}; on the game's board {}; by the saved maps {}",
+                t.checked[0], t.checked[4], t.checked[3], t.checked[1], t.checked[2], t.board, t.saved
             );
         } else if t.checked[0] > 0 {
             println!(
