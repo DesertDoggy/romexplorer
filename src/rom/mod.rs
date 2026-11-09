@@ -57,6 +57,7 @@ pub mod v30mz;
 pub mod pce_music;
 pub mod m68k;
 pub mod msx_music;
+pub mod ws_map;
 pub mod wswan_music;
 pub mod v810;
 pub mod vb_music;
