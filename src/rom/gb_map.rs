@@ -286,12 +286,13 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
     cpu.halted = false;
     cpu.stopped = false;
     cpu.calls = vec![(pc, sp)];
-    // Code is the game's when it and the bytes after it are placed: a run that ends right
-    // where a routine starts (the file's own code follows) doesn't make the routine the game's.
-    let of = |p: &Player, addr: u16, set: &[bool]| {
+    // Code is the game's where it is placed. The routine's own entry needs the bytes after
+    // it placed too: a run can end right where it starts, the file's own code following.
+    let of = |p: &Player, addr: u16, set: &[bool], bytes: usize| {
         let s = p.src(addr);
-        s > 0 && (0..ENTRY_BYTES).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
+        s > 0 && (0..bytes).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
     };
+    let mut first = true;
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
     let mut used = 0u32;
@@ -307,7 +308,8 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
         let at = cpu.pc;
         if in_game.is_none() {
             let near = target.is_some_and(|(t, _)| at > t && at - t <= PATCHED_BYTES);
-            let entered = if jumped || near { of(p, at, placed) } else { of(p, at, aligned) };
+            let bytes = if first { ENTRY_BYTES } else { 1 };
+            let entered = if jumped || near { of(p, at, placed, bytes) } else { of(p, at, aligned, bytes) };
             if entered {
                 // What the file's code pushed since it got here, still on the stack.
                 if let Some((_, s)) = target.filter(|t| t.1 > cpu.sp) {
@@ -317,6 +319,7 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
                 in_game = Some(cpu.calls.len());
             }
         }
+        first = false;
         let op = p.read(at);
         p.log = in_game.is_none().then(Vec::new);
         used += cpu.step(p);
