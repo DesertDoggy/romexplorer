@@ -61,6 +61,9 @@ pub struct Script {
     pub ops: Vec<Op>,
     pub end: Regs,
     pub halt: bool,
+    /// Cut short by an interrupt (the code was waiting for one): played back, the interrupt
+    /// is waited for before anything else runs.
+    pub cut: bool,
     pub cycles: u32,
 }
 
@@ -200,10 +203,10 @@ fn record(
     let mut out = Vec::with_capacity(frames);
     // The script being recorded: where it was entered, its writes, its cycles.
     let mut cur: Option<(u32, Vec<Op>, u32)> = None;
-    let mut finish = |ws: &mut WonderSwan, cur: &mut Option<(u32, Vec<Op>, u32)>, events: &mut Option<&mut Vec<String>>, frame: usize| {
+    let mut finish = |ws: &mut WonderSwan, cur: &mut Option<(u32, Vec<Op>, u32)>, events: &mut Option<&mut Vec<String>>, frame: usize, cut: bool| {
         let Some((key, ops, cycles)) = cur.take() else { return };
         ws.log(false);
-        let s = Script { ops, end: regs(ws), halt: ws.cpu().halted, cycles };
+        let s = Script { ops, end: regs(ws), halt: ws.cpu().halted, cut, cycles };
         if let Some(e) = events.as_deref_mut() {
             e.push(format!("f{frame} c{} script at {key:X}: {}", ws.cycle(), describe(&s)));
         }
@@ -221,7 +224,7 @@ fn record(
         while !ws.frame_over() {
             if ws.interrupt_due() {
                 // Interrupted in the file's code: the script so far ends here.
-                finish(&mut ws, &mut cur, &mut events, frame);
+                finish(&mut ws, &mut cur, &mut events, frame, true);
                 if let Some(e) = events.as_deref_mut() {
                     e.push(format!("f{frame} c{} interrupt at {:X}", ws.cycle(), ws.cpu().pc()));
                 }
@@ -255,13 +258,13 @@ fn record(
                 ops.extend(outs.into_iter().map(|(p, v)| Op::Out(p, v)));
                 *cycles += t;
                 if ws.cpu().halted || !is_own(&ws, own) || *cycles > MAX_SCRIPT_CYCLES {
-                    finish(&mut ws, &mut cur, &mut events, frame);
+                    finish(&mut ws, &mut cur, &mut events, frame, false);
                 }
             }
         }
         out.push(ws.sound_writes());
     }
-    finish(&mut ws, &mut cur, &mut events, frames);
+    finish(&mut ws, &mut cur, &mut events, frames, false);
     (out, seqs)
 }
 
@@ -351,6 +354,8 @@ pub struct LayoutSong {
     /// Cycles a script took that are still to pass, a scanline at a time: the time it ran,
     /// over which nothing interrupted it.
     idle: u32,
+    /// Waiting for the interrupt that cut the last script short.
+    wait: bool,
     frame: usize,
     stopped: bool,
 }
@@ -361,7 +366,7 @@ impl LayoutSong {
         let data = rebuilt(m.data_len, &m.runs, &m.patches, rom, fill);
         let own = own_bytes(m.data_len, &m.runs, Fill::Bridged);
         let ws = console(image_of(&data), song);
-        Some(Self { m, song: index, own, ws, count: HashMap::new(), idle: 0, frame: 0, stopped: false })
+        Some(Self { m, song: index, own, ws, count: HashMap::new(), idle: 0, wait: false, frame: 0, stopped: false })
     }
 
     /// The next frame's sound writes; None once the CPU enters the file's code somewhere the
@@ -380,6 +385,14 @@ impl LayoutSong {
                 ws.advance(t);
                 self.idle -= t;
                 continue;
+            }
+            if self.wait {
+                if !ws.interrupt_due() {
+                    let t = ws.to_next_line();
+                    ws.advance(t);
+                    continue;
+                }
+                self.wait = false;
             }
             if let Some(e) = events.as_deref_mut() {
                 if ws.interrupt_due() {
@@ -428,6 +441,7 @@ impl LayoutSong {
             c.flags = s.end.flags;
             c.halted = s.halt;
             self.idle = s.cycles;
+            self.wait = s.cut;
             if let Some(e) = events.as_deref_mut() {
                 e.push(format!("f{frame} c{} script at {key:X}: {}", ws.cycle() + s.cycles, describe(s)));
             }
@@ -525,7 +539,7 @@ impl Map {
                     Op::Out(p, v) => format!("O{p:x}:{v:x}"),
                 })
                 .collect();
-            out.push(format!("x {} {:x} {} {}", s.halt as u8, s.cycles, regs.join(","), ops.join(" ")).trim_end().to_string());
+            out.push(format!("x {} {:x} {} {}", if s.cut { 2 } else { s.halt as u8 }, s.cycles, regs.join(","), ops.join(" ")).trim_end().to_string());
         }
         for (song, e) in &self.songs {
             let at: Vec<String> = e.at.iter().map(|(k, h, c)| format!("{k:x}={}/{}", list(h), list(c))).collect();
@@ -561,7 +575,8 @@ impl Map {
                 }
                 "x" => {
                     let mut f = rest.split_whitespace();
-                    let halt = f.next()? == "1";
+                    let state = f.next()?;
+                    let (halt, cut) = (state == "1", state == "2");
                     let cycles = num(f.next()?)?;
                     let regs: Vec<u16> = f.next()?.split(',').map(|v| num(v).map(|v| v as u16)).collect::<Option<_>>()?;
                     if regs.len() != 14 {
@@ -579,7 +594,7 @@ impl Map {
                             _ => return None,
                         });
                     }
-                    m.scripts.push(Script { ops, end, halt, cycles });
+                    m.scripts.push(Script { ops, end, halt, cut, cycles });
                 }
                 "s" => {
                     let mut f = rest.split_whitespace();
