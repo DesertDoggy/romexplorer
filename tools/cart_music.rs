@@ -469,13 +469,14 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, t: 
     let ops: usize = m.scripts.iter().map(|s| s.ops.len()).sum();
     let wrong: Vec<String> = zeros.iter().filter(|s| s.1 < MAP_RIGHT).take(10).map(|s| format!("{}:{:.2}", s.0, s.1)).collect();
     println!(
-        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points){}",
+        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read){}",
         started.elapsed().as_secs_f32(),
         m.songs.len(),
         ws_map::RECORD_FRAMES * 2,
         songs.len(),
         if listed.is_empty() { ", no playlist" } else { "" },
         m.scripts.len(),
+        m.patches.len(),
         if wrong.is_empty() { String::new() } else { format!("; wrong {}", wrong.join(" ")) }
     );
     t.songs += m.songs.len();
