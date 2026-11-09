@@ -264,14 +264,16 @@ fn record(
         }
         out.push(ws.sound_writes());
     }
-    finish(&mut ws, &mut cur, &mut events, frames, false);
+    // A script the recording's end cut short is left out: it ends nowhere the code was ever
+    // entered again.
+    ws.log(false);
     (out, seqs)
 }
 
 /// `seq` as a head and a cycle repeated after it: the shortest both together.
 fn head_and_cycle(seq: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let mut best = (seq.len(), 0usize);
-    for p in 1..=16.min(seq.len()) {
+    for p in 1..=64.min(seq.len()) {
         // From where on each entry is the one `p` before.
         let mut start = seq.len();
         while start > p && seq[start - 1] == seq[start - 1 - p] {
@@ -707,6 +709,8 @@ mod tests {
         for (song, alike) in map_check(&wsr, &m, &rom, 300, Fill::Zeros) {
             assert!(alike >= 0.99, "song {song}: {alike}");
         }
+        // It plays on past what was recorded.
+        assert_eq!(map_track_writes(&m, &rom, 1, RECORD_FRAMES * 3, Fill::Zeros).unwrap().len(), RECORD_FRAMES * 3);
         // Written down and read back, it plays the same.
         let back = Map::decode(&m.encode()).unwrap();
         assert_eq!(back.encode(), m.encode());
