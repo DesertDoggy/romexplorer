@@ -561,6 +561,8 @@ fn print_hes_mapcheck(path: &Path, rom: &[u8], hes: &[u8], t: &mut Tally) {
     let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     let bridged = right_with(&m, hes_map::Fill::Bridged);
     let oracle = right_with(&m, hes_map::Fill::File(&hes[0x20..]));
+    let board = right_with(&m, hes_map::Fill::Board);
+    t.board += board;
     hes_map::choose_ways(hes, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
     let saved = hes_map::Map::decode(&m.encode()).map_or(0, |back| {
         (0..back.header.songs)
@@ -584,7 +586,7 @@ fn print_hes_mapcheck(path: &Path, rom: &[u8], hes: &[u8], t: &mut Tally) {
         .unwrap_or(0);
     let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} runs; scripts up to {calls} calls){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's banks: {board}; saved map: {saved}) ({} runs; scripts up to {calls} calls){}",
         started.elapsed().as_secs_f32(),
         m.runs.len(),
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
