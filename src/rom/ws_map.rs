@@ -192,7 +192,7 @@ fn record(
     table: &mut Vec<Script>,
     index: &mut HashMap<Script, u32>,
     mut events: Option<&mut Vec<String>>,
-    mut read: Option<&mut std::collections::BTreeSet<usize>>,
+    mut read: Option<(&[bool], &mut std::collections::BTreeSet<usize>)>,
 ) -> (Vec<Vec<Write>>, Vec<(u32, Vec<u32>)>) {
     let mut ws = console(image_of(data), song);
     ws.log_cart(read.is_some());
@@ -238,11 +238,12 @@ fn record(
             }
             let in_script = cur.is_some();
             let t = ws.exec();
-            if let Some(read) = read.as_deref_mut() {
-                // The file's own bytes the game's code reads (and the sound DMA plays).
+            if let Some((unplaced, read)) = read.as_mut() {
+                // The bytes no run places that the game's code runs or reads (and the sound DMA
+                // plays): its own where a gap is bridged, else the file's.
                 let reads = ws.log_cart(true);
                 if !in_script {
-                    read.extend(reads.into_iter().map(|o| o as usize).filter(|&o| own.get(o).copied().unwrap_or(false)));
+                    read.extend(reads.into_iter().map(|o| o as usize).filter(|&o| unplaced.get(o).copied().unwrap_or(false)));
                 }
             }
             if let Some((_, ops, cycles)) = cur.as_mut() {
@@ -293,8 +294,9 @@ pub fn map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Ma
     let mut m = Map { data_len: wsr.len(), runs: layout.runs, ..Default::default() };
     let mut index = HashMap::new();
     let mut read = std::collections::BTreeSet::new();
+    let unplaced = own_bytes(wsr.len(), &m.runs, Fill::Zeros);
     for song in songs {
-        let (frames, seqs) = record(wsr, &own, song, RECORD_FRAMES, &mut m.scripts, &mut index, None, Some(&mut read));
+        let (frames, seqs) = record(wsr, &own, song, RECORD_FRAMES, &mut m.scripts, &mut index, None, Some((&unplaced, &mut read)));
         if melody(&frames).len() < music_search::MIN_MELODY {
             continue;
         }
@@ -304,8 +306,14 @@ pub fn map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Ma
         });
         m.songs.push((song, Entries { at: at.collect() }));
     }
+    // Kept where the file differs from the layout bridged from the ROM.
     let base = image_size(wsr.len()) - wsr.len();
-    m.patches = read.into_iter().filter(|&o| o >= base).map(|o| ((o - base) as u32, wsr[o - base])).collect();
+    let bridged = rebuilt(m.data_len, &m.runs, &[], rom, Fill::Bridged);
+    m.patches = read
+        .into_iter()
+        .filter(|&o| o >= base && wsr[o - base] != bridged[o - base])
+        .map(|o| ((o - base) as u32, wsr[o - base]))
+        .collect();
     Some(m)
 }
 
@@ -405,14 +413,14 @@ fn describe(s: &Script) -> String {
     )
 }
 
-/// For diagnosis: song `song` as the file plays it and as the map plays it (gaps from the
-/// file), the first frame their sound writes differ, and both runs' events up to it.
+/// For diagnosis: song `song` as the file plays it and as the map plays it (gaps bridged from
+/// the ROM, the patches over them), the first frame their sound writes differ, and both runs' events up to it.
 pub fn trace(wsr: &[u8], m: &Map, rom: &[u8], song: u8, frames: usize) -> Vec<String> {
     let own = own_bytes(m.data_len, &m.runs, Fill::Bridged);
     let mut rec = Vec::new();
     let (want, _) = record(wsr, &own, song, frames, &mut Vec::new(), &mut HashMap::new(), Some(&mut rec), None);
     let mut rep = Vec::new();
-    let got = replay(m, rom, song, frames, Fill::File(wsr), Some(&mut rep)).unwrap_or_default();
+    let got = replay(m, rom, song, frames, Fill::Bridged, Some(&mut rep)).unwrap_or_default();
     let key = |f: &Vec<Write>| f.iter().map(|w| (w.port, w.value)).collect::<Vec<_>>();
     let first = (0..want.len()).find(|&i| got.get(i).map(key) != Some(key(&want[i])));
     let mut out = vec![format!("song {song}: {} frames from the file, {} from the map; first differing frame {first:?}", want.len(), got.len())];
