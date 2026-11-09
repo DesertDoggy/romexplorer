@@ -694,7 +694,7 @@ fn index_sgc_map(rom: &[u8], key: &str, m: &super::sgc_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(SGC_MAP, key, v, out.len(), rate, timing, 2, codec, t) {
             out.push(track);
         }
@@ -758,7 +758,7 @@ fn index_hes_map(rom: &[u8], key: &str, m: &super::hes_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(HES_MAP, key, v, out.len(), rate, timing, 2, "PC Engine", t) {
             out.push(track);
         }
@@ -829,7 +829,7 @@ fn index_gb_map(rom: &[u8], key: &str, m: &super::gb_map::Map, t: &Thresholds) -
         }
         let Ok(mut song) = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(GB_MAP, key, v, out.len(), rate, timing, 2, "Game Boy", t) {
             out.push(track);
         }
