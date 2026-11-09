@@ -166,7 +166,20 @@ pub fn rebuilt(t: &Track, rom: &[u8], fill: Fill) -> Vec<u8> {
 /// Each 1/60 s frame's pitch of every voice playing, from the DSP's registers, as writes
 /// [`melody`] reads.
 pub fn frames(spc: &[u8], count: usize) -> Option<Vec<Vec<Write>>> {
-    let mut apu = Apu::from_spc(spc).ok()?;
+    frames_of(&mut Apu::from_spc(spc).ok()?, count)
+}
+
+/// The melody a booted game's sound chip plays (`boot`, its `.spc` snapshot) once `value` is
+/// written to `port`, as the game's main CPU would to start a song.
+pub fn probe(boot: &[u8], port: usize, value: u8, count: usize) -> HashSet<u64> {
+    let Ok(mut apu) = Apu::from_spc(boot) else { return HashSet::new() };
+    apu.write_port(port, value);
+    // A frame for the driver to take the command in before listening.
+    apu.advance(FRAME_CLOCKS * 4);
+    frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
+}
+
+fn frames_of(apu: &mut Apu, count: usize) -> Option<Vec<Vec<Write>>> {
     let mut out = Vec::with_capacity(count);
     let mut last = [u16::MAX; 8];
     for _ in 0..count {

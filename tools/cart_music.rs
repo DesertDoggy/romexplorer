@@ -235,6 +235,9 @@ struct Options {
     /// `--write-maps <dir>`: with `--originals`, build each matched ROM's music map the way the
     /// app does and keep it under `<dir>` (`nes/<key>.nesmap`, ...), for `--pack-maps`.
     write_maps: Option<PathBuf>,
+    /// `--spcprobe`: with `--originals`, boot each SNES ROM, then start songs by writing each
+    /// value to each port of its sound chip, and count the `.spc` tracks that start that way.
+    spcprobe: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -626,6 +629,78 @@ fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     *t.reasons.entry(cover.into()).or_default() += 1;
 }
 
+/// `--spcprobe` for a SNES ROM and its matched set: after the game's own boot (Start pressed
+/// now and then), each value 0-127 written to each of the four ports, and the tracks of the
+/// set whose melody the chip then plays.
+fn print_spc_probe(path: &Path, rom: &[u8], set: &Path, seconds: u32, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
+    let real: Vec<std::collections::HashSet<u64>> = spcs
+        .iter()
+        .map(|s| spc_map::frames(s, CHECK_FRAMES).map(|f| spc_map::melody(&f)).unwrap_or_default())
+        .filter(|m| m.len() >= music_search::MIN_MELODY)
+        .collect();
+    if real.is_empty() {
+        println!("{name}: probe: no .spc with a melody in the set");
+        *t.reasons.entry("no .spc with a melody".into()).or_default() += 1;
+        return;
+    }
+    let options = romexplorer::rom::snes_capture::Options { seconds: seconds as f32, keep_audio: false, press_start: true, watch_register: None };
+    let capture = match romexplorer::rom::snes_capture::capture(rom, &options) {
+        Ok(c) if !c.driver_starts.is_empty() => c,
+        Ok(_) => {
+            println!("{name}: probe: no sound driver started");
+            *t.reasons.entry("no sound driver started".into()).or_default() += 1;
+            return;
+        }
+        Err(e) => {
+            println!("{name}: probe: {e}");
+            *t.reasons.entry("the boot failed".into()).or_default() += 1;
+            return;
+        }
+    };
+    let boot_s = started.elapsed().as_secs_f32();
+    // Which track each (port, value) starts, best match only.
+    let mut right = vec![None::<(usize, u8)>; real.len()];
+    let at_boot = spc_map::melody(&spc_map::frames(&capture.spc, CHECK_FRAMES).unwrap_or_default());
+    let booted = real.iter().filter(|r| music_search::alike(r, &at_boot) >= MAP_RIGHT).count();
+    for port in 0..4 {
+        for value in 0..=0x7Fu8 {
+            let m = spc_map::probe(&capture.spc, port, value, CHECK_FRAMES);
+            if m.len() < music_search::MIN_MELODY {
+                continue;
+            }
+            for (i, r) in real.iter().enumerate() {
+                if right[i].is_none() && music_search::alike(r, &m) >= MAP_RIGHT {
+                    right[i] = Some((port, value));
+                }
+            }
+        }
+    }
+    let found = right.iter().flatten().count();
+    let mut by_port = [0usize; 4];
+    right.iter().flatten().for_each(|(p, _)| by_port[*p] += 1);
+    println!(
+        "{name}: probe, {:.1} s (boot {boot_s:.1} s): {found} of {} tracks started by a port write (by port 0-3: {by_port:?}); playing at boot: {booted}",
+        started.elapsed().as_secs_f32(),
+        real.len()
+    );
+    t.checked[0] += 1;
+    t.checked[3] += real.len();
+    t.checked[4] += found;
+    t.saved += found;
+    let bucket = match found as f64 / real.len() as f64 {
+        s if s >= 1.0 => "all tracks started",
+        s if s >= 0.9 => "90-99% started",
+        s if s >= 0.5 => "50-90% started",
+        s if s > 0.0 => "under 50% started",
+        _ => "none started",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
 /// `--mapcheck` for a PC Engine HuCard and its matched HES.
 fn print_hes_mapcheck(path: &Path, rom: &[u8], hes: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -901,7 +976,9 @@ fn main() {
         layout: args.iter().any(|a| a == "--layout"),
         mapcheck: args.iter().any(|a| a == "--mapcheck"),
         write_maps: None,
+        spcprobe: args.iter().any(|a| a == "--spcprobe"),
     };
+    args.retain(|a| a != "--spcprobe");
     // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
     // rommusic ship (assets/music_maps.zst).
     if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
@@ -1119,7 +1196,11 @@ fn main() {
                 tally.entry("Virtual Boy").or_default(),
             ),
             Some("SNES") => {
-                if o.mapcheck {
+                if o.spcprobe {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_probe(&path, &rom, &set, o.seconds, tally.entry("SNES").or_default());
+                    }
+                } else if o.mapcheck {
                     if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
                         print_spc_mapcheck(&path, &rom, &set, tally.entry("SNES").or_default());
                     }
