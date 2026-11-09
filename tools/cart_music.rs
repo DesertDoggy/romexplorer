@@ -238,6 +238,9 @@ struct Options {
     /// `--spcprobe`: with `--originals`, boot each SNES ROM, then start songs by writing each
     /// value to each port of its sound chip, and count the `.spc` tracks that start that way.
     spcprobe: bool,
+    /// `--spcsearch`: with `--originals`, run each SNES ROM, find the work RAM byte it asks
+    /// for songs with, play each value of it and count the matched set's tracks heard.
+    spcsearch: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -701,6 +704,64 @@ fn print_spc_probe(path: &Path, rom: &[u8], set: &Path, seconds: u32, t: &mut Ta
     *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
+/// `--spcsearch` for a SNES ROM and its matched set (see [`snes_songs`]).
+fn print_spc_search(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let real: Vec<std::collections::HashSet<u64>> = rip_sets::all_with_magic(set, b"SNES-SPC700")
+        .iter()
+        .map(|s| spc_map::frames(s, CHECK_FRAMES).map(|f| spc_map::melody(&f)).unwrap_or_default())
+        .filter(|m| m.len() >= music_search::MIN_MELODY)
+        .collect();
+    if real.is_empty() {
+        println!("{name}: search: no .spc with a melody in the set");
+        *t.reasons.entry("no .spc with a melody".into()).or_default() += 1;
+        return;
+    }
+    let found = match romexplorer::rom::snes_songs::find(rom, 0..=0x7Fu8, CHECK_FRAMES) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("{name}: search, {:.1} s: {e}", started.elapsed().as_secs_f32());
+            *t.reasons.entry(e).or_default() += 1;
+            return;
+        }
+    };
+    let mut right = vec![None::<u8>; real.len()];
+    for (v, m) in &found.songs {
+        for (i, r) in real.iter().enumerate() {
+            if right[i].is_none() && music_search::alike(r, m) >= MAP_RIGHT {
+                right[i] = Some(*v);
+            }
+        }
+    }
+    let n = right.iter().flatten().count();
+    let mut values: Vec<u8> = right.iter().flatten().copied().collect();
+    values.sort_unstable();
+    values.dedup();
+    println!(
+        "{name}: search, {:.1} s: {n} of {} tracks by the request at ${:05X} (candidate {}; {} values with a melody; values heard right: {})",
+        started.elapsed().as_secs_f32(),
+        real.len(),
+        found.var,
+        found.tried,
+        found.songs.len(),
+        values.iter().map(|v| format!("{v:02X}")).collect::<Vec<_>>().join(" ")
+    );
+    t.checked[0] += 1;
+    t.checked[3] += real.len();
+    t.checked[4] += n;
+    t.saved += n;
+    let bucket = match n as f64 / real.len() as f64 {
+        s if s >= 1.0 => "all tracks heard",
+        s if s >= 0.9 => "90-99% heard",
+        s if s >= 0.5 => "50-90% heard",
+        s if s > 0.0 => "under 50% heard",
+        _ => "none heard",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
 /// `--mapcheck` for a PC Engine HuCard and its matched HES.
 fn print_hes_mapcheck(path: &Path, rom: &[u8], hes: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -977,8 +1038,9 @@ fn main() {
         mapcheck: args.iter().any(|a| a == "--mapcheck"),
         write_maps: None,
         spcprobe: args.iter().any(|a| a == "--spcprobe"),
+        spcsearch: args.iter().any(|a| a == "--spcsearch"),
     };
-    args.retain(|a| a != "--spcprobe");
+    args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
     // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
     // rommusic ship (assets/music_maps.zst).
     if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
@@ -1196,7 +1258,11 @@ fn main() {
                 tally.entry("Virtual Boy").or_default(),
             ),
             Some("SNES") => {
-                if o.spcprobe {
+                if o.spcsearch {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_search(&path, &rom, &set, tally.entry("SNES").or_default());
+                    }
+                } else if o.spcprobe {
                     if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
                         print_spc_probe(&path, &rom, &set, o.seconds, tally.entry("SNES").or_default());
                     }
