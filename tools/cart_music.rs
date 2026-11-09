@@ -88,6 +88,8 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "wsc"
                 | "vb"
                 | "gba"
+                | "sfc"
+                | "smc"
                 | "ngp"
                 | "ngc"
                 | "npc"
