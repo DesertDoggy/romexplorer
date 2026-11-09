@@ -165,6 +165,10 @@ struct Player {
     data: Vec<u8>,
     banked: bool,
     fds: bool,
+    /// The header's sound chip byte: the cartridge chips' writes are kept too.
+    chips: u8,
+    n163_addr: u8,
+    n163_ram: [u8; 128],
     writes: Vec<Write>,
     /// For each byte of `mem`, 1 + its offset in the file's data (after the header); 0 for
     /// none.
@@ -190,6 +194,13 @@ impl Bus for Player {
                 }
                 self.mem[i]
             }
+            // The Namco 163's memory, read through its data port (which counts up as on a
+            // write): drivers read back what they change.
+            0x4800..=0x4FFF if self.chips & 16 != 0 => {
+                let v = self.n163_ram[(self.n163_addr & 0x7F) as usize];
+                self.n163_step();
+                v
+            }
             _ => 0,
         }
     }
@@ -197,6 +208,22 @@ impl Bus for Player {
     fn write(&mut self, addr: u16, v: u8) {
         if let Some(log) = self.log.as_mut() {
             log.push((addr, v));
+        }
+        if let Some(t) = chip_target(self.chips, addr) {
+            use super::nes_apu::Target;
+            match t {
+                Target::N163Addr => self.n163_addr = v,
+                Target::N163Data => {
+                    // Each write with its own address, so a chip fed only the writes lands
+                    // them where reads moved the address to.
+                    let a = self.n163_addr & 0x7F;
+                    self.writes.push(Write { at: 0, port: super::nes_music::port(Target::N163Addr, 0xF800), value: a as u16 });
+                    self.writes.push(Write { at: 0, port: super::nes_music::port(t, addr), value: v as u16 });
+                    self.n163_ram[a as usize] = v;
+                    self.n163_step();
+                }
+                _ => self.writes.push(Write { at: 0, port: super::nes_music::port(t, addr), value: v as u16 }),
+            }
         }
         match addr {
             0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF] = v,
@@ -226,6 +253,12 @@ impl Bus for Player {
 }
 
 impl Player {
+    fn n163_step(&mut self) {
+        if self.n163_addr & 0x80 != 0 {
+            self.n163_addr = 0x80 | (self.n163_addr.wrapping_add(1) & 0x7F);
+        }
+    }
+
     /// Puts 4 KB bank `bank` of the (padded) data at slot `slot` ($6000 + slot * 4 KB).
     fn bank(&mut self, slot: usize, bank: u8) {
         let from = bank as usize * 0x1000;
@@ -351,6 +384,9 @@ pub struct Header {
     pub banks: [u8; 8],
     pub fds: bool,
     pub songs: u8,
+    /// The header's sound chip byte: 1 VRC6, 2 VRC7, 4 Disk System, 8 MMC5, 16 Namco 163,
+    /// 32 Sunsoft 5B.
+    pub chips: u8,
 }
 
 impl Header {
@@ -366,8 +402,24 @@ impl Header {
             banks: nsf[0x70..0x78].try_into().ok()?,
             fds: nsf[0x7B] & 4 != 0,
             songs: nsf[6],
+            chips: nsf[0x7B],
         })
     }
+}
+
+/// Where a write to `addr` goes among the cartridge sound chips `chips` (an NSF header's
+/// chip byte) at the addresses an NSF uses for them.
+fn chip_target(chips: u8, addr: u16) -> Option<super::nes_apu::Target> {
+    use super::nes_apu::Target;
+    Some(match addr {
+        0x9000..=0x9002 | 0xA000..=0xA002 | 0xB000..=0xB002 if chips & 1 != 0 => Target::Vrc6 { osc: ((addr >> 12) - 9) as u8, reg: (addr & 3) as u8 },
+        0x5000..=0x5015 if chips & 8 != 0 => Target::Mmc5,
+        0x4800..=0x4FFF if chips & 16 != 0 => Target::N163Data,
+        0xF800..=0xFFFF if chips & 16 != 0 => Target::N163Addr,
+        0xC000..=0xDFFF if chips & 32 != 0 => Target::Fme7Latch,
+        0xE000..=0xFFFF if chips & 32 != 0 => Target::Fme7Data,
+        _ => return None,
+    })
 }
 
 /// A player for `data` laid out as header `h` says.
@@ -380,6 +432,9 @@ fn player(h: &Header, data: &[u8]) -> Option<Player> {
         data: Vec::new(),
         banked,
         fds,
+        chips: h.chips,
+        n163_addr: 0,
+        n163_ram: [0; 128],
         writes: Vec::new(),
         src: vec![0; 0xA000],
         pad: (load & 0xFFF) as usize,
@@ -412,6 +467,91 @@ fn player(h: &Header, data: &[u8]) -> Option<Player> {
 /// and 2, and the triangle.
 pub fn melody(frames: &[Vec<Write>]) -> HashSet<u64> {
     music_search::melody(frames, &[(0x4002, 0x4003), (0x4006, 0x4007), (0x400A, 0x400B)])
+}
+
+/// [`melody`] with the tone channels of the sound chips `chips` (an NSF header's chip byte)
+/// too: a game whose music is on its cartridge's chip has little on the console's own. The
+/// chips' writes are as [`super::nes_music`] tags them (the target in the port's high bits).
+pub fn melody_chips(frames: &[Vec<Write>], chips: u8) -> HashSet<u64> {
+    if chips & 0x3D == 0 {
+        return melody(frames);
+    }
+    // Each chip channel's pitch as a synthetic channel: ports 0x100000 + 2n (low byte) and
+    // + 1 (the next 3 bits), of the period or frequency shifted to about 11 bits.
+    let (mut n163_addr, mut n163) = (0u8, [0u8; 128]);
+    let (mut fme7_latch, mut fme7) = (0u8, [0u8; 16]);
+    let mut vrc6 = [[0u8; 3]; 3];
+    let mut regs: HashMap<u16, u8> = HashMap::new();
+    let pitched: Vec<Vec<Write>> = frames
+        .iter()
+        .map(|f| {
+            let mut out = Vec::with_capacity(f.len());
+            let put = |out: &mut Vec<Write>, ch: u32, pitch: u32| {
+                let v = (pitch & 0x7FF) as u16;
+                out.push(Write { at: 0, port: 0x100000 + ch * 2, value: v & 0xFF });
+                out.push(Write { at: 0, port: 0x100001 + ch * 2, value: v >> 8 });
+            };
+            for w in f {
+                out.push(*w);
+                let (code, addr, v) = (w.port >> 16, w.port as u16, w.value as u8);
+                match code {
+                    // VRC6: two pulses and the saw, 12-bit periods.
+                    0x10..=0x1F if chips & 1 != 0 => {
+                        let (osc, reg) = (((code >> 2) & 3) as usize, (code & 3) as usize);
+                        if osc < 3 && reg < 3 {
+                            vrc6[osc][reg] = v;
+                            if reg > 0 {
+                                put(&mut out, osc as u32, (vrc6[osc][2] as u32 & 0x0F) << 8 | vrc6[osc][1] as u32);
+                            }
+                        }
+                    }
+                    // Namco 163: its 18-bit frequencies in its own RAM, through an address
+                    // port that can count up.
+                    0x20 if chips & 16 != 0 => n163_addr = v,
+                    0x21 if chips & 16 != 0 => {
+                        let a = (n163_addr & 0x7F) as usize;
+                        n163[a] = v;
+                        if n163_addr & 0x80 != 0 {
+                            n163_addr = 0x80 | ((n163_addr + 1) & 0x7F);
+                        }
+                        if a >= 0x40 && a & 7 <= 4 {
+                            let b = a & !7;
+                            let freq = (n163[b + 4] as u32 & 3) << 16 | (n163[b + 2] as u32) << 8 | n163[b] as u32;
+                            put(&mut out, 3 + (b as u32 - 0x40) / 8, freq >> 7);
+                        }
+                    }
+                    // Sunsoft 5B: three 12-bit tone periods through a latch.
+                    0x22 if chips & 32 != 0 => fme7_latch = v & 0x0F,
+                    0x23 if chips & 32 != 0 => {
+                        fme7[fme7_latch as usize] = v;
+                        if fme7_latch < 6 {
+                            let c = (fme7_latch / 2) as usize;
+                            put(&mut out, 11 + c as u32, (fme7[c * 2 + 1] as u32 & 0x0F) << 8 | fme7[c * 2] as u32);
+                        }
+                    }
+                    // MMC5's two pulses, as the APU's.
+                    0x24 if chips & 8 != 0 && matches!(addr, 0x5002 | 0x5003 | 0x5006 | 0x5007) => {
+                        regs.insert(addr, v);
+                        let base = addr & !1;
+                        let reg = |a: u16| regs.get(&a).copied().unwrap_or(0) as u32;
+                        put(&mut out, 14 + (base as u32 - 0x5002) / 4, (reg(base + 1) & 7) << 8 | reg(base));
+                    }
+                    // The Disk System's wave channel: a 12-bit frequency (untagged from a
+                    // file, tagged from the board).
+                    0 | 0x25 if chips & 4 != 0 && matches!(addr, 0x4082 | 0x4083) => {
+                        regs.insert(addr, v);
+                        let reg = |a: u16| regs.get(&a).copied().unwrap_or(0) as u32;
+                        put(&mut out, 16, (reg(0x4083) & 0x0F) << 8 | reg(0x4082));
+                    }
+                    _ => {}
+                }
+            }
+            out
+        })
+        .collect();
+    let mut channels = vec![(0x4002, 0x4003), (0x4006, 0x4007), (0x400A, 0x400B)];
+    channels.extend((0..17u32).map(|c| (0x100000 + c * 2, 0x100001 + c * 2)));
+    music_search::melody(&pitched, &channels)
 }
 
 pub use music_search::alike;
@@ -741,6 +881,9 @@ pub enum Fill<'a> {
     Bridged,
     /// The file's own bytes (an oracle: what the map would play if it held them).
     File(&'a [u8]),
+    /// A Disk System game's gap from the disk file a neighbouring run lies in, at the gap's
+    /// place in that file's load range.
+    DiskFiles,
 }
 
 /// The file's data as a map rebuilds it from the ROM: its runs, and the gaps as `fill` says.
@@ -757,7 +900,7 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
     }
     // A Disk System game's files each load at their own address: a gap is filled from the
     // file a neighbouring run lies in, at the gap's place in that file's load range.
-    if fill == Fill::Bridged && m.header.fds {
+    if fill == Fill::DiskFiles {
         if let Ok(disk) = super::fds::parse(prg) {
             let files: Vec<(u16, usize, usize)> =
                 disk.sides.iter().flat_map(|s| &s.files).filter(|f| f.kind == 0).map(|f| (f.addr, f.at, f.data.len())).collect();
@@ -864,11 +1007,12 @@ pub fn map_track_writes(m: &Map, prg: &[u8], song: u8, frames: usize, fill: Fill
 pub fn map_check(nsf: &[u8], m: &Map, prg: &[u8], frames: usize, fill: Fill) -> Vec<Option<f64>> {
     (0..m.header.songs)
         .map(|t| {
-            let real = melody(&track_writes(nsf, t, frames)?);
+            let chips = nsf.get(0x7B).copied().unwrap_or(0);
+            let real = melody_chips(&track_writes(nsf, t, frames)?, chips);
             if real.len() < music_search::MIN_MELODY {
                 return None;
             }
-            let mine = map_track_writes(m, prg, t, frames, fill).map(|w| melody(&w)).unwrap_or_default();
+            let mine = map_track_writes(m, prg, t, frames, fill).map(|w| melody_chips(&w, chips)).unwrap_or_default();
             Some(alike(&real, &mine))
         })
         .collect()
@@ -1147,14 +1291,15 @@ pub fn saved_check(nsf: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option
 fn played_check(nsf: &[u8], songs: u8, frames: usize, play: impl Fn(u8) -> Option<Vec<Vec<Write>>>) -> Vec<Option<f64>> {
     (0..songs)
         .map(|t| {
-            let real = melody(&track_writes(nsf, t, frames)?);
+            let chips = nsf.get(0x7B).copied().unwrap_or(0);
+            let real = melody_chips(&track_writes(nsf, t, frames)?, chips);
             if real.len() < music_search::MIN_MELODY {
                 return None;
             }
             let Some(mine) = play(t) else { return Some(0.0) };
             // The periods as written, and by notes at either clock: a PAL release may keep
             // the NTSC period table or have its own (the header doesn't always say PAL).
-            let raw = alike(&real, &melody(&mine));
+            let raw = alike(&real, &melody_chips(&mine, chips));
             let real_writes = track_writes(nsf, t, frames)?;
             let mut best = raw;
             for per_write in [false, true] {
@@ -1175,6 +1320,8 @@ pub enum Way {
     Layout,
     /// The same with the gaps left empty (a gap the ROM fills with other bytes).
     Zeros,
+    /// A Disk System game's layout, gaps filled per disk file ([`Fill::DiskFiles`]).
+    DiskFiles,
     /// The game's own board ([`cart_track_writes`]).
     Board,
     /// Neither plays it right.
@@ -1187,7 +1334,18 @@ pub fn program(rom: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
     if super::fds::is_disk(rom) {
         return Some(std::sync::Arc::new(super::fds::strip_header(rom).to_vec()));
     }
-    super::nes_cart::parse(rom).ok().map(|h| h.prg)
+    if let Ok(h) = super::nes_cart::parse(rom) {
+        return Some(h.prg);
+    }
+    // A headerless dump starts with its program data too; the character data after it is
+    // never in a run.
+    is_headerless(rom).then(|| std::sync::Arc::new(rom.to_vec()))
+}
+
+/// Whether `rom` looks like a cartridge dumped without its iNES header (program then
+/// character data, whole 8 KB banks). Such a dump has no board way: its mapper is unknown.
+pub fn is_headerless(rom: &[u8]) -> bool {
+    rom.len() >= 0x4000 && rom.len() % 0x2000 == 0 && super::nes_cart::parse(rom).is_err() && !super::fds::is_disk(rom)
 }
 
 /// Picks, per track, the player that plays it most like the file (at least `right`). A Disk
@@ -1195,23 +1353,23 @@ pub fn program(rom: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
 pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f64) {
     let Some(prg) = program(rom) else { return };
     let layout = map_check(nsf, m, &prg, frames, Fill::Bridged);
-    let board = if super::fds::is_disk(rom) { vec![None; layout.len()] } else { cart_check(nsf, m, rom, frames) };
+    let board = if super::nes_cart::parse(rom).is_err() { vec![None; layout.len()] } else { cart_check(nsf, m, rom, frames) };
     // The empty-gap layout only where neither of the others plays a track right.
-    let zeros = if layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right) {
-        map_check(nsf, m, &prg, frames, Fill::Zeros)
-    } else {
-        Vec::new()
-    };
+    let missed = layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right);
+    let zeros = if missed { map_check(nsf, m, &prg, frames, Fill::Zeros) } else { Vec::new() };
+    let files = if missed && m.header.fds { map_check(nsf, m, &prg, frames, Fill::DiskFiles) } else { Vec::new() };
     m.ways = (0..layout.len())
         .map(|i| {
             let score = |v: &Vec<Option<f64>>| v.get(i).copied().flatten().unwrap_or(0.0);
-            let (l, b, z) = (score(&layout), score(&board), score(&zeros));
+            let (l, b, z, f) = (score(&layout), score(&board), score(&zeros), score(&files));
             if l >= right && l >= b {
                 Way::Layout
             } else if b >= right {
                 Way::Board
             } else if z >= right {
                 Way::Zeros
+            } else if f >= right {
+                Way::DiskFiles
             } else {
                 Way::None
             }
@@ -1229,7 +1387,7 @@ const WAY_FRAMES: usize = 600;
 pub fn build_map(nsf: &[u8], rom: &[u8]) -> Option<Map> {
     let prg = program(rom)?;
     let mut m = map(nsf, &prg)?;
-    if !super::fds::is_disk(rom) {
+    if super::nes_cart::parse(rom).is_ok() {
         choose_board(nsf, &mut m, rom);
     }
     choose_ways(nsf, &mut m, rom, WAY_FRAMES, MAP_RIGHT);
@@ -1243,6 +1401,7 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
         Way::Board => cart_track_writes(m, rom, song, frames),
         Way::Layout => map_track_writes(m, &program(rom)?, song, frames, Fill::Bridged),
         Way::Zeros => map_track_writes(m, &program(rom)?, song, frames, Fill::Zeros),
+        Way::DiskFiles => map_track_writes(m, &program(rom)?, song, frames, Fill::DiskFiles),
         Way::None => None,
     }
 }
@@ -1276,11 +1435,20 @@ impl MapSong {
                 let s = BoardSong::open(m, rom, song).ok_or("the song didn't start")?;
                 MapPlayer::Board(s, nes.new_chip(rate)?)
             }
-            Some(way @ (Way::Layout | Way::Zeros)) => {
+            Some(way @ (Way::Layout | Way::Zeros | Way::DiskFiles)) => {
                 let prg = program(rom).ok_or("not a NES cartridge or Disk System image")?;
-                let fill = if *way == Way::Zeros { Fill::Zeros } else { Fill::Bridged };
+                let fill = match way {
+                    Way::Zeros => Fill::Zeros,
+                    Way::DiskFiles => Fill::DiskFiles,
+                    _ => Fill::Bridged,
+                };
                 let s = LayoutSong::open(m, &prg, song, fill).ok_or("the song didn't start")?;
-                let chips = if m.header.fds { super::nes_apu::CHIP_FDS } else { 0 };
+                let c = m.header.chips | if m.header.fds { 4 } else { 0 };
+                use super::nes_apu::{CHIP_FDS, CHIP_FME7, CHIP_MMC5, CHIP_N163, CHIP_VRC6};
+                let chips = [(1, CHIP_VRC6), (4, CHIP_FDS), (8, CHIP_MMC5), (16, CHIP_N163), (32, CHIP_FME7)]
+                    .iter()
+                    .filter(|(bit, _)| c & bit != 0)
+                    .fold(0, |a, (_, chip)| a | chip);
                 MapPlayer::Layout(s, super::nes_apu::Apu::new(rate, pal, chips)?, cycles)
             }
             _ => return Err("the map has no way to play this song".into()),
@@ -1311,11 +1479,13 @@ impl MapSong {
                 }
                 apu.set_reader(Some(read), &*s as *const LayoutSong as *mut std::ffi::c_void);
                 for x in &w {
-                    let t = match x.port {
-                        0x4040..=0x40FF => super::nes_apu::Target::Fds,
-                        _ => super::nes_apu::Target::Apu,
+                    let (t, addr) = match x.port {
+                        0x4040..=0x40FF => (super::nes_apu::Target::Fds, x.port as u16),
+                        0..=0xFFFF => (super::nes_apu::Target::Apu, x.port as u16),
+                        // A cartridge chip's, tagged by the file's player.
+                        _ => super::nes_music::target(x.port),
                     };
-                    apu.write(x.at.min(*cycles), t, x.port as u16, x.value as u8);
+                    apu.write(x.at.min(*cycles), t, addr, x.value as u8);
                 }
                 apu.end_frame(*cycles, out);
                 apu.set_reader(None, std::ptr::null_mut());
@@ -1343,7 +1513,7 @@ impl Map {
         };
         let mut out = vec![
             "nesmap 1".to_string(),
-            format!("h {:x} {:x} {:x} {} {} {}", h.load, h.init, h.play, hex(&h.banks), h.fds as u8, h.songs),
+            format!("h {:x} {:x} {:x} {} {} {} {:x}", h.load, h.init, h.play, hex(&h.banks), h.fds as u8, h.songs, h.chips),
             format!("d {:x}", self.data_len),
             format!("r {}", self.runs.iter().map(|r| format!("{:x}:{:x}:{:x}", r.data, r.len, r.rom)).collect::<Vec<_>>().join(" ")),
             format!("w {} {}", self.board.fixed as u8, self.board.pin as u8),
@@ -1364,7 +1534,7 @@ impl Map {
         }
         out.push(format!(
             "s {}",
-            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::Board => 'b', Way::None => '-' }).collect::<String>()
+            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::DiskFiles => 'f', Way::Board => 'b', Way::None => '-' }).collect::<String>()
         ));
         out.join("\n")
     }
@@ -1391,7 +1561,7 @@ impl Map {
                 .collect()
         };
         let mut m = Map {
-            header: Header { load: 0, init: 0, play: 0, banks: [0; 8], fds: false, songs: 0 },
+            header: Header { load: 0, init: 0, play: 0, banks: [0; 8], fds: false, songs: 0, chips: 0 },
             data_len: 0,
             runs: Vec::new(),
             play: Vec::new(),
@@ -1405,7 +1575,7 @@ impl Map {
         for line in lines {
             let f: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
             match f.first().copied() {
-                Some("h") if f.len() == 7 => {
+                Some("h") if f.len() == 7 || f.len() == 8 => {
                     let b = f[4].as_bytes();
                     let mut banks = [0u8; 8];
                     for (i, c) in b.chunks(2).enumerate().take(8) {
@@ -1418,6 +1588,10 @@ impl Map {
                         banks,
                         fds: f[5] == "1",
                         songs: f[6].parse().ok()?,
+                        chips: match f.get(7) {
+                            Some(c) => num(c)? as u8,
+                            None => if f[5] == "1" { 4 } else { 0 },
+                        },
                     };
                     m.tracks = vec![None; m.header.songs as usize];
                     m.plays = vec![None; m.header.songs as usize];
@@ -1453,7 +1627,7 @@ impl Map {
                     *list.get_mut(i)? = Some(ops(&f[2..])?);
                 }
                 Some("s") => {
-                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'b' => Way::Board, _ => Way::None }).collect();
+                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'f' => Way::DiskFiles, 'b' => Way::Board, _ => Way::None }).collect();
                 }
                 _ => {}
             }

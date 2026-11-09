@@ -1465,9 +1465,143 @@ pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Re
     })
 }
 
+/// Every write, port and value, for [`measure_frames_by_writes`].
+pub fn every_write(w: &Write) -> Option<u64> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (w.port, w.value).hash(&mut h);
+    Some(h.finish())
+}
+
+/// [`measure_frames`] for a player whose play routine runs at its own timer's rate, so one
+/// frame holds one call and the next two: the frames never repeat even when the song does.
+/// The loop is found in the stream of writes instead, with the frames left out of it, each
+/// write as `note` sees it (None: not part of the notes; a driver's vibrato or duty sweep can
+/// run on a count that doesn't restart with the loop). Every write is searched as well, for
+/// a track with too few notes to tell, and the first loop either finds is taken.
+pub fn measure_frames_by_writes(
+    frame_rate: f64,
+    mut note: impl FnMut(&Write) -> Option<u64>,
+    mut next: impl FnMut(&mut Vec<i16>) -> Result<Vec<Write>, String>,
+) -> Result<Timing, String> {
+    let max_frames = (MEASURE_FRAMES as f64 * frame_rate / 60.0) as usize;
+    let mut last_loud = 0usize;
+    let mut samples = Vec::new();
+    let (mut notes, mut all) = (WriteLoops::default(), WriteLoops::default());
+    for f in 0..max_frames {
+        samples.clear();
+        let writes = next(&mut samples)?;
+        if samples.iter().any(|s| s.unsigned_abs() > AUDIBLE) {
+            last_loud = f;
+        }
+        if f > last_loud + SILENT_END_FRAMES {
+            return Ok(Timing { frames: last_loud + 1, looping: None });
+        }
+        let mut found = None;
+        for w in &writes {
+            if let Some(t) = note(w) {
+                found = found.or(notes.push(t, f));
+            }
+            found = found.or(all.push(every_write(w).unwrap_or(0), f));
+        }
+        if let Some((a, b)) = found {
+            return Ok(Timing { frames: b, looping: Some((a, b - a)) });
+        }
+        notes.end_frame(f);
+        all.end_frame(f);
+    }
+    Ok(Timing { frames: max_frames, looping: None })
+}
+
+/// A stream of writes as tokens, and the first stretch of it that repeats.
+#[derive(Default)]
+struct WriteLoops {
+    tokens: Vec<u64>,
+    frame_of: Vec<usize>,
+    seen: HashMap<u64, usize>,
+    /// How many tokens a window holds: those of the first LOOP_WINDOW frames (0 until then).
+    window: usize,
+    drop: u64,
+    rolling: u64,
+}
+
+impl WriteLoops {
+    const BASE: u64 = 0x100_0000_01B3;
+
+    /// Adds a token from frame `f`; the loop's (start, repeat) frames once one is found.
+    fn push(&mut self, t: u64, f: usize) -> Option<(usize, usize)> {
+        self.tokens.push(t);
+        self.frame_of.push(f);
+        let window = self.window;
+        if window == 0 {
+            return None;
+        }
+        let end = self.tokens.len();
+        self.rolling = self.rolling.wrapping_mul(Self::BASE).wrapping_add(t);
+        if end > window {
+            self.rolling = self.rolling.wrapping_sub(self.tokens[end - 1 - window].wrapping_mul(self.drop));
+        }
+        if end < window {
+            return None;
+        }
+        let start = end - window;
+        match self.seen.get(&self.rolling) {
+            Some(&first)
+                if self.frame_of[start] - self.frame_of[first] >= MIN_LOOP_FRAMES
+                    && self.tokens[first..first + window] == self.tokens[start..end] =>
+            {
+                Some((self.frame_of[first], self.frame_of[start]))
+            }
+            Some(_) => None,
+            None => {
+                self.seen.insert(self.rolling, start);
+                None
+            }
+        }
+    }
+
+    /// After frame `f`: fixes the window's length once LOOP_WINDOW frames have gone by.
+    fn end_frame(&mut self, f: usize) {
+        if self.window != 0 || f + 1 < LOOP_WINDOW || self.tokens.len() < 16 {
+            return;
+        }
+        let window = self.tokens.len();
+        self.window = window;
+        self.drop = (0..window).fold(1u64, |d, _| d.wrapping_mul(Self::BASE));
+        self.rolling = self.tokens.iter().fold(0u64, |h, &t| h.wrapping_mul(Self::BASE).wrapping_add(t));
+        self.seen.insert(self.rolling, 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loop_is_found_in_the_writes_when_the_frames_never_repeat() {
+        // A 100-call tune, after a 30-call intro, played 1.37 calls a frame.
+        let call = |n: usize| -> Vec<Write> {
+            let note = if n < 30 { 900 + n as u16 } else { ((n - 30) % 100) as u16 * 7 % 61 };
+            vec![Write { at: 0, port: 0x10, value: note & 0xFF }, Write { at: 0, port: 0x11, value: note >> 8 }]
+        };
+        let (mut due, mut n) = (0.0f64, 0usize);
+        let t = measure_frames_by_writes(60.0, every_write, |out| {
+            out.clear();
+            out.resize(10, 1000);
+            due += 1.37;
+            let mut w = Vec::new();
+            while due >= 1.0 {
+                due -= 1.0;
+                w.extend(call(n));
+                n += 1;
+            }
+            Ok(w)
+        })
+        .unwrap();
+        let (start, len) = t.looping.expect("a loop");
+        // 100 calls at 1.37 a frame, give or take a frame.
+        assert!((72..=74).contains(&len), "{len}");
+        assert!(start <= 30, "{start}");
+    }
 
     #[test]
     fn recipes_round_trip() {

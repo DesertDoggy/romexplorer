@@ -70,6 +70,21 @@ struct Player {
     used: Option<Vec<bool>>,
     /// Every write, while recording.
     log: Option<Vec<(u16, u8)>>,
+    /// How writes to $2000-$3FFF pick the bank: the GBS's way, or the game's cartridge's.
+    mbc: Mbc,
+    /// The bank the board last put the game at for a call (what a restore of bank 0 means).
+    home: usize,
+}
+
+/// A cartridge's bank controller, as far as picking the ROM bank at $4000 goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mbc {
+    /// A GBS: any value, 0 meaning 1.
+    Gbs,
+    /// MBC1 (and the rest that take 5-7 bits, 0 meaning 1).
+    Mbc1,
+    /// MBC5: $2000-$2FFF the low 8 bits, $3000-$3FFF the 9th; 0 is bank 0.
+    Mbc5,
 }
 
 impl Player {
@@ -78,7 +93,30 @@ impl Player {
         rom.extend_from_slice(data);
         let mut io = [0; 0x80];
         io[0x26] = 0x80;
-        Player { load: h.load as usize, data_len: data.len(), rom, bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None }
+        Player { load: h.load as usize, data_len: data.len(), rom, bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None, mbc: Mbc::Gbs, home: 1 }
+    }
+
+    /// The game's own ROM in its cartridge, for the board player.
+    fn board(rom: &[u8]) -> Self {
+        let mut io = [0; 0x80];
+        io[0x26] = 0x80;
+        let mbc = if matches!(rom.get(0x147), Some(0x19..=0x1E)) { Mbc::Mbc5 } else { Mbc::Mbc1 };
+        Player { load: 0, data_len: rom.len(), rom: rom.to_vec(), bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None, mbc, home: 1 }
+    }
+
+    fn select(&mut self, addr: u16, v: u8) {
+        let banks = (self.rom.len() / 0x4000).max(2);
+        self.bank = match self.mbc {
+            Mbc::Gbs => (v as usize).max(1),
+            Mbc::Mbc1 => ((v & 0x7F) as usize).max(1) % banks,
+            Mbc::Mbc5 if addr < 0x3000 => ((self.bank & 0x100) | v as usize) % banks,
+            Mbc::Mbc5 => ((self.bank & 0xFF) | ((v as usize & 1) << 8)) % banks,
+        };
+        // Bank 0 at $4000 is what a game's restore of its bank variable gives when no boot set
+        // it: the bank the call was made in instead.
+        if self.bank == 0 {
+            self.bank = self.home;
+        }
     }
 
     /// The index into the padded data the CPU reads at `addr`.
@@ -149,7 +187,7 @@ impl Bus for Player {
             log.push((addr, v));
         }
         match addr {
-            0x2000..=0x3FFF => self.bank = (v as usize).max(1),
+            0x2000..=0x3FFF => self.select(addr, v),
             0xA000..=0xDFFF => self.ram[addr as usize - 0xA000] = v,
             0xE000..=0xFDFF => self.ram[addr as usize - 0xC000] = v,
             0xFF00..=0xFF7F => {
@@ -181,6 +219,9 @@ pub enum Way {
     Layout,
     /// The same with the gaps left empty.
     Zeros,
+    /// The game's own ROM in its cartridge, the file's bank numbers and calls translated to
+    /// where the game has them (a file whose author renumbered the banks).
+    Board,
     None,
 }
 
@@ -216,6 +257,8 @@ impl Map {
 
 /// Bytes after a jump target within which running on into the game's code still counts as
 /// entering it (the target's own instruction patched by the file's author).
+/// Bytes from a call's target that must be placed for the call to be the game's.
+const ENTRY_BYTES: usize = 3;
 const PATCHED_BYTES: u16 = 3;
 
 /// Play calls recorded per track: the first few take the start request, then play settles.
@@ -250,10 +293,16 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
     cpu.halted = false;
     cpu.stopped = false;
     cpu.calls = vec![(pc, sp)];
-    let of = |p: &Player, addr: u16, set: &[bool]| {
+    // Code is the game's where it is placed. The routine's own entry needs the bytes after
+    // it placed too: a run can end right where it starts, the file's own code following.
+    let of = |p: &Player, addr: u16, set: &[bool], bytes: usize| {
         let s = p.src(addr);
-        s > 0 && set.get(s as usize - 1).copied().unwrap_or(false)
+        let placed = |k: usize| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0);
+        // (A patched operand right after is the file's constant in the game's code: the
+        // run picks up again within an instruction.)
+        s > 0 && placed(0) && (bytes <= 1 || (1..=bytes).any(placed))
     };
+    let mut first = true;
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
     let mut used = 0u32;
@@ -269,7 +318,8 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
         let at = cpu.pc;
         if in_game.is_none() {
             let near = target.is_some_and(|(t, _)| at > t && at - t <= PATCHED_BYTES);
-            let entered = if jumped || near { of(p, at, placed) } else { of(p, at, aligned) };
+            let bytes = if first { ENTRY_BYTES } else { 1 };
+            let entered = if jumped || near { of(p, at, placed, bytes) } else { of(p, at, aligned, bytes) };
             if entered {
                 // What the file's code pushed since it got here, still on the stack.
                 if let Some((_, s)) = target.filter(|t| t.1 > cpu.sp) {
@@ -279,6 +329,7 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
                 in_game = Some(cpu.calls.len());
             }
         }
+        first = false;
         let op = p.read(at);
         p.log = in_game.is_none().then(Vec::new);
         used += cpu.step(p);
@@ -437,6 +488,69 @@ pub struct LayoutSong {
     due: f64,
     play: Vec<Op>,
     first: Vec<Write>,
+    /// On the game's board: the map's header and runs, to translate by.
+    board: Option<(Header, Vec<Run>)>,
+}
+
+/// Where the game has the file's data offset `d`: the ROM bank and the CPU address it is seen
+/// at with that bank in place. None when no run holds it.
+fn game_place(runs: &[Run], h: &Header, d: usize) -> Option<(usize, u16)> {
+    let r = runs.iter().find(|r| (r.data..r.data + r.len).contains(&d))?;
+    let rom = r.rom + d - r.data;
+    let file_cpu = h.cpu_of(d);
+    if rom < 0x4000 {
+        // Bank 0 only where the file has it below $4000 too.
+        return (file_cpu < 0x4000).then_some((1, rom as u16));
+    }
+    Some((rom / 0x4000, 0x4000 + (rom % 0x4000) as u16))
+}
+
+/// The game's ROM bank holding most of the file's bank `b`.
+fn game_bank(runs: &[Run], h: &Header, b: u8) -> Option<usize> {
+    let from = (b.max(1) as usize * 0x4000).checked_sub(h.load as usize)?;
+    let to = from + 0x4000;
+    runs.iter()
+        .filter_map(|r| {
+            let (lo, hi) = (r.data.max(from), (r.data + r.len).min(to));
+            (hi > lo).then(|| (hi - lo, (r.rom + lo - r.data) / 0x4000))
+        })
+        .max()
+        .map(|(_, bank)| bank)
+}
+
+/// [`replay`] on the game's board: the file's bank writes as the game's banks, its calls to
+/// where the game has each routine.
+fn board_replay(p: &mut Player, cpu: &mut Cpu, h: &Header, runs: &[Run], ops: &[Op]) -> bool {
+    let mut pushed = Vec::new();
+    for op in ops {
+        match *op {
+            Op::Poke(0x2000..=0x3FFF, b) => {
+                if let Some(bank) = game_bank(runs, h, b) {
+                    p.bank = bank.max(1);
+                    p.home = p.bank;
+                }
+            }
+            Op::Poke(0x0000..=0x7FFF, _) => {}
+            Op::Poke(a, v) => p.write(a, v),
+            Op::Push(v) => pushed.push(v),
+            Op::Call { addr, regs, src } => {
+                let at = match src.checked_sub(1).and_then(|d| game_place(runs, h, d as usize)) {
+                    Some((bank, at)) => {
+                        if at >= 0x4000 {
+                            p.bank = bank;
+                            p.home = bank.max(1);
+                        }
+                        at
+                    }
+                    None => addr,
+                };
+                if !p.call_with(cpu, h.sp, at, regs, &std::mem::take(&mut pushed)) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 impl LayoutSong {
@@ -448,14 +562,30 @@ impl LayoutSong {
             return None;
         }
         let first = std::mem::take(&mut p.writes);
-        Some(Self { p, cpu, sp: m.header.sp, rate: m.header.rate(), due: 0.0, play: m.play_of(song).to_vec(), first })
+        Some(Self { p, cpu, sp: m.header.sp, rate: m.header.rate(), due: 0.0, play: m.play_of(song).to_vec(), first, board: None })
+    }
+
+    /// Track `song` on the game's own board ([`Way::Board`]).
+    pub fn open_board(m: &Map, rom: &[u8], song: u8) -> Option<Self> {
+        let script = m.tracks.get(song as usize)?.as_ref()?;
+        let mut p = Player::board(rom);
+        let mut cpu = Cpu::default();
+        if !board_replay(&mut p, &mut cpu, &m.header, &m.runs, script) {
+            return None;
+        }
+        let first = std::mem::take(&mut p.writes);
+        Some(Self { p, cpu, sp: m.header.sp, rate: m.header.rate(), due: 0.0, play: m.play_of(song).to_vec(), first, board: Some((m.header, m.runs.clone())) })
     }
 
     pub fn frame(&mut self) -> Option<Vec<Write>> {
         self.due += self.rate;
         while self.due >= 1.0 {
             self.due -= 1.0;
-            if !replay(&mut self.p, &mut self.cpu, self.sp, &self.play) {
+            let ran = match &self.board {
+                Some((h, runs)) => board_replay(&mut self.p, &mut self.cpu, h, runs, &self.play),
+                None => replay(&mut self.p, &mut self.cpu, self.sp, &self.play),
+            };
+            if !ran {
                 return None;
             }
         }
@@ -463,6 +593,12 @@ impl LayoutSong {
         f.append(&mut self.p.writes);
         Some(f)
     }
+}
+
+/// Track `song` played on the game's own board: each 1/60 s frame's sound writes.
+pub fn board_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
+    let mut s = LayoutSong::open_board(m, rom, song)?;
+    Some((0..frames).map_while(|_| s.frame()).collect())
 }
 
 /// Track `song` played from the ROM by its map: each 1/60 s frame's sound writes.
@@ -490,7 +626,13 @@ pub fn map_check(gbs: &[u8], m: &Map, rom: &[u8], frames: usize, fill: Fill) -> 
 /// Picks, per track, the layout that plays it like the file (at least `right`).
 pub fn choose_ways(gbs: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f64) {
     let bridged = map_check(gbs, m, rom, frames, Fill::Bridged);
-    let zeros = if bridged.iter().any(|b| b.unwrap_or(0.0) < right) { map_check(gbs, m, rom, frames, Fill::Zeros) } else { Vec::new() };
+    let misses = |v: &[Option<f64>]| v.iter().any(|b| b.unwrap_or(0.0) < right);
+    let zeros = if misses(&bridged) { map_check(gbs, m, rom, frames, Fill::Zeros) } else { Vec::new() };
+    let both_miss = (0..bridged.len()).any(|i| {
+        let s = |v: &Vec<Option<f64>>| v.get(i).copied().flatten().unwrap_or(0.0);
+        s(&bridged) < right && s(&zeros) < right
+    });
+    let board = if both_miss { board_check(gbs, m, rom, frames) } else { Vec::new() };
     m.ways = (0..bridged.len())
         .map(|i| {
             let score = |v: &Vec<Option<f64>>| v.get(i).copied().flatten().unwrap_or(0.0);
@@ -498,11 +640,28 @@ pub fn choose_ways(gbs: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f6
                 Way::Layout
             } else if score(&zeros) >= right {
                 Way::Zeros
+            } else if score(&board) >= right {
+                Way::Board
             } else {
                 Way::None
             }
         })
         .collect();
+}
+
+/// How the map plays the GBS's tracks on the game's own board ([`Way::Board`]).
+pub fn board_check(gbs: &[u8], m: &Map, rom: &[u8], frames: usize) -> Vec<Option<f64>> {
+    use super::gb_gbs::{melody, track_writes};
+    (0..m.header.songs)
+        .map(|t| {
+            let real = melody(&track_writes(gbs, t, frames)?);
+            if real.len() < music_search::MIN_MELODY {
+                return None;
+            }
+            let mine = board_track_writes(m, rom, t, frames).map(|w| melody(&w)).unwrap_or_default();
+            Some(music_search::alike(&real, &mine))
+        })
+        .collect()
 }
 
 /// How alike to the file a track must play to count as right.
@@ -521,6 +680,7 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
     let fill = match m.ways.get(song as usize)? {
         Way::Layout => Fill::Bridged,
         Way::Zeros => Fill::Zeros,
+        Way::Board => return board_track_writes(m, rom, song, frames),
         Way::None => return None,
     };
     map_track_writes(m, rom, song, frames, fill)
@@ -537,12 +697,13 @@ const FRAME_CLOCKS: u32 = 4_194_304 / 60;
 
 impl MapSong {
     pub fn open(m: &Map, rom: &[u8], song: u8, rate: u32) -> Result<Self, String> {
-        let fill = match m.ways.get(song as usize) {
-            Some(Way::Layout) => Fill::Bridged,
-            Some(Way::Zeros) => Fill::Zeros,
+        let song = match m.ways.get(song as usize) {
+            Some(Way::Layout) => LayoutSong::open(m, rom, song, Fill::Bridged),
+            Some(Way::Zeros) => LayoutSong::open(m, rom, song, Fill::Zeros),
+            Some(Way::Board) => LayoutSong::open_board(m, rom, song),
             _ => return Err("the map has no way to play this song".into()),
-        };
-        let song = LayoutSong::open(m, rom, song, fill).ok_or("the song didn't start")?;
+        }
+        .ok_or("the song didn't start")?;
         Ok(Self { song, apu: super::gb_apu::Apu::new(rate)? })
     }
 
@@ -594,7 +755,7 @@ impl Map {
                 out.push(format!("q {i} {}", ops(p)));
             }
         }
-        out.push(format!("s {}", self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::None => '-' }).collect::<String>()));
+        out.push(format!("s {}", self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::Board => 'b', Way::None => '-' }).collect::<String>()));
         out.join("\n")
     }
 
@@ -655,7 +816,7 @@ impl Map {
                     *list.get_mut(i)? = Some(ops(&f[2..])?);
                 }
                 Some("s") => {
-                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, _ => Way::None }).collect();
+                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'b' => Way::Board, _ => Way::None }).collect();
                 }
                 _ => {}
             }
@@ -720,6 +881,11 @@ mod tests {
         assert!(t1.iter().any(|o| matches!(o, Op::Call { addr: 0x4000, regs, .. } if regs[0] == 0x22)), "{t1:?}");
         let check = map_check(&f, &m, &rom, 60, Fill::Zeros);
         assert!(check.iter().all(|c| c.is_some_and(|a| a > 0.99)), "{check:?}");
+        // On the game's board: the file's bank 1 is the game's bank 2.
+        assert_eq!(game_bank(&m.runs, &m.header, 1), Some(2));
+        for t in 0..3 {
+            assert_eq!(board_track_writes(&m, &rom, t, 60), super::super::gb_gbs::track_writes(&f, t, 60));
+        }
         choose_ways(&f, &mut m, &rom, 60, MAP_RIGHT);
         assert!(m.ways.iter().all(|w| *w != Way::None), "{:?}", m.ways);
         let text = m.encode();

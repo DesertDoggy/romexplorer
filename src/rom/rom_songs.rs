@@ -41,6 +41,9 @@ const GB_MAP: &str = "gbmap";
 /// `sgcmap@<map key>@<body ms>@<fade ms>`: the same for the Master System and Game Gear
 /// ([`super::sgc_map::Map`]).
 const SGC_MAP: &str = "sgcmap";
+/// `hesmap@<map key>@<body ms>@<fade ms>`: the same for the PC Engine
+/// ([`super::hes_map::Map`]).
+const HES_MAP: &str = "hesmap";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -140,6 +143,18 @@ pub fn read_rom(path: &Path) -> Result<std::sync::Arc<Vec<u8>>, String> {
 
 /// A ROM's bytes: the file itself, or the one ROM inside a zip / 7z.
 fn read_rom_uncached(path: &Path) -> Result<Vec<u8>, String> {
+    let rom = read_rom_bytes(path)?;
+    // A NES cartridge dumped without its iNES header gets back the header its headered dump
+    // carries (fcdb), so it plays, and shares its maps, like that dump.
+    if super::nes_nsf::is_headerless(&rom) {
+        if let Some(headered) = super::convert::nes::add(&rom) {
+            return Ok(headered);
+        }
+    }
+    Ok(rom)
+}
+
+fn read_rom_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let name = path.to_string_lossy().to_ascii_lowercase();
     let format = if name.ends_with(".zip") {
         Some(super::sevenzip_wrapper::ArchiveFormat::Zip)
@@ -235,6 +250,14 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
             return index_machine::<super::md_music::MegaDrive>(path, t, MD, "Mega Drive");
         }
         if platform == P::TurboGrafx16 as u16 {
+            let rom = read_rom(path)?;
+            let key = gb_key(super::hes_map::program(&rom));
+            if let Some(m) = load_hes_map(&key) {
+                let found = index_hes_map(&rom, &key, &m, t)?;
+                if !found.is_empty() {
+                    return Ok((found, None));
+                }
+            }
             return index_machine::<super::pce_music::PcEngine>(path, t, PCE, "PC Engine");
         }
         if platform == P::Msx as u16 || platform == P::Msx2 as u16 {
@@ -465,6 +488,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(NES_MAP) => open_map(path, engine, song),
         Some(GB_MAP) => open_gb_map(path, engine, song),
         Some(SGC_MAP) => open_sgc_map(path, engine, song),
+        Some(HES_MAP) => open_hes_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -502,9 +526,88 @@ fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<Str
 
 static MAPS_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Where music maps are kept (`<dir>/nes/<key>.nesmap`). Without it, none are read or kept.
+/// Where music maps built here are kept (`<dir>/nes/<key>.nesmap`). Without it, none are kept,
+/// and only the bundled ones ([`BUNDLE_FILE`]) are read.
 pub fn set_maps_dir(dir: PathBuf) {
     let _ = MAPS_DIR.set(dir);
+}
+
+/// The maps that ship with the app and rommusic, under `<app root>/assets/`: every kept map in
+/// one zstd stream, read once on first use. Numbers only, like each map.
+pub const BUNDLE_FILE: &str = "music_maps.zst";
+const BUNDLE_MAGIC: &str = "romexplorer music maps 1";
+
+fn bundled() -> &'static std::collections::HashMap<String, String> {
+    static BUNDLE: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        let Some(root) = super::native_lib::exe_root() else { return Default::default() };
+        let path = root.join("assets").join(BUNDLE_FILE);
+        let Ok(packed) = std::fs::read(&path) else { return Default::default() };
+        match read_bundle(&packed) {
+            Ok(maps) => maps,
+            Err(e) => {
+                log::warn!("{}: {e}", path.display());
+                Default::default()
+            }
+        }
+    })
+}
+
+/// A bundle's maps by `<kind>/<key>` (`nes/<sha1>`).
+pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, String>, String> {
+    let text = zstd::decode_all(packed).map_err(|e| e.to_string())?;
+    let text = String::from_utf8(text).map_err(|_| "not text")?;
+    let (head, mut rest) = text.split_once('\n').ok_or("empty")?;
+    if head != BUNDLE_MAGIC {
+        return Err("not a music map bundle".into());
+    }
+    let mut maps = std::collections::HashMap::new();
+    while !rest.is_empty() {
+        let (line, after) = rest.split_once('\n').ok_or("cut short")?;
+        let (name, len) = line.rsplit_once(' ').ok_or("bad entry")?;
+        let len: usize = len.parse().map_err(|_| "bad entry")?;
+        let body = after.get(..len).ok_or("cut short")?;
+        maps.insert(name.to_string(), body.to_string());
+        rest = &after[len..];
+    }
+    Ok(maps)
+}
+
+/// Packs every map kept under `dir` (as [`set_maps_dir`] lays them out) into one bundle.
+/// Returns how many maps of each kind went in.
+pub fn pack_bundle(dir: &Path) -> Result<(Vec<u8>, Vec<(String, usize)>), String> {
+    let mut text = format!("{BUNDLE_MAGIC}\n");
+    let mut counts = Vec::new();
+    for (kind, ext) in MAP_KINDS {
+        let Ok(entries) = std::fs::read_dir(dir.join(kind)) else { continue };
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext)).collect();
+        // Sorted, so the same maps always pack to the same bytes.
+        files.sort();
+        for f in &files {
+            let body = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+            let key = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            text.push_str(&format!("{kind}/{key} {}\n", body.len()));
+            text.push_str(&body);
+        }
+        counts.push((kind.to_string(), files.len()));
+    }
+    // zstd -19: packed once per release and read once per run, so size is what counts here.
+    let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
+    Ok((packed, counts))
+}
+
+/// Each kind of map: its folder under the maps dir and its file extension.
+const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap")];
+
+/// A kept map's text: one built here first, then the bundled one.
+fn kept_map(kind: &str, key: &str) -> Option<String> {
+    let ext = MAP_KINDS.iter().find(|(k, _)| *k == kind)?.1;
+    if let Some(dir) = MAPS_DIR.get() {
+        if let Ok(text) = std::fs::read_to_string(dir.join(kind).join(format!("{key}.{ext}"))) {
+            return Some(text);
+        }
+    }
+    bundled().get(&format!("{kind}/{key}")).cloned()
 }
 
 /// What a NES ROM's map is kept under: the SHA-1 of its program data (a Disk System image's
@@ -520,18 +623,18 @@ fn map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_map(key: &str) -> Option<super::nes_nsf::Map> {
-    super::nes_nsf::Map::decode(&std::fs::read_to_string(map_path(key)?).ok()?)
+    super::nes_nsf::Map::decode(&kept_map("nes", key)?)
 }
 
 /// Whether a map is kept for the NES ROM `rom`.
 pub fn has_map(rom: &[u8]) -> bool {
-    map_key(rom).and_then(|k| map_path(&k)).is_some_and(|p| p.is_file())
+    map_key(rom).is_some_and(|k| kept_map("nes", &k).is_some())
 }
 
 /// Builds the map of the NES ROM `rom` from the NSF it matches (only to find and check where
 /// its music is; nothing of the file is kept) and keeps it. False when none plays any track.
 pub fn build_nes_map(rom: &[u8], nsf: &[u8]) -> Result<bool, String> {
-    let key = map_key(rom).ok_or("not an iNES cartridge")?;
+    let key = map_key(rom).ok_or("not a NES cartridge or Disk System image")?;
     let path = map_path(&key).ok_or("no folder for music maps")?;
     let Some(m) = super::nes_nsf::build_map(nsf, rom) else { return Ok(false) };
     if m.ways.iter().all(|w| *w == super::nes_nsf::Way::None) {
@@ -549,7 +652,7 @@ pub fn builds_maps(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     (is_nes(platform) && super::nes_apu::available())
         || (is_gb(platform) && super::gb_apu::available())
-        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16) && super::vgm_chips::available())
+        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::TurboGrafx16 as u16) && super::vgm_chips::available())
 }
 
 fn sgc_map_path(key: &str) -> Option<PathBuf> {
@@ -557,14 +660,15 @@ fn sgc_map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_sgc_map(key: &str) -> Option<super::sgc_map::Map> {
-    super::sgc_map::Map::decode(&std::fs::read_to_string(sgc_map_path(key)?).ok()?)
+    super::sgc_map::Map::decode(&kept_map("sgc", key)?)
 }
 
 /// The map of the Master System / Game Gear ROM `rom` from the first of `sets` holding an
 /// SGC, unless one is kept already.
 fn sgc_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<(), String> {
-    let file = sgc_map_path(&gb_key(rom)).ok_or("no folder for music maps")?;
-    if file.is_file() {
+    let key = gb_key(rom);
+    let file = sgc_map_path(&key).ok_or("no folder for music maps")?;
+    if kept_map("sgc", &key).is_some() {
         return Ok(());
     }
     for set in sets {
@@ -590,7 +694,7 @@ fn index_sgc_map(rom: &[u8], key: &str, m: &super::sgc_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(SGC_MAP, key, v, out.len(), rate, timing, 2, codec, t) {
             out.push(track);
         }
@@ -613,6 +717,99 @@ fn open_sgc_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStrea
     Ok(Box::new(MapPcm { song: AnyMapSong::Sgc(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
+fn hes_map_path(key: &str) -> Option<PathBuf> {
+    Some(MAPS_DIR.get()?.join("hes").join(format!("{key}.hesmap")))
+}
+
+fn load_hes_map(key: &str) -> Option<super::hes_map::Map> {
+    super::hes_map::Map::decode(&kept_map("hes", key)?)
+}
+
+/// The map of the PC Engine ROM `rom` from the first of `sets` holding a HES, unless one is
+/// kept already. False when no set holds one.
+fn hes_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
+    let key = gb_key(super::hes_map::program(rom));
+    let file = hes_map_path(&key).ok_or("no folder for music maps")?;
+    let mut any = false;
+    for set in sets {
+        let Some(hes) = super::rip_sets::first_with_magic(set, b"HESM") else { continue };
+        any = true;
+        if kept_map("hes", &key).is_some() {
+            return Ok(true);
+        }
+        let Some(m) = super::hes_map::build_map(&hes, rom) else { continue };
+        if m.ways.iter().all(|w| *w == super::hes_map::Way::None) {
+            continue;
+        }
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()))?;
+        return Ok(true);
+    }
+    Ok(any)
+}
+
+fn index_hes_map(rom: &[u8], key: &str, m: &super::hes_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+    let mut out = Vec::new();
+    for v in 0..m.header.songs {
+        if matches!(m.ways.get(v as usize), None | Some(super::hes_map::Way::None)) {
+            continue;
+        }
+        let Ok(mut song) = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+        let rate = song.frame_rate();
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        if let Some(track) = map_track(HES_MAP, key, v, out.len(), rate, timing, 2, "PC Engine", t) {
+            out.push(track);
+        }
+    }
+    Ok(out)
+}
+
+fn open_hes_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_hes_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let v = u8::try_from(song).map_err(|_| bad())?;
+    let song = super::hes_map::MapSong::open(&m, &rom, v, PLAY_RATE)?;
+    let r = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(MapPcm { song: AnyMapSong::Hes(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+/// A Game Boy track's notes as a loop is found in them: each note started (its channel and
+/// pitch to the semitone) and each volume envelope set. Pitch moves within a note (vibrato,
+/// slides), duty and length, panning and wave memory are left out: drivers run those on
+/// counts that don't restart with the loop.
+fn gb_notes() -> impl FnMut(&music_search::Write) -> Option<u64> {
+    let mut low = [0u8; 3];
+    move |w| {
+        let ch = match w.port {
+            0xFF13 | 0xFF14 => 0,
+            0xFF18 | 0xFF19 => 1,
+            0xFF1D | 0xFF1E => 2,
+            0xFF12 | 0xFF17 | 0xFF1C | 0xFF21 => return Some(u64::from(w.port) << 16 | u64::from(w.value)),
+            0xFF23 => return (w.value & 0x80 != 0).then_some(0xFF23 << 16),
+            _ => return None,
+        };
+        if matches!(w.port, 0xFF13 | 0xFF18 | 0xFF1D) {
+            low[ch] = w.value as u8;
+            return None;
+        }
+        if w.value & 0x80 == 0 {
+            return None;
+        }
+        let x = (u32::from(w.value & 7) << 8) | u32::from(low[ch]);
+        let hz = 131_072.0 / f64::from(2048 - x.min(2047));
+        let semitone = (12.0 * hz.log2()).round() as i64;
+        Some(u64::from(w.port) << 16 | (semitone as u64 & 0xFFFF))
+    }
+}
+
 /// What a Game Boy (or Master System / Game Gear) ROM's map is kept under: the SHA-1 of the
 /// whole ROM.
 fn gb_key(rom: &[u8]) -> String {
@@ -625,7 +822,7 @@ fn gb_map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_gb_map(key: &str) -> Option<super::gb_map::Map> {
-    super::gb_map::Map::decode(&std::fs::read_to_string(gb_map_path(key)?).ok()?)
+    super::gb_map::Map::decode(&kept_map("gb", key)?)
 }
 
 /// Builds the map of the Game Boy ROM at `path` from the first of `sets` that holds a GBS
@@ -635,7 +832,7 @@ fn gb_map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
     let rom = read_rom(path)?;
     let key = gb_key(&rom);
     let file = gb_map_path(&key).ok_or("no folder for music maps")?;
-    if file.is_file() {
+    if kept_map("gb", &key).is_some() {
         return Ok(());
     }
     for set in sets {
@@ -661,7 +858,7 @@ fn index_gb_map(rom: &[u8], key: &str, m: &super::gb_map::Map, t: &Thresholds) -
         }
         let Ok(mut song) = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, gb_notes(), |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(GB_MAP, key, v, out.len(), rate, timing, 2, "Game Boy", t) {
             out.push(track);
         }
@@ -723,24 +920,34 @@ fn open_gb_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
 /// a Game Boy ROM), unless one is kept already.
 pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
     let rom = read_rom(path)?;
-    if super::nes_nsf::program(&rom).is_none() {
-        // A Game Boy ROM carries the Nintendo logo at $104.
-        if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
-            return gb_map_from_sets(path, sets);
+    // A Game Boy ROM carries the Nintendo logo at $104.
+    if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
+        return gb_map_from_sets(path, sets);
+    }
+    // A headerless NES dump has nothing to tell it from other consoles' ROMs but the NSF it
+    // matches.
+    let headerless = super::nes_nsf::is_headerless(&rom);
+    if super::nes_nsf::program(&rom).is_some() {
+        if has_map(&rom) {
+            return Ok(());
         }
-        return sgc_map_from_sets(&rom, sets);
-    }
-    if map_key(&rom).is_none() || has_map(&rom) {
-        return Ok(());
-    }
-    for set in sets {
-        if let Some(nsf) = super::rip_sets::first_with_magic(set, b"NESM\x1a") {
-            if build_nes_map(&rom, &nsf)? {
-                return Ok(());
+        let mut any = false;
+        for set in sets {
+            if let Some(nsf) = super::rip_sets::first_with_magic(set, b"NESM\x1a") {
+                any = true;
+                if build_nes_map(&rom, &nsf)? {
+                    return Ok(());
+                }
             }
         }
+        if any || !headerless {
+            return Ok(());
+        }
     }
-    Ok(())
+    if hes_map_from_sets(&rom, sets)? {
+        return Ok(());
+    }
+    sgc_map_from_sets(&rom, sets)
 }
 
 /// The songs a map plays, measured and classified like [`index_machine`]'s.
@@ -908,6 +1115,7 @@ enum AnyMapSong {
     Nes(super::nes_nsf::MapSong),
     Gb(super::gb_map::MapSong),
     Sgc(super::sgc_map::MapSong),
+    Hes(super::hes_map::MapSong),
 }
 
 impl AnyMapSong {
@@ -916,6 +1124,7 @@ impl AnyMapSong {
             AnyMapSong::Nes(s) => s.frame(out),
             AnyMapSong::Gb(s) => s.frame(out),
             AnyMapSong::Sgc(s) => s.frame(out),
+            AnyMapSong::Hes(s) => s.frame(out),
         }
     }
 }
@@ -982,4 +1191,26 @@ where
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MachinePcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+
+    #[test]
+    fn a_bundle_gives_back_every_map_packed_into_it() {
+        let dir = std::env::temp_dir().join(format!("music_map_bundle_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("nes")).unwrap();
+        std::fs::create_dir_all(dir.join("hes")).unwrap();
+        std::fs::write(dir.join("nes").join("aa.nesmap"), "nesmap 1\nline two\n").unwrap();
+        std::fs::write(dir.join("hes").join("bb.hesmap"), "hesmap 1\n").unwrap();
+        std::fs::write(dir.join("nes").join("stray.txt"), "not a map").unwrap();
+        let (packed, counts) = pack_bundle(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(counts.iter().map(|(_, n)| n).sum::<usize>(), 2);
+        let maps = read_bundle(&packed).unwrap();
+        assert_eq!(maps.len(), 2);
+        assert_eq!(maps["nes/aa"], "nesmap 1\nline two\n");
+        assert_eq!(maps["hes/bb"], "hesmap 1\n");
+    }
 }
