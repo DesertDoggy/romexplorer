@@ -469,7 +469,7 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, t: 
     let ops: usize = m.scripts.iter().map(|s| s.ops.len()).sum();
     let wrong: Vec<String> = zeros.iter().filter(|s| s.1 < MAP_RIGHT).take(10).map(|s| format!("{}:{:.2}", s.0, s.1)).collect();
     println!(
-        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read){}",
+        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read; map text {} KB){}",
         started.elapsed().as_secs_f32(),
         m.songs.len(),
         ws_map::RECORD_FRAMES * 2,
@@ -477,6 +477,7 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, t: 
         if listed.is_empty() { ", no playlist" } else { "" },
         m.scripts.len(),
         m.patches.len(),
+        m.encode().len() / 1024,
         if wrong.is_empty() { String::new() } else { format!("; wrong {}", wrong.join(" ")) }
     );
     t.songs += m.songs.len();
@@ -1310,6 +1311,8 @@ fn write_map(
         Some("PCE") => (Platform::TurboGrafx16, "PC Engine"),
         Some("SMS") => (Platform::SegaMasterSystem, "Master System"),
         Some("GG") => (Platform::SegaGameGear, "Game Gear"),
+        Some("WS") => (Platform::WonderSwan, "WonderSwan"),
+        Some("WSC") => (Platform::WonderSwanColor, "WonderSwan Color"),
         _ => return,
     };
     let t = tally.entry(what).or_default();
@@ -1337,7 +1340,7 @@ fn write_map(
 }
 
 fn count_maps(dir: &Path) -> usize {
-    ["nes", "gb", "hes", "sgc"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+    ["nes", "gb", "hes", "sgc", "ws"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
 }
 
 fn main() {

@@ -44,6 +44,9 @@ const SGC_MAP: &str = "sgcmap";
 /// `hesmap@<map key>@<body ms>@<fade ms>`: the same for the PC Engine
 /// ([`super::hes_map::Map`]).
 const HES_MAP: &str = "hesmap";
+/// `wsmap@<map key>@<body ms>@<fade ms>`: the same for the WonderSwan
+/// ([`super::ws_map::Map`]).
+const WS_MAP: &str = "wsmap";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -264,6 +267,14 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
             return index_machine::<super::msx_music::Msx>(path, t, MSX, "MSX");
         }
         if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
+            let rom = read_rom(path)?;
+            let key = gb_key(&rom);
+            if let Some(m) = load_ws_map(&key) {
+                let found = index_ws_map(&rom, &key, &m, t)?;
+                if !found.is_empty() {
+                    return Ok((found, None));
+                }
+            }
             return index_machine::<super::wswan_music::WonderSwan>(path, t, WS, "WonderSwan");
         }
         if platform == P::VirtualBoy as u16 {
@@ -489,6 +500,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(GB_MAP) => open_gb_map(path, engine, song),
         Some(SGC_MAP) => open_sgc_map(path, engine, song),
         Some(HES_MAP) => open_hes_map(path, engine, song),
+        Some(WS_MAP) => open_ws_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -598,7 +610,7 @@ pub fn pack_bundle(dir: &Path) -> Result<(Vec<u8>, Vec<(String, usize)>), String
 }
 
 /// Each kind of map: its folder under the maps dir and its file extension.
-const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap")];
+const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap")];
 
 /// A kept map's text: one built here first, then the bundled one.
 fn kept_map(kind: &str, key: &str) -> Option<String> {
@@ -653,7 +665,12 @@ pub fn builds_maps(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     (is_nes(platform) && super::nes_apu::available())
         || (is_gb(platform) && super::gb_apu::available())
-        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::TurboGrafx16 as u16) && super::vgm_chips::available())
+        || ((platform == P::SegaMasterSystem as u16
+            || platform == P::SegaGameGear as u16
+            || platform == P::TurboGrafx16 as u16
+            || platform == P::WonderSwan as u16
+            || platform == P::WonderSwanColor as u16)
+            && super::vgm_chips::available())
 }
 
 fn sgc_map_path(key: &str) -> Option<PathBuf> {
@@ -780,6 +797,71 @@ fn open_hes_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStrea
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MapPcm { song: AnyMapSong::Hes(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+fn ws_map_path(key: &str) -> Option<PathBuf> {
+    Some(MAPS_DIR.get()?.join("ws").join(format!("{key}.wsmap")))
+}
+
+fn load_ws_map(key: &str) -> Option<super::ws_map::Map> {
+    super::ws_map::Map::decode(&kept_map("ws", key)?)
+}
+
+/// The map of the WonderSwan ROM `rom` from the first of `sets` holding a WSR (its playlist's
+/// songs, or 64 from its first), unless one is kept already. False when no set holds one.
+fn ws_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
+    let key = gb_key(rom);
+    let file = ws_map_path(&key).ok_or("no folder for music maps")?;
+    let mut any = false;
+    for set in sets {
+        for (wsr, listed) in super::rip_sets::wsrs_with_songs(set) {
+            any = true;
+            if kept_map("ws", &key).is_some() {
+                return Ok(true);
+            }
+            let songs: Vec<u8> = if listed.is_empty() {
+                let first = super::ws_map::first_song(&wsr);
+                (first..first.saturating_add(64)).collect()
+            } else {
+                listed
+            };
+            let Some(m) = super::ws_map::build_map(&wsr, rom, songs.into_iter()) else { continue };
+            if let Some(dir) = file.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()))?;
+            return Ok(true);
+        }
+    }
+    Ok(any)
+}
+
+fn index_ws_map(rom: &[u8], key: &str, m: &super::ws_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+    let mut out = Vec::new();
+    for &(v, _) in &m.songs {
+        let Ok(mut song) = super::ws_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+        let rate = song.frame_rate();
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        if let Some(track) = map_track(WS_MAP, key, v, out.len(), rate, timing, 2, "WonderSwan", t) {
+            out.push(track);
+        }
+    }
+    Ok(out)
+}
+
+fn open_ws_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_ws_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let v = u8::try_from(song).map_err(|_| bad())?;
+    let song = super::ws_map::MapSong::open(&m, &rom, v, PLAY_RATE)?;
+    let r = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(MapPcm { song: AnyMapSong::Ws(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
 /// A Game Boy track's notes as a loop is found in them: each note started (its channel and
@@ -946,6 +1028,9 @@ pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
         }
     }
     if hes_map_from_sets(&rom, sets)? {
+        return Ok(());
+    }
+    if ws_map_from_sets(&rom, sets)? {
         return Ok(());
     }
     sgc_map_from_sets(&rom, sets)
@@ -1126,6 +1211,7 @@ enum AnyMapSong {
     Gb(super::gb_map::MapSong),
     Sgc(super::sgc_map::MapSong),
     Hes(super::hes_map::MapSong),
+    Ws(super::ws_map::MapSong),
 }
 
 impl AnyMapSong {
@@ -1135,6 +1221,7 @@ impl AnyMapSong {
             AnyMapSong::Gb(s) => s.frame(out),
             AnyMapSong::Sgc(s) => s.frame(out),
             AnyMapSong::Hes(s) => s.frame(out),
+            AnyMapSong::Ws(s) => s.frame(out),
         }
     }
 }
