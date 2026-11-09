@@ -59,6 +59,8 @@ struct Player {
     disables: u8,
     /// The time writes are stamped with (master clocks into the frame).
     at: u32,
+    /// Cycles the calls took, all told.
+    spent: u64,
 }
 
 impl Player {
@@ -83,6 +85,7 @@ impl Player {
             timer_on: false,
             disables: 0x06,
             at: 0,
+            spent: 0,
         }
     }
 
@@ -108,9 +111,7 @@ impl Player {
     /// Runs the routine at `pc` with A X Y and the banks of `regs`, entered as a call or (with
     /// `irq`) as an interrupt, with `pushed` on the stack; false when it doesn't return.
     fn call_with(&mut self, cpu: &mut Cpu, pc: u16, regs: &Regs, irq: bool, pushed: &[u8]) -> bool {
-        // The file's own code: it is what the map is checked against, so it gets the init's
-        // allowance even in an interrupt.
-        self.call_within(cpu, pc, regs, irq, pushed, budget(false))
+        self.call_within(cpu, pc, regs, irq, pushed, ROUTINE_CYCLES)
     }
 
     /// [`Self::call_with`] given up after `limit` cycles.
@@ -141,10 +142,12 @@ impl Player {
         let mut used = 0u32;
         while !cpu.calls.is_empty() {
             if used > limit {
+                self.spent += used as u64;
                 return false;
             }
             used += cpu.step(self);
         }
+        self.spent += used as u64;
         true
     }
 
@@ -283,16 +286,10 @@ pub struct Map {
 
 const PATCHED_BYTES: u16 = 3;
 
-/// Cycles a routine may take before it counts as stuck: an init can unpack a lot. On the
-/// map's side an interrupt's call gets far less: a game's own banks can send one into a
-/// loop the file's never takes.
-fn budget(irq: bool) -> u32 {
-    if irq {
-        400_000
-    } else {
-        4_000_000
-    }
-}
+/// Cycles a routine may take before it counts as stuck: an init can unpack a lot. (A
+/// track's interrupts together get [`FRAME_ALLOWANCE`] a frame.)
+const ROUTINE_CYCLES: u32 = 4_000_000;
+
 /// Frames whose interrupts are recorded before they settle.
 const SETTLE_FRAMES: usize = 6;
 
@@ -326,7 +323,7 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, irq: bool, placed: &[bo
     let mut target: Option<(u16, u8)> = None;
     let mut first = true;
     while !cpu.calls.is_empty() {
-        if used > budget(false) {
+        if used > ROUTINE_CYCLES {
             return None;
         }
         if in_game.is_some_and(|d| cpu.calls.len() < d) {
@@ -368,14 +365,14 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, irq: bool, placed: &[bo
 }
 
 /// Plays a script; `handler`: an interrupt's, whose calls get an interrupt's [`budget`].
-fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op], handler: bool) -> bool {
+fn replay(p: &mut Player, cpu: &mut Cpu, ops: &[Op]) -> bool {
     let mut pushed = Vec::new();
     for op in ops {
         match *op {
             Op::Poke(a, v) => p.write(a, v),
             Op::Push(v) => pushed.push(v),
             Op::Call { addr, regs, irq, .. } => {
-                if !p.call_within(cpu, addr, &regs, irq, &std::mem::take(&mut pushed), budget(handler)) {
+                if !p.call_with(cpu, addr, &regs, irq, &std::mem::take(&mut pushed)) {
                     return false;
                 }
             }
@@ -694,7 +691,14 @@ pub struct LayoutSong {
     track: Track,
     due: f64,
     first: Vec<Write>,
+    /// Cycles the calls may have taken so far: [`FRAME_ALLOWANCE`] a frame, past the init.
+    allowance: u64,
 }
+
+/// Cycles a frame's interrupts may take on average before a track counts as stuck. A
+/// file's handlers can take several frames' worth now and then (they wait on hardware the
+/// player answers at once); the game's own banks can send one into a loop for good.
+const FRAME_ALLOWANCE: u64 = 2_000_000;
 
 impl LayoutSong {
     pub fn open(m: &Map, rom: &[u8], song: u8, fill: Fill) -> Option<Self> {
@@ -707,26 +711,31 @@ impl LayoutSong {
             Player::new(&m.header, &rebuilt(m, rom, fill))
         };
         let mut cpu = Cpu::with(m.header.init, 0xFF);
-        if !replay(&mut p, &mut cpu, &track.init, false) {
+        if !replay(&mut p, &mut cpu, &track.init) {
             return None;
         }
         let first = std::mem::take(&mut p.writes);
-        Some(Self { p, cpu, track, due: 0.0, first })
+        let allowance = p.spent + 4_000_000;
+        Some(Self { p, cpu, track, due: 0.0, first, allowance })
     }
 
     pub fn frame(&mut self) -> Option<Vec<Write>> {
+        self.allowance += FRAME_ALLOWANCE;
+        if self.p.spent > self.allowance {
+            return None;
+        }
         self.due += self.p.timer_rate();
         let n = self.due as u32;
         self.due -= n as f64;
         for k in 0..n {
             self.p.at = k * FRAME_CLOCKS / n.max(1);
-            if !replay(&mut self.p, &mut self.cpu, &self.track.timer, true) {
+            if !replay(&mut self.p, &mut self.cpu, &self.track.timer) {
                 return None;
             }
         }
         if self.p.vblank() {
             self.p.at = FRAME_CLOCKS - 1;
-            if !replay(&mut self.p, &mut self.cpu, &self.track.vblank, true) {
+            if !replay(&mut self.p, &mut self.cpu, &self.track.vblank) {
                 return None;
             }
         }
