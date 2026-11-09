@@ -27,7 +27,7 @@ use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::common::models::Platform;
-use romexplorer::rom::{gb_gbs, gb_map, sgc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
+use romexplorer::rom::{gb_gbs, gb_map, hes_map, sgc_map, snes_sound, spc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -88,6 +88,8 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "wsc"
                 | "vb"
                 | "gba"
+                | "sfc"
+                | "smc"
                 | "ngp"
                 | "ngc"
                 | "npc"
@@ -130,6 +132,9 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     {
         return Some("MSX");
     }
+    if name.ends_with(".sfc") || name.ends_with(".smc") || name.contains("super famicom") || name.contains("super nintendo") {
+        return Some("SNES");
+    }
     if name.ends_with(".pce")
         || name.contains("pc engine")
         || name.contains("pcengine")
@@ -152,7 +157,7 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if name.ends_with(".ws") || name.contains("wonderswan") {
         return Some("WS");
     }
-    if name.ends_with(".nes") {
+    if (name.ends_with(".nes") || name.ends_with(".unh")) && nes_nsf::is_headerless(rom) {
         return Some("NES?");
     }
     if name.ends_with(".gg") || name.contains("game gear") || name.contains("gamegear") {
@@ -227,6 +232,9 @@ struct Options {
     /// `--mapcheck`: with `--originals`, build each NES ROM's music map from its matched NSF and
     /// play every track from the ROM by it, against the NSF's own.
     mapcheck: bool,
+    /// `--write-maps <dir>`: with `--originals`, build each matched ROM's music map the way the
+    /// app does and keep it under `<dir>` (`nes/<key>.nesmap`, ...), for `--pack-maps`.
+    write_maps: Option<PathBuf>,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -243,6 +251,16 @@ fn original_hint(
     read: fn(&[u8]) -> Option<music_search::Hint>,
     verbose: bool,
 ) -> Option<(music_search::Hint, Vec<u8>)> {
+    let set = matched_set(lib, path, platform, verbose)?;
+    let hint = rip_sets::first_with_magic(&set, magic).and_then(|d| Some((read(&d)?, d)));
+    if verbose && hint.is_none() {
+        println!("    (no NSF/GBS in it)");
+    }
+    hint
+}
+
+/// The original audio format set a ROM matches best.
+fn matched_set(lib: Option<&rip_match::Library>, path: &Path, platform: Platform, verbose: bool) -> Option<PathBuf> {
     let lib = lib?;
     let matches = lib
         .match_rom(path, platform as u16)
@@ -288,16 +306,10 @@ fn original_hint(
             .unwrap_or((set.as_path(), share)),
         false => (set.as_path(), share),
     };
-    let hint = rip_sets::first_with_magic(set, magic).and_then(|d| Some((read(&d)?, d)));
     if verbose {
-        println!(
-            "    matched set: {} ({:.0}% matched){}",
-            set.display(),
-            share * 100.0,
-            if hint.is_some() { "" } else { ", no NSF/GBS in it" }
-        );
+        println!("    matched set: {} ({:.0}% matched)", set.display(), share * 100.0);
     }
-    hint
+    Some(set.to_path_buf())
 }
 
 /// `--layout` for a NES/Famicom ROM and its matched NSF.
@@ -345,7 +357,9 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
     let Some(prg) = nes_nsf::program(rom) else { return };
-    let disk = romexplorer::rom::fds::is_disk(rom);
+    // (A Disk System game has no board: its files load into RAM. A headerless dump's mapper
+    // is unknown.)
+    let disk = nes_cart::parse(rom).is_err();
     let started = std::time::Instant::now();
     let Some(m) = nes_nsf::map(nsf, &prg) else {
         println!("{name}: map: the NSF doesn't run");
@@ -364,7 +378,6 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
     // On the game's own board: its code where the ROM has it, the calls moved there.
     let mut m = m;
-    // (A Disk System game has no board: its files load into RAM.)
     let board = if disk {
         0
     } else {
@@ -443,6 +456,8 @@ fn print_gb_mapcheck(path: &Path, rom: &[u8], gbs: &[u8], t: &mut Tally) {
     let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     let bridged = right_with(&m, gb_map::Fill::Bridged);
     let oracle = right_with(&m, gb_map::Fill::File(&gbs[0x70..]));
+    let board = gb_map::board_check(gbs, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    t.board += board;
     gb_map::choose_ways(gbs, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
     let saved = gb_map::Map::decode(&m.encode()).map_or(0, |back| {
         (0..back.header.songs)
@@ -457,7 +472,7 @@ fn print_gb_mapcheck(path: &Path, rom: &[u8], gbs: &[u8], t: &mut Tally) {
     let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, gb_map::Op::Call { .. })).count()).max().unwrap_or(0);
     let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
         started.elapsed().as_secs_f32(),
         m.header.songs,
         m.runs.len(),
@@ -520,6 +535,142 @@ fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
         m.runs.len(),
         m.tracks.iter().filter(|s| s.is_none()).count(),
         m.play.len(),
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += right;
+    if with_melody > 0 && right == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match right.max(saved) as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--mapcheck` for a SNES ROM and its matched set's `.spc` files: how much of each track's
+/// sound memory is in the ROM as is, and how many tracks play right rebuilt from it.
+fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let rom = snes_sound::rom_image(rom);
+    let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
+    if spcs.is_empty() {
+        println!("{name}: map: no .spc in the set");
+        *t.reasons.entry("no .spc in the set".into()).or_default() += 1;
+        return;
+    }
+    let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
+    let maps = spc_map::tracks(&refs, rom);
+    let (mut got, mut total) = (0usize, 0usize);
+    let (mut with_melody, mut zeros, mut bridged, mut oracle, mut best) = (0, 0, 0, 0, 0);
+    let mut off = Vec::new();
+    for (i, (spc, m)) in spcs.iter().zip(&maps).enumerate() {
+        let Some(m) = m else { continue };
+        let (g, n) = spc_map::coverage(spc, &m.runs);
+        got += g;
+        total += n;
+        let check = |fill| spc_map::check(spc, m, rom, fill, CHECK_FRAMES);
+        let Some(z) = check(spc_map::Fill::Zeros) else { continue };
+        with_melody += 1;
+        let b = check(spc_map::Fill::Bridged).unwrap_or(0.0);
+        let f = check(spc_map::Fill::File(spc)).unwrap_or(0.0);
+        zeros += (z >= MAP_RIGHT) as usize;
+        bridged += (b >= MAP_RIGHT) as usize;
+        oracle += (f >= MAP_RIGHT) as usize;
+        best += (z.max(b) >= MAP_RIGHT) as usize;
+        if z.max(b) < MAP_RIGHT && off.len() < 12 {
+            off.push(format!("{i}:{:.2}/{:.0}%", z.max(b), g as f64 * 100.0 / n.max(1) as f64));
+        }
+    }
+    let share = got as f64 * 100.0 / total.max(1) as f64;
+    t.saved += best;
+    println!(
+        "{name}: map, {:.1} s: {best} of {with_melody} tracks played right from the ROM (as-is: {zeros}; gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} .spc; {share:.1}% of sound memory in the ROM){}",
+        started.elapsed().as_secs_f32(),
+        spcs.len(),
+        if off.is_empty() { String::new() } else { format!("; off: {}", off.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += zeros;
+    if with_melody > 0 && best == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match best as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+    let cover = match share {
+        s if s >= 99.0 => "sound memory in the ROM: 99-100%",
+        s if s >= 90.0 => "sound memory in the ROM: 90-99%",
+        s if s >= 50.0 => "sound memory in the ROM: 50-90%",
+        _ => "sound memory in the ROM: under 50%",
+    };
+    *t.reasons.entry(cover.into()).or_default() += 1;
+}
+
+/// `--mapcheck` for a PC Engine HuCard and its matched HES.
+fn print_hes_mapcheck(path: &Path, rom: &[u8], hes: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let rom = hes_map::program(rom);
+    let Some(mut m) = hes_map::map(hes, rom) else {
+        println!("{name}: map: the HES doesn't run");
+        *t.reasons.entry("the HES doesn't run".into()).or_default() += 1;
+        return;
+    };
+    let right_with = |m: &hes_map::Map, fill| hes_map::map_check(hes, m, rom, CHECK_FRAMES, fill).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let check = hes_map::map_check(hes, &m, rom, CHECK_FRAMES, hes_map::Fill::Zeros);
+    let with_melody = check.iter().flatten().count();
+    let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let bridged = right_with(&m, hes_map::Fill::Bridged);
+    let oracle = right_with(&m, hes_map::Fill::File(&hes[0x20..]));
+    let board = right_with(&m, hes_map::Fill::Board);
+    t.board += board;
+    hes_map::choose_ways(hes, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
+    let saved = hes_map::Map::decode(&m.encode()).map_or(0, |back| {
+        (0..back.header.songs)
+            .filter(|&s| {
+                if back.tracks.get(s as usize).is_none_or(|t| t.is_none()) {
+                    return false;
+                }
+                let Some(real) = hes_map::track_writes(hes, s, CHECK_FRAMES).map(|w| hes_map::melody(&w)) else { return false };
+                let mine = hes_map::play_map(&back, rom, s, CHECK_FRAMES).map(|w| hes_map::melody(&w)).unwrap_or_default();
+                real.len() >= music_search::MIN_MELODY && music_search::alike(&real, &mine) >= MAP_RIGHT
+            })
+            .count()
+    });
+    t.saved += saved;
+    let calls = m
+        .tracks
+        .iter()
+        .flatten()
+        .map(|s| [&s.init, &s.vblank, &s.timer].iter().map(|v| v.iter().filter(|o| matches!(o, hes_map::Op::Call { .. })).count()).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+    let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
+    println!(
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's banks: {board}; saved map: {saved}) ({} runs; scripts up to {calls} calls){}",
+        started.elapsed().as_secs_f32(),
+        m.runs.len(),
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
     );
     t.checked[0] += 1;
@@ -691,6 +842,54 @@ fn run_hinted<M: Machine>(
     }
 }
 
+/// `--write-maps`: the music map of `path`, from its matched set, built and kept as the app
+/// keeps it (under `dir`).
+fn write_map(
+    dir: &Path,
+    path: &Path,
+    rom: &[u8],
+    lib: Option<&rip_match::Library>,
+    verbose: bool,
+    tally: &mut std::collections::BTreeMap<&str, Tally>,
+) {
+    let (platform, what) = match console(rom, path) {
+        Some("NES") | Some("NES?") => (Platform::Famicom, "NES"),
+        Some("FDS") => (Platform::Famicom, "Disk System"),
+        Some("GB") => (Platform::GameBoy, "Game Boy"),
+        Some("GBC") => (Platform::GameBoyColor, "Game Boy Color"),
+        Some("PCE") => (Platform::TurboGrafx16, "PC Engine"),
+        Some("SMS") => (Platform::SegaMasterSystem, "Master System"),
+        Some("GG") => (Platform::SegaGameGear, "Game Gear"),
+        _ => return,
+    };
+    let t = tally.entry(what).or_default();
+    t.games += 1;
+    let Some(set) = matched_set(lib, path, platform, verbose) else {
+        *t.reasons.entry("no matching set".into()).or_default() += 1;
+        return;
+    };
+    rom_songs::set_maps_dir(dir.to_path_buf());
+    let before = count_maps(dir);
+    match rom_songs::map_from_sets(path, &[set]) {
+        Ok(()) if count_maps(dir) > before => {
+            t.with_music += 1;
+            println!("{}: map kept", path.display());
+        }
+        Ok(()) => {
+            *t.reasons.entry("no map (nothing played, or kept already)".into()).or_default() += 1;
+            println!("{}: no map", path.display());
+        }
+        Err(e) => {
+            *t.reasons.entry(e.clone()).or_default() += 1;
+            println!("{}: {e}", path.display());
+        }
+    }
+}
+
+fn count_maps(dir: &Path) -> usize {
+    ["nes", "gb", "hes", "sgc"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut o = Options {
@@ -701,7 +900,37 @@ fn main() {
         nsf: None,
         layout: args.iter().any(|a| a == "--layout"),
         mapcheck: args.iter().any(|a| a == "--mapcheck"),
+        write_maps: None,
     };
+    // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
+    // rommusic ship (assets/music_maps.zst).
+    if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
+        let (Some(dir), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("usage: cart_music --pack-maps <maps folder> <bundle file>");
+            std::process::exit(2);
+        };
+        match rom_songs::pack_bundle(Path::new(dir)) {
+            Ok((packed, counts)) => {
+                if let Err(e) = std::fs::write(out, &packed) {
+                    eprintln!("{out}: {e}");
+                    std::process::exit(1);
+                }
+                for (kind, n) in counts {
+                    println!("{kind}: {n} maps");
+                }
+                println!("{out}: {} bytes", packed.len());
+                return;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(i) = args.iter().position(|a| a == "--write-maps") {
+        o.write_maps = args.get(i + 1).map(PathBuf::from);
+        args.drain(i..(i + 2).min(args.len()));
+    }
     args.retain(|a| a != "--layout" && a != "--mapcheck");
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
@@ -722,7 +951,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck]] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps <maps folder> <bundle file>"
         );
         std::process::exit(2);
     }
@@ -755,6 +984,10 @@ fn main() {
                 continue;
             }
         };
+        if let Some(dir) = &o.write_maps {
+            write_map(dir, &path, &rom, nsf_lib.as_ref(), o.verbose, &mut tally);
+            continue;
+        }
         match console(&rom, &path) {
             Some("NES") => {
                 let what = format!(
@@ -885,6 +1118,21 @@ fn main() {
                 &o,
                 tally.entry("Virtual Boy").or_default(),
             ),
+            Some("SNES") => {
+                if o.mapcheck {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_mapcheck(&path, &rom, &set, tally.entry("SNES").or_default());
+                    }
+                } else {
+                    println!("{}: SNES: only --mapcheck", path.display());
+                }
+            }
+            Some("PCE") if o.mapcheck => {
+                let hes = original_hint(nsf_lib.as_ref(), &path, Platform::TurboGrafx16, b"HESM", |_| Some(Default::default()), o.verbose);
+                if let Some(h) = &hes {
+                    print_hes_mapcheck(&path, &rom, &h.1, tally.entry("PC Engine").or_default());
+                }
+            }
             Some("PCE") => run::<PcEngine>(
                 &path,
                 &rom,
@@ -892,6 +1140,12 @@ fn main() {
                 &o,
                 tally.entry("PC Engine").or_default(),
             ),
+            Some("NES?") if o.mapcheck => {
+                let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                if let Some(h) = &hint {
+                    print_mapcheck(&path, &rom, &h.1, tally.entry("NES (headerless)").or_default());
+                }
+            }
             Some("NES?") => {
                 println!(
                     "{}: no iNES header (headerless dump): skipped",

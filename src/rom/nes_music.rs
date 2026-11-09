@@ -333,7 +333,7 @@ pub struct Nes {
     board: Board,
 }
 
-fn port(target: Target, addr: u16) -> u32 {
+pub fn port(target: Target, addr: u16) -> u32 {
     let code = match target {
         Target::Apu => 0,
         Target::Vrc6 { osc, reg } => 0x10 | (osc as u32) << 2 | reg as u32,
@@ -347,7 +347,7 @@ fn port(target: Target, addr: u16) -> u32 {
     code << 16 | addr as u32
 }
 
-fn target(port: u32) -> (Target, u16) {
+pub fn target(port: u32) -> (Target, u16) {
     let addr = port as u16;
     let t = match port >> 16 {
         0 => Target::Apu,
