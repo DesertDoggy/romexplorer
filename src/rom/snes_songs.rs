@@ -169,3 +169,20 @@ pub fn find(
     }
     Ok(Found { var, songs, tried })
 }
+
+/// For diagnosis: boots `file`, then plays each of `values` through the request byte `var`
+/// given. Also how alike the game sounds after a restore to how it sounds run straight on (1.0
+/// when a restore loses nothing).
+pub fn try_var(file: &[u8], var: u32, values: impl Iterator<Item = u8>, frames: usize) -> Result<(f64, Vec<(u8, HashSet<u64>)>), String> {
+    let mut s = Session::boot(file, true)?;
+    s.run(BOOT_SECONDS)?;
+    let saved = s.save();
+    s.run(UPLOAD_SECONDS)?;
+    let straight = listen(&mut s, frames);
+    s.restore(&saved)?;
+    s.run(UPLOAD_SECONDS)?;
+    let restored = listen(&mut s, frames);
+    let same = music_search::alike(&straight, &restored);
+    let songs = values.map(|v| (v, heard(&mut s, &saved, var, v, frames))).collect();
+    Ok((same, songs))
+}
