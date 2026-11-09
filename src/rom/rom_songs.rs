@@ -38,6 +38,9 @@ const NES: &str = "nes";
 const NES_MAP: &str = "nesmap";
 /// `gbmap@<map key>@<body ms>@<fade ms>`: the same for the Game Boy ([`super::gb_map::Map`]).
 const GB_MAP: &str = "gbmap";
+/// `sgcmap@<map key>@<body ms>@<fade ms>`: the same for the Master System and Game Gear
+/// ([`super::sgc_map::Map`]).
+const SGC_MAP: &str = "sgcmap";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -212,6 +215,16 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
     }
     {
         use crate::common::models::Platform as P;
+        if platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 {
+            let rom = read_rom(path)?;
+            let key = gb_key(&rom);
+            if let Some(m) = load_sgc_map(&key) {
+                let found = index_sgc_map(&rom, &key, &m, t)?;
+                if !found.is_empty() {
+                    return Ok((found, None));
+                }
+            }
+        }
         if platform == P::SegaMasterSystem as u16 {
             return index_machine::<super::sms_music::MasterSystem>(path, t, SMS, "Master System");
         }
@@ -451,6 +464,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
         Some(NES_MAP) => open_map(path, engine, song),
         Some(GB_MAP) => open_gb_map(path, engine, song),
+        Some(SGC_MAP) => open_sgc_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -532,10 +546,75 @@ pub fn build_nes_map(rom: &[u8], nsf: &[u8]) -> Result<bool, String> {
 
 /// Whether ROMs of `platform` get music maps from matched sets ([`map_from_sets`]).
 pub fn builds_maps(platform: u16) -> bool {
-    (is_nes(platform) && super::nes_apu::available()) || (is_gb(platform) && super::gb_apu::available())
+    use crate::common::models::Platform as P;
+    (is_nes(platform) && super::nes_apu::available())
+        || (is_gb(platform) && super::gb_apu::available())
+        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16) && super::vgm_chips::available())
 }
 
-/// What a Game Boy ROM's map is kept under: the SHA-1 of the whole ROM.
+fn sgc_map_path(key: &str) -> Option<PathBuf> {
+    Some(MAPS_DIR.get()?.join("sgc").join(format!("{key}.sgcmap")))
+}
+
+fn load_sgc_map(key: &str) -> Option<super::sgc_map::Map> {
+    super::sgc_map::Map::decode(&std::fs::read_to_string(sgc_map_path(key)?).ok()?)
+}
+
+/// The map of the Master System / Game Gear ROM `rom` from the first of `sets` holding an
+/// SGC, unless one is kept already.
+fn sgc_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<(), String> {
+    let file = sgc_map_path(&gb_key(rom)).ok_or("no folder for music maps")?;
+    if file.is_file() {
+        return Ok(());
+    }
+    for set in sets {
+        let Some(sgc) = super::rip_sets::first_with_magic(set, b"SGC\x1a") else { continue };
+        let Some(m) = super::sgc_map::build_map(&sgc, rom) else { continue };
+        if m.ways.iter().all(|w| *w == super::sgc_map::Way::None) {
+            continue;
+        }
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        return std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()));
+    }
+    Ok(())
+}
+
+fn index_sgc_map(rom: &[u8], key: &str, m: &super::sgc_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+    let mut out = Vec::new();
+    let codec = if m.header.system == 1 { "Game Gear" } else { "Master System" };
+    for v in 0..m.header.songs {
+        if matches!(m.ways.get(v as usize), None | Some(super::sgc_map::Way::None)) {
+            continue;
+        }
+        let Ok(mut song) = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+        let rate = song.frame_rate();
+        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        if let Some(track) = map_track(SGC_MAP, key, v, out.len(), rate, timing, 2, codec, t) {
+            out.push(track);
+        }
+    }
+    Ok(out)
+}
+
+fn open_sgc_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_sgc_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let v = u8::try_from(song).map_err(|_| bad())?;
+    let song = super::sgc_map::MapSong::open(&m, &rom, v, PLAY_RATE)?;
+    let r = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(MapPcm { song: AnyMapSong::Sgc(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+/// What a Game Boy (or Master System / Game Gear) ROM's map is kept under: the SHA-1 of the
+/// whole ROM.
 fn gb_key(rom: &[u8]) -> String {
     use sha1::{Digest, Sha1};
     Sha1::digest(rom).iter().map(|b| format!("{b:02x}")).collect()
@@ -645,7 +724,11 @@ fn open_gb_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
 pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
     let rom = read_rom(path)?;
     if super::nes_nsf::program(&rom).is_none() {
-        return gb_map_from_sets(path, sets);
+        // A Game Boy ROM carries the Nintendo logo at $104.
+        if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
+            return gb_map_from_sets(path, sets);
+        }
+        return sgc_map_from_sets(&rom, sets);
     }
     if map_key(&rom).is_none() || has_map(&rom) {
         return Ok(());
@@ -824,6 +907,7 @@ struct MapPcm {
 enum AnyMapSong {
     Nes(super::nes_nsf::MapSong),
     Gb(super::gb_map::MapSong),
+    Sgc(super::sgc_map::MapSong),
 }
 
 impl AnyMapSong {
@@ -831,6 +915,7 @@ impl AnyMapSong {
         match self {
             AnyMapSong::Nes(s) => s.frame(out),
             AnyMapSong::Gb(s) => s.frame(out),
+            AnyMapSong::Sgc(s) => s.frame(out),
         }
     }
 }
