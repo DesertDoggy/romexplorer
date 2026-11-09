@@ -86,6 +86,18 @@ impl Player {
         }
     }
 
+    /// A player over the game's ROM at its own banks.
+    fn board(h: &Header, rom: &[u8]) -> Self {
+        let mut p = Player::new(h, &[]);
+        for bank in 0..0x80u32 {
+            if let Some(from) = rom_bank_at(rom.len(), bank) {
+                let at = (bank as usize) << 13;
+                p.mem[at..at + 0x2000].copy_from_slice(&rom[from..from + 0x2000]);
+            }
+        }
+        p
+    }
+
     fn src(&self, phys: u32) -> u32 {
         match phys.checked_sub(self.addr) {
             Some(d) if (d as usize) < self.data_len && phys < 0x10_0000 => d + 1,
@@ -225,6 +237,8 @@ pub enum Op {
 pub enum Way {
     Layout,
     Zeros,
+    /// On the game's own banks: the file's bank numbers turned into the game's.
+    Board,
     None,
 }
 
@@ -233,6 +247,8 @@ pub enum Fill<'a> {
     Zeros,
     Bridged,
     File(&'a [u8]),
+    /// The whole ROM at its own banks ([`Way::Board`]).
+    Board,
 }
 
 /// A track's scripts: its init (with its first frames' one-off steps), and what the vertical
@@ -546,6 +562,79 @@ pub fn map(hes: &[u8], rom: &[u8]) -> Option<Map> {
     Some(Map { header: h, data_len: data.len(), runs: layout.runs, tracks, ways: Vec::new() })
 }
 
+/// Where in a HuCard of `len` bytes the console finds bank `bank` ($00-$7F): a 384 KB card
+/// is wired as 256 KB at $00 and 128 KB at $40, others repeat.
+fn rom_bank_at(len: usize, bank: u32) -> Option<usize> {
+    let banks = len / 0x2000;
+    if banks == 0 {
+        return None;
+    }
+    let b = bank as usize;
+    let at = if len == 0x60000 {
+        if b < 0x40 {
+            (b & 0x1F) << 13
+        } else {
+            0x40000 + ((b & 0x0F) << 13)
+        }
+    } else {
+        (b % banks) << 13
+    };
+    (at + 0x2000 <= len).then_some(at)
+}
+
+/// The bank the console sees ROM offset `off` of a `len`-byte HuCard at.
+fn bank_of_rom(len: usize, off: usize) -> u8 {
+    let b = off >> 13;
+    if len == 0x60000 && b >= 0x20 {
+        (0x40 + (b - 0x20)) as u8
+    } else {
+        b as u8
+    }
+}
+
+/// Per file bank (the console's bank number the file has its data at), the game's bank
+/// holding most of it at the same place in the bank.
+fn game_banks(m: &Map, rom_len: usize) -> HashMap<u8, u8> {
+    let mut count: HashMap<(u8, u8), usize> = HashMap::new();
+    for r in &m.runs {
+        let phys = m.header.addr as usize + r.data;
+        if (phys ^ r.rom) & 0x1FFF != 0 {
+            continue;
+        }
+        let mut k = 0;
+        while k < r.len {
+            let n = (0x2000 - ((phys + k) & 0x1FFF)).min(r.len - k);
+            *count.entry((((phys + k) >> 13) as u8, bank_of_rom(rom_len, r.rom + k))).or_default() += n;
+            k += n;
+        }
+    }
+    let mut best: HashMap<u8, (u8, usize)> = HashMap::new();
+    for ((f, g), n) in count {
+        let e = best.entry(f).or_insert((g, 0));
+        if n > e.1 || (n == e.1 && g < e.0) {
+            *e = (g, n);
+        }
+    }
+    best.into_iter().map(|(f, (g, _))| (f, g)).collect()
+}
+
+/// A script on the game's own banks: calls with their banks turned into the game's, and no
+/// writes into the ROM's space.
+fn on_board(ops: &[Op], banks: &HashMap<u8, u8>) -> Vec<Op> {
+    ops.iter()
+        .filter(|o| !matches!(o, Op::Poke(a, _) if *a < 0x10_0000))
+        .map(|o| match *o {
+            Op::Call { addr, mut regs, irq, src } => {
+                for b in regs.mpr.iter_mut().filter(|b| **b < 0x80) {
+                    *b = banks.get(b).copied().unwrap_or(*b);
+                }
+                Op::Call { addr, regs, irq, src }
+            }
+            ref o => o.clone(),
+        })
+        .collect()
+}
+
 fn rebuilt(m: &Map, rom: &[u8], fill: Fill) -> Vec<u8> {
     let mut data = match fill {
         Fill::File(d) => d.to_vec(),
@@ -586,8 +675,14 @@ pub struct LayoutSong {
 
 impl LayoutSong {
     pub fn open(m: &Map, rom: &[u8], song: u8, fill: Fill) -> Option<Self> {
-        let track = m.tracks.get(song as usize)?.clone()?;
-        let mut p = Player::new(&m.header, &rebuilt(m, rom, fill));
+        let mut track = m.tracks.get(song as usize)?.clone()?;
+        let mut p = if fill == Fill::Board {
+            let banks = game_banks(m, rom.len());
+            track = Track { init: on_board(&track.init, &banks), vblank: on_board(&track.vblank, &banks), timer: on_board(&track.timer, &banks) };
+            Player::board(&m.header, rom)
+        } else {
+            Player::new(&m.header, &rebuilt(m, rom, fill))
+        };
         let mut cpu = Cpu::with(m.header.init, 0xFF);
         if !replay(&mut p, &mut cpu, &track.init) {
             return None;
@@ -642,12 +737,16 @@ pub fn map_check(hes: &[u8], m: &Map, rom: &[u8], frames: usize, fill: Fill) -> 
 
 pub fn choose_ways(hes: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f64) {
     let bridged = map_check(hes, m, rom, frames, Fill::Bridged);
-    let zeros = if bridged.iter().any(|b| b.is_some_and(|b| b < right)) { map_check(hes, m, rom, frames, Fill::Zeros) } else { Vec::new() };
+    let missed = bridged.iter().any(|b| b.is_some_and(|b| b < right));
+    let board = if missed { map_check(hes, m, rom, frames, Fill::Board) } else { Vec::new() };
+    let zeros = if missed { map_check(hes, m, rom, frames, Fill::Zeros) } else { Vec::new() };
     m.ways = (0..bridged.len())
         .map(|i| {
             let score = |v: &Vec<Option<f64>>| v.get(i).copied().flatten().unwrap_or(0.0);
             if score(&bridged) >= right {
                 Way::Layout
+            } else if score(&board) >= right {
+                Way::Board
             } else if score(&zeros) >= right {
                 Way::Zeros
             } else {
@@ -680,6 +779,7 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
     let fill = match m.ways.get(song as usize)? {
         Way::Layout => Fill::Bridged,
         Way::Zeros => Fill::Zeros,
+        Way::Board => Fill::Board,
         Way::None => return None,
     };
     map_track_writes(m, program(rom), song, frames, fill)
@@ -700,6 +800,7 @@ impl MapSong {
         let fill = match m.ways.get(song as usize) {
             Some(Way::Layout) => Fill::Bridged,
             Some(Way::Zeros) => Fill::Zeros,
+            Some(Way::Board) => Fill::Board,
             _ => return Err("the map has no way to play this song".into()),
         };
         let song = LayoutSong::open(m, program(rom), song, fill).ok_or("the song didn't start")?;
@@ -747,7 +848,7 @@ impl Map {
                 out.push(format!("m {i} {}", ops(&t.timer)));
             }
         }
-        out.push(format!("s {}", self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::None => '-' }).collect::<String>()));
+        out.push(format!("s {}", self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::Board => 'b', Way::None => '-' }).collect::<String>()));
         out.join("\n")
     }
 
@@ -813,7 +914,7 @@ impl Map {
                     }
                 }
                 Some("s") => {
-                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, _ => Way::None }).collect();
+                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'b' => Way::Board, _ => Way::None }).collect();
                 }
                 _ => {}
             }
@@ -878,6 +979,10 @@ mod tests {
         assert!(t1.vblank.iter().any(|o| matches!(o, Op::Call { addr: 0x8100, .. })), "{:?}", t1.vblank);
         let check = map_check(&f, &m, &rom, 60, Fill::Zeros);
         assert!(check.iter().flatten().count() >= 3 && check.iter().flatten().all(|&a| a > 0.99), "{check:?}");
+        // On the game's own banks: the file's bank $11 is the game's bank 3.
+        assert_eq!(game_banks(&m, rom.len()).get(&0x11), Some(&3));
+        let board = map_check(&f, &m, &rom, 60, Fill::Board);
+        assert!(board.iter().flatten().count() >= 3 && board.iter().flatten().all(|&a| a > 0.99), "{board:?}");
         choose_ways(&f, &mut m, &rom, 60, MAP_RIGHT);
         let text = m.encode();
         let back = Map::decode(&text).unwrap();
