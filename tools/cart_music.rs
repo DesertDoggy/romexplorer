@@ -243,6 +243,9 @@ struct Options {
     spcsearch: bool,
     /// `--spcpoke <hex address>`: play values 0-127 through that work RAM byte, for diagnosis.
     spcpoke: Option<u32>,
+    /// `--spcbank`: boot each SNES ROM, lay each track's song and samples in from the ROM,
+    /// send the driver the track's command, and count the tracks heard.
+    spcbank: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -706,6 +709,73 @@ fn print_spc_probe(path: &Path, rom: &[u8], set: &Path, seconds: u32, t: &mut Ta
     *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
+/// `--spcbank` for a SNES ROM and its matched set: the boot's sound chip with each track's
+/// banks laid in from the ROM, then the track's port command.
+fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
+    let options = romexplorer::rom::snes_capture::Options { seconds: 30.0, keep_audio: false, press_start: true, watch_register: None };
+    let boot = match romexplorer::rom::snes_capture::capture(file, &options) {
+        Ok(c) if !c.driver_starts.is_empty() => c.spc,
+        Ok(_) => {
+            println!("{name}: bank: no sound driver started");
+            *t.reasons.entry("no sound driver started".into()).or_default() += 1;
+            return;
+        }
+        Err(e) => {
+            println!("{name}: bank: {e}");
+            *t.reasons.entry("the boot failed".into()).or_default() += 1;
+            return;
+        }
+    };
+    let rom = snes_sound::rom_image(file);
+    let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
+    let maps = spc_map::tracks(&refs, rom);
+    let (mut tracks, mut heard, mut by) = (0usize, 0usize, [0usize; 3]);
+    for (spc, m) in spcs.iter().zip(&maps) {
+        let Some(m) = m else { continue };
+        let real = spc_map::melody(&spc_map::frames(spc, CHECK_FRAMES).unwrap_or_default());
+        if real.len() < music_search::MIN_MELODY {
+            continue;
+        }
+        tracks += 1;
+        let state = spc_map::with_bank(&boot, spc, &m.runs, rom);
+        let ports = spc_map::ports_of(spc);
+        // The command as the four ports, then each port alone, then the bank alone.
+        let all: Vec<(usize, u8)> = ports.iter().enumerate().map(|(p, &v)| (p, v)).collect();
+        let tries: Vec<Vec<(usize, u8)>> = std::iter::once(all.clone()).chain((0..4).map(|p| vec![(p, ports[p])])).chain(std::iter::once(Vec::new())).collect();
+        for (k, w) in tries.iter().enumerate() {
+            if music_search::alike(&real, &spc_map::command(&state, w, CHECK_FRAMES)) >= MAP_RIGHT {
+                heard += 1;
+                by[match k { 0 => 0, 5 => 2, _ => 1 }] += 1;
+                break;
+            }
+        }
+    }
+    println!(
+        "{name}: bank, {:.1} s: {heard} of {tracks} tracks heard (by all four ports {}, one port {}, the bank alone {})",
+        started.elapsed().as_secs_f32(),
+        by[0],
+        by[1],
+        by[2]
+    );
+    t.checked[0] += 1;
+    t.checked[3] += tracks;
+    t.checked[4] += heard;
+    t.saved += heard;
+    let bucket = match heard as f64 / tracks.max(1) as f64 {
+        _ if tracks == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks heard",
+        s if s >= 0.9 => "90-99% heard",
+        s if s >= 0.5 => "50-90% heard",
+        s if s > 0.0 => "under 50% heard",
+        _ => "none heard",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
 /// `--spcpoke`: each value 0-127 through `var`, and the track of the set each one plays.
 fn print_spc_poke(path: &Path, rom: &[u8], set: &Path, var: u32) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -1077,7 +1147,9 @@ fn main() {
         spcprobe: args.iter().any(|a| a == "--spcprobe"),
         spcsearch: args.iter().any(|a| a == "--spcsearch"),
         spcpoke: None,
+        spcbank: args.iter().any(|a| a == "--spcbank"),
     };
+    args.retain(|a| a != "--spcbank");
     if let Some(i) = args.iter().position(|a| a == "--spcpoke") {
         o.spcpoke = args.get(i + 1).and_then(|a| u32::from_str_radix(a.trim_start_matches('$'), 16).ok());
         args.drain(i..(i + 2).min(args.len()));
@@ -1300,7 +1372,11 @@ fn main() {
                 tally.entry("Virtual Boy").or_default(),
             ),
             Some("SNES") => {
-                if let Some(var) = o.spcpoke {
+                if o.spcbank {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_bank(&path, &rom, &set, tally.entry("SNES").or_default());
+                    }
+                } else if let Some(var) = o.spcpoke {
                     if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
                         print_spc_poke(&path, &rom, &set, var);
                     }

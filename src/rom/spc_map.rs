@@ -179,6 +179,43 @@ pub fn probe(boot: &[u8], port: usize, value: u8, count: usize) -> HashSet<u64> 
     frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
 }
 
+/// A booted game's sound chip (`boot`, its `.spc` snapshot: the driver running, from the
+/// user's ROM) with a track's song and samples laid in from the ROM: of the track's runs,
+/// the bytes where its sound memory differs from the boot's, outside the driver's zero page
+/// and stack (its live state, which stays the boot's).
+pub fn with_bank(boot: &[u8], spc: &[u8], runs: &[Run], rom: &[u8]) -> Vec<u8> {
+    let mut out = boot.to_vec();
+    for r in runs {
+        let Some(src) = rom.get(r.rom..r.rom + r.len) else { continue };
+        for (i, &b) in src.iter().enumerate() {
+            let at = r.data + i;
+            if at < 0x200 || (0xF0..0x100).contains(&at) {
+                continue;
+            }
+            if spc[ARAM + at] != boot[ARAM + at] {
+                out[ARAM + at] = b;
+            }
+        }
+    }
+    out
+}
+
+/// The melody the chip `state` plays once the main CPU's `writes` (port, value) reach it.
+pub fn command(state: &[u8], writes: &[(usize, u8)], count: usize) -> HashSet<u64> {
+    let Ok(mut apu) = Apu::from_spc(state) else { return HashSet::new() };
+    for &(port, value) in writes {
+        apu.write_port(port, value);
+        apu.advance(FRAME_CLOCKS);
+    }
+    apu.advance(FRAME_CLOCKS * 4);
+    frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
+}
+
+/// The four ports' values as the main CPU last wrote them, in an `.spc`.
+pub fn ports_of(spc: &[u8]) -> [u8; 4] {
+    [spc[ARAM + 0xF4], spc[ARAM + 0xF5], spc[ARAM + 0xF6], spc[ARAM + 0xF7]]
+}
+
 fn frames_of(apu: &mut Apu, count: usize) -> Option<Vec<Vec<Write>>> {
     let mut out = Vec::with_capacity(count);
     let mut last = [u16::MAX; 8];
