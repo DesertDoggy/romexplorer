@@ -1465,14 +1465,21 @@ pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Re
     })
 }
 
+/// Every write, port and value, for [`measure_frames_by_writes`].
+pub fn every_write(w: &Write) -> Option<u64> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (w.port, w.value).hash(&mut h);
+    Some(h.finish())
+}
+
 /// [`measure_frames`] for a player whose play routine runs at its own timer's rate, so one
 /// frame holds one call and the next two: the frames never repeat even when the song does.
-/// The loop is found in the stream of writes instead, with the frames left out of it, and
-/// only the writes `keep` says carry the notes (a driver's vibrato can run on a count that
-/// doesn't restart with the loop).
+/// The loop is found in the stream of writes instead, with the frames left out of it, each
+/// write as `note` sees it (None: not part of the notes; a driver's vibrato or duty sweep can
+/// run on a count that doesn't restart with the loop). [`every_write`] keeps them all.
 pub fn measure_frames_by_writes(
     frame_rate: f64,
-    keep: impl Fn(&Write) -> bool,
+    mut note: impl FnMut(&Write) -> Option<u64>,
     mut next: impl FnMut(&mut Vec<i16>) -> Result<Vec<Write>, String>,
 ) -> Result<Timing, String> {
     const BASE: u64 = 0x100_0000_01B3;
@@ -1496,10 +1503,8 @@ pub fn measure_frames_by_writes(
         if f > last_loud + SILENT_END_FRAMES {
             return Ok(Timing { frames: last_loud + 1, looping: None });
         }
-        for w in writes.iter().filter(|w| keep(w)) {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (w.port, w.value).hash(&mut h);
-            tokens.push(h.finish());
+        for t in writes.iter().filter_map(&mut note) {
+            tokens.push(t);
             frame_of.push(f);
             if window == 0 {
                 continue;
@@ -1553,7 +1558,7 @@ mod tests {
             vec![Write { at: 0, port: 0x10, value: note & 0xFF }, Write { at: 0, port: 0x11, value: note >> 8 }]
         };
         let (mut due, mut n) = (0.0f64, 0usize);
-        let t = measure_frames_by_writes(60.0, |_| true, |out| {
+        let t = measure_frames_by_writes(60.0, every_write, |out| {
             out.clear();
             out.resize(10, 1000);
             due += 1.37;
