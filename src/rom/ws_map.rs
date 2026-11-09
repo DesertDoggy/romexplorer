@@ -330,22 +330,55 @@ pub fn map_track_writes(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill
 }
 
 fn replay(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill, mut events: Option<&mut Vec<String>>) -> Option<Vec<Vec<Write>>> {
-    let entries = &m.songs.iter().find(|s| s.0 == song)?.1;
-    let data = rebuilt(m.data_len, &m.runs, &m.patches, rom, fill);
-    let own = own_bytes(m.data_len, &m.runs, Fill::Bridged);
-    let mut ws = console(image_of(&data), song);
-    let mut count: HashMap<u32, usize> = HashMap::new();
+    let mut p = LayoutSong::open(m.clone(), rom, song, fill)?;
     let mut out = Vec::with_capacity(frames);
-    // Cycles a script took that are still to pass, a scanline at a time: the time it ran,
-    // over which nothing interrupted it.
-    let mut idle = 0u32;
-    'frames: for frame in 0..frames {
+    for _ in 0..frames {
+        match p.frame(events.as_deref_mut()) {
+            Some(w) => out.push(w),
+            None => break,
+        }
+    }
+    Some(out)
+}
+
+/// A song played by its map on the file's layout rebuilt from the ROM, a frame at a time.
+pub struct LayoutSong {
+    m: Map,
+    song: usize,
+    own: Vec<bool>,
+    ws: WonderSwan,
+    count: HashMap<u32, usize>,
+    /// Cycles a script took that are still to pass, a scanline at a time: the time it ran,
+    /// over which nothing interrupted it.
+    idle: u32,
+    frame: usize,
+    stopped: bool,
+}
+
+impl LayoutSong {
+    pub fn open(m: Map, rom: &[u8], song: u8, fill: Fill) -> Option<Self> {
+        let index = m.songs.iter().position(|s| s.0 == song)?;
+        let data = rebuilt(m.data_len, &m.runs, &m.patches, rom, fill);
+        let own = own_bytes(m.data_len, &m.runs, Fill::Bridged);
+        let ws = console(image_of(&data), song);
+        Some(Self { m, song: index, own, ws, count: HashMap::new(), idle: 0, frame: 0, stopped: false })
+    }
+
+    /// The next frame's sound writes; None once the CPU enters the file's code somewhere the
+    /// map never saw it.
+    pub fn frame(&mut self, mut events: Option<&mut Vec<String>>) -> Option<Vec<Write>> {
+        if self.stopped {
+            return None;
+        }
+        let frame = self.frame;
+        self.frame += 1;
+        let ws = &mut self.ws;
         ws.begin_frame();
         while !ws.frame_over() {
-            if idle > 0 {
-                let t = idle.min(ws.to_next_line());
+            if self.idle > 0 {
+                let t = self.idle.min(ws.to_next_line());
                 ws.advance(t);
-                idle -= t;
+                self.idle -= t;
                 continue;
             }
             if let Some(e) = events.as_deref_mut() {
@@ -353,50 +386,212 @@ fn replay(m: &Map, rom: &[u8], song: u8, frames: usize, fill: Fill, mut events: 
                     e.push(format!("f{frame} c{} interrupt at {:X}", ws.cycle(), ws.cpu().pc()));
                 }
             }
-            interrupts(&mut ws);
+            interrupts(ws);
             if ws.cpu().halted {
                 ws.exec();
                 continue;
             }
-            if is_own(&ws, &own) {
-                let key = ws.rom_offset(ws.cpu().pc()).unwrap_or(0) as u32;
-                let Some((_, head, cycle)) = entries.at.iter().find(|e| e.0 == key) else {
-                    if let Some(e) = events.as_deref_mut() {
-                        e.push(format!("f{frame} c{} entered at {key:X}, never seen", ws.cycle()));
-                    }
-                    break 'frames;
-                };
-                let n = count.entry(key).or_default();
-                let i = match head.get(*n) {
-                    Some(&i) => i,
-                    None if !cycle.is_empty() => cycle[(*n - head.len()) % cycle.len()],
-                    None => break 'frames,
-                };
-                *n += 1;
-                let s = &m.scripts[i as usize];
-                for op in &s.ops {
-                    match *op {
-                        Op::Poke(a, v) => ws.ram_write(a, v),
-                        Op::Out(p, v) => ws.out(p, v),
-                    }
-                }
-                let c = ws.cpu_mut();
-                c.r = s.end.r;
-                c.seg = s.end.seg;
-                c.ip = s.end.ip;
-                c.flags = s.end.flags;
-                c.halted = s.halt;
-                idle = s.cycles;
-                if let Some(e) = events.as_deref_mut() {
-                    e.push(format!("f{frame} c{} script at {key:X}: {}", ws.cycle() + s.cycles, describe(s)));
-                }
+            if !is_own(ws, &self.own) {
+                ws.exec();
                 continue;
             }
-            ws.exec();
+            let key = ws.rom_offset(ws.cpu().pc()).unwrap_or(0) as u32;
+            let entries = &self.m.songs[self.song].1;
+            let Some((_, head, cycle)) = entries.at.iter().find(|e| e.0 == key) else {
+                if let Some(e) = events.as_deref_mut() {
+                    e.push(format!("f{frame} c{} entered at {key:X}, never seen", ws.cycle()));
+                }
+                self.stopped = true;
+                return None;
+            };
+            let n = self.count.entry(key).or_default();
+            let i = match head.get(*n) {
+                Some(&i) => i,
+                None if !cycle.is_empty() => cycle[(*n - head.len()) % cycle.len()],
+                None => {
+                    self.stopped = true;
+                    return None;
+                }
+            };
+            *n += 1;
+            let s = &self.m.scripts[i as usize];
+            for op in &s.ops {
+                match *op {
+                    Op::Poke(a, v) => ws.ram_write(a, v),
+                    Op::Out(p, v) => ws.out(p, v),
+                }
+            }
+            let c = ws.cpu_mut();
+            c.r = s.end.r;
+            c.seg = s.end.seg;
+            c.ip = s.end.ip;
+            c.flags = s.end.flags;
+            c.halted = s.halt;
+            self.idle = s.cycles;
+            if let Some(e) = events.as_deref_mut() {
+                e.push(format!("f{frame} c{} script at {key:X}: {}", ws.cycle() + s.cycles, describe(s)));
+            }
         }
-        out.push(ws.sound_writes());
+        Some(ws.sound_writes())
     }
-    Some(out)
+}
+
+/// A song from the user's ROM by its map, as sound (stereo).
+pub struct MapSong {
+    song: LayoutSong,
+    chip: super::wswan_music::Chip,
+}
+
+impl MapSong {
+    pub fn open(m: &Map, rom: &[u8], song: u8, rate: u32) -> Result<Self, String> {
+        use super::music_search::Machine;
+        let song = LayoutSong::open(m.clone(), rom, song, Fill::Bridged).ok_or("the map has no such song")?;
+        let chip = song.ws.new_chip(rate)?;
+        Ok(Self { song, chip })
+    }
+
+    pub fn frame_rate(&self) -> f64 {
+        super::wswan_music::RATE
+    }
+
+    pub fn frame(&mut self, out: &mut Vec<i16>) -> Option<Vec<Write>> {
+        use super::music_search::Machine;
+        let w = self.song.frame(None)?;
+        self.song.ws.feed(&mut self.chip, &w, out);
+        Some(w)
+    }
+}
+
+/// How alike a song plays from the ROM to the file's own for it to be kept.
+pub const MAP_RIGHT: f64 = 0.9;
+
+/// The map, keeping only the songs it plays right from the ROM (gaps bridged), checked over
+/// the frames recorded. None when it plays none.
+pub fn build_map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Map> {
+    let mut m = map(wsr, rom, songs)?;
+    let right: Vec<u8> = m
+        .songs
+        .iter()
+        .filter(|s| {
+            let want = melody(&track_writes(wsr, s.0, RECORD_FRAMES));
+            let got = map_track_writes(&m, rom, s.0, RECORD_FRAMES, Fill::Bridged).map(|f| melody(&f)).unwrap_or_default();
+            music_search::alike(&want, &got) >= MAP_RIGHT
+        })
+        .map(|s| s.0)
+        .collect();
+    m.songs.retain(|s| right.contains(&s.0));
+    if m.songs.is_empty() {
+        return None;
+    }
+    // Scripts no kept song uses go, the rest renumbered.
+    let mut used: Vec<u32> = m.songs.iter().flat_map(|s| s.1.at.iter().flat_map(|e| e.1.iter().chain(&e.2).copied())).collect();
+    used.sort_unstable();
+    used.dedup();
+    let new: HashMap<u32, u32> = used.iter().enumerate().map(|(i, &o)| (o, i as u32)).collect();
+    m.scripts = used.iter().map(|&o| m.scripts[o as usize].clone()).collect();
+    for s in &mut m.songs {
+        for e in &mut s.1.at {
+            e.1.iter_mut().chain(e.2.iter_mut()).for_each(|i| *i = new[i]);
+        }
+    }
+    Some(m)
+}
+
+impl Map {
+    /// The map as text: numbers only.
+    pub fn encode(&self) -> String {
+        let list = |v: &[u32]| v.iter().map(|i| format!("{i:x}")).collect::<Vec<_>>().join(".");
+        let mut out = vec![
+            "wsmap 1".to_string(),
+            format!("d {:x}", self.data_len),
+            format!("r {}", self.runs.iter().map(|r| format!("{:x}:{:x}:{:x}", r.data, r.len, r.rom)).collect::<Vec<_>>().join(" ")),
+            format!("p {}", self.patches.iter().map(|(d, v)| format!("{d:x}:{v:x}")).collect::<Vec<_>>().join(" ")),
+        ];
+        for s in &self.scripts {
+            let e = &s.end;
+            let regs: Vec<String> = e.r.iter().chain(&e.seg).chain([&e.ip, &e.flags]).map(|v| format!("{v:x}")).collect();
+            let ops: Vec<String> = s
+                .ops
+                .iter()
+                .map(|o| match *o {
+                    Op::Poke(a, v) => format!("P{a:x}:{v:x}"),
+                    Op::Out(p, v) => format!("O{p:x}:{v:x}"),
+                })
+                .collect();
+            out.push(format!("x {} {:x} {} {}", s.halt as u8, s.cycles, regs.join(","), ops.join(" ")).trim_end().to_string());
+        }
+        for (song, e) in &self.songs {
+            let at: Vec<String> = e.at.iter().map(|(k, h, c)| format!("{k:x}={}/{}", list(h), list(c))).collect();
+            out.push(format!("s {song} {}", at.join(" ")));
+        }
+        out.join("\n")
+    }
+
+    pub fn decode(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != "wsmap 1" {
+            return None;
+        }
+        let num = |t: &str| u32::from_str_radix(t, 16).ok();
+        let list = |t: &str| -> Option<Vec<u32>> { if t.is_empty() { Some(Vec::new()) } else { t.split('.').map(num).collect() } };
+        let mut m = Map::default();
+        for line in lines {
+            let (tag, rest) = line.split_once(' ').unwrap_or((line, ""));
+            match tag {
+                "d" => m.data_len = num(rest)? as usize,
+                "r" => {
+                    for r in rest.split_whitespace() {
+                        let f: Vec<u32> = r.split(':').map(num).collect::<Option<_>>()?;
+                        let [data, len, rom] = f[..] else { return None };
+                        m.runs.push(Run { data: data as usize, len: len as usize, rom: rom as usize });
+                    }
+                }
+                "p" => {
+                    for p in rest.split_whitespace() {
+                        let (d, v) = p.split_once(':')?;
+                        m.patches.push((num(d)?, num(v)? as u8));
+                    }
+                }
+                "x" => {
+                    let mut f = rest.split_whitespace();
+                    let halt = f.next()? == "1";
+                    let cycles = num(f.next()?)?;
+                    let regs: Vec<u16> = f.next()?.split(',').map(|v| num(v).map(|v| v as u16)).collect::<Option<_>>()?;
+                    if regs.len() != 14 {
+                        return None;
+                    }
+                    let mut end = Regs { r: [0; 8], seg: [0; 4], ip: regs[12], flags: regs[13] };
+                    end.r.copy_from_slice(&regs[..8]);
+                    end.seg.copy_from_slice(&regs[8..12]);
+                    let mut ops = Vec::new();
+                    for o in f {
+                        let (a, v) = o[1..].split_once(':')?;
+                        ops.push(match &o[..1] {
+                            "P" => Op::Poke(num(a)? as u16, num(v)? as u8),
+                            "O" => Op::Out(num(a)? as u8, num(v)? as u8),
+                            _ => return None,
+                        });
+                    }
+                    m.scripts.push(Script { ops, end, halt, cycles });
+                }
+                "s" => {
+                    let mut f = rest.split_whitespace();
+                    let song: u8 = f.next()?.parse().ok()?;
+                    let mut e = Entries::default();
+                    for a in f {
+                        let (k, hc) = a.split_once('=')?;
+                        let (h, c) = hc.split_once('/')?;
+                        e.at.push((num(k)?, list(h)?, list(c)?));
+                    }
+                    m.songs.push((song, e));
+                }
+                _ => {}
+            }
+        }
+        let n = m.scripts.len() as u32;
+        let fine = m.songs.iter().all(|s| s.1.at.iter().all(|e| e.1.iter().chain(&e.2).all(|&i| i < n)));
+        (m.data_len > 0 && fine).then_some(m)
+    }
 }
 
 /// A script in a line, for traces.
@@ -490,6 +685,11 @@ mod tests {
         for (song, alike) in map_check(&wsr, &m, &rom, 300, Fill::Zeros) {
             assert!(alike >= 0.99, "song {song}: {alike}");
         }
+        // Written down and read back, it plays the same.
+        let back = Map::decode(&m.encode()).unwrap();
+        assert_eq!(back.encode(), m.encode());
+        assert_eq!(map_track_writes(&back, &rom, 2, 300, Fill::Zeros).unwrap(), map_track_writes(&m, &rom, 2, 300, Fill::Zeros).unwrap());
+        assert_eq!(build_map(&wsr, &rom, 0..4).unwrap().songs.len(), 3);
         // Nothing of the stub is kept but numbers: its writes and registers.
         assert!(m.scripts.iter().all(|s| s.ops.iter().all(|o| matches!(o, Op::Poke(..) | Op::Out(..)))));
     }
