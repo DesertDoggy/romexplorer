@@ -326,6 +326,12 @@ pub fn all_with_magic(set: &Path, magic: &[u8]) -> Vec<Vec<u8>> {
     collect_set(set).into_iter().map(|f| f.data).filter(|d| d.starts_with(magic)).collect()
 }
 
+/// Every file of the set `keep` accepts (a WonderSwan set's `.wsr`, known by the `WSRF` 32
+/// bytes from its end), in the set's order.
+pub fn all_where(set: &Path, keep: impl Fn(&[u8]) -> bool) -> Vec<Vec<u8>> {
+    collect_set(set).into_iter().map(|f| f.data).filter(|d| keep(d)).collect()
+}
+
 /// Reads one rip-set file again, by its place, with its playlist.
 fn read_one(folder: &Path, rel: &str) -> Result<RipFile, String> {
     let psf_track = psf::is_track_file(rel);

@@ -360,6 +360,70 @@ fn print_layout(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     *t.reasons.entry(format!("needed bytes in the ROM: {bucket}")).or_default() += 1;
 }
 
+/// Whether `d` is a WSR: `WSRF` 32 bytes from its end.
+fn is_wsr(d: &[u8]) -> bool {
+    d.len() >= 32 && &d[d.len() - 32..d.len() - 28] == b"WSRF"
+}
+
+/// `--layout` for a WonderSwan ROM and its matched set's WSR files: how much of each WSR
+/// (filler aside) is the ROM's own bytes, and how big the part the file's author wrote is.
+/// The WSR's top sits at the cartridge's top, as the ROM's last bank does.
+fn print_ws_layout(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let wsrs = rip_sets::all_where(set, is_wsr);
+    if wsrs.is_empty() {
+        println!("{name}: layout: no WSR in the matched set");
+        *t.reasons.entry("no WSR in the set".into()).or_default() += 1;
+        return;
+    }
+    let mut worst = 100.0f64;
+    for (i, w) in wsrs.iter().enumerate() {
+        let l = music_map::layout(w, &[], rom);
+        let filler = |s: usize, n: usize| w[s..s + n].iter().filter(|&&b| b == 0xFF || b == 0x00).count();
+        // Bytes the author wrote: unplaced, and not padding.
+        let written: usize = l.missing.iter().map(|&(s, n)| n - filler(s, n)).sum();
+        let real = w.len() - filler(0, w.len());
+        let placed_real = real.saturating_sub(written);
+        let share = placed_real as f64 * 100.0 / real.max(1) as f64;
+        worst = worst.min(share);
+        let biggest = l.missing.iter().map(|&(s, n)| n - filler(s, n)).max().unwrap_or(0);
+        // Where the written stretches are, from the file's top (the header's bank).
+        let spots: Vec<String> = l
+            .missing
+            .iter()
+            .filter(|&&(s, n)| n - filler(s, n) >= 16)
+            .take(8)
+            .map(|&(s, n)| format!("-{:X}+{}", w.len() - s, n - filler(s, n)))
+            .collect();
+        // Do the runs keep the ROM's places counted from the top?
+        let tail_aligned = l.runs.iter().filter(|r| rom.len() as isize - r.rom as isize == w.len() as isize - r.data as isize).map(|r| r.len).sum::<usize>();
+        let first_song = w[w.len() - 32 + 5];
+        println!(
+            "{name}: wsr {i} ({} KB, first song {first_song}): {:.1}% of {} non-filler bytes in the ROM ({} runs, {} bytes at the ROM's own place from the top); written {} bytes, biggest {}; at {}",
+            w.len() / 1024,
+            share,
+            real,
+            l.runs.len(),
+            tail_aligned,
+            written,
+            biggest,
+            spots.join(" ")
+        );
+    }
+    if worst >= 99.0 {
+        t.with_music += 1;
+    }
+    let bucket = match worst {
+        s if s >= 99.0 => "99-100%",
+        s if s >= 95.0 => "95-99%",
+        s if s >= 80.0 => "80-95%",
+        s if s >= 50.0 => "50-80%",
+        _ => "under 50%",
+    };
+    *t.reasons.entry(format!("WSR bytes in the ROM: {bucket}")).or_default() += 1;
+}
+
 /// A track the map plays this alike the NSF's own is played right.
 const MAP_RIGHT: f64 = 0.9;
 
@@ -1414,6 +1478,13 @@ fn main() {
             }
             Some(c @ ("WS" | "WSC")) => {
                 let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
+                if o.layout {
+                    let platform = if c == "WS" { Platform::WonderSwan } else { Platform::WonderSwanColor };
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, platform, o.verbose) {
+                        print_ws_layout(&path, &rom, &set, tally.entry(what).or_default());
+                    }
+                    continue;
+                }
                 run::<WonderSwan>(&path, &rom, what, &o, tally.entry(what).or_default())
             }
             Some(c @ ("NGP" | "NGPC")) => {
