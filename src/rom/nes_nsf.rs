@@ -1192,7 +1192,18 @@ pub fn program(rom: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
     if super::fds::is_disk(rom) {
         return Some(std::sync::Arc::new(super::fds::strip_header(rom).to_vec()));
     }
-    super::nes_cart::parse(rom).ok().map(|h| h.prg)
+    if let Ok(h) = super::nes_cart::parse(rom) {
+        return Some(h.prg);
+    }
+    // A headerless dump starts with its program data too; the character data after it is
+    // never in a run.
+    is_headerless(rom).then(|| std::sync::Arc::new(rom.to_vec()))
+}
+
+/// Whether `rom` looks like a cartridge dumped without its iNES header (program then
+/// character data, whole 8 KB banks). Such a dump has no board way: its mapper is unknown.
+pub fn is_headerless(rom: &[u8]) -> bool {
+    rom.len() >= 0x4000 && rom.len() % 0x2000 == 0 && super::nes_cart::parse(rom).is_err() && !super::fds::is_disk(rom)
 }
 
 /// Picks, per track, the player that plays it most like the file (at least `right`). A Disk
@@ -1200,7 +1211,7 @@ pub fn program(rom: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
 pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f64) {
     let Some(prg) = program(rom) else { return };
     let layout = map_check(nsf, m, &prg, frames, Fill::Bridged);
-    let board = if super::fds::is_disk(rom) { vec![None; layout.len()] } else { cart_check(nsf, m, rom, frames) };
+    let board = if super::nes_cart::parse(rom).is_err() { vec![None; layout.len()] } else { cart_check(nsf, m, rom, frames) };
     // The empty-gap layout only where neither of the others plays a track right.
     let missed = layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right);
     let zeros = if missed { map_check(nsf, m, &prg, frames, Fill::Zeros) } else { Vec::new() };
@@ -1234,7 +1245,7 @@ const WAY_FRAMES: usize = 600;
 pub fn build_map(nsf: &[u8], rom: &[u8]) -> Option<Map> {
     let prg = program(rom)?;
     let mut m = map(nsf, &prg)?;
-    if !super::fds::is_disk(rom) {
+    if super::nes_cart::parse(rom).is_ok() {
         choose_board(nsf, &mut m, rom);
     }
     choose_ways(nsf, &mut m, rom, WAY_FRAMES, MAP_RIGHT);
