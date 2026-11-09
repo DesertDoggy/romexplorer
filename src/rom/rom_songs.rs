@@ -526,9 +526,88 @@ fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<Str
 
 static MAPS_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Where music maps are kept (`<dir>/nes/<key>.nesmap`). Without it, none are read or kept.
+/// Where music maps built here are kept (`<dir>/nes/<key>.nesmap`). Without it, none are kept,
+/// and only the bundled ones ([`BUNDLE_FILE`]) are read.
 pub fn set_maps_dir(dir: PathBuf) {
     let _ = MAPS_DIR.set(dir);
+}
+
+/// The maps that ship with the app and rommusic, under `<app root>/assets/`: every kept map in
+/// one zstd stream, read once on first use. Numbers only, like each map.
+pub const BUNDLE_FILE: &str = "music_maps.zst";
+const BUNDLE_MAGIC: &str = "romexplorer music maps 1";
+
+fn bundled() -> &'static std::collections::HashMap<String, String> {
+    static BUNDLE: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        let Some(root) = super::native_lib::exe_root() else { return Default::default() };
+        let path = root.join("assets").join(BUNDLE_FILE);
+        let Ok(packed) = std::fs::read(&path) else { return Default::default() };
+        match read_bundle(&packed) {
+            Ok(maps) => maps,
+            Err(e) => {
+                log::warn!("{}: {e}", path.display());
+                Default::default()
+            }
+        }
+    })
+}
+
+/// A bundle's maps by `<kind>/<key>` (`nes/<sha1>`).
+pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, String>, String> {
+    let text = zstd::decode_all(packed).map_err(|e| e.to_string())?;
+    let text = String::from_utf8(text).map_err(|_| "not text")?;
+    let (head, mut rest) = text.split_once('\n').ok_or("empty")?;
+    if head != BUNDLE_MAGIC {
+        return Err("not a music map bundle".into());
+    }
+    let mut maps = std::collections::HashMap::new();
+    while !rest.is_empty() {
+        let (line, after) = rest.split_once('\n').ok_or("cut short")?;
+        let (name, len) = line.rsplit_once(' ').ok_or("bad entry")?;
+        let len: usize = len.parse().map_err(|_| "bad entry")?;
+        let body = after.get(..len).ok_or("cut short")?;
+        maps.insert(name.to_string(), body.to_string());
+        rest = &after[len..];
+    }
+    Ok(maps)
+}
+
+/// Packs every map kept under `dir` (as [`set_maps_dir`] lays them out) into one bundle.
+/// Returns how many maps of each kind went in.
+pub fn pack_bundle(dir: &Path) -> Result<(Vec<u8>, Vec<(String, usize)>), String> {
+    let mut text = format!("{BUNDLE_MAGIC}\n");
+    let mut counts = Vec::new();
+    for (kind, ext) in MAP_KINDS {
+        let Ok(entries) = std::fs::read_dir(dir.join(kind)) else { continue };
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext)).collect();
+        // Sorted, so the same maps always pack to the same bytes.
+        files.sort();
+        for f in &files {
+            let body = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+            let key = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            text.push_str(&format!("{kind}/{key} {}\n", body.len()));
+            text.push_str(&body);
+        }
+        counts.push((kind.to_string(), files.len()));
+    }
+    // zstd -19: packed once per release and read once per run, so size is what counts here.
+    let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
+    Ok((packed, counts))
+}
+
+/// Each kind of map: its folder under the maps dir and its file extension.
+const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap")];
+
+/// A kept map's text: one built here first, then the bundled one.
+fn kept_map(kind: &str, key: &str) -> Option<String> {
+    let ext = MAP_KINDS.iter().find(|(k, _)| *k == kind)?.1;
+    if let Some(dir) = MAPS_DIR.get() {
+        if let Ok(text) = std::fs::read_to_string(dir.join(kind).join(format!("{key}.{ext}"))) {
+            return Some(text);
+        }
+    }
+    bundled().get(&format!("{kind}/{key}")).cloned()
 }
 
 /// What a NES ROM's map is kept under: the SHA-1 of its program data (a Disk System image's
@@ -544,12 +623,12 @@ fn map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_map(key: &str) -> Option<super::nes_nsf::Map> {
-    super::nes_nsf::Map::decode(&std::fs::read_to_string(map_path(key)?).ok()?)
+    super::nes_nsf::Map::decode(&kept_map("nes", key)?)
 }
 
 /// Whether a map is kept for the NES ROM `rom`.
 pub fn has_map(rom: &[u8]) -> bool {
-    map_key(rom).and_then(|k| map_path(&k)).is_some_and(|p| p.is_file())
+    map_key(rom).is_some_and(|k| kept_map("nes", &k).is_some())
 }
 
 /// Builds the map of the NES ROM `rom` from the NSF it matches (only to find and check where
@@ -581,14 +660,15 @@ fn sgc_map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_sgc_map(key: &str) -> Option<super::sgc_map::Map> {
-    super::sgc_map::Map::decode(&std::fs::read_to_string(sgc_map_path(key)?).ok()?)
+    super::sgc_map::Map::decode(&kept_map("sgc", key)?)
 }
 
 /// The map of the Master System / Game Gear ROM `rom` from the first of `sets` holding an
 /// SGC, unless one is kept already.
 fn sgc_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<(), String> {
-    let file = sgc_map_path(&gb_key(rom)).ok_or("no folder for music maps")?;
-    if file.is_file() {
+    let key = gb_key(rom);
+    let file = sgc_map_path(&key).ok_or("no folder for music maps")?;
+    if kept_map("sgc", &key).is_some() {
         return Ok(());
     }
     for set in sets {
@@ -642,18 +722,19 @@ fn hes_map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_hes_map(key: &str) -> Option<super::hes_map::Map> {
-    super::hes_map::Map::decode(&std::fs::read_to_string(hes_map_path(key)?).ok()?)
+    super::hes_map::Map::decode(&kept_map("hes", key)?)
 }
 
 /// The map of the PC Engine ROM `rom` from the first of `sets` holding a HES, unless one is
 /// kept already. False when no set holds one.
 fn hes_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
-    let file = hes_map_path(&gb_key(super::hes_map::program(rom))).ok_or("no folder for music maps")?;
+    let key = gb_key(super::hes_map::program(rom));
+    let file = hes_map_path(&key).ok_or("no folder for music maps")?;
     let mut any = false;
     for set in sets {
         let Some(hes) = super::rip_sets::first_with_magic(set, b"HESM") else { continue };
         any = true;
-        if file.is_file() {
+        if kept_map("hes", &key).is_some() {
             return Ok(true);
         }
         let Some(m) = super::hes_map::build_map(&hes, rom) else { continue };
@@ -712,7 +793,7 @@ fn gb_map_path(key: &str) -> Option<PathBuf> {
 }
 
 fn load_gb_map(key: &str) -> Option<super::gb_map::Map> {
-    super::gb_map::Map::decode(&std::fs::read_to_string(gb_map_path(key)?).ok()?)
+    super::gb_map::Map::decode(&kept_map("gb", key)?)
 }
 
 /// Builds the map of the Game Boy ROM at `path` from the first of `sets` that holds a GBS
@@ -722,7 +803,7 @@ fn gb_map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
     let rom = read_rom(path)?;
     let key = gb_key(&rom);
     let file = gb_map_path(&key).ok_or("no folder for music maps")?;
-    if file.is_file() {
+    if kept_map("gb", &key).is_some() {
         return Ok(());
     }
     for set in sets {
@@ -1081,4 +1162,26 @@ where
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MachinePcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+
+    #[test]
+    fn a_bundle_gives_back_every_map_packed_into_it() {
+        let dir = std::env::temp_dir().join(format!("music_map_bundle_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("nes")).unwrap();
+        std::fs::create_dir_all(dir.join("hes")).unwrap();
+        std::fs::write(dir.join("nes").join("aa.nesmap"), "nesmap 1\nline two\n").unwrap();
+        std::fs::write(dir.join("hes").join("bb.hesmap"), "hesmap 1\n").unwrap();
+        std::fs::write(dir.join("nes").join("stray.txt"), "not a map").unwrap();
+        let (packed, counts) = pack_bundle(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(counts.iter().map(|(_, n)| n).sum::<usize>(), 2);
+        let maps = read_bundle(&packed).unwrap();
+        assert_eq!(maps.len(), 2);
+        assert_eq!(maps["nes/aa"], "nesmap 1\nline two\n");
+        assert_eq!(maps["hes/bb"], "hesmap 1\n");
+    }
 }

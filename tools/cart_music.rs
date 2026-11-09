@@ -232,6 +232,9 @@ struct Options {
     /// `--mapcheck`: with `--originals`, build each NES ROM's music map from its matched NSF and
     /// play every track from the ROM by it, against the NSF's own.
     mapcheck: bool,
+    /// `--write-maps <dir>`: with `--originals`, build each matched ROM's music map the way the
+    /// app does and keep it under `<dir>` (`nes/<key>.nesmap`, ...), for `--pack-maps`.
+    write_maps: Option<PathBuf>,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -839,6 +842,54 @@ fn run_hinted<M: Machine>(
     }
 }
 
+/// `--write-maps`: the music map of `path`, from its matched set, built and kept as the app
+/// keeps it (under `dir`).
+fn write_map(
+    dir: &Path,
+    path: &Path,
+    rom: &[u8],
+    lib: Option<&rip_match::Library>,
+    verbose: bool,
+    tally: &mut std::collections::BTreeMap<&str, Tally>,
+) {
+    let (platform, what) = match console(rom, path) {
+        Some("NES") | Some("NES?") => (Platform::Famicom, "NES"),
+        Some("FDS") => (Platform::Famicom, "Disk System"),
+        Some("GB") => (Platform::GameBoy, "Game Boy"),
+        Some("GBC") => (Platform::GameBoyColor, "Game Boy Color"),
+        Some("PCE") => (Platform::TurboGrafx16, "PC Engine"),
+        Some("SMS") => (Platform::SegaMasterSystem, "Master System"),
+        Some("GG") => (Platform::SegaGameGear, "Game Gear"),
+        _ => return,
+    };
+    let t = tally.entry(what).or_default();
+    t.games += 1;
+    let Some(set) = matched_set(lib, path, platform, verbose) else {
+        *t.reasons.entry("no matching set".into()).or_default() += 1;
+        return;
+    };
+    rom_songs::set_maps_dir(dir.to_path_buf());
+    let before = count_maps(dir);
+    match rom_songs::map_from_sets(path, &[set]) {
+        Ok(()) if count_maps(dir) > before => {
+            t.with_music += 1;
+            println!("{}: map kept", path.display());
+        }
+        Ok(()) => {
+            *t.reasons.entry("no map (nothing played, or kept already)".into()).or_default() += 1;
+            println!("{}: no map", path.display());
+        }
+        Err(e) => {
+            *t.reasons.entry(e.clone()).or_default() += 1;
+            println!("{}: {e}", path.display());
+        }
+    }
+}
+
+fn count_maps(dir: &Path) -> usize {
+    ["nes", "gb", "hes", "sgc"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut o = Options {
@@ -849,7 +900,37 @@ fn main() {
         nsf: None,
         layout: args.iter().any(|a| a == "--layout"),
         mapcheck: args.iter().any(|a| a == "--mapcheck"),
+        write_maps: None,
     };
+    // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
+    // rommusic ship (assets/music_maps.zst).
+    if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
+        let (Some(dir), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("usage: cart_music --pack-maps <maps folder> <bundle file>");
+            std::process::exit(2);
+        };
+        match rom_songs::pack_bundle(Path::new(dir)) {
+            Ok((packed, counts)) => {
+                if let Err(e) = std::fs::write(out, &packed) {
+                    eprintln!("{out}: {e}");
+                    std::process::exit(1);
+                }
+                for (kind, n) in counts {
+                    println!("{kind}: {n} maps");
+                }
+                println!("{out}: {} bytes", packed.len());
+                return;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(i) = args.iter().position(|a| a == "--write-maps") {
+        o.write_maps = args.get(i + 1).map(PathBuf::from);
+        args.drain(i..(i + 2).min(args.len()));
+    }
     args.retain(|a| a != "--layout" && a != "--mapcheck");
     args.retain(|a| a != "--verbose");
     if let Some(i) = args.iter().position(|a| a == "--render") {
@@ -870,7 +951,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck]] <rom or folder>..."
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps <maps folder> <bundle file>"
         );
         std::process::exit(2);
     }
@@ -903,6 +984,10 @@ fn main() {
                 continue;
             }
         };
+        if let Some(dir) = &o.write_maps {
+            write_map(dir, &path, &rom, nsf_lib.as_ref(), o.verbose, &mut tally);
+            continue;
+        }
         match console(&rom, &path) {
             Some("NES") => {
                 let what = format!(
