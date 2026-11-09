@@ -27,7 +27,7 @@ use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::common::models::Platform;
-use romexplorer::rom::{gb_gbs, gb_map, hes_map, sgc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
+use romexplorer::rom::{gb_gbs, gb_map, hes_map, sgc_map, snes_sound, spc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -129,6 +129,9 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
             && (name.ends_with(".rom") || name.ends_with(".zip") || name.ends_with(".7z")))
     {
         return Some("MSX");
+    }
+    if name.ends_with(".sfc") || name.ends_with(".smc") || name.contains("super famicom") || name.contains("super nintendo") {
+        return Some("SNES");
     }
     if name.ends_with(".pce")
         || name.contains("pc engine")
@@ -243,6 +246,16 @@ fn original_hint(
     read: fn(&[u8]) -> Option<music_search::Hint>,
     verbose: bool,
 ) -> Option<(music_search::Hint, Vec<u8>)> {
+    let set = matched_set(lib, path, platform, verbose)?;
+    let hint = rip_sets::first_with_magic(&set, magic).and_then(|d| Some((read(&d)?, d)));
+    if verbose && hint.is_none() {
+        println!("    (no NSF/GBS in it)");
+    }
+    hint
+}
+
+/// The original audio format set a ROM matches best.
+fn matched_set(lib: Option<&rip_match::Library>, path: &Path, platform: Platform, verbose: bool) -> Option<PathBuf> {
     let lib = lib?;
     let matches = lib
         .match_rom(path, platform as u16)
@@ -288,16 +301,10 @@ fn original_hint(
             .unwrap_or((set.as_path(), share)),
         false => (set.as_path(), share),
     };
-    let hint = rip_sets::first_with_magic(set, magic).and_then(|d| Some((read(&d)?, d)));
     if verbose {
-        println!(
-            "    matched set: {} ({:.0}% matched){}",
-            set.display(),
-            share * 100.0,
-            if hint.is_some() { "" } else { ", no NSF/GBS in it" }
-        );
+        println!("    matched set: {} ({:.0}% matched)", set.display(), share * 100.0);
     }
-    hint
+    Some(set.to_path_buf())
 }
 
 /// `--layout` for a NES/Famicom ROM and its matched NSF.
@@ -542,6 +549,76 @@ fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
         _ => "none right",
     };
     *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--mapcheck` for a SNES ROM and its matched set's `.spc` files: how much of each track's
+/// sound memory is in the ROM as is, and how many tracks play right rebuilt from it.
+fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let rom = snes_sound::rom_image(rom);
+    let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
+    if spcs.is_empty() {
+        println!("{name}: map: no .spc in the set");
+        *t.reasons.entry("no .spc in the set".into()).or_default() += 1;
+        return;
+    }
+    let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
+    let maps = spc_map::tracks(&refs, rom);
+    let (mut got, mut total) = (0usize, 0usize);
+    let (mut with_melody, mut zeros, mut bridged, mut oracle, mut best) = (0, 0, 0, 0, 0);
+    let mut off = Vec::new();
+    for (i, (spc, m)) in spcs.iter().zip(&maps).enumerate() {
+        let Some(m) = m else { continue };
+        let (g, n) = spc_map::coverage(spc, &m.runs);
+        got += g;
+        total += n;
+        let check = |fill| spc_map::check(spc, m, rom, fill, CHECK_FRAMES);
+        let Some(z) = check(spc_map::Fill::Zeros) else { continue };
+        with_melody += 1;
+        let b = check(spc_map::Fill::Bridged).unwrap_or(0.0);
+        let f = check(spc_map::Fill::File(spc)).unwrap_or(0.0);
+        zeros += (z >= MAP_RIGHT) as usize;
+        bridged += (b >= MAP_RIGHT) as usize;
+        oracle += (f >= MAP_RIGHT) as usize;
+        best += (z.max(b) >= MAP_RIGHT) as usize;
+        if z.max(b) < MAP_RIGHT && off.len() < 12 {
+            off.push(format!("{i}:{:.2}/{:.0}%", z.max(b), g as f64 * 100.0 / n.max(1) as f64));
+        }
+    }
+    let share = got as f64 * 100.0 / total.max(1) as f64;
+    t.saved += best;
+    println!(
+        "{name}: map, {:.1} s: {best} of {with_melody} tracks played right from the ROM (as-is: {zeros}; gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} .spc; {share:.1}% of sound memory in the ROM){}",
+        started.elapsed().as_secs_f32(),
+        spcs.len(),
+        if off.is_empty() { String::new() } else { format!("; off: {}", off.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += zeros;
+    if with_melody > 0 && best == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match best as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+    let cover = match share {
+        s if s >= 99.0 => "sound memory in the ROM: 99-100%",
+        s if s >= 90.0 => "sound memory in the ROM: 90-99%",
+        s if s >= 50.0 => "sound memory in the ROM: 50-90%",
+        _ => "sound memory in the ROM: under 50%",
+    };
+    *t.reasons.entry(cover.into()).or_default() += 1;
 }
 
 /// `--mapcheck` for a PC Engine HuCard and its matched HES.
@@ -954,6 +1031,15 @@ fn main() {
                 &o,
                 tally.entry("Virtual Boy").or_default(),
             ),
+            Some("SNES") => {
+                if o.mapcheck {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_mapcheck(&path, &rom, &set, tally.entry("SNES").or_default());
+                    }
+                } else {
+                    println!("{}: SNES: only --mapcheck", path.display());
+                }
+            }
             Some("PCE") if o.mapcheck => {
                 let hes = original_hint(nsf_lib.as_ref(), &path, Platform::TurboGrafx16, b"HESM", |_| Some(Default::default()), o.verbose);
                 if let Some(h) = &hes {

@@ -47,6 +47,7 @@ pub mod gb_gbs;
 pub mod gb_map;
 pub mod hes_map;
 pub mod sgc_map;
+pub mod spc_map;
 pub mod music_map;
 pub mod sm83;
 pub mod z80;
