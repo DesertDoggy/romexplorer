@@ -293,10 +293,10 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, irq: bool, placed: &[bo
     cpu.pc = pc;
     cpu.a = regs.a;
     cpu.calls = vec![(cpu.physical(pc), s0)];
-    // As in `gb_map`: the target and the bytes after it placed.
-    let of = |p: &Player, cpu: &Cpu, addr: u16, set: &[bool]| {
+    // As in `gb_map`: the routine's own entry needs the bytes after it placed too.
+    let of = |p: &Player, cpu: &Cpu, addr: u16, set: &[bool], bytes: usize| {
         let s = p.src(cpu.physical(addr));
-        s > 0 && (0..3).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
+        s > 0 && (0..bytes).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
     };
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
@@ -314,7 +314,8 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, irq: bool, placed: &[bo
         let at = cpu.pc;
         if in_game.is_none() {
             let near = target.is_some_and(|(t, _)| at > t && at - t <= PATCHED_BYTES);
-            let entered = if jumped || near { of(p, cpu, at, placed) } else { of(p, cpu, at, aligned) };
+            let bytes = if first { 3 } else { 1 };
+            let entered = if jumped || near { of(p, cpu, at, placed, bytes) } else { of(p, cpu, at, aligned, bytes) };
             if entered {
                 if let Some((_, s)) = target.filter(|t| t.1 > cpu.s) {
                     ops.extend((cpu.s as u16 + 1..=s as u16).rev().map(|i| {
