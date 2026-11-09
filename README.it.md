@@ -268,7 +268,8 @@ predefinita, perché il database grande rallenta tutto).
 
 Le pagine dei titoli possono riprodurre la musica contenuta nelle tue ROM, direttamente dal file:
 non viene estratto né copiato nulla. Esegui prima «Indicizza l'audio delle ROM» nella scheda Audio. `rommusic`
-legge le stesse cose.
+legge le stesse cose. Per ora la musica di una ROM si sente solo dopo che la ROM è stata indicizzata;
+nel frattempo la sua pagina può riprodurre la musica di un altro gioco.
 
 | musica da | piattaforme | file |
 |---|---|---|
