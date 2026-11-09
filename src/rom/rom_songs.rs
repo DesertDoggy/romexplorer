@@ -41,6 +41,9 @@ const GB_MAP: &str = "gbmap";
 /// `sgcmap@<map key>@<body ms>@<fade ms>`: the same for the Master System and Game Gear
 /// ([`super::sgc_map::Map`]).
 const SGC_MAP: &str = "sgcmap";
+/// `hesmap@<map key>@<body ms>@<fade ms>`: the same for the PC Engine
+/// ([`super::hes_map::Map`]).
+const HES_MAP: &str = "hesmap";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -235,6 +238,14 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
             return index_machine::<super::md_music::MegaDrive>(path, t, MD, "Mega Drive");
         }
         if platform == P::TurboGrafx16 as u16 {
+            let rom = read_rom(path)?;
+            let key = gb_key(super::hes_map::program(&rom));
+            if let Some(m) = load_hes_map(&key) {
+                let found = index_hes_map(&rom, &key, &m, t)?;
+                if !found.is_empty() {
+                    return Ok((found, None));
+                }
+            }
             return index_machine::<super::pce_music::PcEngine>(path, t, PCE, "PC Engine");
         }
         if platform == P::Msx as u16 || platform == P::Msx2 as u16 {
@@ -465,6 +476,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(NES_MAP) => open_map(path, engine, song),
         Some(GB_MAP) => open_gb_map(path, engine, song),
         Some(SGC_MAP) => open_sgc_map(path, engine, song),
+        Some(HES_MAP) => open_hes_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -549,7 +561,7 @@ pub fn builds_maps(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     (is_nes(platform) && super::nes_apu::available())
         || (is_gb(platform) && super::gb_apu::available())
-        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16) && super::vgm_chips::available())
+        || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::TurboGrafx16 as u16) && super::vgm_chips::available())
 }
 
 fn sgc_map_path(key: &str) -> Option<PathBuf> {
@@ -611,6 +623,69 @@ fn open_sgc_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStrea
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MapPcm { song: AnyMapSong::Sgc(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+fn hes_map_path(key: &str) -> Option<PathBuf> {
+    Some(MAPS_DIR.get()?.join("hes").join(format!("{key}.hesmap")))
+}
+
+fn load_hes_map(key: &str) -> Option<super::hes_map::Map> {
+    super::hes_map::Map::decode(&std::fs::read_to_string(hes_map_path(key)?).ok()?)
+}
+
+/// The map of the PC Engine ROM `rom` from the first of `sets` holding a HES, unless one is
+/// kept already. False when no set holds one.
+fn hes_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
+    let file = hes_map_path(&gb_key(super::hes_map::program(rom))).ok_or("no folder for music maps")?;
+    let mut any = false;
+    for set in sets {
+        let Some(hes) = super::rip_sets::first_with_magic(set, b"HESM") else { continue };
+        any = true;
+        if file.is_file() {
+            return Ok(true);
+        }
+        let Some(m) = super::hes_map::build_map(&hes, rom) else { continue };
+        if m.ways.iter().all(|w| *w == super::hes_map::Way::None) {
+            continue;
+        }
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()))?;
+        return Ok(true);
+    }
+    Ok(any)
+}
+
+fn index_hes_map(rom: &[u8], key: &str, m: &super::hes_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+    let mut out = Vec::new();
+    for v in 0..m.header.songs {
+        if matches!(m.ways.get(v as usize), None | Some(super::hes_map::Way::None)) {
+            continue;
+        }
+        let Ok(mut song) = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+        let rate = song.frame_rate();
+        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        if let Some(track) = map_track(HES_MAP, key, v, out.len(), rate, timing, 2, "PC Engine", t) {
+            out.push(track);
+        }
+    }
+    Ok(out)
+}
+
+fn open_hes_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_hes_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let v = u8::try_from(song).map_err(|_| bad())?;
+    let song = super::hes_map::MapSong::open(&m, &rom, v, PLAY_RATE)?;
+    let r = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(MapPcm { song: AnyMapSong::Hes(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
 /// What a Game Boy (or Master System / Game Gear) ROM's map is kept under: the SHA-1 of the
@@ -727,6 +802,9 @@ pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
         // A Game Boy ROM carries the Nintendo logo at $104.
         if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
             return gb_map_from_sets(path, sets);
+        }
+        if hes_map_from_sets(&rom, sets)? {
+            return Ok(());
         }
         return sgc_map_from_sets(&rom, sets);
     }
@@ -908,6 +986,7 @@ enum AnyMapSong {
     Nes(super::nes_nsf::MapSong),
     Gb(super::gb_map::MapSong),
     Sgc(super::sgc_map::MapSong),
+    Hes(super::hes_map::MapSong),
 }
 
 impl AnyMapSong {
@@ -916,6 +995,7 @@ impl AnyMapSong {
             AnyMapSong::Nes(s) => s.frame(out),
             AnyMapSong::Gb(s) => s.frame(out),
             AnyMapSong::Sgc(s) => s.frame(out),
+            AnyMapSong::Hes(s) => s.frame(out),
         }
     }
 }
