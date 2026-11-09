@@ -443,6 +443,8 @@ fn print_gb_mapcheck(path: &Path, rom: &[u8], gbs: &[u8], t: &mut Tally) {
     let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
     let bridged = right_with(&m, gb_map::Fill::Bridged);
     let oracle = right_with(&m, gb_map::Fill::File(&gbs[0x70..]));
+    let board = gb_map::board_check(gbs, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    t.board += board;
     gb_map::choose_ways(gbs, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
     let saved = gb_map::Map::decode(&m.encode()).map_or(0, |back| {
         (0..back.header.songs)
@@ -457,7 +459,7 @@ fn print_gb_mapcheck(path: &Path, rom: &[u8], gbs: &[u8], t: &mut Tally) {
     let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, gb_map::Op::Call { .. })).count()).max().unwrap_or(0);
     let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
         started.elapsed().as_secs_f32(),
         m.header.songs,
         m.runs.len(),

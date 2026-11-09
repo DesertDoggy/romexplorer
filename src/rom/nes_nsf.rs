@@ -741,6 +741,9 @@ pub enum Fill<'a> {
     Bridged,
     /// The file's own bytes (an oracle: what the map would play if it held them).
     File(&'a [u8]),
+    /// A Disk System game's gap from the disk file a neighbouring run lies in, at the gap's
+    /// place in that file's load range.
+    DiskFiles,
 }
 
 /// The file's data as a map rebuilds it from the ROM: its runs, and the gaps as `fill` says.
@@ -757,7 +760,7 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
     }
     // A Disk System game's files each load at their own address: a gap is filled from the
     // file a neighbouring run lies in, at the gap's place in that file's load range.
-    if fill == Fill::Bridged && m.header.fds {
+    if fill == Fill::DiskFiles {
         if let Ok(disk) = super::fds::parse(prg) {
             let files: Vec<(u16, usize, usize)> =
                 disk.sides.iter().flat_map(|s| &s.files).filter(|f| f.kind == 0).map(|f| (f.addr, f.at, f.data.len())).collect();
@@ -1175,6 +1178,8 @@ pub enum Way {
     Layout,
     /// The same with the gaps left empty (a gap the ROM fills with other bytes).
     Zeros,
+    /// A Disk System game's layout, gaps filled per disk file ([`Fill::DiskFiles`]).
+    DiskFiles,
     /// The game's own board ([`cart_track_writes`]).
     Board,
     /// Neither plays it right.
@@ -1197,21 +1202,21 @@ pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f6
     let layout = map_check(nsf, m, &prg, frames, Fill::Bridged);
     let board = if super::fds::is_disk(rom) { vec![None; layout.len()] } else { cart_check(nsf, m, rom, frames) };
     // The empty-gap layout only where neither of the others plays a track right.
-    let zeros = if layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right) {
-        map_check(nsf, m, &prg, frames, Fill::Zeros)
-    } else {
-        Vec::new()
-    };
+    let missed = layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right);
+    let zeros = if missed { map_check(nsf, m, &prg, frames, Fill::Zeros) } else { Vec::new() };
+    let files = if missed && m.header.fds { map_check(nsf, m, &prg, frames, Fill::DiskFiles) } else { Vec::new() };
     m.ways = (0..layout.len())
         .map(|i| {
             let score = |v: &Vec<Option<f64>>| v.get(i).copied().flatten().unwrap_or(0.0);
-            let (l, b, z) = (score(&layout), score(&board), score(&zeros));
+            let (l, b, z, f) = (score(&layout), score(&board), score(&zeros), score(&files));
             if l >= right && l >= b {
                 Way::Layout
             } else if b >= right {
                 Way::Board
             } else if z >= right {
                 Way::Zeros
+            } else if f >= right {
+                Way::DiskFiles
             } else {
                 Way::None
             }
@@ -1243,6 +1248,7 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
         Way::Board => cart_track_writes(m, rom, song, frames),
         Way::Layout => map_track_writes(m, &program(rom)?, song, frames, Fill::Bridged),
         Way::Zeros => map_track_writes(m, &program(rom)?, song, frames, Fill::Zeros),
+        Way::DiskFiles => map_track_writes(m, &program(rom)?, song, frames, Fill::DiskFiles),
         Way::None => None,
     }
 }
@@ -1276,9 +1282,13 @@ impl MapSong {
                 let s = BoardSong::open(m, rom, song).ok_or("the song didn't start")?;
                 MapPlayer::Board(s, nes.new_chip(rate)?)
             }
-            Some(way @ (Way::Layout | Way::Zeros)) => {
+            Some(way @ (Way::Layout | Way::Zeros | Way::DiskFiles)) => {
                 let prg = program(rom).ok_or("not a NES cartridge or Disk System image")?;
-                let fill = if *way == Way::Zeros { Fill::Zeros } else { Fill::Bridged };
+                let fill = match way {
+                    Way::Zeros => Fill::Zeros,
+                    Way::DiskFiles => Fill::DiskFiles,
+                    _ => Fill::Bridged,
+                };
                 let s = LayoutSong::open(m, &prg, song, fill).ok_or("the song didn't start")?;
                 let chips = if m.header.fds { super::nes_apu::CHIP_FDS } else { 0 };
                 MapPlayer::Layout(s, super::nes_apu::Apu::new(rate, pal, chips)?, cycles)
@@ -1364,7 +1374,7 @@ impl Map {
         }
         out.push(format!(
             "s {}",
-            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::Board => 'b', Way::None => '-' }).collect::<String>()
+            self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::DiskFiles => 'f', Way::Board => 'b', Way::None => '-' }).collect::<String>()
         ));
         out.join("\n")
     }
@@ -1453,7 +1463,7 @@ impl Map {
                     *list.get_mut(i)? = Some(ops(&f[2..])?);
                 }
                 Some("s") => {
-                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'b' => Way::Board, _ => Way::None }).collect();
+                    m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, 'f' => Way::DiskFiles, 'b' => Way::Board, _ => Way::None }).collect();
                 }
                 _ => {}
             }
