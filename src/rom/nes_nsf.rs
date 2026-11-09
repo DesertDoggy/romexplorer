@@ -1381,49 +1381,6 @@ pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<
 pub struct MapSong {
     player: MapPlayer,
     rate: f64,
-    n163: N163Channels,
-}
-
-/// The Namco 163's channel count ($7F bits 4-6), which a game may set once at boot and its
-/// file never: left at power-on's one channel, music on the lower channels is silent. Set
-/// to reach the lowest channel the song uses, unless the song sets it itself.
-#[derive(Default)]
-struct N163Channels {
-    addr: u8,
-    set: bool,
-    count: u8,
-}
-
-impl N163Channels {
-    /// `w` with the count written before the first write that needs more channels.
-    fn fill(&mut self, w: Vec<Write>) -> Vec<Write> {
-        let (addr_port, data_port) = (super::nes_music::port(super::nes_apu::Target::N163Addr, 0xF800), super::nes_music::port(super::nes_apu::Target::N163Data, 0x4800));
-        let mut out = Vec::with_capacity(w.len());
-        for x in w {
-            if x.port == addr_port {
-                self.addr = x.value as u8;
-            } else if x.port == data_port {
-                let a = self.addr & 0x7F;
-                if a == 0x7F {
-                    self.set = true;
-                } else if !self.set && a >= 0x40 {
-                    // Channel n (from the top, $78) needs a count of n + 1.
-                    let need = (0x7F - a) / 8 + 1;
-                    if need > self.count.max(1) {
-                        self.count = need;
-                        out.push(Write { at: x.at, port: addr_port, value: 0x7F });
-                        out.push(Write { at: x.at, port: data_port, value: ((need - 1) << 4) as u16 });
-                        out.push(Write { at: x.at, port: addr_port, value: self.addr as u16 });
-                    }
-                }
-                if self.addr & 0x80 != 0 {
-                    self.addr = 0x80 | (self.addr.wrapping_add(1) & 0x7F);
-                }
-            }
-            out.push(x);
-        }
-        out
-    }
 }
 
 enum MapPlayer {
@@ -1466,7 +1423,7 @@ impl MapSong {
             }
             _ => return Err("the map has no way to play this song".into()),
         };
-        Ok(Self { player, rate: frame_rate, n163: N163Channels::default() })
+        Ok(Self { player, rate: frame_rate })
     }
 
     pub fn frame_rate(&self) -> f64 {
@@ -1484,7 +1441,7 @@ impl MapSong {
                 Some(w)
             }
             MapPlayer::Layout(s, apu, cycles) => {
-                let w = self.n163.fill(s.frame()?);
+                let w = s.frame()?;
                 extern "C" fn read(data: *mut std::ffi::c_void, addr: std::ffi::c_uint) -> std::ffi::c_int {
                     // SAFETY: set to a live LayoutSong for the writes and end of one frame.
                     let s = unsafe { &*(data as *const LayoutSong) };
