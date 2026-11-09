@@ -326,6 +326,19 @@ pub fn all_with_magic(set: &Path, magic: &[u8]) -> Vec<Vec<u8>> {
     collect_set(set).into_iter().map(|f| f.data).filter(|d| d.starts_with(magic)).collect()
 }
 
+/// Every WSR of the set (known by the `WSRF` 32 bytes from its end) with the song numbers
+/// its playlist lists (empty without one), in the set's order.
+pub fn wsrs_with_songs(set: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
+    collect_set(set)
+        .into_iter()
+        .filter(|f| super::ws_map::is_wsr(&f.data))
+        .map(|f| {
+            let songs = wsr::listed_songs(&f.playlist);
+            (f.data, songs)
+        })
+        .collect()
+}
+
 /// Every file of the set `keep` accepts (a WonderSwan set's `.wsr`, known by the `WSRF` 32
 /// bytes from its end), in the set's order.
 pub fn all_where(set: &Path, keep: impl Fn(&[u8]) -> bool) -> Vec<Vec<u8>> {

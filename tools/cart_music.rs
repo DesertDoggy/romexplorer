@@ -424,6 +424,63 @@ fn print_ws_layout(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     *t.reasons.entry(format!("WSR bytes in the ROM: {bucket}")).or_default() += 1;
 }
 
+/// `--mapcheck` for a WonderSwan ROM and its matched set's WSR: the map built, and each song
+/// played from the ROM by it against the file's own, with the file's unplaced bytes zeroed,
+/// bridged from the ROM, and (an oracle) the file's own.
+fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    use romexplorer::rom::ws_map;
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let Some((wsr, listed)) = rip_sets::wsrs_with_songs(set).into_iter().next() else {
+        println!("{name}: map: no WSR in the matched set");
+        *t.reasons.entry("no WSR in the set".into()).or_default() += 1;
+        return;
+    };
+    let songs: Vec<u8> = if listed.is_empty() {
+        let first = ws_map::first_song(&wsr);
+        (first..first.saturating_add(64)).collect()
+    } else {
+        listed.clone()
+    };
+    let started = std::time::Instant::now();
+    let Some(m) = ws_map::map(&wsr, rom, songs.iter().copied()) else {
+        println!("{name}: map: nothing of the WSR is in the ROM");
+        *t.reasons.entry("nothing placed".into()).or_default() += 1;
+        return;
+    };
+    let built = started.elapsed().as_secs_f32();
+    let right = |fill| ws_map::map_check(&wsr, &m, rom, CHECK_FRAMES, fill).iter().filter(|s| s.1 >= MAP_RIGHT).count();
+    let zeros = ws_map::map_check(&wsr, &m, rom, CHECK_FRAMES, ws_map::Fill::Zeros);
+    let right_zeros = zeros.iter().filter(|s| s.1 >= MAP_RIGHT).count();
+    let bridged = right(ws_map::Fill::Bridged);
+    let oracle = right(ws_map::Fill::File(&wsr));
+    // Past what was recorded: the scripts' cycles carry the song on.
+    let long = ws_map::map_check(&wsr, &m, rom, ws_map::RECORD_FRAMES * 2, ws_map::Fill::Bridged).iter().filter(|s| s.1 >= MAP_RIGHT).count();
+    let entries: usize = m.songs.iter().map(|s| s.1.at.len()).max().unwrap_or(0);
+    let ops: usize = m.scripts.iter().map(|s| s.ops.len()).sum();
+    let wrong: Vec<String> = zeros.iter().filter(|s| s.1 < MAP_RIGHT).take(10).map(|s| format!("{}:{:.2}", s.0, s.1)).collect();
+    println!(
+        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points){}",
+        started.elapsed().as_secs_f32(),
+        m.songs.len(),
+        ws_map::RECORD_FRAMES * 2,
+        songs.len(),
+        if listed.is_empty() { ", no playlist" } else { "" },
+        m.scripts.len(),
+        if wrong.is_empty() { String::new() } else { format!("; wrong {}", wrong.join(" ")) }
+    );
+    t.songs += m.songs.len();
+    t.checked[0] += 1;
+    t.checked[1] += m.songs.len();
+    t.checked[2] += right_zeros;
+    t.checked[3] += bridged;
+    t.checked[4] += oracle;
+    t.board += long;
+    if right_zeros > 0 {
+        t.with_music += 1;
+    }
+}
+
 /// A track the map plays this alike the NSF's own is played right.
 const MAP_RIGHT: f64 = 0.9;
 
@@ -1478,10 +1535,14 @@ fn main() {
             }
             Some(c @ ("WS" | "WSC")) => {
                 let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
-                if o.layout {
+                if o.layout || o.mapcheck {
                     let platform = if c == "WS" { Platform::WonderSwan } else { Platform::WonderSwanColor };
                     if let Some(set) = matched_set(nsf_lib.as_ref(), &path, platform, o.verbose) {
-                        print_ws_layout(&path, &rom, &set, tally.entry(what).or_default());
+                        if o.layout {
+                            print_ws_layout(&path, &rom, &set, tally.entry(what).or_default());
+                        } else {
+                            print_ws_mapcheck(&path, &rom, &set, tally.entry(what).or_default());
+                        }
                     }
                     continue;
                 }
