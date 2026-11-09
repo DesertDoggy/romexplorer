@@ -12,8 +12,8 @@ use super::nes_apu::{Apu, Target};
 use super::nes_cart::{self, Cart};
 
 /// CPU cycles per frame and scanlines per frame.
-const NTSC_FRAME: u32 = 29_781;
-const PAL_FRAME: u32 = 33_248;
+pub const NTSC_FRAME: u32 = 29_781;
+pub const PAL_FRAME: u32 = 33_248;
 const NTSC_LINES: u32 = 262;
 const PAL_LINES: u32 = 312;
 const VBLANK_LINE: u32 = 241;

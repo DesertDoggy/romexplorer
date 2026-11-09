@@ -1152,14 +1152,24 @@ pub enum Way {
     None,
 }
 
-/// Picks, per track, the player that plays it most like the file (at least `right`).
+/// What a map's runs point into: an iNES cartridge's program data, or a Disk System image
+/// (its files, as the disk holds them). None for anything else.
+pub fn program(rom: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
+    if super::fds::is_disk(rom) {
+        return Some(std::sync::Arc::new(super::fds::strip_header(rom).to_vec()));
+    }
+    super::nes_cart::parse(rom).ok().map(|h| h.prg)
+}
+
+/// Picks, per track, the player that plays it most like the file (at least `right`). A Disk
+/// System game has no board to play on: only the layouts.
 pub fn choose_ways(nsf: &[u8], m: &mut Map, rom: &[u8], frames: usize, right: f64) {
-    let Ok(h) = super::nes_cart::parse(rom) else { return };
-    let layout = map_check(nsf, m, &h.prg, frames, Fill::Bridged);
-    let board = cart_check(nsf, m, rom, frames);
+    let Some(prg) = program(rom) else { return };
+    let layout = map_check(nsf, m, &prg, frames, Fill::Bridged);
+    let board = if super::fds::is_disk(rom) { vec![None; layout.len()] } else { cart_check(nsf, m, rom, frames) };
     // The empty-gap layout only where neither of the others plays a track right.
     let zeros = if layout.iter().zip(&board).any(|(l, b)| l.unwrap_or(0.0) < right && b.unwrap_or(0.0) < right) {
-        map_check(nsf, m, &h.prg, frames, Fill::Zeros)
+        map_check(nsf, m, &prg, frames, Fill::Zeros)
     } else {
         Vec::new()
     };
@@ -1185,12 +1195,14 @@ pub const MAP_RIGHT: f64 = 0.9;
 /// Frames each track plays when [`build_map`] chooses its way.
 const WAY_FRAMES: usize = 600;
 
-/// The map of `rom` (a whole iNES file) for the NSF it matches, its board way and each
-/// track's player chosen. None when the NSF doesn't run.
+/// The map of `rom` (a whole iNES file, or a Disk System image) for the NSF it matches, its
+/// board way and each track's player chosen. None when the NSF doesn't run.
 pub fn build_map(nsf: &[u8], rom: &[u8]) -> Option<Map> {
-    let prg = super::nes_cart::parse(rom).ok()?.prg;
+    let prg = program(rom)?;
     let mut m = map(nsf, &prg)?;
-    choose_board(nsf, &mut m, rom);
+    if !super::fds::is_disk(rom) {
+        choose_board(nsf, &mut m, rom);
+    }
     choose_ways(nsf, &mut m, rom, WAY_FRAMES, MAP_RIGHT);
     Some(m)
 }
@@ -1200,8 +1212,8 @@ pub fn build_map(nsf: &[u8], rom: &[u8]) -> Option<Map> {
 pub fn play_map(m: &Map, rom: &[u8], song: u8, frames: usize) -> Option<Vec<Vec<Write>>> {
     match m.ways.get(song as usize)? {
         Way::Board => cart_track_writes(m, rom, song, frames),
-        Way::Layout => map_track_writes(m, &super::nes_cart::parse(rom).ok()?.prg, song, frames, Fill::Bridged),
-        Way::Zeros => map_track_writes(m, &super::nes_cart::parse(rom).ok()?.prg, song, frames, Fill::Zeros),
+        Way::Layout => map_track_writes(m, &program(rom)?, song, frames, Fill::Bridged),
+        Way::Zeros => map_track_writes(m, &program(rom)?, song, frames, Fill::Zeros),
         Way::None => None,
     }
 }
@@ -1219,22 +1231,28 @@ enum MapPlayer {
 }
 
 impl MapSong {
-    /// Track `song` of the whole iNES file `rom`, rendered at `rate`.
+    /// Track `song` of `rom` (a whole iNES file, or a Disk System image), rendered at `rate`.
     pub fn open(m: &Map, rom: &[u8], song: u8, rate: u32) -> Result<Self, String> {
         use super::music_search::Machine;
-        let nes = super::nes_music::Nes::boot(rom)?;
-        let frame_rate = nes.frame_rate();
+        // The console's clock: a PAL cartridge's own, else NTSC (every Disk System).
+        let pal = super::nes_cart::parse(rom).map(|h| h.pal).unwrap_or(false);
+        let (frame_rate, cycles) = if pal {
+            (super::nes_music::PAL_RATE, super::nes_music::PAL_FRAME)
+        } else {
+            (super::nes_music::NTSC_RATE, super::nes_music::NTSC_FRAME)
+        };
         let player = match m.ways.get(song as usize) {
             Some(Way::Board) => {
+                let nes = super::nes_music::Nes::boot(rom)?;
                 let s = BoardSong::open(m, rom, song).ok_or("the song didn't start")?;
                 MapPlayer::Board(s, nes.new_chip(rate)?)
             }
             Some(way @ (Way::Layout | Way::Zeros)) => {
-                let prg = super::nes_cart::parse(rom)?.prg;
+                let prg = program(rom).ok_or("not a NES cartridge or Disk System image")?;
                 let fill = if *way == Way::Zeros { Fill::Zeros } else { Fill::Bridged };
                 let s = LayoutSong::open(m, &prg, song, fill).ok_or("the song didn't start")?;
                 let chips = if m.header.fds { super::nes_apu::CHIP_FDS } else { 0 };
-                MapPlayer::Layout(s, super::nes_apu::Apu::new(rate, nes.pal(), chips)?, nes.frame_length())
+                MapPlayer::Layout(s, super::nes_apu::Apu::new(rate, pal, chips)?, cycles)
             }
             _ => return Err("the map has no way to play this song".into()),
         };

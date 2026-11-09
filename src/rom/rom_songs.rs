@@ -483,11 +483,11 @@ pub fn set_maps_dir(dir: PathBuf) {
     let _ = MAPS_DIR.set(dir);
 }
 
-/// What a NES ROM's map is kept under: the SHA-1 of its program data, so a header changed
-/// by a tool still finds it. None for what isn't an iNES cartridge.
+/// What a NES ROM's map is kept under: the SHA-1 of its program data (a Disk System image's
+/// disk data), so a header changed by a tool still finds it. None for anything else.
 pub fn map_key(rom: &[u8]) -> Option<String> {
     use sha1::{Digest, Sha1};
-    let prg = super::nes_cart::parse(rom).ok()?.prg;
+    let prg = super::nes_nsf::program(rom)?;
     Some(Sha1::digest(prg.as_slice()).iter().map(|b| format!("{b:02x}")).collect())
 }
 
