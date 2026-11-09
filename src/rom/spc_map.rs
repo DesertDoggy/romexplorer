@@ -185,25 +185,33 @@ fn frames_of(apu: &mut Apu, count: usize) -> Option<Vec<Vec<Write>>> {
     for _ in 0..count {
         apu.advance(FRAME_CLOCKS);
         let state = apu.save_spc();
-        let dsp = state.get(DSP..DSP + 128)?;
-        let mut f = Vec::new();
-        for v in 0..8 {
-            // A voice sounds while its envelope is above zero.
-            let pitch = u16::from_le_bytes([dsp[v * 16 + 2], dsp[v * 16 + 3] & 0x3F]);
-            let env = dsp[v * 16 + 8];
-            let p = if env == 0 { 0 } else { pitch };
-            if p != last[v] {
-                last[v] = p;
-                // 14-bit pitch, kept to 11 bits for the fingerprint.
-                let q = p >> 3;
-                f.push(Write { at: 0, port: 0x2000 + v as u32 * 2, value: q & 0xFF });
-                f.push(Write { at: 0, port: 0x2001 + v as u32 * 2, value: q >> 8 });
-            }
-        }
-        out.push(f);
+        out.push(dsp_frame(state.get(DSP..DSP + 128)?, &mut last));
     }
     Some(out)
 }
+
+/// A frame's writes, as [`melody`] reads them, from the DSP's registers (`dsp`, 128 bytes) at
+/// its end: each voice's pitch where it changed since `last`.
+pub fn dsp_frame(dsp: &[u8], last: &mut [u16; 8]) -> Vec<Write> {
+    let mut f = Vec::new();
+    for v in 0..8 {
+        // A voice sounds while its envelope is above zero.
+        let pitch = u16::from_le_bytes([dsp[v * 16 + 2], dsp[v * 16 + 3] & 0x3F]);
+        let env = dsp[v * 16 + 8];
+        let p = if env == 0 { 0 } else { pitch };
+        if p != last[v] {
+            last[v] = p;
+            // 14-bit pitch, kept to 11 bits for the fingerprint.
+            let q = p >> 3;
+            f.push(Write { at: 0, port: 0x2000 + v as u32 * 2, value: q & 0xFF });
+            f.push(Write { at: 0, port: 0x2001 + v as u32 * 2, value: q >> 8 });
+        }
+    }
+    f
+}
+
+/// Where the DSP's registers are in an `.spc`.
+pub const SPC_DSP: usize = DSP;
 
 pub fn melody(frames: &[Vec<Write>]) -> HashSet<u64> {
     let pairs: Vec<(u32, u32)> = (0..8).map(|v| (0x2000 + v * 2, 0x2001 + v * 2)).collect();

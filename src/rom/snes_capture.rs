@@ -7,7 +7,7 @@
 //! What a capture keeps: the snapshot, the moments the sound chip started a newly uploaded
 //! driver, and the values the game wrote to the ports (its commands to the driver).
 
-use super::snes_apu::{Apu, CLOCK_RATE};
+use super::snes_apu::{Apu, CLOCK_RATE, FRAME_CLOCKS};
 use super::snes_sound::rom_image;
 use super::w65816::{Bus, Cpu};
 
@@ -122,16 +122,45 @@ pub struct PortWrite {
     pub value: u8,
 }
 
+/// The sound chip, in a [`Snes`] that can be cloned for a [`Session`]'s save: a clone is a
+/// fresh chip, and [`Session::restore`] loads the saved one into it.
+struct Chip(Apu);
+
+impl Clone for Chip {
+    fn clone(&self) -> Self {
+        Chip(Apu::new().expect("the sound chip was made once already"))
+    }
+}
+
+impl std::ops::Deref for Chip {
+    type Target = Apu;
+    fn deref(&self) -> &Apu {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Chip {
+    fn deref_mut(&mut self) -> &mut Apu {
+        &mut self.0
+    }
+}
+
 /// The SNES around the CPU.
+#[derive(Clone)]
 struct Snes<'a> {
     rom: &'a [u8],
     mapping: Mapping,
     wram: Vec<u8>,
     sram: Vec<u8>,
     vram: Vec<u8>,
-    apu: Apu,
+    apu: Chip,
     /// Master clocks not yet given to the sound chip, scaled: sound clocks × MASTER_RATE.
     apu_debt: u64,
+    /// Sound clocks the chip ran ahead of the CPU (to reach a frame's end for a snapshot),
+    /// taken off the next catch-ups.
+    apu_ahead: u64,
+    /// Writes to work RAM (address, value, master clock), while kept.
+    ram_log: Option<Vec<(u32, u8, u64)>>,
     master: u64,
     line: u32,
     line_clock: u32,
@@ -221,7 +250,11 @@ impl Snes<'_> {
     }
 
     fn catch_up_apu(&mut self) {
-        let clocks = self.apu_debt / MASTER_RATE;
+        let mut clocks = self.apu_debt / MASTER_RATE;
+        let skip = clocks.min(self.apu_ahead);
+        self.apu_ahead -= skip;
+        self.apu_debt -= skip * MASTER_RATE;
+        clocks -= skip;
         if clocks > 0 {
             self.apu.advance(clocks as i32);
             self.apu_debt -= clocks * MASTER_RATE;
@@ -517,6 +550,18 @@ impl Bus for Snes<'_> {
     fn write(&mut self, addr: u32, value: u8) {
         let bank = (addr >> 16) as u8;
         let a = addr as u16;
+        let ram = if bank == 0x7E || bank == 0x7F {
+            Some((addr as usize) & 0x1FFFF)
+        } else if bank & 0x7F < 0x40 && a < 0x2000 {
+            Some(a as usize)
+        } else {
+            None
+        };
+        if let (Some(at), Some(log)) = (ram, &mut self.ram_log) {
+            if log.len() < 1 << 22 {
+                log.push((at as u32, value, self.master));
+            }
+        }
         if bank == 0x7E || bank == 0x7F {
             self.wram[(addr as usize) & 0x1FFFF] = value;
         } else if bank & 0x7F < 0x40 && a < 0x2000 {
@@ -594,27 +639,17 @@ fn start_held(master: u64) -> bool {
 
 const START: u16 = 0x1000;
 
-/// Runs the game from power on and returns what it left in the sound chip.
-pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
-    let Options { seconds, keep_audio, press_start, .. } = *options;
-    let rom = rom_image(file);
-    let mapping = mapping(rom).ok_or("no SNES header found")?;
-    if coprocessor_cpu(rom, mapping) {
-        return Err("the game runs on a coprocessor CPU (SA-1 or Super FX), which is not emulated".into());
-    }
-    if s_dd1(rom, mapping) {
-        return Err("the game unpacks its data with the S-DD1 chip, which is not emulated".into());
-    }
-    let mut apu = Apu::new()?;
-    apu.keep_output = keep_audio;
-    let mut snes = Snes {
+fn new_snes(rom: &[u8], mapping: Mapping, apu: Apu, watch_register: Option<u16>) -> Snes<'_> {
+    Snes {
         rom,
         mapping,
         wram: vec![0; 0x20000],
         sram: vec![0; save_ram_size(rom, mapping)],
         vram: vec![0; 0x10000],
-        apu,
+        apu: Chip(apu),
         apu_debt: 0,
+        apu_ahead: 0,
+        ram_log: None,
         master: 0,
         line: 0,
         line_clock: 0,
@@ -622,7 +657,7 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         nmi_due: false,
         pal: pal_region(rom, mapping),
         pc: 0,
-        watched_register: options.watch_register,
+        watched_register: watch_register,
         watched: Vec::new(),
         fast_rom: false,
         nmitimen: 0,
@@ -650,7 +685,23 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
         serial: 0,
         strobe: false,
         watch: None,
-    };
+    }
+}
+
+/// Runs the game from power on and returns what it left in the sound chip.
+pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
+    let Options { seconds, keep_audio, press_start, .. } = *options;
+    let rom = rom_image(file);
+    let mapping = mapping(rom).ok_or("no SNES header found")?;
+    if coprocessor_cpu(rom, mapping) {
+        return Err("the game runs on a coprocessor CPU (SA-1 or Super FX), which is not emulated".into());
+    }
+    if s_dd1(rom, mapping) {
+        return Err("the game unpacks its data with the S-DD1 chip, which is not emulated".into());
+    }
+    let mut apu = Apu::new()?;
+    apu.keep_output = keep_audio;
+    let mut snes = new_snes(rom, mapping, apu, options.watch_register);
     let mut cpu = Cpu::reset(&mut snes);
     let end = (seconds.max(0.0) as f64 * MASTER_RATE as f64) as u64;
     let mut driver_starts = Vec::new();
@@ -724,6 +775,122 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
     let spc = snes.apu.save_spc();
     let audio = std::mem::take(&mut snes.apu.output);
     Ok(Capture { spc, driver_starts, port_writes: snes.writes, port_replies: snes.replies, audio, instructions, stopped, busy_at, busy_reads, nmis, irqs, nmitimen: snes.nmitimen, irq_masked: cpu.p & 0x04 != 0, crash_trace: crash, watched_writes: std::mem::take(&mut snes.watched) })
+}
+
+/// A game run that can be saved, poked and resumed: for finding how it starts its songs.
+pub struct Session<'a> {
+    snes: Snes<'a>,
+    cpu: Cpu,
+    press_start: bool,
+}
+
+/// A [`Session`] as it was at a moment, to go back to.
+pub struct Saved<'a> {
+    snes: Snes<'a>,
+    cpu: Cpu,
+    spc: Vec<u8>,
+}
+
+impl<'a> Session<'a> {
+    /// The game at power on (`file`, with or without a copier header), Start pressed now and
+    /// then when `press_start`.
+    pub fn boot(file: &'a [u8], press_start: bool) -> Result<Self, String> {
+        let rom = rom_image(file);
+        let mapping = mapping(rom).ok_or("no SNES header found")?;
+        if coprocessor_cpu(rom, mapping) {
+            return Err("the game runs on a coprocessor CPU (SA-1 or Super FX), which is not emulated".into());
+        }
+        if s_dd1(rom, mapping) {
+            return Err("the game unpacks its data with the S-DD1 chip, which is not emulated".into());
+        }
+        let mut snes = new_snes(rom, mapping, Apu::new()?, None);
+        let cpu = Cpu::reset(&mut snes);
+        Ok(Self { snes, cpu, press_start })
+    }
+
+    pub fn seconds(&self) -> f64 {
+        self.snes.master as f64 / MASTER_RATE as f64
+    }
+
+    /// Runs the game `seconds` more.
+    pub fn run(&mut self, seconds: f64) -> Result<(), String> {
+        let end = self.snes.master + (seconds.max(0.0) * MASTER_RATE as f64) as u64;
+        while self.snes.master < end {
+            if self.press_start {
+                self.snes.buttons = if start_held(self.snes.master) { START } else { 0 };
+            }
+            self.snes.pc = (self.cpu.pbr as u32) << 16 | self.cpu.pc as u32;
+            let cycles = self.cpu.step(&mut self.snes);
+            let fast = self.snes.fast_rom && self.cpu.pbr >= 0x80;
+            let clocks = if fast { cycles * FAST_CLOCKS } else { (cycles * SLOW_PAIR_CLOCKS).div_ceil(2) };
+            if self.snes.tick(clocks) {
+                self.snes.nmi_due = true;
+            }
+            if std::mem::take(&mut self.snes.nmi_due) {
+                self.cpu.nmi(&mut self.snes);
+            }
+            if self.snes.irq_flag {
+                self.cpu.irq(&mut self.snes);
+            }
+            if self.cpu.stopped {
+                return Err(format!("the CPU stopped at {:02x}:{:04x}", self.cpu.pbr, self.cpu.pc));
+            }
+        }
+        self.snes.catch_up_apu();
+        Ok(())
+    }
+
+    pub fn save(&mut self) -> Saved<'a> {
+        let spc = self.spc_now();
+        Saved { snes: self.snes.clone(), cpu: self.cpu.clone(), spc }
+    }
+
+    pub fn restore(&mut self, saved: &Saved<'a>) -> Result<(), String> {
+        self.snes = saved.snes.clone();
+        self.snes.apu = Chip(Apu::from_spc(&saved.spc)?);
+        self.cpu = saved.cpu.clone();
+        Ok(())
+    }
+
+    pub fn wram(&self) -> &[u8] {
+        &self.snes.wram
+    }
+
+    pub fn poke(&mut self, at: usize, value: u8) {
+        if let Some(b) = self.snes.wram.get_mut(at) {
+            *b = value;
+        }
+    }
+
+    /// Keeps the writes to work RAM from now on (or stops).
+    pub fn log_ram(&mut self, on: bool) {
+        self.snes.ram_log = on.then(Vec::new);
+    }
+
+    /// The work RAM writes kept: address, value, and when (seconds since power on).
+    pub fn ram_writes(&self) -> Vec<(u32, u8, f64)> {
+        self.snes.ram_log.iter().flatten().map(|&(a, v, t)| (a, v, t as f64 / MASTER_RATE as f64)).collect()
+    }
+
+    /// The main CPU's port writes so far: port, value, and when (seconds since power on).
+    pub fn port_writes(&self) -> Vec<(u8, u8, f64)> {
+        self.snes.writes.iter().map(|w| (w.port, w.value, w.at as f64 / MASTER_RATE as f64)).collect()
+    }
+
+    /// Whether the sound chip runs a driver (not its boot ROM).
+    pub fn driver_running(&self) -> bool {
+        self.snes.apu.pc() < 0xFFC0
+    }
+
+    /// The sound chip's state now, as an `.spc`; the chip stays in step with the game.
+    pub fn spc_now(&mut self) -> Vec<u8> {
+        self.snes.catch_up_apu();
+        let into = self.snes.apu.clocks_into_frame();
+        if into > 0 {
+            self.snes.apu_ahead += (FRAME_CLOCKS - into) as u64;
+        }
+        self.snes.apu.save_spc()
+    }
 }
 
 #[cfg(test)]
