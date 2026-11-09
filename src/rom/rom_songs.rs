@@ -143,6 +143,18 @@ pub fn read_rom(path: &Path) -> Result<std::sync::Arc<Vec<u8>>, String> {
 
 /// A ROM's bytes: the file itself, or the one ROM inside a zip / 7z.
 fn read_rom_uncached(path: &Path) -> Result<Vec<u8>, String> {
+    let rom = read_rom_bytes(path)?;
+    // A NES cartridge dumped without its iNES header gets back the header its headered dump
+    // carries (fcdb), so it plays, and shares its maps, like that dump.
+    if super::nes_nsf::is_headerless(&rom) {
+        if let Some(headered) = super::convert::nes::add(&rom) {
+            return Ok(headered);
+        }
+    }
+    Ok(rom)
+}
+
+fn read_rom_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let name = path.to_string_lossy().to_ascii_lowercase();
     let format = if name.ends_with(".zip") {
         Some(super::sevenzip_wrapper::ArchiveFormat::Zip)
