@@ -4,7 +4,7 @@
 //! taken from its rips; a ROM is scanned once against the fingerprints of every set for its
 //! system, and a set whose runs are mostly found there belongs to it.
 //!
-//! Only rips that carry ROM bytes can be matched: NSF, NSFE, GBS, SPC, HES, KSS and SGC. VGM,
+//! Only rips that carry ROM bytes can be matched: NSF, NSFE, GBS, SPC, HES, KSS, SGC and WSR. VGM,
 //! GYM, AY and SAP are logs or other machines' memory and are never matched.
 
 use std::collections::HashMap;
@@ -36,6 +36,7 @@ pub enum RipSystem {
     MasterSystem,
     GameGear,
     ColecoVision,
+    WonderSwan,
 }
 
 impl RipSystem {
@@ -52,12 +53,17 @@ impl RipSystem {
             // each is tried against both.
             Self::MasterSystem | Self::GameGear => &[P::SegaMasterSystem as u16, P::SegaGameGear as u16, P::Sg1000 as u16],
             Self::ColecoVision => &[P::ColecoVision as u16],
+            Self::WonderSwan => &[P::WonderSwan as u16, P::WonderSwanColor as u16],
         }
     }
 }
 
 /// The ROM bytes a rip file carries, and its system. `None` for formats with none.
 pub fn rom_image(data: &[u8]) -> Option<(RipSystem, &[u8])> {
+    // A WSR is a cartridge image with its `WSRF` header in the last 32 bytes.
+    if data.len() >= 32 && &data[data.len() - 32..data.len() - 28] == b"WSRF" {
+        return Some((RipSystem::WonderSwan, &data[..data.len() - 32]));
+    }
     let tag = data.get(..4)?;
     match tag {
         b"NESM" => Some((RipSystem::Nes, data.get(0x80..)?)),
