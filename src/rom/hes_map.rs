@@ -277,9 +277,10 @@ fn record(p: &mut Player, cpu: &mut Cpu, pc: u16, a: u8, irq: bool, placed: &[bo
     cpu.pc = pc;
     cpu.a = regs.a;
     cpu.calls = vec![(cpu.physical(pc), s0)];
+    // As in `gb_map`: the target and the bytes after it placed.
     let of = |p: &Player, cpu: &Cpu, addr: u16, set: &[bool]| {
         let s = p.src(cpu.physical(addr));
-        s > 0 && set.get(s as usize - 1).copied().unwrap_or(false)
+        s > 0 && (0..3).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
     };
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
