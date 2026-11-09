@@ -87,6 +87,8 @@ struct Board {
     trace: Option<Vec<(u32, bool, u8)>>,
     /// Port writes, when logged (for `ws_map`).
     outs: Option<Vec<(u8, u8)>>,
+    /// Cartridge bytes read (offsets), when logged (for `ws_map`).
+    cart_reads: Option<Vec<u32>>,
 }
 
 impl Board {
@@ -238,8 +240,14 @@ impl Bus for Board {
                 self.sram[at]
             }
             1 => 0,
-            b @ (2 | 3) => self.rom_bank(self.banks[b as usize] as u32, off),
-            b => self.rom_bank(((self.banks[0] as u32 & 0x0F) << 4) | b, off),
+            b => {
+                let bank = if b < 4 { self.banks[b as usize] as u32 } else { ((self.banks[0] as u32 & 0x0F) << 4) | b };
+                if let Some(r) = self.cart_reads.as_mut() {
+                    let n = (self.rom.len() >> 16) as u32;
+                    r.push(((bank & (n - 1)) << 16) | off);
+                }
+                self.rom_bank(bank, off)
+            }
         }
     }
 
@@ -451,6 +459,7 @@ impl WonderSwan {
             stack: (u32::MAX, 0),
             trace: None,
             outs: None,
+            cart_reads: None,
         };
         for (p, v) in START_PORTS {
             board.output(p as u16, v);
@@ -542,6 +551,11 @@ impl WonderSwan {
     pub(super) fn log(&mut self, on: bool) {
         self.board.trace = on.then(Vec::new);
         self.board.outs = on.then(Vec::new);
+    }
+
+    /// Logs the cartridge bytes read from now on (or stops); returns those logged so far.
+    pub(super) fn log_cart(&mut self, on: bool) -> Vec<u32> {
+        std::mem::replace(&mut self.board.cart_reads, on.then(Vec::new)).unwrap_or_default()
     }
 
     /// The RAM writes and port writes logged since the last call.
