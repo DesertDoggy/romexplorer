@@ -27,7 +27,7 @@ use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::common::models::Platform;
-use romexplorer::rom::{gb_gbs, gb_map, sgc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
+use romexplorer::rom::{gb_gbs, gb_map, hes_map, sgc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -543,6 +543,70 @@ fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
     *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
+/// `--mapcheck` for a PC Engine HuCard and its matched HES.
+fn print_hes_mapcheck(path: &Path, rom: &[u8], hes: &[u8], t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let rom = hes_map::program(rom);
+    let Some(mut m) = hes_map::map(hes, rom) else {
+        println!("{name}: map: the HES doesn't run");
+        *t.reasons.entry("the HES doesn't run".into()).or_default() += 1;
+        return;
+    };
+    let right_with = |m: &hes_map::Map, fill| hes_map::map_check(hes, m, rom, CHECK_FRAMES, fill).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let check = hes_map::map_check(hes, &m, rom, CHECK_FRAMES, hes_map::Fill::Zeros);
+    let with_melody = check.iter().flatten().count();
+    let right = check.iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    let bridged = right_with(&m, hes_map::Fill::Bridged);
+    let oracle = right_with(&m, hes_map::Fill::File(&hes[0x20..]));
+    hes_map::choose_ways(hes, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
+    let saved = hes_map::Map::decode(&m.encode()).map_or(0, |back| {
+        (0..back.header.songs)
+            .filter(|&s| {
+                if back.tracks.get(s as usize).is_none_or(|t| t.is_none()) {
+                    return false;
+                }
+                let Some(real) = hes_map::track_writes(hes, s, CHECK_FRAMES).map(|w| hes_map::melody(&w)) else { return false };
+                let mine = hes_map::play_map(&back, rom, s, CHECK_FRAMES).map(|w| hes_map::melody(&w)).unwrap_or_default();
+                real.len() >= music_search::MIN_MELODY && music_search::alike(&real, &mine) >= MAP_RIGHT
+            })
+            .count()
+    });
+    t.saved += saved;
+    let calls = m
+        .tracks
+        .iter()
+        .flatten()
+        .map(|s| [&s.init, &s.vblank, &s.timer].iter().map(|v| v.iter().filter(|o| matches!(o, hes_map::Op::Call { .. })).count()).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+    let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
+    println!(
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} runs; scripts up to {calls} calls){}",
+        started.elapsed().as_secs_f32(),
+        m.runs.len(),
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[1] += bridged;
+    t.checked[2] += oracle;
+    t.checked[3] += with_melody;
+    t.checked[4] += right;
+    if with_melody > 0 && right == with_melody {
+        t.with_music += 1;
+    }
+    let bucket = match right.max(saved) as f64 / with_melody.max(1) as f64 {
+        _ if with_melody == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
 fn run_hinted<M: Machine>(
     path: &Path,
     rom: &[u8],
@@ -887,6 +951,12 @@ fn main() {
                 &o,
                 tally.entry("Virtual Boy").or_default(),
             ),
+            Some("PCE") if o.mapcheck => {
+                let hes = original_hint(nsf_lib.as_ref(), &path, Platform::TurboGrafx16, b"HESM", |_| Some(Default::default()), o.verbose);
+                if let Some(h) = &hes {
+                    print_hes_mapcheck(&path, &rom, &h.1, tally.entry("PC Engine").or_default());
+                }
+            }
             Some("PCE") => run::<PcEngine>(
                 &path,
                 &rom,
