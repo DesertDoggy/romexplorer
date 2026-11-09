@@ -36,6 +36,8 @@ const NES: &str = "nes";
 /// `nesmap@<map key>@<body ms>@<fade ms>`: a NES song played from the ROM by its music map
 /// ([`super::nes_nsf::Map`], kept in the maps folder by [`map_key`]), with no boot.
 const NES_MAP: &str = "nesmap";
+/// `gbmap@<map key>@<body ms>@<fade ms>`: the same for the Game Boy ([`super::gb_map::Map`]).
+const GB_MAP: &str = "gbmap";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -199,6 +201,13 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
         return index_nes(path, t);
     }
     if is_gb(platform) {
+        let rom = read_rom(path)?;
+        if let Some(m) = load_gb_map(&gb_key(&rom)) {
+            let found = index_gb_map(&rom, &gb_key(&rom), &m, t)?;
+            if !found.is_empty() {
+                return Ok((found, None));
+            }
+        }
         return index_machine::<super::gb_music::GameBoy>(path, t, GB, "Game Boy");
     }
     {
@@ -441,6 +450,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(NDS_SSEQ) => open_sseq(path, engine, song),
         Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
         Some(NES_MAP) => open_map(path, engine, song),
+        Some(GB_MAP) => open_gb_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -522,13 +532,121 @@ pub fn build_nes_map(rom: &[u8], nsf: &[u8]) -> Result<bool, String> {
 
 /// Whether ROMs of `platform` get music maps from matched sets ([`map_from_sets`]).
 pub fn builds_maps(platform: u16) -> bool {
-    is_nes(platform) && super::nes_apu::available()
+    (is_nes(platform) && super::nes_apu::available()) || (is_gb(platform) && super::gb_apu::available())
 }
 
-/// Builds the map of the ROM at `path` from the first of `sets` that holds an NSF, unless one
-/// is kept already.
+/// What a Game Boy ROM's map is kept under: the SHA-1 of the whole ROM.
+fn gb_key(rom: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    Sha1::digest(rom).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn gb_map_path(key: &str) -> Option<PathBuf> {
+    Some(MAPS_DIR.get()?.join("gb").join(format!("{key}.gbmap")))
+}
+
+fn load_gb_map(key: &str) -> Option<super::gb_map::Map> {
+    super::gb_map::Map::decode(&std::fs::read_to_string(gb_map_path(key)?).ok()?)
+}
+
+/// Builds the map of the Game Boy ROM at `path` from the first of `sets` that holds a GBS
+/// (only to find and check where its music is; nothing of the file is kept), unless one is
+/// kept already.
+fn gb_map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
+    let rom = read_rom(path)?;
+    let key = gb_key(&rom);
+    let file = gb_map_path(&key).ok_or("no folder for music maps")?;
+    if file.is_file() {
+        return Ok(());
+    }
+    for set in sets {
+        let Some(gbs) = super::rip_sets::first_with_magic(set, b"GBS") else { continue };
+        let Some(m) = super::gb_map::build_map(&gbs, &rom) else { continue };
+        if m.ways.iter().all(|w| *w == super::gb_map::Way::None) {
+            continue;
+        }
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        return std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()));
+    }
+    Ok(())
+}
+
+/// The songs a Game Boy map plays, measured and classified like [`index_machine`]'s.
+fn index_gb_map(rom: &[u8], key: &str, m: &super::gb_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+    let mut out = Vec::new();
+    for v in 0..m.header.songs {
+        if matches!(m.ways.get(v as usize), None | Some(super::gb_map::Way::None)) {
+            continue;
+        }
+        let Ok(mut song) = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+        let rate = song.frame_rate();
+        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        if let Some(track) = map_track(GB_MAP, key, v, out.len(), rate, timing, 2, "Game Boy", t) {
+            out.push(track);
+        }
+    }
+    Ok(out)
+}
+
+/// A found track from a map's song `v`, timed as `timing` says (frames at `rate`).
+#[allow(clippy::too_many_arguments)]
+fn map_track(engine: &str, key: &str, v: u8, index: usize, rate: f64, timing: music_search::Timing, channels: u16, codec: &str, t: &Thresholds) -> Option<FoundTrack> {
+    let ms = |frames: usize| (frames as f64 * 1000.0 / rate) as u64;
+    let (looping, intro, lp) = match timing.looping {
+        Some((start, len)) => (true, ms(start), ms(len)),
+        None => (false, ms(timing.frames), 0),
+    };
+    let duration_ms = if looping { intro + lp } else { intro };
+    if duration_ms == 0 {
+        return None;
+    }
+    let (body, fade) = if looping { (intro + lp * u64::from(PLAY_LOOPS), SONG_FADE_MS) } else { (duration_ms, 0) };
+    let name = format!("Track {}", index + 1);
+    let shape = Shape { looping, duration_ms, channels, cd_track: 0, rip: true };
+    let kind = classify(&shape, &name, t);
+    let r = u64::from(PLAY_RATE);
+    Some(FoundTrack {
+        location: TrackLocation::RomSong { engine: format!("{engine}@{key}@{body}@{fade}"), song: u32::from(v) },
+        name,
+        kind,
+        sample_rate: PLAY_RATE,
+        channels,
+        duration_ms,
+        looping,
+        loop_start: intro * r / 1000,
+        loop_end: (intro + lp) * r / 1000,
+        codec: codec.into(),
+        format: format!("song {v}"),
+        bytes: 0,
+        video: false,
+    })
+}
+
+/// A Game Boy song played from the ROM by its map ([`GB_MAP`]).
+fn open_gb_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_gb_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let v = u8::try_from(song).map_err(|_| bad())?;
+    let song = super::gb_map::MapSong::open(&m, &rom, v, PLAY_RATE)?;
+    let r = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(MapPcm { song: AnyMapSong::Gb(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+/// Builds the map of the ROM at `path` from the first of `sets` that holds an NSF (a GBS for
+/// a Game Boy ROM), unless one is kept already.
 pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
     let rom = read_rom(path)?;
+    if super::nes_nsf::program(&rom).is_none() {
+        return gb_map_from_sets(path, sets);
+    }
     if map_key(&rom).is_none() || has_map(&rom) {
         return Ok(());
     }
@@ -598,7 +716,7 @@ fn open_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     let song = super::nes_nsf::MapSong::open(&m, &rom, v, PLAY_RATE)?;
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
-    Ok(Box::new(MapPcm { song, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+    Ok(Box::new(MapPcm { song: AnyMapSong::Nes(song), channels: 1, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
 fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
@@ -694,11 +812,27 @@ where
 
 /// A song played from the ROM by its map, like [`MachinePcm`] (mono).
 struct MapPcm {
-    song: super::nes_nsf::MapSong,
+    song: AnyMapSong,
+    channels: u16,
     left: u64,
     fade: u64,
     tail: u64,
     pending: Vec<i16>,
+}
+
+/// A song from either console's map.
+enum AnyMapSong {
+    Nes(super::nes_nsf::MapSong),
+    Gb(super::gb_map::MapSong),
+}
+
+impl AnyMapSong {
+    fn frame(&mut self, out: &mut Vec<i16>) -> Option<Vec<music_search::Write>> {
+        match self {
+            AnyMapSong::Nes(s) => s.frame(out),
+            AnyMapSong::Gb(s) => s.frame(out),
+        }
+    }
 }
 
 impl PcmStream for MapPcm {
@@ -706,7 +840,7 @@ impl PcmStream for MapPcm {
         PLAY_RATE
     }
     fn channels(&self) -> u16 {
-        1
+        self.channels
     }
     fn total_samples(&self) -> Option<u64> {
         Some(self.left)
@@ -715,23 +849,26 @@ impl PcmStream for MapPcm {
         if self.left == 0 {
             return Ok(None);
         }
-        while self.pending.len() < 4096 {
+        let ch = self.channels as usize;
+        while self.pending.len() < 4096 * ch {
             if self.song.frame(&mut self.pending).is_none() {
                 // The song's code stopped: what was rendered is the end.
-                self.left = self.left.min(self.pending.len() as u64);
+                self.left = self.left.min((self.pending.len() / ch) as u64);
                 break;
             }
         }
-        let n = (self.left as usize).min(self.pending.len());
+        let n = (self.left as usize).min(self.pending.len() / ch);
         if n == 0 {
             return Ok(None);
         }
-        let mut buf: Vec<i16> = self.pending.drain(..n).collect();
+        let mut buf: Vec<i16> = self.pending.drain(..n * ch).collect();
         if self.fade > 0 {
-            for (i, s) in buf.iter_mut().enumerate() {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
                 let g = super::track_timing::fade_gain(self.left - i as u64, self.fade, self.tail);
                 if g < 1.0 {
-                    *s = (f32::from(*s) * g) as i16;
+                    for s in frame {
+                        *s = (f32::from(*s) * g) as i16;
+                    }
                 }
             }
         }

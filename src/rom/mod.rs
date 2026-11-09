@@ -44,6 +44,7 @@ pub mod music_search;
 pub mod nes_music;
 pub mod nes_nsf;
 pub mod gb_gbs;
+pub mod gb_map;
 pub mod music_map;
 pub mod sm83;
 pub mod z80;
