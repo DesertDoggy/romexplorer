@@ -115,6 +115,9 @@ impl Player {
     fn call_within(&mut self, cpu: &mut Cpu, pc: u16, regs: &Regs, irq: bool, pushed: &[u8], limit: u32) -> bool {
         cpu.mpr = regs.mpr;
         cpu.s = 0xFF;
+        // Flags as an interrupt leaves them: a routine that returned with RTI (a file can
+        // call the game's interrupt routine as a subroutine) pops whatever was on the stack.
+        cpu.p = 0x04;
         let s0 = cpu.s;
         let mut push = |cpu: &mut Cpu, p: &mut Player, v: u8| {
             let at = cpu.physical(0x2100 | cpu.s as u16);
