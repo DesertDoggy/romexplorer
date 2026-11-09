@@ -241,6 +241,8 @@ struct Options {
     /// `--spcsearch`: with `--originals`, run each SNES ROM, find the work RAM byte it asks
     /// for songs with, play each value of it and count the matched set's tracks heard.
     spcsearch: bool,
+    /// `--spcpoke <hex address>`: play values 0-127 through that work RAM byte, for diagnosis.
+    spcpoke: Option<u32>,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -704,6 +706,33 @@ fn print_spc_probe(path: &Path, rom: &[u8], set: &Path, seconds: u32, t: &mut Ta
     *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
+/// `--spcpoke`: each value 0-127 through `var`, and the track of the set each one plays.
+fn print_spc_poke(path: &Path, rom: &[u8], set: &Path, var: u32) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let started = std::time::Instant::now();
+    let real: Vec<std::collections::HashSet<u64>> = rip_sets::all_with_magic(set, b"SNES-SPC700")
+        .iter()
+        .map(|s| spc_map::frames(s, CHECK_FRAMES).map(|f| spc_map::melody(&f)).unwrap_or_default())
+        .collect();
+    match romexplorer::rom::snes_songs::try_var(rom, var, 0..=0x7Fu8, CHECK_FRAMES) {
+        Err(e) => println!("{name}: poke: {e}"),
+        Ok((same, songs)) => {
+            println!("{name}: poke ${var:05X}, {:.1} s: after a restore the game sounds {same:.2} alike to straight on", started.elapsed().as_secs_f32());
+            let mut tracks = std::collections::BTreeSet::new();
+            for (v, m) in &songs {
+                let best = real.iter().enumerate().map(|(i, r)| (i, music_search::alike(r, m))).max_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((i, a)) = best {
+                    if a >= MAP_RIGHT {
+                        tracks.insert(i);
+                    }
+                    println!("  {v:02X}: melody {} notes; best track {i} at {a:.2}", m.len());
+                }
+            }
+            println!("  {} of {} tracks heard", tracks.len(), real.len());
+        }
+    }
+}
+
 /// `--spcsearch` for a SNES ROM and its matched set (see [`snes_songs`]).
 fn print_spc_search(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -1047,7 +1076,12 @@ fn main() {
         write_maps: None,
         spcprobe: args.iter().any(|a| a == "--spcprobe"),
         spcsearch: args.iter().any(|a| a == "--spcsearch"),
+        spcpoke: None,
     };
+    if let Some(i) = args.iter().position(|a| a == "--spcpoke") {
+        o.spcpoke = args.get(i + 1).and_then(|a| u32::from_str_radix(a.trim_start_matches('$'), 16).ok());
+        args.drain(i..(i + 2).min(args.len()));
+    }
     args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
     // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
     // rommusic ship (assets/music_maps.zst).
@@ -1266,7 +1300,11 @@ fn main() {
                 tally.entry("Virtual Boy").or_default(),
             ),
             Some("SNES") => {
-                if o.spcsearch {
+                if let Some(var) = o.spcpoke {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_poke(&path, &rom, &set, var);
+                    }
+                } else if o.spcsearch {
                     if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
                         print_spc_search(&path, &rom, &set, tally.entry("SNES").or_default());
                     }
