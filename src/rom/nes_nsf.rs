@@ -167,6 +167,8 @@ struct Player {
     fds: bool,
     /// The header's sound chip byte: the cartridge chips' writes are kept too.
     chips: u8,
+    n163_addr: u8,
+    n163_ram: [u8; 128],
     writes: Vec<Write>,
     /// For each byte of `mem`, 1 + its offset in the file's data (after the header); 0 for
     /// none.
@@ -192,6 +194,13 @@ impl Bus for Player {
                 }
                 self.mem[i]
             }
+            // The Namco 163's memory, read through its data port (which counts up as on a
+            // write): drivers read back what they change.
+            0x4800..=0x4FFF if self.chips & 16 != 0 => {
+                let v = self.n163_ram[(self.n163_addr & 0x7F) as usize];
+                self.n163_step();
+                v
+            }
             _ => 0,
         }
     }
@@ -201,7 +210,20 @@ impl Bus for Player {
             log.push((addr, v));
         }
         if let Some(t) = chip_target(self.chips, addr) {
-            self.writes.push(Write { at: 0, port: super::nes_music::port(t, addr), value: v as u16 });
+            use super::nes_apu::Target;
+            match t {
+                Target::N163Addr => self.n163_addr = v,
+                Target::N163Data => {
+                    // Each write with its own address, so a chip fed only the writes lands
+                    // them where reads moved the address to.
+                    let a = self.n163_addr & 0x7F;
+                    self.writes.push(Write { at: 0, port: super::nes_music::port(Target::N163Addr, 0xF800), value: a as u16 });
+                    self.writes.push(Write { at: 0, port: super::nes_music::port(t, addr), value: v as u16 });
+                    self.n163_ram[a as usize] = v;
+                    self.n163_step();
+                }
+                _ => self.writes.push(Write { at: 0, port: super::nes_music::port(t, addr), value: v as u16 }),
+            }
         }
         match addr {
             0x0000..=0x1FFF => self.ram[addr as usize & 0x7FF] = v,
@@ -231,6 +253,12 @@ impl Bus for Player {
 }
 
 impl Player {
+    fn n163_step(&mut self) {
+        if self.n163_addr & 0x80 != 0 {
+            self.n163_addr = 0x80 | (self.n163_addr.wrapping_add(1) & 0x7F);
+        }
+    }
+
     /// Puts 4 KB bank `bank` of the (padded) data at slot `slot` ($6000 + slot * 4 KB).
     fn bank(&mut self, slot: usize, bank: u8) {
         let from = bank as usize * 0x1000;
@@ -405,6 +433,8 @@ fn player(h: &Header, data: &[u8]) -> Option<Player> {
         banked,
         fds,
         chips: h.chips,
+        n163_addr: 0,
+        n163_ram: [0; 128],
         writes: Vec::new(),
         src: vec![0; 0xA000],
         pad: (load & 0xFFF) as usize,
