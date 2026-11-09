@@ -250,6 +250,8 @@ impl Map {
 
 /// Bytes after a jump target within which running on into the game's code still counts as
 /// entering it (the target's own instruction patched by the file's author).
+/// Bytes from a call's target that must be placed for the call to be the game's.
+const ENTRY_BYTES: usize = 3;
 const PATCHED_BYTES: u16 = 3;
 
 /// Play calls recorded per track: the first few take the start request, then play settles.
@@ -284,9 +286,11 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
     cpu.halted = false;
     cpu.stopped = false;
     cpu.calls = vec![(pc, sp)];
+    // Code is the game's when it and the bytes after it are placed: a run that ends right
+    // where a routine starts (the file's own code follows) doesn't make the routine the game's.
     let of = |p: &Player, addr: u16, set: &[bool]| {
         let s = p.src(addr);
-        s > 0 && set.get(s as usize - 1).copied().unwrap_or(false)
+        s > 0 && (0..ENTRY_BYTES).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
     };
     let mut ops = Vec::new();
     let mut in_game: Option<usize> = None;
