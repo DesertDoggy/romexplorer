@@ -72,6 +72,8 @@ struct Player {
     log: Option<Vec<(u16, u8)>>,
     /// How writes to $2000-$3FFF pick the bank: the GBS's way, or the game's cartridge's.
     mbc: Mbc,
+    /// The bank the board last put the game at for a call (what a restore of bank 0 means).
+    home: usize,
 }
 
 /// A cartridge's bank controller, as far as picking the ROM bank at $4000 goes.
@@ -91,7 +93,7 @@ impl Player {
         rom.extend_from_slice(data);
         let mut io = [0; 0x80];
         io[0x26] = 0x80;
-        Player { load: h.load as usize, data_len: data.len(), rom, bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None, mbc: Mbc::Gbs }
+        Player { load: h.load as usize, data_len: data.len(), rom, bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None, mbc: Mbc::Gbs, home: 1 }
     }
 
     /// The game's own ROM in its cartridge, for the board player.
@@ -99,7 +101,7 @@ impl Player {
         let mut io = [0; 0x80];
         io[0x26] = 0x80;
         let mbc = if matches!(rom.get(0x147), Some(0x19..=0x1E)) { Mbc::Mbc5 } else { Mbc::Mbc1 };
-        Player { load: 0, data_len: rom.len(), rom: rom.to_vec(), bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None, mbc }
+        Player { load: 0, data_len: rom.len(), rom: rom.to_vec(), bank: 1, ram: vec![0; 0x4000], io, hram: [0; 0x80], writes: Vec::new(), used: None, log: None, mbc, home: 1 }
     }
 
     fn select(&mut self, addr: u16, v: u8) {
@@ -110,6 +112,11 @@ impl Player {
             Mbc::Mbc5 if addr < 0x3000 => ((self.bank & 0x100) | v as usize) % banks,
             Mbc::Mbc5 => ((self.bank & 0xFF) | ((v as usize & 1) << 8)) % banks,
         };
+        // Bank 0 at $4000 is what a game's restore of its bank variable gives when no boot set
+        // it: the bank the call was made in instead.
+        if self.bank == 0 {
+            self.bank = self.home;
+        }
     }
 
     /// The index into the padded data the CPU reads at `addr`.
@@ -290,7 +297,10 @@ fn record(p: &mut Player, cpu: &mut Cpu, sp: u16, pc: u16, a: u8, placed: &[bool
     // it placed too: a run can end right where it starts, the file's own code following.
     let of = |p: &Player, addr: u16, set: &[bool], bytes: usize| {
         let s = p.src(addr);
-        s > 0 && (0..bytes).all(|k| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0))
+        let placed = |k: usize| set.get(s as usize - 1 + k).copied().unwrap_or(k > 0);
+        // (A patched operand right after is the file's constant in the game's code: the
+        // run picks up again within an instruction.)
+        s > 0 && placed(0) && (bytes <= 1 || (1..=bytes).any(placed))
     };
     let mut first = true;
     let mut ops = Vec::new();
@@ -517,6 +527,7 @@ fn board_replay(p: &mut Player, cpu: &mut Cpu, h: &Header, runs: &[Run], ops: &[
             Op::Poke(0x2000..=0x3FFF, b) => {
                 if let Some(bank) = game_bank(runs, h, b) {
                     p.bank = bank.max(1);
+                    p.home = p.bank;
                 }
             }
             Op::Poke(0x0000..=0x7FFF, _) => {}
@@ -527,6 +538,7 @@ fn board_replay(p: &mut Player, cpu: &mut Cpu, h: &Header, runs: &[Run], ops: &[
                     Some((bank, at)) => {
                         if at >= 0x4000 {
                             p.bank = bank;
+                            p.home = bank.max(1);
                         }
                         at
                     }
