@@ -755,6 +755,35 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
             data[r.data..r.data + r.len].copy_from_slice(src);
         }
     }
+    // A Disk System game's files each load at their own address: a gap is filled from the
+    // file a neighbouring run lies in, at the gap's place in that file's load range.
+    if fill == Fill::Bridged && m.header.fds {
+        if let Ok(disk) = super::fds::parse(prg) {
+            let files: Vec<(u16, usize, usize)> =
+                disk.sides.iter().flat_map(|s| &s.files).filter(|f| f.kind == 0).map(|f| (f.addr, f.at, f.data.len())).collect();
+            let file_of = |rom: usize| files.iter().find(|f| (f.1..f.1 + f.2).contains(&rom)).copied();
+            let mut placed = vec![false; m.data_len];
+            m.runs.iter().for_each(|r| placed[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true));
+            for d in 0..m.data_len {
+                if placed[d] {
+                    continue;
+                }
+                let Some(cpu) = cpu_of(&m.header, d) else { continue };
+                // The runs just before and after the gap, nearest first.
+                let before = m.runs.iter().filter(|r| r.data + r.len <= d).max_by_key(|r| r.data + r.len);
+                let after = m.runs.iter().filter(|r| r.data > d).min_by_key(|r| r.data);
+                let byte = [before.map(|r| r.rom + r.len - 1), after.map(|r| r.rom)].into_iter().flatten().find_map(|rom| {
+                    let (addr, at, len) = file_of(rom)?;
+                    let i = (cpu as usize).checked_sub(addr as usize).filter(|&i| i < len)?;
+                    prg.get(at + i).copied()
+                });
+                if let Some(b) = byte {
+                    data[d] = b;
+                }
+            }
+            return data;
+        }
+    }
     if fill == Fill::Bridged {
         for w in m.runs.windows(2) {
             let (a, b) = (w[0], w[1]);
