@@ -57,7 +57,8 @@ pub fn is_disk(image: &[u8]) -> bool {
     body.len() > 15 && body[0] == 1 && &body[1..15] == MAGIC
 }
 
-fn strip_header(image: &[u8]) -> &[u8] {
+/// The disk image without its fwNES header, if it has one.
+pub fn strip_header(image: &[u8]) -> &[u8] {
     if image.len() >= 16 && &image[0..4] == b"FDS\x1A" {
         &image[16..]
     } else {

@@ -344,17 +344,18 @@ const MAP_RIGHT: f64 = 0.9;
 fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
-    let Ok(h) = nes_cart::parse(rom) else { return };
+    let Some(prg) = nes_nsf::program(rom) else { return };
+    let disk = romexplorer::rom::fds::is_disk(rom);
     let started = std::time::Instant::now();
-    let Some(m) = nes_nsf::map(nsf, &h.prg) else {
+    let Some(m) = nes_nsf::map(nsf, &prg) else {
         println!("{name}: map: the NSF doesn't run");
         *t.reasons.entry("the NSF doesn't run".into()).or_default() += 1;
         return;
     };
-    let check = nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, nes_nsf::Fill::Zeros);
+    let check = nes_nsf::map_check(nsf, &m, &prg, CHECK_FRAMES, nes_nsf::Fill::Zeros);
     // Why tracks play wrong: the gaps filled with the game's own bytes, or with the file's.
     let right_with = |fill| {
-        nes_nsf::map_check(nsf, &m, &h.prg, CHECK_FRAMES, fill)
+        nes_nsf::map_check(nsf, &m, &prg, CHECK_FRAMES, fill)
             .iter()
             .flatten()
             .filter(|&&a| a >= MAP_RIGHT)
@@ -363,8 +364,13 @@ fn print_mapcheck(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
     let (bridged, oracle) = (right_with(nes_nsf::Fill::Bridged), right_with(nes_nsf::Fill::File(&nsf[0x80..])));
     // On the game's own board: its code where the ROM has it, the calls moved there.
     let mut m = m;
-    nes_nsf::choose_board(nsf, &mut m, rom);
-    let board = nes_nsf::cart_check(nsf, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count();
+    // (A Disk System game has no board: its files load into RAM.)
+    let board = if disk {
+        0
+    } else {
+        nes_nsf::choose_board(nsf, &mut m, rom);
+        nes_nsf::cart_check(nsf, &m, rom, CHECK_FRAMES).iter().flatten().filter(|&&a| a >= MAP_RIGHT).count()
+    };
     t.board += board;
     // The map as the app keeps it: each track's way chosen, written down and read back.
     nes_nsf::choose_ways(nsf, &mut m, rom, CHECK_FRAMES, MAP_RIGHT);
@@ -672,6 +678,12 @@ fn main() {
             ),
             Some("FDS") => {
                 let hint = original_hint(nsf_lib.as_ref(), &path, Platform::Famicom, b"NESM\x1a", nes_nsf::hint, o.verbose);
+                if o.mapcheck {
+                    if let Some(h) = &hint {
+                        print_mapcheck(&path, &rom, &h.1, tally.entry("Disk System").or_default());
+                    }
+                    continue;
+                }
                 let answers = hint.as_ref().map(|h| answers(&h.1, 6, nes_nsf::track_writes, nes_nsf::melody));
                 run_hinted::<Nes>(
                     &path,
