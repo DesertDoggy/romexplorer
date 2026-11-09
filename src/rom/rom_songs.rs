@@ -694,7 +694,7 @@ fn index_sgc_map(rom: &[u8], key: &str, m: &super::sgc_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, |_| true, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(SGC_MAP, key, v, out.len(), rate, timing, 2, codec, t) {
             out.push(track);
         }
@@ -758,7 +758,7 @@ fn index_hes_map(rom: &[u8], key: &str, m: &super::hes_map::Map, t: &Thresholds)
         }
         let Ok(mut song) = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, |_| true, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(HES_MAP, key, v, out.len(), rate, timing, 2, "PC Engine", t) {
             out.push(track);
         }
@@ -779,6 +779,16 @@ fn open_hes_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStrea
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MapPcm { song: AnyMapSong::Hes(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+/// Whether a Game Boy sound write carries a note: all but a pitch change on its own (a
+/// frequency write that doesn't start a note), which is how a driver plays vibrato.
+fn gb_note_write(w: &music_search::Write) -> bool {
+    match w.port {
+        0xFF13 | 0xFF18 | 0xFF1D => false,
+        0xFF14 | 0xFF19 | 0xFF1E => w.value & 0x80 != 0,
+        _ => true,
+    }
 }
 
 /// What a Game Boy (or Master System / Game Gear) ROM's map is kept under: the SHA-1 of the
@@ -829,7 +839,7 @@ fn index_gb_map(rom: &[u8], key: &str, m: &super::gb_map::Map, t: &Thresholds) -
         }
         let Ok(mut song) = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        let Ok(timing) = music_search::measure_frames_by_writes(rate, gb_note_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
         if let Some(track) = map_track(GB_MAP, key, v, out.len(), rate, timing, 2, "Game Boy", t) {
             out.push(track);
         }

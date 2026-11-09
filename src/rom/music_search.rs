@@ -1467,8 +1467,14 @@ pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Re
 
 /// [`measure_frames`] for a player whose play routine runs at its own timer's rate, so one
 /// frame holds one call and the next two: the frames never repeat even when the song does.
-/// The loop is found in the stream of writes instead, with the frames left out of it.
-pub fn measure_frames_by_writes(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Result<Vec<Write>, String>) -> Result<Timing, String> {
+/// The loop is found in the stream of writes instead, with the frames left out of it, and
+/// only the writes `keep` says carry the notes (a driver's vibrato can run on a count that
+/// doesn't restart with the loop).
+pub fn measure_frames_by_writes(
+    frame_rate: f64,
+    keep: impl Fn(&Write) -> bool,
+    mut next: impl FnMut(&mut Vec<i16>) -> Result<Vec<Write>, String>,
+) -> Result<Timing, String> {
     const BASE: u64 = 0x100_0000_01B3;
     let max_frames = (MEASURE_FRAMES as f64 * frame_rate / 60.0) as usize;
     let mut last_loud = 0usize;
@@ -1490,7 +1496,7 @@ pub fn measure_frames_by_writes(frame_rate: f64, mut next: impl FnMut(&mut Vec<i
         if f > last_loud + SILENT_END_FRAMES {
             return Ok(Timing { frames: last_loud + 1, looping: None });
         }
-        for w in &writes {
+        for w in writes.iter().filter(|w| keep(w)) {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (w.port, w.value).hash(&mut h);
             tokens.push(h.finish());
@@ -1547,7 +1553,7 @@ mod tests {
             vec![Write { at: 0, port: 0x10, value: note & 0xFF }, Write { at: 0, port: 0x11, value: note >> 8 }]
         };
         let (mut due, mut n) = (0.0f64, 0usize);
-        let t = measure_frames_by_writes(60.0, |out| {
+        let t = measure_frames_by_writes(60.0, |_| true, |out| {
             out.clear();
             out.resize(10, 1000);
             due += 1.37;
