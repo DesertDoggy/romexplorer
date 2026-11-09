@@ -2952,5 +2952,7 @@
   "Combined into": "Unita a",
   "list and copy this release on its own again": "elenca e copia di nuovo questa uscita da sola",
   "split off": "separa",
-  "Listed and copied with this release.": "Elencate e copiate con questa uscita."
+  "Listed and copied with this release.": "Elencate e copiate con questa uscita.",
+  "Indexing this game's music: {progress}": "Indicizzazione della musica di questo gioco: {progress}",
+  "waiting to start": "in attesa di avvio"
 }

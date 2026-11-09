@@ -238,7 +238,8 @@ impl Settings {
 // the index job
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct IndexSummary {
     pub mode: String,
     pub roms_seen: u64,
@@ -256,6 +257,10 @@ pub struct IndexSummary {
     /// Of `tracks`, songs read from cartridge ROMs' own sound engines.
     pub rom_songs: u64,
     pub errors: Vec<String>,
+    /// A title page's run (`title_id`): every ROM it looked at, music found or not, so the
+    /// page does not queue the same ROMs again when they turn out to have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rom_ids: Vec<u64>,
 }
 
 pub fn one_liner(s: &IndexSummary) -> String {
@@ -463,6 +468,9 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     }
     let total = roms.len() as u64;
     summary.roms_seen = total;
+    if request.title_id.is_some() {
+        summary.rom_ids = roms.iter().filter_map(|r| r.try_get("id").ok()).collect();
+    }
     let library = Arc::new(rip_library(app, progress).await?);
     summary.library_sets = library.len() as u64;
     let mut chosen = choose_library_sets(app, progress, &library, &roms).await?;
@@ -474,6 +482,12 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         }
         let rom_id: u64 = row.try_get("id")?;
         let main_path: String = row.try_get("main_path")?;
+        // A title page opened while this run goes on indexes its own ROMs first, beside it:
+        // a quick run does not read them a second time when it gets there.
+        if quick && sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rom_audio_index WHERE rom_id = ?").bind(rom_id).fetch_one(&app.pool).await? > 0 {
+            summary.skipped_existing += 1;
+            continue;
+        }
         let files: Vec<String> = sqlx::query_scalar("SELECT f.path FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE WHERE rf.rom_id = ? ORDER BY f.path LIMIT 100000")
             .bind(rom_id)
             .fetch_all(&app.pool)
@@ -667,6 +681,81 @@ async fn record_error(app: &App, rom_id: u64, error: &str) -> Result<()> {
         .execute(&app.pool)
         .await?;
     Ok(())
+}
+
+/// A title page's ROMs still being indexed: what the page shows in place of music until
+/// they are done.
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+pub struct Indexing {
+    pub job_id: u64,
+    /// The page's ROMs with no index yet.
+    pub roms: u64,
+    /// `pending` (waiting for its slot) or `in_progress`.
+    pub status: String,
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+    pub message: Option<String>,
+}
+
+/// The page's own ROMs first: when `titles` have ROMs here that were never indexed, a quick
+/// index of just those titles goes into the ROM audio lane's fast slot, so it runs beside a
+/// long index of the whole library instead of waiting behind it. Returns the job while it
+/// is queued or running; `None` once there is nothing left to index for the page (all done,
+/// or the last run for the title looked at them and found nothing to keep).
+pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>> {
+    if titles.is_empty() || validate(app, &RomAudioIndexRequest { mode: FileScanMode::NewOnly, title_id: None }).await.is_err() {
+        return Ok(None);
+    }
+    let mut queued = None;
+    for &title in titles.iter().take(4) {
+        let unindexed: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT r.id FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
+            roms_of(&[title])
+        )))
+        .fetch_all(&app.pool)
+        .await?;
+        if unindexed.is_empty() {
+            continue;
+        }
+        let jobs = sqlx::query(
+            "SELECT id, status, progress_done, progress_total, progress_message, result FROM jobs \
+             WHERE job_type = 'rom_audio_index' AND CAST(JSON_VALUE(payload, '$.title_id') AS UNSIGNED) = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(title)
+        .fetch_optional(&app.pool)
+        .await?;
+        if let Some(job) = &jobs {
+            let status: String = job.try_get("status")?;
+            if status == "pending" || status == "in_progress" {
+                let indexing = Indexing {
+                    job_id: job.try_get("id")?,
+                    roms: unindexed.len() as u64,
+                    status,
+                    done: job.try_get::<Option<u64>, _>("progress_done")?,
+                    total: job.try_get::<Option<u64>, _>("progress_total")?,
+                    message: job.try_get("progress_message")?,
+                };
+                queued.get_or_insert(indexing);
+                continue;
+            }
+            // The last run for this title looked at these ROMs and kept nothing (not music
+            // it can read), or failed: not queued again on every visit. The Audio tab's
+            // index buttons still read them.
+            let looked: HashSet<u64> = job
+                .try_get::<Option<serde_json::Value>, _>("result")?
+                .and_then(|r| serde_json::from_value::<IndexSummary>(r).ok())
+                .map(|r| r.rom_ids.into_iter().collect())
+                .unwrap_or_default();
+            if status == "failed" || unindexed.iter().all(|id| looked.contains(id)) {
+                continue;
+            }
+        }
+        let request = super::jobs::JobRequest::RomAudioIndex(RomAudioIndexRequest { mode: FileScanMode::NewOnly, title_id: Some(title) });
+        let id = super::jobs::enqueue_with_priority(app, &request, super::jobs::PRIORITY_INTERACTIVE).await?;
+        log::info!("rom audio: title {title}'s page opened with {} ROM(s) not indexed; job {id} indexes them first", unindexed.len());
+        queued.get_or_insert(Indexing { job_id: id, roms: unindexed.len() as u64, status: "pending".to_string(), ..Default::default() });
+    }
+    Ok(queued)
 }
 
 /// A track's place in its ROM, as the key a user's own kind is kept by across re-indexes.

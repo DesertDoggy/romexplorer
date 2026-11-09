@@ -2952,5 +2952,7 @@
   "Combined into": "Combinado en",
   "list and copy this release on its own again": "volver a listar y copiar este lanzamiento por separado",
   "split off": "separar",
-  "Listed and copied with this release.": "Se listan y copian con este lanzamiento."
+  "Listed and copied with this release.": "Se listan y copian con este lanzamiento.",
+  "Indexing this game's music: {progress}": "Indexando la música de este juego: {progress}",
+  "waiting to start": "esperando para empezar"
 }

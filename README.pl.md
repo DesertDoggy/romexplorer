@@ -268,7 +268,8 @@ wszystko).
 
 Strony tytułów mogą odtwarzać muzykę zapisaną w twoich ROM-ach prosto z pliku: nic nie jest
 rozpakowywane ani kopiowane. Najpierw uruchom „Indeksuj dźwięk z ROM-ów” na karcie Audio. `rommusic` czyta
-to samo.
+to samo. Na razie muzyka z ROM-u gra dopiero po jego zindeksowaniu; do tego czasu jego strona
+może odtwarzać muzykę z innej gry.
 
 | muzyka z | platformy | pliki |
 |---|---|---|

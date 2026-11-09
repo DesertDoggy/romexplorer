@@ -273,6 +273,8 @@ heruntergeladen sein. Eine Einstellung kann die zugehörigen Daten automatisch h
 
 Titelseiten können die Musik in Ihren ROMs direkt aus der Datei abspielen: Nichts wird entpackt
 oder kopiert. Führen Sie zuerst „ROM-Audio indizieren“ im Audio-Tab aus. `rommusic` liest dasselbe.
+Vorerst spielt die Musik eines ROMs erst, wenn es indiziert ist; bis dahin kann auf seiner Seite
+die Musik eines anderen Spiels laufen.
 
 | Musik aus | Plattformen | Dateien |
 |---|---|---|
