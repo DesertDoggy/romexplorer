@@ -734,7 +734,8 @@ fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
     let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
     let maps = spc_map::tracks(&refs, rom);
     let (mut tracks, mut heard, mut by) = (0usize, 0usize, [0usize; 3]);
-    for (spc, m) in spcs.iter().zip(&maps) {
+    let (mut searched, mut learned) = (0usize, Vec::new());
+    for (i, (spc, m)) in spcs.iter().zip(&maps).enumerate() {
         let Some(m) = m else { continue };
         let real = spc_map::melody(&spc_map::frames(spc, CHECK_FRAMES).unwrap_or_default());
         if real.len() < music_search::MIN_MELODY {
@@ -746,20 +747,43 @@ fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
         // The command as the four ports, then each port alone, then the bank alone.
         let all: Vec<(usize, u8)> = ports.iter().enumerate().map(|(p, &v)| (p, v)).collect();
         let tries: Vec<Vec<(usize, u8)>> = std::iter::once(all.clone()).chain((0..4).map(|p| vec![(p, ports[p])])).chain(std::iter::once(Vec::new())).collect();
+        let mut ok = false;
         for (k, w) in tries.iter().enumerate() {
             if music_search::alike(&real, &spc_map::command(&state, w, CHECK_FRAMES)) >= MAP_RIGHT {
                 heard += 1;
                 by[match k { 0 => 0, 5 => 2, _ => 1 }] += 1;
+                ok = true;
                 break;
             }
         }
+        // For the first tracks no command started: every value on each port, to learn how
+        // the driver takes one.
+        if !ok && searched < 3 {
+            searched += 1;
+            let mut hit = None;
+            'probe: for p in 0..4 {
+                for v in 0..=0xFFu8 {
+                    let mut w = all.clone();
+                    w[p].1 = v;
+                    if music_search::alike(&real, &spc_map::command(&state, &w, 300)) >= MAP_RIGHT {
+                        hit = Some((p, v));
+                        break 'probe;
+                    }
+                }
+            }
+            learned.push(match hit {
+                Some((p, v)) => format!("track {i}: port {p} = {v:02X} (its .spc has {:02X?})", ports),
+                None => format!("track {i}: no single port value ({:02X?})", ports),
+            });
+        }
     }
     println!(
-        "{name}: bank, {:.1} s: {heard} of {tracks} tracks heard (by all four ports {}, one port {}, the bank alone {})",
+        "{name}: bank, {:.1} s: {heard} of {tracks} tracks heard (by all four ports {}, one port {}, the bank alone {}){}",
         started.elapsed().as_secs_f32(),
         by[0],
         by[1],
-        by[2]
+        by[2],
+        if learned.is_empty() { String::new() } else { format!("; {}", learned.join("; ")) }
     );
     t.checked[0] += 1;
     t.checked[3] += tracks;
