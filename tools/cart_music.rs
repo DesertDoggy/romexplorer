@@ -246,6 +246,9 @@ struct Options {
     /// `--wstrace <song>`: with `--mapcheck`, a WonderSwan song as the file and the map play it,
     /// up to where they first differ.
     wstrace: Option<u8>,
+    /// `--wsplay`: with `--mapcheck`, each kept WonderSwan song played by its saved map as the
+    /// app plays it: how long it runs and how it is timed.
+    wsplay: bool,
     /// `--spcbank`: boot each SNES ROM, lay each track's song and samples in from the ROM,
     /// send the driver the track's command, and count the tracks heard.
     spcbank: bool,
@@ -430,7 +433,7 @@ fn print_ws_layout(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
 /// `--mapcheck` for a WonderSwan ROM and its matched set's WSR: the map built, and each song
 /// played from the ROM by it against the file's own, with the file's unplaced bytes zeroed,
 /// bridged from the ROM, and (an oracle) the file's own.
-fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, t: &mut Tally) {
+fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, play: bool, t: &mut Tally) {
     use romexplorer::rom::ws_map;
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     t.games += 1;
@@ -446,6 +449,42 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, t: 
         listed.clone()
     };
     let started = std::time::Instant::now();
+    if play {
+        let Some(m) = ws_map::build_map(&wsr, rom, songs.iter().copied()) else {
+            println!("{name}: no map kept");
+            return;
+        };
+        let m = ws_map::Map::decode(&m.encode()).expect("the map reads back");
+        println!("{name}: map kept with {} songs, {} KB, built in {:.1} s", m.songs.len(), m.encode().len() / 1024, started.elapsed().as_secs_f32());
+        for &(v, _) in &m.songs {
+            let Ok(mut song) = ws_map::MapSong::open(&m, rom, v, 44_100) else {
+                println!("  song {v}: doesn't open");
+                continue;
+            };
+            let rate = song.frame_rate();
+            let mut played = 0usize;
+            let mut buf = Vec::new();
+            let mut loud = 0usize;
+            while played < (rate * 300.0) as usize {
+                buf.clear();
+                if song.frame(&mut buf).is_none() {
+                    break;
+                }
+                if buf.iter().any(|s| s.unsigned_abs() > 64) {
+                    loud = played;
+                }
+                played += 1;
+            }
+            let Ok(mut song) = ws_map::MapSong::open(&m, rom, v, 8000) else { continue };
+            let timing = music_search::measure_frames_by_writes(rate, music_search::every_write, |b| song.frame(b).ok_or_else(|| "the song stopped".to_string()));
+            let timing = match timing {
+                Ok(t) => format!("{:.1} s, loop {:?}", t.frames as f64 / rate, t.looping.map(|(a, l)| (format!("{:.1} s", a as f64 / rate), format!("{:.1} s", l as f64 / rate)))),
+                Err(e) => e,
+            };
+            println!("  song {v}: runs {:.1} s (last sound at {:.1} s); timed: {timing}", played as f64 / rate, loud as f64 / rate);
+        }
+        return;
+    }
     let Some(m) = ws_map::map(&wsr, rom, songs.iter().copied()) else {
         println!("{name}: map: nothing of the WSR is in the ROM");
         *t.reasons.entry("nothing placed".into()).or_default() += 1;
@@ -1358,9 +1397,10 @@ fn main() {
         spcsearch: args.iter().any(|a| a == "--spcsearch"),
         spcpoke: None,
         wstrace: None,
+        wsplay: args.iter().any(|a| a == "--wsplay"),
         spcbank: args.iter().any(|a| a == "--spcbank"),
     };
-    args.retain(|a| a != "--spcbank");
+    args.retain(|a| a != "--spcbank" && a != "--wsplay");
     if let Some(i) = args.iter().position(|a| a == "--wstrace") {
         o.wstrace = args.get(i + 1).and_then(|a| a.parse().ok());
         args.drain(i..(i + 2).min(args.len()));
@@ -1559,7 +1599,7 @@ fn main() {
                         if o.layout {
                             print_ws_layout(&path, &rom, &set, tally.entry(what).or_default());
                         } else {
-                            print_ws_mapcheck(&path, &rom, &set, o.wstrace, tally.entry(what).or_default());
+                            print_ws_mapcheck(&path, &rom, &set, o.wstrace, o.wsplay, tally.entry(what).or_default());
                         }
                     }
                     continue;
