@@ -39,6 +39,7 @@ pub struct Settings {
     pub extract: Extract,
     pub hash: Hash,
     pub cartridge: Cartridge,
+    pub n3ds: N3ds,
     pub jobs: Jobs,
 }
 
@@ -184,6 +185,23 @@ impl Default for Cartridge {
     fn default() -> Self {
         // What current emulators and No-Intro expect.
         Self { nes: "headered".into(), n64: "z64".into(), snes: "sfc".into() }
+    }
+}
+
+/// What a 3DS title is written as (`crate::n3ds`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct N3ds {
+    /// One of `n3ds::FORMATS`: `cci` or `3ds` (a decrypted cartridge image), `zcci` (that
+    /// image compressed), `cxi` (the game's main part alone), `zcxi` (that, compressed).
+    /// Updates, DLC, demos and system titles stay a decrypted `.cia` (`.zcia` for the
+    /// compressed formats).
+    pub format: String,
+}
+
+impl Default for N3ds {
+    fn default() -> Self {
+        Self { format: "cci".into() }
     }
 }
 

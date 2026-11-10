@@ -1,7 +1,7 @@
 [workspace]
 # The GUI (Dioxus) is its own crate so its dependencies stay out of every existing lib /
 # bin / test build here; `cargo build` in this directory still builds just `romexplorer`.
-members = [".", "romexplorer-gui", "romexplorer-types", "chdlite", "rommusic-cli"]
+members = [".", "romexplorer-gui", "romexplorer-types", "chdlite", "rommusic-cli", "cia-tool"]
 default-members = ["."]
 resolver = "2"
 
@@ -59,6 +59,10 @@ path = "tests/src/test_serial.rs"
 [[test]]
 name = "test_pbp"
 path = "tests/src/test_pbp.rs"
+
+[[test]]
+name = "test_n3ds"
+path = "tests/src/test_n3ds.rs"
 
 [[test]]
 name = "test_converter"
@@ -138,6 +142,9 @@ sha2 = "0.11"
 # AES-128 for the outer layer of PS3/PSP packages, to read their PARAM.SFO (rom::platforms::sony,
 # off unless `scan_pkg_titles` is set). Already in the lock file through nod; test_wiiu uses it too.
 aes = "0.9"
+# 3DS CIA / CCI decryption (`rom::n3ds`): cia-tool's library, pure Rust, in `cia-tool/`.
+# No console keys come with it; they are asked for when a conversion needs them.
+cia-tool = { path = "cia-tool" }
 
 # src/database: MariaDB-backed reference data (hash -> game/region lookup, later
 # file/content/game "pages" -- see docs/plan and the database module's own doc comments).
@@ -261,6 +268,8 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # `oneshot` for driving the router in-process in server tests, the way the desktop app does.
 # Already in the lock file via axum and the GUI's `local` backend.
 tower = { version = "0.5", features = ["util"] }
+# Encrypted 3DS test files made with fake keys (`tests/src/test_n3ds.rs`).
+cia-tool = { path = "cia-tool", features = ["testkit"] }
 
 [build-dependencies]
 cc = "1.1"

@@ -20,6 +20,7 @@ pub mod gme;
 pub mod hash;
 pub mod models;
 pub mod multiple;
+pub mod n3ds;
 pub mod native_lib;
 pub mod operation;
 pub mod parallel;
