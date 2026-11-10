@@ -15,6 +15,9 @@ replacing a build.
 
 - ROM music indexing never finished on some disc images, ones with a ";" inside a file name.
   A ROM that takes more than 20 minutes is now skipped.
+- When a copy converted SNES dumps, a file whose size and internal header disagreed about a
+  copier header was converted anyway. It is now reported instead. A NES dump missing from the
+  header database is reported with its hash.
 
 # romexplorer 0.2.0 (alpha)
 
