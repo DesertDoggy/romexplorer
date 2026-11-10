@@ -98,7 +98,7 @@ where
 }
 
 fn normalize_iso_name(name: &str) -> String {
-    let no_version = name.split(';').next().unwrap_or(name);
+    let no_version = crate::rom::disc_files::strip_iso_version(name);
     let trimmed = no_version.trim_end_matches('.');
     trimmed.to_ascii_uppercase()
 }
