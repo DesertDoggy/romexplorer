@@ -300,11 +300,13 @@ impl Placer {
         let image = image_of(&sections);
         let spans = covered(&sections);
         let (moved, source) = self.placed.get_or_insert_with(|| {
+            // A set's image can run past the ROM's end (a demo cut from a bigger build).
+            let mut source = rom.to_vec();
+            source.resize(rom.len().max(image.len()), 0);
             if same_share(&image, &spans, rom) >= IN_PLACE {
-                return (Vec::new(), rom.to_vec());
+                return (Vec::new(), source);
             }
             let moved = moves(&image, &spans, rom);
-            let mut source = rom.to_vec();
             for &(s, len, r) in &moved {
                 source[s..s + len].copy_from_slice(&rom[r..r + len]);
             }
@@ -447,6 +449,47 @@ impl Map {
         let n = |runs: &[Run]| runs.iter().map(|r| if let Run::Bytes(_, b) = r { b.len() } else { 0 }).sum::<usize>();
         n(&self.common) + self.tracks.iter().map(|t| n(&t.runs)).sum::<usize>()
     }
+}
+
+/// How long each track is played while [`slim`] tries leaving bytes out.
+const SLIM_SECONDS: u32 = 4;
+
+/// Leaves out the shared byte runs the music does not need: a set's image often differs from
+/// the ROM in code and data its songs never read. Runs are left out in groups, halving a
+/// group whose loss changes any track's sound, so a game whose songs need a few runs costs a
+/// few dozen plays. Returns how many bytes it left out.
+pub fn slim(map: &mut Map, rom: &[u8]) -> Result<usize, String> {
+    let tracks: Vec<usize> = (0..map.tracks.len()).collect();
+    let mut wanted = Vec::with_capacity(tracks.len());
+    for &t in &tracks {
+        wanted.push(render(&map.image(rom, t)?, SLIM_SECONDS).ok());
+    }
+    let bytes: Vec<usize> = map.common.iter().enumerate().filter(|(_, r)| matches!(r, Run::Bytes(..))).map(|(i, _)| i).collect();
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    let mut dropped: std::collections::HashSet<usize> = Default::default();
+    let same_without = |dropped: &std::collections::HashSet<usize>, more: &[usize]| -> bool {
+        let mut trial = map.clone();
+        trial.common = map.common.iter().enumerate().filter(|(i, _)| !dropped.contains(i) && !more.contains(i)).map(|(_, r)| r.clone()).collect();
+        tracks.iter().all(|&t| {
+            let Some(want) = &wanted[t] else { return true };
+            trial.image(rom, t).and_then(|img| render(&img, SLIM_SECONDS)).is_ok_and(|got| alike(want, &got) >= 0.999)
+        })
+    };
+    let mut groups = vec![bytes];
+    while let Some(group) = groups.pop() {
+        if same_without(&dropped, &group) {
+            dropped.extend(group);
+        } else if group.len() > 1 {
+            let (a, b) = group.split_at(group.len() / 2);
+            groups.push(b.to_vec());
+            groups.push(a.to_vec());
+        }
+    }
+    let before = map.file_bytes();
+    map.common = map.common.iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, r)| r.clone()).collect();
+    Ok(before - map.file_bytes())
 }
 
 /// Renders `seconds` of a cartridge image (stereo at [`GbaImage::RATE`]).

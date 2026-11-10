@@ -771,7 +771,13 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         *t.reasons.entry(why.into()).or_default() += 1;
         return;
     }
-    let Some(m) = gba_map::Map::from_tracks(rom.len(), tracks) else { return };
+    let Some(mut m) = gba_map::Map::from_tracks(rom.len(), tracks) else { return };
+    let full = m.file_bytes();
+    let slim_started = std::time::Instant::now();
+    if let Err(e) = gba_map::slim(&mut m, rom) {
+        println!("{name}: slimming failed: {e}");
+    }
+    let slim_s = slim_started.elapsed().as_secs_f32();
     let text = m.encode();
     let Some(back) = gba_map::Map::decode(&text) else {
         println!("{name}: the map does not read back");
@@ -791,7 +797,7 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     }
     let n = set_images.len() - silent;
     println!(
-        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file, {} common runs, {} moved; map {:.1} KB){}",
+        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file of {full} before slimming ({slim_s:.1} s), {} common runs, {} moved; map {:.1} KB){}",
         started.elapsed().as_secs_f32(),
         back.file_bytes(),
         back.common.len(),
