@@ -74,6 +74,18 @@ impl Cart {
     }
 }
 
+/// The three choices in one line, for the main window: "NES headered .nes · N64 .z64 · SNES .sfc".
+/// A value the settings file got wrong shows as such.
+pub fn summary(settings: &Cartridge) -> String {
+    let nes = match Cart::Nes.layout(settings) {
+        Ok(Layout::Nes { header: NesHeader::Headered, .. }) => "headered .nes".to_string(),
+        Ok(layout) => format!("headerless .{}", layout.extension()),
+        Err(_) => format!("'{}'?", settings.nes),
+    };
+    let short = |cart: Cart, value: &str| cart.layout(settings).map(|layout| format!(".{}", layout.extension())).unwrap_or_else(|_| format!("'{value}'?"));
+    format!("NES {nes} · N64 {} · SNES {}", short(Cart::N64, &settings.n64), short(Cart::Snes, &settings.snes))
+}
+
 /// What the dump at `path` becomes under `settings`; reads it whole (a cartridge is a few MB
 /// at most), refusing a file far larger than one of its kind can be.
 pub fn convert(cart: Cart, path: &Path, settings: &Cartridge) -> Result<Converted, String> {
@@ -89,6 +101,13 @@ pub fn convert(cart: Cart, path: &Path, settings: &Cartridge) -> Result<Converte
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_summary_names_each_choice() {
+        assert_eq!(summary(&Cartridge::default()), "NES headered .nes · N64 .z64 · SNES .sfc");
+        let settings = Cartridge { nes: "unh".into(), n64: "v64".into(), snes: "smc".into() };
+        assert_eq!(summary(&settings), "NES headerless .unh · N64 .v64 · SNES .smc");
+    }
 
     #[test]
     fn every_setting_value_is_a_layout_and_nothing_else_is() {

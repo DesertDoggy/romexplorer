@@ -335,6 +335,7 @@ fn App() -> Element {
     let overall = snapshot.overall();
     let status = if snapshot.names.is_empty() { String::new() } else { format!("{:.0}%  ·  {}/{}", overall, snapshot.done, snapshot.names.len()) };
     let output_dir = settings().output.dir.clone();
+    let cartridges = chdlite::cart::summary(&settings().cartridge);
 
     #[cfg(target_os = "android")]
     let needs_access = !file_access();
@@ -491,6 +492,11 @@ fn App() -> Element {
                     },
                     "Open…"
                 }
+            }
+            div { class: "row",
+                label { title: "What Lite and Comp write a NES, N64 or SNES dump as", "Cartridges" }
+                span { class: "cartridges", style: "flex:1", "{cartridges}" }
+                button { onclick: move |_| show_settings.set(true), "Change…" }
             }
             div { class: "row",
                 div { class: "bar", style: "flex:1", div { style: "width:{overall}%" } }
