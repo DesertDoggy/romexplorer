@@ -8,11 +8,14 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Modifiche
 
-**Copia: 3DS**
+**3DS**
 - Una copia può decifrare i titoli 3DS in .cci, .3ds o .cxi, oppure nei compressi .zcci e .zcxi
   che legge Azahar. Aggiornamenti e DLC restano .cia (.zcia), l'homebrew .3dsx (.z3dsx).
 - romexplorer non include chiavi. Metti il tuo aes_keys.txt (e seeddb.bin se un titolo lo
   richiede) accanto ai file, accanto a romexplorer o nella sua cartella assets.
+- Le scansioni trovano .cci, .cxi e i compressi .zcci, .zcia e .zcxi, quindi una copia può anche
+  trasformare un .zcci in .cci e viceversa. La corrispondenza per seriale legge codice prodotto e
+  ID titolo, con una propria casella per le immagini di cartuccia.
 
 **Audio delle ROM**
 - Aprendo la pagina di un titolo si indicizza prima la musica delle ROM di quel gioco. Nel

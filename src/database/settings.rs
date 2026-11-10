@@ -262,13 +262,17 @@ pub const KEY_SERIAL_MATCH: &str = "serial_match";
 /// changed dump is not quietly linked to the release it no longer is.
 ///
 /// - `cia`, `xiso`, `wua`, `zar`, `vpk`, `pkg`, `psv`: by extension (`psv` also covers a Vita
-///   game-card `.img`).
+///   game-card `.img`, `cia` a compressed `.zcia`).
+/// - `3ds`: a 3DS cartridge image or its main part, `.3ds`, `.cci`, `.cxi`, and compressed
+///   `.zcci` / `.zcxi`. No-Intro hashes the encrypted cartridge, but a decrypted or
+///   compressed one matches no hash, so its serial is all there is.
 /// - `nsp`: a Switch `.nsp` or `.nsz`, by the ticket inside or the title id in its name.
 /// - `vita_folder`: a Vita app folder, by its `sce_sys/param.sfo`.
 /// - `ps_disc`: a PS1, PS2 or PS3 disc image, by the serial on the disc, and a PS3 game
 ///   folder by its `PS3_GAME/PARAM.SFO`.
-pub const SERIAL_MATCH_FORMATS: [(&str, bool); 10] = [
+pub const SERIAL_MATCH_FORMATS: [(&str, bool); 11] = [
     ("cia", true),
+    ("3ds", true),
     ("xiso", true),
     ("wua", true),
     ("zar", true),
