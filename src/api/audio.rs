@@ -723,6 +723,10 @@ pub struct Playlist {
     /// The title a hide on this page is recorded for (`PUT /audio/hidden`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_title: Option<u64>,
+    /// The page's ROMs are being indexed (queued ahead of the rest when the page opened):
+    /// with no tracks, the page shows this instead of a stand-in, and asks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexing: Option<super::rom_audio::Indexing>,
 }
 
 /// What `PUT /audio/hidden` is sent: a track of a page's player to hide or bring back.
@@ -881,7 +885,16 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
         // Only this title's own tracks for now: the stand-ins below come after.
         add_from_main(app, q, Fallback::None, &rom.query(super::rom_audio::NotOwned::None), &mut list).await?;
     }
-    if !list.tracks.is_empty() {
+    // ROMs of the page never indexed: they go first, beside any long index run.
+    // A client's own come before the main server's, which `add_from_main` brought along.
+    if rom.sources.rom() {
+        if let Some(mine) = super::rom_audio::indexing_for(app, &titles).await? {
+            list.indexing = Some(mine);
+        }
+    }
+    // Something to play, or the page's own ROM music on its way: a stand-in would be another
+    // game's music where this one's is about to be.
+    if !list.tracks.is_empty() || list.indexing.is_some() {
         return Ok(list);
     }
     // No ROM of its own: another version's ROM music, or a random title's.
@@ -946,6 +959,10 @@ async fn add_from_main(app: &App, q: &PlaylistQuery, fallback: Fallback, rom: &s
                 if list.fallback.is_none() && !list.tracks.is_empty() {
                     list.fallback = theirs.fallback;
                 }
+                // The server is indexing the page's ROMs there: the page waits for them too.
+                if list.indexing.is_none() {
+                    list.indexing = theirs.indexing;
+                }
                 for tag in theirs.tags {
                     if !list.tags.contains(&tag) {
                         list.tags.push(tag);
@@ -997,7 +1014,7 @@ async fn local_playlist(app: &App, titles: &[u64]) -> Result<Playlist> {
         "SELECT DISTINCT m.name FROM audio_file_tags m JOIN audio_files a ON a.id = m.audio_file_id AND a.deleted = FALSE AND a.playable = TRUE WHERE m.name IN ({keyword_names}) ORDER BY m.name"
     );
     let tags: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(tags_sql)).fetch_all(&app.pool).await?;
-    Ok(Playlist { tags, tracks, fallback: None, keep_playing: false, title_videos: None, hidden: Vec::new(), hide_title: None })
+    Ok(Playlist { tags, tracks, ..Default::default() })
 }
 
 #[cfg(test)]

@@ -251,6 +251,8 @@ everything down).
 
 Title pages can play the music inside your ROMs, straight from the file: nothing is extracted or
 copied. Run Index ROM audio on the Audio tab first. `rommusic` reads the same.
+For now a ROM's music plays only once the ROM has been indexed; until then its page may play
+another game's music.
 
 | music from | platforms | files |
 |---|---|---|

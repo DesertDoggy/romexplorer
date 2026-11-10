@@ -271,7 +271,8 @@ defecto, porque la gran base de datos lo ralentiza todo).
 
 Las páginas de título pueden reproducir la música que hay dentro de tus ROM, directamente desde el
 archivo: no se extrae ni se copia nada. Ejecuta primero «Indexar el audio de las ROM» en la pestaña Audio.
-`rommusic` lee lo mismo.
+`rommusic` lee lo mismo. Por ahora, la música de una ROM solo suena cuando ya está indexada; hasta
+entonces, su página puede reproducir música de otro juego.
 
 | música de | plataformas | archivos |
 |---|---|---|

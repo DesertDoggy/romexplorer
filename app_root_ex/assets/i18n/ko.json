@@ -2952,5 +2952,7 @@
   "Combined into": "합쳐진 릴리스:",
   "list and copy this release on its own again": "이 릴리스를 다시 따로 표시하고 복사합니다",
   "split off": "분리",
-  "Listed and copied with this release.": "이 릴리스와 함께 표시되고 복사됩니다."
+  "Listed and copied with this release.": "이 릴리스와 함께 표시되고 복사됩니다.",
+  "Indexing this game's music: {progress}": "이 게임의 음악을 색인하고 있습니다: {progress}",
+  "waiting to start": "시작 대기 중"
 }

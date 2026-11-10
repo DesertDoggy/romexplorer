@@ -2952,5 +2952,7 @@
   "Combined into": "統合先:",
   "list and copy this release on its own again": "このリリースを再び単独で表示・コピーします",
   "split off": "分離",
-  "Listed and copied with this release.": "このリリースと一緒に表示・コピーされます。"
+  "Listed and copied with this release.": "このリリースと一緒に表示・コピーされます。",
+  "Indexing this game's music: {progress}": "このゲームの音楽を索引しています: {progress}",
+  "waiting to start": "開始待ち"
 }
