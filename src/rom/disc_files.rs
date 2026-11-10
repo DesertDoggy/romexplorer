@@ -519,6 +519,16 @@ fn iso_extent(view: &DiscView, layout: IsoLayout, lba: u64, len: u32) -> Result<
     Ok(out)
 }
 
+/// An ISO 9660 name without its version (`NAME.EXT;1`). Only a `;` followed by nothing but
+/// digits at the end is a version: some discs use `;` inside names (`roll_e;1.it3`), and
+/// cutting there would give several files one name.
+pub fn strip_iso_version(name: &str) -> &str {
+    match name.rsplit_once(';') {
+        Some((base, version)) if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    }
+}
+
 fn iso_dir(view: &DiscView, layout: IsoLayout, lba: u64, len: u32, prefix: &str, depth: usize, out: &mut Vec<DiscFile>) -> Result<(), String> {
     if depth > MAX_DEPTH || out.len() >= MAX_FILES || len > 16 << 20 {
         return Ok(());
@@ -543,7 +553,7 @@ fn iso_dir(view: &DiscView, layout: IsoLayout, lba: u64, len: u32, prefix: &str,
             continue; // `.` and `..`
         }
         let name = String::from_utf8_lossy(raw_name);
-        let name = name.split(';').next().unwrap_or(&name).trim_end_matches('.').to_string();
+        let name = strip_iso_version(&name).trim_end_matches('.').to_string();
         let path = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
         let (extent, size, flags) = (u64::from(le32(record, 2).unwrap_or(0)), le32(record, 10).unwrap_or(0), record[25]);
         if flags & 0x02 != 0 {
@@ -595,5 +605,19 @@ mod tests {
         plain[32] = 1;
         plain.push(b'A');
         assert!(!is_xa_form2(&plain, 1), "no system use area");
+    }
+}
+
+#[cfg(test)]
+mod iso_name_tests {
+    use super::strip_iso_version;
+
+    #[test]
+    fn only_a_trailing_number_is_a_version() {
+        assert_eq!(strip_iso_version("MUSIC.AT3;1"), "MUSIC.AT3");
+        assert_eq!(strip_iso_version("roll_e;1.it3"), "roll_e;1.it3");
+        assert_eq!(strip_iso_version("roll_e;2.xmt;1"), "roll_e;2.xmt");
+        assert_eq!(strip_iso_version("NOVERSION.BIN"), "NOVERSION.BIN");
+        assert_eq!(strip_iso_version("ODD;"), "ODD;");
     }
 }
