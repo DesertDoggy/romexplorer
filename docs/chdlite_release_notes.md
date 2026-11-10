@@ -11,6 +11,14 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
   `--n64` and `--snes`.
 - Whether a NES dump has a header is looked up in the NES header database. A dump that is not
   in it is reported with its hash.
+- **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
+  RetroAchievements has achievements for it, with the game's name. The list it checks is
+  bundled; its date is shown in Settings and by `--version`.
+
+## Bug fixes
+
+- In the Android app, allowing file access failed with "Java exception was thrown" instead of
+  opening the system's access screen.
 
 # chdlite 0.3.1
 
