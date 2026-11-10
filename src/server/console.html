@@ -2308,13 +2308,19 @@ async function showAudio() {
   queueable(...view.querySelectorAll('[data-scan]'), document.getElementById('audio-fetch'), document.getElementById('audio-autotag'), ...view.querySelectorAll('[data-romidx]'));
 }
 
+// "Indexing this game's music: ROM 1 of 2: …", from a playlist's `indexing`.
+function indexingText(ix) {
+  return trf("Indexing this game's music: {progress}", { progress: ix.message || (ix.status === 'pending' ? tr('waiting to start') : '…') });
+}
+
 // The player for a page: every playable file sharing a keyword tag with the page's title,
 // and the music in its ROMs. Shown (and started) only when there is something to play; a
 // title page with nothing stops music kept playing from an earlier one.
 async function pagePlayer(query) {
   if (!window.rxPlayer) return;
+  const page = location.hash;
   let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { window.rxPlayer.stop(); return; }
-  for (const old of view.querySelectorAll('.rx-videos')) old.remove();
+  for (const old of view.querySelectorAll('.rx-videos, .rx-indexing')) old.remove();
   // A title page whose ROMs have video sound (a title movie): this title's own on / off,
   // over the audio_rom_videos setting.
   const tv = list.title_videos;
@@ -2324,6 +2330,14 @@ async function pagePlayer(query) {
       try { await api(`/api/v1/audio/rom/title/${tv.title_id}`, { method: 'PUT', body: { videos: e.target.value } }); toast(tr('saved')); for (const h of view.querySelectorAll('.rx-player-host')) h.remove(); pagePlayer(query); } catch (err) { toast(err.message, true); }
     };
     view.insertBefore(row, view.firstChild);
+  }
+  // The page's ROMs are being indexed (they went ahead of the rest when the page opened):
+  // their progress, not another game's music, until they are done.
+  if (!list.tracks.length && list.indexing) {
+    window.rxPlayer.stop();
+    view.insertBefore(el(`<div class="toolbar rx-indexing muted">${esc(indexingText(list.indexing))}</div>`), view.firstChild);
+    setTimeout(() => { if (location.hash === page) pagePlayer(query); }, 2000);
+    return;
   }
   if (!list.tracks.length && !(list.hidden || []).length) { window.rxPlayer.stop(); return; }
   const host = el('<div class="rx-player-host"></div>'); view.insertBefore(host, view.firstChild);

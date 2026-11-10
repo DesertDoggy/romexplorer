@@ -491,7 +491,14 @@ impl VgmSource for DiscFileSource {
     }
 
     fn open(&self, name: &str) -> Option<Box<dyn VgmSource>> {
-        let file = find_named(&self.listing, &self.file, name)?.clone();
+        // A decoder reopening the file it was given gets that very file, never another one
+        // the listing happens to name the same: handed a different file of a different
+        // size, the decoder has been seen to loop forever.
+        let wanted = name.replace('\\', "/");
+        let wanted = wanted.trim_start_matches('/');
+        let itself = self.file.path.eq_ignore_ascii_case(wanted)
+            || (!wanted.contains('/') && self.file.name().eq_ignore_ascii_case(wanted));
+        let file = if itself { self.file.clone() } else { find_named(&self.listing, &self.file, name)?.clone() };
         Some(Box::new(DiscFileSource { view: self.view.clone(), listing: self.listing.clone(), file }))
     }
 }

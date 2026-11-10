@@ -263,12 +263,25 @@ pub fn PagePlayer(query: String) -> Element {
             async move { api::get(&format!("/api/v1/audio/playlist?{query}")).await.unwrap_or_else(|_| json!({})) }
         }
     });
+    let resource = playlist;
     // `None` until it has loaded.
     let loaded = playlist.read().clone();
     let start_host = host.clone();
     use_effect(use_reactive!(|loaded| {
         let Some(playlist) = loaded else { return };
         let list = api::arr(&playlist, "tracks").to_vec();
+        // The page's ROMs are being indexed (they went ahead of the rest when the page
+        // opened): their progress shows below instead of another game's music, and the
+        // playlist is asked for again until they are done.
+        if list.is_empty() && playlist.get("indexing").is_some_and(Value::is_object) {
+            let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
+            let mut again = resource;
+            spawn(async move {
+                ui::sleep(2000).await;
+                again.restart();
+            });
+            return;
+        }
         if list.is_empty() && api::arr(&playlist, "hidden").is_empty() {
             // A title page with nothing to play ends music kept from an earlier one.
             let _ = document::eval("if (window.rxPlayer) window.rxPlayer.stop();");
@@ -345,9 +358,18 @@ pub fn PagePlayer(query: String) -> Element {
             }
         }
     });
+    let indexing = playlist.read().as_ref().filter(|p| api::arr(p, "tracks").is_empty()).and_then(|p| p.get("indexing").filter(|i| i.is_object()).cloned()).map(|ix| {
+        let progress = match ix.get("message").and_then(Value::as_str) {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ if s(&ix, "status") == "pending" => state::tr("waiting to start"),
+            _ => "…".to_string(),
+        };
+        let text = state::trf("Indexing this game's music: {progress}", &[("progress", progress.as_str())]);
+        rsx! { div { class: "toolbar rx-indexing muted", "{text}" } }
+    });
     // An empty element the script draws the bar into. It holds nothing Dioxus renders, so a
     // re-render leaves what the script put there alone.
-    rsx! { div { id: "{host}" } Html { html: String::new() } {switch} }
+    rsx! { div { id: "{host}" } Html { html: String::new() } {indexing} {switch} }
 }
 
 /// A playlist track with the URL this app reads it from.

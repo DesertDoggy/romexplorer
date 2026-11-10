@@ -238,7 +238,8 @@ impl Settings {
 // the index job
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct IndexSummary {
     pub mode: String,
     pub roms_seen: u64,
@@ -255,7 +256,14 @@ pub struct IndexSummary {
     pub library_matches: u64,
     /// Of `tracks`, songs read from cartridge ROMs' own sound engines.
     pub rom_songs: u64,
+    /// ROMs whose files are byte for byte those of a ROM already indexed: its tracks were
+    /// copied instead of reading the ROM again.
+    pub same_content: u64,
     pub errors: Vec<String>,
+    /// A title page's run (`title_id`): every ROM it looked at, music found or not, so the
+    /// page does not queue the same ROMs again when they turn out to have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rom_ids: Vec<u64>,
 }
 
 pub fn one_liner(s: &IndexSummary) -> String {
@@ -268,6 +276,9 @@ pub fn one_liner(s: &IndexSummary) -> String {
     }
     if s.library_sets > 0 {
         parts.push(format!("{} ROM(s) matched to the rip library's {} set(s)", s.library_matches, s.library_sets));
+    }
+    if s.same_content > 0 {
+        parts.push(format!("{} copied from an indexed ROM with the same content", s.same_content));
     }
     if s.skipped_existing > 0 {
         parts.push(format!("{} already indexed", s.skipped_existing));
@@ -439,6 +450,10 @@ fn read_member(archive: &Path, member: &str) -> Option<Vec<u8>> {
     (0..opened.entry_count()).find(|&i| opened.entry(i).is_ok_and(|e| !e.is_dir && norm(&e.path) == want)).and_then(|i| opened.read_entry(i).ok())
 }
 
+/// How long one ROM may take before the index gives up on it. The longest honest reads (a
+/// cartridge's sound-engine search) stop by themselves well inside this.
+const ROM_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
 pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Progress) -> Result<IndexSummary> {
     provide_ps2_bios(app).await?;
     let quick = request.mode == FileScanMode::NewOnly;
@@ -463,17 +478,28 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     }
     let total = roms.len() as u64;
     summary.roms_seen = total;
+    if request.title_id.is_some() {
+        summary.rom_ids = roms.iter().filter_map(|r| r.try_get("id").ok()).collect();
+    }
     let library = Arc::new(rip_library(app, progress).await?);
     summary.library_sets = library.len() as u64;
     let mut chosen = choose_library_sets(app, progress, &library, &roms).await?;
     // A library set's tracks, read once per run however many ROMs (regions) it matches.
     let mut set_tracks: HashMap<PathBuf, Vec<FoundTrack>> = HashMap::new();
+    // ROMs this run indexed: what a full run may copy a same-content ROM's tracks from.
+    let mut read_this_run: HashSet<u64> = HashSet::new();
     for (i, row) in roms.iter().enumerate() {
         if progress.cancelled().await {
             break;
         }
         let rom_id: u64 = row.try_get("id")?;
         let main_path: String = row.try_get("main_path")?;
+        // A title page opened while this run goes on indexes its own ROMs first, beside it:
+        // a quick run does not read them a second time when it gets there.
+        if quick && sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rom_audio_index WHERE rom_id = ?").bind(rom_id).fetch_one(&app.pool).await? > 0 {
+            summary.skipped_existing += 1;
+            continue;
+        }
         let files: Vec<String> = sqlx::query_scalar("SELECT f.path FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE WHERE rf.rom_id = ? ORDER BY f.path LIMIT 100000")
             .bind(rom_id)
             .fetch_all(&app.pool)
@@ -482,8 +508,23 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             Some(folder) if rip_sets::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
             _ => None,
         };
-        let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
         let platform: u16 = row.try_get("app_platform_id")?;
+        // The same files as a ROM already indexed (another copy, a duplicate folder): its
+        // tracks are this one's too. Not when this ROM's folder has music files of its own,
+        // which the other's index would not have. A full run reuses only ROMs it read itself.
+        if folder.is_none() {
+            if let Some(source) = same_content_indexed(app, rom_id, platform, (!quick).then_some(&read_this_run)).await? {
+                let label = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
+                progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label} (same content as one already indexed)", i + 1)).await;
+                if let Some(copied) = copy_index(app, source, rom_id, !quick).await? {
+                    summary.same_content += 1;
+                    summary.tracks += copied;
+                    read_this_run.insert(rom_id);
+                    continue;
+                }
+            }
+        }
+        let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
         let in_library = library.covers(platform);
         let songs = rom_songs::covers(platform);
         if disc.is_none() && folder.is_none() && !in_library && !songs {
@@ -501,15 +542,47 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             (Ok(sets), true) => sets.clone(),
             _ => Vec::new(),
         };
-        let found = tokio::task::spawn_blocking(move || {
+        // What inside the ROM is being read right now, for the job's progress line.
+        let step = Arc::new(std::sync::Mutex::new(String::new()));
+        let at = step.clone();
+        let mut task = tokio::task::spawn_blocking(move || {
+            let note = |what: &str| *at.lock().unwrap_or_else(|p| p.into_inner()) = what.to_string();
+            note("music map");
             let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets(&rom_file, &map_sets)).and_then(|r| r.err());
-            let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |_| {})).unwrap_or_default();
-            let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |_| {}));
+            note("music files in the game's folder");
+            let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |p| note(p))).unwrap_or_default();
+            note("disc");
+            let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |p| note(p)));
+            note("the game's sound engine");
             let songs = if songs && rom_file.is_file() { rom_songs::index(&rom_file, platform, &thresholds) } else { Ok(Vec::new()) };
             (rips, disc, songs, map_error)
-        })
-        .await
-        .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+        });
+        let started = std::time::Instant::now();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        let found = loop {
+            tokio::select! {
+                done = &mut task => break Some(done.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?),
+                _ = tick.tick() => {
+                    let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let secs = started.elapsed().as_secs();
+                    // A ROM that never finishes must not hold the whole run: it is noted as
+                    // an error and the run goes on. Its reader is left to end on its own.
+                    if started.elapsed() > ROM_TIME_LIMIT || progress.cancelled().await {
+                        if started.elapsed() > ROM_TIME_LIMIT {
+                            let error = format!("gave up after {} min, still reading {what}", ROM_TIME_LIMIT.as_secs() / 60);
+                            log::warn!("rom audio index: {main_path}: {error}");
+                            summary.errors.push(format!("{main_path}: {error}"));
+                            record_error(app, rom_id, &error).await?;
+                        }
+                        break None;
+                    }
+                    if secs >= 4 {
+                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {main_path}: {what} ({secs} s)", i + 1)).await;
+                    }
+                }
+            }
+        };
+        let Some(found) = found else { continue };
         let (mut rips, disc_found, songs_found, map_error) = found;
         if let Some(e) = map_error {
             summary.errors.push(format!("{main_path}: music map: {e}"));
@@ -560,6 +633,9 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         summary.tracks += tracks.len() as u64;
         summary.roms_read += 1;
         store(app, rom_id, &tracks, error.as_deref()).await?;
+        if error.is_none() {
+            read_this_run.insert(rom_id);
+        }
     }
     progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
     Ok(summary)
@@ -667,6 +743,146 @@ async fn record_error(app: &App, rom_id: u64, error: &str) -> Result<()> {
         .execute(&app.pool)
         .await?;
     Ok(())
+}
+
+/// A ROM's content: the content ids of its files, in order. Two ROMs with the same list
+/// hold the same bytes, wherever their files are.
+async fn content_of(app: &App, rom_id: u64) -> Result<Vec<u64>> {
+    Ok(sqlx::query_scalar("SELECT f.content_id FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE WHERE rf.rom_id = ? ORDER BY f.content_id")
+        .bind(rom_id)
+        .fetch_all(&app.pool)
+        .await?)
+}
+
+/// Another ROM of the same platform with exactly `rom_id`'s content that was indexed without
+/// an error -- with `among`, only one of those. Candidates are the ROMs sharing its first
+/// file's content, so this is a lookup by index, not a pass over every ROM.
+async fn same_content_indexed(app: &App, rom_id: u64, platform: u16, among: Option<&HashSet<u64>>) -> Result<Option<u64>> {
+    let mine = content_of(app, rom_id).await?;
+    let Some(&first) = mine.first() else { return Ok(None) };
+    let candidates: Vec<u64> = sqlx::query_scalar(
+        "SELECT DISTINCT rf.rom_id FROM local_files f JOIN local_rom_files rf ON rf.file_id = f.id JOIN local_rom r ON r.id = rf.rom_id AND r.deleted = FALSE AND r.app_platform_id = ? \
+         JOIN rom_audio_index i ON i.rom_id = rf.rom_id AND i.error IS NULL WHERE f.content_id = ? AND f.deleted = FALSE AND rf.rom_id <> ? LIMIT 50",
+    )
+    .bind(platform)
+    .bind(first)
+    .bind(rom_id)
+    .fetch_all(&app.pool)
+    .await?;
+    for other in candidates {
+        if among.is_some_and(|set| !set.contains(&other)) {
+            continue;
+        }
+        if content_of(app, other).await? == mine {
+            return Ok(Some(other));
+        }
+    }
+    Ok(None)
+}
+
+/// Gives `rom_id` the tracks of `source` (the same content), kinds set by hand included.
+/// With `keep_own`, a ROM whose own tracks carry kinds set by hand is left to be read
+/// instead (`None`), so those are not lost. Returns how many tracks it now has.
+async fn copy_index(app: &App, source: u64, rom_id: u64, keep_own: bool) -> Result<Option<u64>> {
+    let mut tx = app.pool.begin().await?;
+    if keep_own {
+        let own: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rom_audio_tracks WHERE rom_id = ? AND kind_manual IS NOT NULL").bind(rom_id).fetch_one(&mut *tx).await?;
+        if own > 0 {
+            return Ok(None);
+        }
+    }
+    sqlx::query("DELETE FROM rom_audio_tracks WHERE rom_id = ?").bind(rom_id).execute(&mut *tx).await?;
+    let copied = sqlx::query(
+        "INSERT INTO rom_audio_tracks (rom_id, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video) \
+         SELECT ?, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video FROM rom_audio_tracks WHERE rom_id = ? ORDER BY id",
+    )
+    .bind(rom_id)
+    .bind(source)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query("INSERT INTO rom_audio_index (rom_id, indexed_at, tracks, error) VALUES (?, NOW(), ?, NULL) ON DUPLICATE KEY UPDATE indexed_at = NOW(), tracks = VALUES(tracks), error = NULL")
+        .bind(rom_id)
+        .bind(copied as u32)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(copied))
+}
+
+/// A title page's ROMs still being indexed: what the page shows in place of music until
+/// they are done.
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+pub struct Indexing {
+    pub job_id: u64,
+    /// The page's ROMs with no index yet.
+    pub roms: u64,
+    /// `pending` (waiting for its slot) or `in_progress`.
+    pub status: String,
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+    pub message: Option<String>,
+}
+
+/// The page's own ROMs first: when `titles` have ROMs here that were never indexed, a quick
+/// index of just those titles goes into the ROM audio lane's fast slot, so it runs beside a
+/// long index of the whole library instead of waiting behind it. Returns the job while it
+/// is queued or running; `None` once there is nothing left to index for the page (all done,
+/// or the last run for the title looked at them and found nothing to keep).
+pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>> {
+    if titles.is_empty() || validate(app, &RomAudioIndexRequest { mode: FileScanMode::NewOnly, title_id: None }).await.is_err() {
+        return Ok(None);
+    }
+    let mut queued = None;
+    for &title in titles.iter().take(4) {
+        let unindexed: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT r.id FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
+            roms_of(&[title])
+        )))
+        .fetch_all(&app.pool)
+        .await?;
+        if unindexed.is_empty() {
+            continue;
+        }
+        let jobs = sqlx::query(
+            "SELECT id, status, progress_done, progress_total, progress_message, result FROM jobs \
+             WHERE job_type = 'rom_audio_index' AND CAST(JSON_VALUE(payload, '$.title_id') AS UNSIGNED) = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(title)
+        .fetch_optional(&app.pool)
+        .await?;
+        if let Some(job) = &jobs {
+            let status: String = job.try_get("status")?;
+            if status == "pending" || status == "in_progress" {
+                let indexing = Indexing {
+                    job_id: job.try_get("id")?,
+                    roms: unindexed.len() as u64,
+                    status,
+                    done: job.try_get::<Option<u64>, _>("progress_done")?,
+                    total: job.try_get::<Option<u64>, _>("progress_total")?,
+                    message: job.try_get("progress_message")?,
+                };
+                queued.get_or_insert(indexing);
+                continue;
+            }
+            // The last run for this title looked at these ROMs and kept nothing (not music
+            // it can read), or failed: not queued again on every visit. The Audio tab's
+            // index buttons still read them.
+            let looked: HashSet<u64> = job
+                .try_get::<Option<serde_json::Value>, _>("result")?
+                .and_then(|r| serde_json::from_value::<IndexSummary>(r).ok())
+                .map(|r| r.rom_ids.into_iter().collect())
+                .unwrap_or_default();
+            if status == "failed" || unindexed.iter().all(|id| looked.contains(id)) {
+                continue;
+            }
+        }
+        let request = super::jobs::JobRequest::RomAudioIndex(RomAudioIndexRequest { mode: FileScanMode::NewOnly, title_id: Some(title) });
+        let id = super::jobs::enqueue_with_priority(app, &request, super::jobs::PRIORITY_INTERACTIVE).await?;
+        log::info!("rom audio: title {title}'s page opened with {} ROM(s) not indexed; job {id} indexes them first", unindexed.len());
+        queued.get_or_insert(Indexing { job_id: id, roms: unindexed.len() as u64, status: "pending".to_string(), ..Default::default() });
+    }
+    Ok(queued)
 }
 
 /// A track's place in its ROM, as the key a user's own kind is kept by across re-indexes.

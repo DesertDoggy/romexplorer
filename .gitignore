@@ -22,6 +22,10 @@ target/
 # --- build output and machine-local state (restored from the previous repository's rules) ---
 
 /samples/
+
+# Scratch checkouts, target dirs and test output on the user's PC: builds must stay inside
+# the repo folder there (CODING_RULES.md).
+/.test*/
 *.env
 
 # Sample-based test harness: scratch output, reports and the hash cache. All three can hold
