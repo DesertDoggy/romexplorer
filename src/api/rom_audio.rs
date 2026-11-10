@@ -450,6 +450,10 @@ fn read_member(archive: &Path, member: &str) -> Option<Vec<u8>> {
     (0..opened.entry_count()).find(|&i| opened.entry(i).is_ok_and(|e| !e.is_dir && norm(&e.path) == want)).and_then(|i| opened.read_entry(i).ok())
 }
 
+/// How long one ROM may take before the index gives up on it. The longest honest reads (a
+/// cartridge's sound-engine search) stop by themselves well inside this.
+const ROM_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
 pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Progress) -> Result<IndexSummary> {
     provide_ps2_bios(app).await?;
     let quick = request.mode == FileScanMode::NewOnly;
@@ -538,15 +542,47 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             (Ok(sets), true) => sets.clone(),
             _ => Vec::new(),
         };
-        let found = tokio::task::spawn_blocking(move || {
+        // What inside the ROM is being read right now, for the job's progress line.
+        let step = Arc::new(std::sync::Mutex::new(String::new()));
+        let at = step.clone();
+        let mut task = tokio::task::spawn_blocking(move || {
+            let note = |what: &str| *at.lock().unwrap_or_else(|p| p.into_inner()) = what.to_string();
+            note("music map");
             let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets(&rom_file, &map_sets)).and_then(|r| r.err());
-            let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |_| {})).unwrap_or_default();
-            let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |_| {}));
+            note("music files in the game's folder");
+            let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |p| note(p))).unwrap_or_default();
+            note("disc");
+            let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |p| note(p)));
+            note("the game's sound engine");
             let songs = if songs && rom_file.is_file() { rom_songs::index(&rom_file, platform, &thresholds) } else { Ok(Vec::new()) };
             (rips, disc, songs, map_error)
-        })
-        .await
-        .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+        });
+        let started = std::time::Instant::now();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        let found = loop {
+            tokio::select! {
+                done = &mut task => break Some(done.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?),
+                _ = tick.tick() => {
+                    let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let secs = started.elapsed().as_secs();
+                    // A ROM that never finishes must not hold the whole run: it is noted as
+                    // an error and the run goes on. Its reader is left to end on its own.
+                    if started.elapsed() > ROM_TIME_LIMIT || progress.cancelled().await {
+                        if started.elapsed() > ROM_TIME_LIMIT {
+                            let error = format!("gave up after {} min, still reading {what}", ROM_TIME_LIMIT.as_secs() / 60);
+                            log::warn!("rom audio index: {main_path}: {error}");
+                            summary.errors.push(format!("{main_path}: {error}"));
+                            record_error(app, rom_id, &error).await?;
+                        }
+                        break None;
+                    }
+                    if secs >= 4 {
+                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {main_path}: {what} ({secs} s)", i + 1)).await;
+                    }
+                }
+            }
+        };
+        let Some(found) = found else { continue };
         let (mut rips, disc_found, songs_found, map_error) = found;
         if let Some(e) = map_error {
             summary.errors.push(format!("{main_path}: music map: {e}"));
