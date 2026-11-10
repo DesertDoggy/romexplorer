@@ -21,6 +21,7 @@ use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 
 use chdlite::batch::{self, Batch, BatchEvent, CAN_SPAWN_WORKERS, WORKER_FLAG};
+use chdlite::cart::{N64_FORMATS, NES_FORMATS, SNES_FORMATS};
 use chdlite::classify::{expand, lossy_targets};
 use chdlite::job::Mode;
 use chdlite::settings::{CompMode, Jobs, LitePreset, Settings, CD_CODECS, CUE_STYLES, DVD_CODECS, GDROM_SHEETS, HASHES, MAX_CODECS, RVZ_BLOCKS, RVZ_CODECS};
@@ -46,7 +47,7 @@ const ART: [(&str, &[u8]); 4] = [
 ];
 
 const MODES: [(Mode, &str, &str, &str); 4] = [
-    (Mode::Lite, "lite.png", "Lite", "Lite: fast. Disc image, .cso or .pbp → CHD / RVZ; Wii U / Xbox → WUA / ZAR / XISO. A .chd or .rvz is extracted."),
+    (Mode::Lite, "lite.png", "Lite", "Lite: fast. Disc image, .cso or .pbp → CHD / RVZ; Wii U / Xbox → WUA / ZAR / XISO. NES / N64 / SNES dumps → the layout set in Settings. A .chd or .rvz is extracted."),
     (Mode::Comp, "comp.png", "Comp", "Comp: smallest file, slow. A .chd or .rvz is extracted."),
     (Mode::Read, "read.png", "Read", "Read: show what a file is."),
     (Mode::Hash, "hash.png", "Hash", "Hash: hash the disc inside a .chd / .rvz / .cso / .pbp, or the image itself."),
@@ -229,7 +230,7 @@ fn App() -> Element {
                     Ui::Expanded { with, inputs, lossy } => {
                         preparing.set(false);
                         if inputs.is_empty() {
-                            log.write().push(line("err", "Nothing to do: no disc images, .chd, .rvz, .cso or .pbp in what was dropped."));
+                            log.write().push(line("err", "Nothing to do: no disc images, .chd, .rvz, .cso, .pbp or cartridge dumps in what was dropped."));
                         } else if !lossy.is_empty() {
                             asking.set(Some((with, inputs, lossy)));
                         } else {
@@ -464,7 +465,7 @@ fn App() -> Element {
                         });
                     },
                     b { "Drop files or folders here" }
-                    "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO — or click to choose files"
+                    "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO · NES / N64 / SNES → the layout in Settings — or click to choose files"
                 }
             }
             div { class: "row",
@@ -738,6 +739,36 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                     }
                 }
                 Codecs { label: "Hashes", all: HASHES.to_vec(), chosen: s.hash.algorithms.clone(), disabled: false, max: HASHES.len(), on_change: move |next| draft.write().hash.algorithms = next }
+
+                h3 { "Cartridges — NES / N64 / SNES" }
+                div { class: "row",
+                    label { title: "Whether a dump has a header is looked up by its hash in the NES header database; a hash that is not there is an error", "NES" }
+                    select {
+                        onchange: move |event| draft.write().cartridge.nes = event.value(),
+                        for (format, text) in NES_FORMATS.into_iter().zip(["Headered (.nes)", "Headerless (.nes)", "Headerless (.unh)"]) {
+                            option { key: "{format}", value: "{format}", selected: s.cartridge.nes == format, "{text}" }
+                        }
+                    }
+                }
+                div { class: "row",
+                    label { "N64" }
+                    select {
+                        onchange: move |event| draft.write().cartridge.n64 = event.value(),
+                        for (format, text) in N64_FORMATS.into_iter().zip(["Big-endian (.z64)", "Byte-swapped (.v64)", "Little-endian (.n64)"]) {
+                            option { key: "{format}", value: "{format}", selected: s.cartridge.n64 == format, "{text}" }
+                        }
+                    }
+                }
+                div { class: "row",
+                    label { title: "A copier header is told by the size (whole KB + 512 bytes), and the cartridge's own header has to agree", "SNES" }
+                    select {
+                        onchange: move |event| draft.write().cartridge.snes = event.value(),
+                        for (format, text) in SNES_FORMATS.into_iter().zip(["No copier header (.sfc)", "512-byte copier header (.smc)"]) {
+                            option { key: "{format}", value: "{format}", selected: s.cartridge.snes == format, "{text}" }
+                        }
+                    }
+                }
+                div { class: "note", "Lite and Comp write a dropped cartridge dump in this layout; one already in it is skipped." }
 
                 h3 { "Performance and output" }
                 {

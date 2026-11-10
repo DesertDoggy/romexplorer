@@ -2,7 +2,14 @@
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
 
-No changes to chdlite itself. It is released alongside romexplorer 0.2.1.
+## Changes
+
+- **NES, N64 and SNES dumps.** Lite and Comp write a dropped cartridge dump in the layout
+  picked in Settings: NES headered (.nes), headerless (.nes) or headerless (.unh); N64 .z64,
+  .v64 or .n64; SNES .sfc or .smc. A dump already in that layout is skipped. Read shows the
+  layout a dump is in. The console tools take `--nes`, `--n64` and `--snes`.
+- Whether a NES dump has a header is looked up in the NES header database. A dump that is not
+  in it is reported with its hash.
 
 # chdlite 0.3.1
 
