@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "chdlite"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "dioxus",
  "futures-util",
@@ -5823,7 +5823,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -5881,7 +5881,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "dioxus",
@@ -5899,7 +5899,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer-types"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "rustls",
@@ -5911,7 +5911,7 @@ dependencies = [
 
 [[package]]
 name = "rommusic-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dioxus",
  "flac-codec",
