@@ -8,6 +8,12 @@ de segurança antes de substituir uma versão.
 
 ## Alterações
 
+**Cópia: 3DS**
+- Uma cópia pode desencriptar títulos 3DS para .cci, .3ds ou .cxi, ou para os comprimidos .zcci
+  e .zcxi que o Azahar lê. Atualizações e DLC ficam .cia (.zcia), o homebrew .3dsx (.z3dsx).
+- O romexplorer não inclui chaves. Coloque o seu próprio aes_keys.txt (e seeddb.bin quando um
+  título precisar) junto aos ficheiros, junto ao romexplorer ou na sua pasta assets.
+
 **Áudio das ROM**
 - Abrir a página de um título indexa primeiro a música das ROM desse jogo. Até terminar, a página
   mostra o progresso em vez de tocar música de outro jogo.

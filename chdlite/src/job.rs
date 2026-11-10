@@ -107,7 +107,9 @@ fn run_inner(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<
             content_pass(spec, Some(dir), on_event)
         }
         (Mode::Lite | Mode::Comp, Input::Cso | Input::Pbp) => create_from_container(spec, on_event),
+        (Mode::Extract, Input::N3ds) => extract_n3ds(spec, on_event),
         (Mode::Extract, Input::Image { .. } | Input::Cartridge(_)) => Err("nothing to extract: not a .chd, .rvz, .cso or .pbp".to_string()),
+        (Mode::Lite | Mode::Comp, Input::N3ds) => convert_n3ds(spec, on_event),
         (Mode::Lite | Mode::Comp, Input::Cartridge(cart)) => convert_cartridge(spec, cart, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Wua, source, .. }) => create_wua(spec, &source, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Zar, source, .. }) => create_zar(spec, &source, on_event),
@@ -587,6 +589,76 @@ fn convert_cartridge(spec: &JobSpec, cart: Cart, on_event: &mut dyn FnMut(Event)
 }
 
 // ---------------------------------------------------------------------------
+// 3DS: decrypted into the settings' format
+// ---------------------------------------------------------------------------
+
+/// Lite and Comp alike (the compressed formats have one zstd level, Azahar's). A file already
+/// in the wanted form -- decrypted, same extension -- is skipped.
+fn convert_n3ds(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
+    use romexplorer::rom::n3ds;
+    let target = crate::n3ds::target(&spec.settings.n3ds.format)?;
+    let info = n3ds::inspect(&spec.input)?;
+    let extension = n3ds::output_extension(&info, target);
+    if !info.encrypted && crate::classify::extension(&spec.input) == extension {
+        return Ok(format!("skipped, already a decrypted .{extension}"));
+    }
+    let keys = crate::n3ds::keys_for(&spec.input)?;
+    if let Some(missing) = n3ds::check(&spec.input, &keys)? {
+        return Err(format!("{missing} -- put it beside the file, beside chdlite, or in chdlite's assets folder"));
+    }
+    let output = output_dir(spec)?.join(format!("{}.{extension}", stem(&spec.input)));
+    if same_file_path(&output, &spec.input) {
+        return Ok(format!("skipped: {} would be written over the input itself -- choose an output folder", output.display()));
+    }
+    let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
+        return Ok(format!("skipped, {} already exists", output.display()));
+    };
+    on_event(Event::Message(format!("3DS {} -> {}", info.title_kind, output.display())));
+    on_event(Event::Output(output.clone()));
+    let mut last = -1.0f32;
+    let outcome = n3ds::convert(&spec.input, &output, target, &keys, &mut |done, total| {
+        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
+        if percent - last < 0.2 {
+            return true;
+        }
+        last = percent;
+        on_event(Event::Progress(percent))
+    })?;
+    claim.finish();
+    let input_bytes = std::fs::metadata(&spec.input).map(|m| m.len()).unwrap_or(0);
+    let what = match outcome {
+        n3ds::Outcome::Converted => "decrypted",
+        n3ds::Outcome::AlreadyDecrypted => "already decrypted",
+    };
+    Ok(format!("3DS {}, {what}: .{} -> .{extension}{}", info.title_kind, crate::classify::extension(&spec.input), ratio(input_bytes, &output)))
+}
+
+/// A compressed 3DS file back to the plain one: `.zcci` -> `.cci`, `.zcia` -> `.cia`,
+/// `.zcxi` -> `.cxi`, `.z3dsx` -> `.3dsx`.
+fn extract_n3ds(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
+    let ext = crate::classify::extension(&spec.input);
+    let Some(plain) = ext.strip_prefix('z').filter(|_| matches!(ext.as_str(), "zcci" | "zcia" | "zcxi" | "z3dsx")) else {
+        return Err("nothing to extract: not a compressed 3DS file (.zcci, .zcia, .zcxi, .z3dsx)".to_string());
+    };
+    let output = output_dir(spec)?.join(format!("{}.{plain}", stem(&spec.input)));
+    let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
+        return Ok(format!("skipped, {} already exists", output.display()));
+    };
+    on_event(Event::Output(output.clone()));
+    let mut last = -1.0f32;
+    romexplorer::rom::n3ds::z3ds_decompress(&spec.input, &output, &mut |done, total| {
+        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
+        if percent - last < 0.2 {
+            return true;
+        }
+        last = percent;
+        on_event(Event::Progress(percent))
+    })?;
+    claim.finish();
+    Ok(format!(".{ext} -> .{plain} ({})", human(std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0))))
+}
+
+// ---------------------------------------------------------------------------
 // Outputs: never a half-written file taken for a finished one
 // ---------------------------------------------------------------------------
 
@@ -950,6 +1022,27 @@ fn read(path: &Path, input: &Input, settings: &Settings) -> Result<String, Strin
                     lines.push(if converted.changed { format!("  converts to  {}", converted.to) } else { format!("  converts to  nothing, already {}", converted.to) });
                 }
                 Err(err) => lines.push(format!("  layout       unknown: {err}")),
+            }
+        }
+        Input::N3ds => {
+            use romexplorer::rom::n3ds;
+            match n3ds::inspect(path) {
+                Ok(info) => {
+                    let container = match info.container {
+                        n3ds::Container::Cia => "CIA",
+                        n3ds::Container::Cci => "cartridge image (NCSD)",
+                        n3ds::Container::Ncch => "NCCH",
+                        n3ds::Container::Homebrew => "homebrew (3DSX)",
+                    };
+                    lines.push(format!("  type         3DS {container}{}, {}", if info.compressed { ", compressed (Z3DS)" } else { "" }, human(file_bytes)));
+                    lines.push(format!("  title        {}", info.title_kind));
+                    lines.push(format!("  encrypted    {}", if info.encrypted { "yes" } else { "no" }));
+                    match crate::n3ds::target(&settings.n3ds.format) {
+                        Ok(target) => lines.push(format!("  converts to  .{}", n3ds::output_extension(&info, target))),
+                        Err(err) => lines.push(format!("  converts to  unknown: {err}")),
+                    }
+                }
+                Err(err) => lines.push(format!("  type         3DS file, unreadable: {err}")),
             }
         }
         Input::Image { target: Target::Wua, .. } => {

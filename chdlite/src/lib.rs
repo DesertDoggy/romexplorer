@@ -1,5 +1,6 @@
 //! chdlite: drop a disc image, get a CHD or an RVZ. Drop a cartridge dump, get it in the
-//! header / byte order picked in the settings ([`cart`]).
+//! header / byte order picked in the settings ([`cart`]). Drop a 3DS title, get it decrypted
+//! in the format picked there ([`n3ds`]).
 //!
 //! A thin front end over the romexplorer core: [`classify`] decides which container an input
 //! wants (CD CHD, GD-ROM CHD, DVD CHD, or RVZ for GameCube/Wii), [`job`] runs one input
@@ -15,6 +16,7 @@ pub mod cart;
 pub mod classify;
 pub mod cli;
 pub mod job;
+pub mod n3ds;
 pub mod ra;
 pub mod natives;
 pub mod settings;

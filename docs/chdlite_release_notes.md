@@ -1,9 +1,14 @@
-# chdlite 0.3.2
+# chdlite 0.3.3
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
 
 ## Changes
 
+- **3DS.** Lite and Comp decrypt a dropped .cia, .3ds, .cci or .cxi into the format picked in
+  Settings: .cci, .3ds, .cxi, or the compressed .zcci and .zcxi that Azahar reads. Updates and
+  DLC stay .cia (.zcia). Extract unpacks the compressed ones. No keys come with chdlite: put
+  your own aes_keys.txt (and seeddb.bin when a title needs it) beside the files, beside
+  chdlite, or in its assets folder. The console tools take `--3ds`.
 - **NES, N64 and SNES dumps.** Lite and Comp write a dropped cartridge dump in the layout
   picked in Settings: NES headered (.nes), headerless (.nes) or headerless (.unh); N64 .z64,
   .v64 or .n64; SNES .sfc or .smc. The main window shows the current choice. A dump already in
@@ -17,6 +22,10 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 - **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
   RetroAchievements has achievements for it, with the game's name. The list it checks is
   bundled; its date is shown in Settings and by `--version`.
+
+# chdlite 0.3.2
+
+Android only.
 
 ## Bug fixes
 

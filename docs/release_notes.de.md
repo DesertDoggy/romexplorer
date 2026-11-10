@@ -8,6 +8,12 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
+**Kopieren: 3DS**
+- Eine Kopie kann 3DS-Titel zu .cci, .3ds oder .cxi entschlüsseln, oder zu den komprimierten
+  .zcci und .zcxi, die Azahar liest. Updates und DLC bleiben .cia (.zcia), Homebrew .3dsx (.z3dsx).
+- Schlüssel liegen romexplorer nicht bei. Lege deine eigene aes_keys.txt (und seeddb.bin, wenn ein
+  Titel sie braucht) neben die Dateien, neben romexplorer oder in dessen assets-Ordner.
+
 **ROM-Audio**
 - Beim Öffnen einer Titelseite wird zuerst die ROM-Musik dieses Spiels indiziert. Bis dahin zeigt
   die Seite den Fortschritt, statt Musik eines anderen Spiels abzuspielen.
