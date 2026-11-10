@@ -2,6 +2,8 @@
 
 [English](README.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [Italiano](README.it.md) · [Português](README.pt.md) · [Deutsch](README.de.md) · **한국어** · [Polski](README.pl.md)
 
+**다운로드:** [Rom Explorer](https://github.com/DesertDoggy/romexplorer/releases?q=v0) · [CHD Lite](https://github.com/DesertDoggy/romexplorer/releases?q=c0) · [Rom Music](https://github.com/DesertDoggy/romexplorer/releases?q=m0)
+
 *이 문서는 번역본입니다. 내용이 다를 경우 영어 README를 기준으로 합니다.*
 
 > **romexplorer는 ROM, BIOS, 키를 배포하거나 다운로드하지 않으며, 불법 복제를 지원하지 않습니다.**
