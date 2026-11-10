@@ -751,12 +751,13 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     let mut tracks = Vec::new();
     let mut set_images = Vec::new();
     let mut theirs = true;
+    let mut placer = gba_map::Placer::default();
     rip_sets::for_each_gsf(set, |loaded| {
         if !theirs {
             return;
         }
         let info = loaded.info();
-        match gba_map::track_runs(loaded, rom) {
+        match placer.track_runs(loaded, rom) {
             Some(runs) => {
                 tracks.push((runs, info.length_ms, info.fade_ms));
                 set_images.push(gba_map::set_image(loaded));
@@ -765,7 +766,7 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         }
     });
     if !theirs || tracks.is_empty() {
-        let why = if tracks.is_empty() && theirs { "the set holds no GSF track" } else { "the set's image is another revision's" };
+        let why = if tracks.is_empty() && theirs { "the set holds no GSF track" } else { "too little of the set's image is in this ROM" };
         println!("{name}: {why}");
         *t.reasons.entry(why.into()).or_default() += 1;
         return;
@@ -790,10 +791,11 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     }
     let n = set_images.len() - silent;
     println!(
-        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file, {} common runs; map {:.1} KB){}",
+        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file, {} common runs, {} moved; map {:.1} KB){}",
         started.elapsed().as_secs_f32(),
         back.file_bytes(),
         back.common.len(),
+        back.common.iter().filter(|r| matches!(r, gba_map::Run::Copy(..))).count(),
         text.len() as f64 / 1024.0,
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) }
     );

@@ -892,12 +892,13 @@ fn gba_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
     for set in sets {
         let mut tracks = Vec::new();
         let mut theirs = true;
+        let mut placer = super::gba_map::Placer::default();
         super::rip_sets::for_each_gsf(set, |loaded| {
             if !theirs {
                 return;
             }
             let info = loaded.info();
-            match super::gba_map::track_runs(loaded, rom) {
+            match placer.track_runs(loaded, rom) {
                 Some(runs) => tracks.push((runs, info.length_ms, info.fade_ms)),
                 None => theirs = false,
             }
