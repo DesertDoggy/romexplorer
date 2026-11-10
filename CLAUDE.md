@@ -5,6 +5,7 @@
 On the user's Windows PC, build and test only inside the repo folder: Norton quarantines
 builds anywhere else (a sibling worktree, `%TEMP%`). Scratch checkouts, target dirs and test
 output go in a repo subfolder named `.test` or `.test-<name>`, which `.gitignore` ignores.
+Any other folder name must start with `.` and be added to `.gitignore` in the same change.
 See `CODING_RULES.md`.
 
 ## The app and the web console offer the same things
@@ -99,15 +100,6 @@ requirement — never a reason to write deflate.
 
 Measure on real data from this repo before choosing, and put the numbers in the comment. The
 defaults are usually wrong in a way that is invisible until something takes minutes.
-
-## Where to build and test on the Windows PC
-
-On the user's Windows PC, every build and test runs inside the repo directory
-(`D:\Documents\GitHub\romexplorer`). Norton quarantines binaries built anywhere else, so a
-target dir, scratch checkout or test output in `%TEMP%`, another drive or a sibling folder
-breaks the build. When a separate directory is needed (a second `CARGO_TARGET_DIR`, a
-scratch build, test output), make it a subdirectory of the repo whose name starts with `.`
-(for example `.music-test/`) and add it to `.gitignore` in the same change.
 
 ## Release notes: short, user-facing, Japanese written as Japanese
 
