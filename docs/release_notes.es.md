@@ -19,6 +19,9 @@ Haz una copia de seguridad antes de sustituir una versión.
 - La indexación de la música de las ROM no terminaba nunca con algunas imágenes de disco, las
   que tienen un «;» dentro de un nombre de archivo. Ahora se omite una ROM que tarda más de 20
   minutos.
+- Al convertir volcados de SNES en una copia, se convertía un archivo aunque su tamaño y su
+  cabecera interna no coincidieran sobre la cabecera de copiadora. Ahora se informa como error.
+  Un volcado de NES que no está en la base de datos de cabeceras se informa con su hash.
 
 # romexplorer 0.2.0 (alpha)
 

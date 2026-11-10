@@ -19,6 +19,7 @@ use romexplorer::rom::operation::{Detect, ProgressEvent, Single, SingleArgs, Sin
 use romexplorer::rom::platforms::helpers::{is_chd_platform, is_rvz_platform};
 use romexplorer::rom::sheet_build::{rebuild_cue, Expected, TrackFile};
 
+use crate::cart::Cart;
 use crate::classify::{classify, Input, Target};
 use crate::settings::{CompMode, LitePreset, Settings};
 
@@ -99,14 +100,15 @@ pub fn remove_outputs(outputs: &[PathBuf]) {
 fn run_inner(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let input = classify(&spec.input)?;
     match (spec.mode, input) {
-        (Mode::Read, input) => read(&spec.input, &input),
+        (Mode::Read, input) => read(&spec.input, &input, &spec.settings),
         (Mode::Hash, _) => content_pass(spec, None, on_event),
         (Mode::Extract | Mode::Lite | Mode::Comp, Input::Chd | Input::Rvz) | (Mode::Extract, Input::Cso | Input::Pbp) => {
             let dir = output_dir(spec)?;
             content_pass(spec, Some(dir), on_event)
         }
         (Mode::Lite | Mode::Comp, Input::Cso | Input::Pbp) => create_from_container(spec, on_event),
-        (Mode::Extract, Input::Image { .. }) => Err("nothing to extract: not a .chd, .rvz, .cso or .pbp".to_string()),
+        (Mode::Extract, Input::Image { .. } | Input::Cartridge(_)) => Err("nothing to extract: not a .chd, .rvz, .cso or .pbp".to_string()),
+        (Mode::Lite | Mode::Comp, Input::Cartridge(cart)) => convert_cartridge(spec, cart, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Wua, source, .. }) => create_wua(spec, &source, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Zar, source, .. }) => create_zar(spec, &source, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Xiso, source, .. }) => create_xiso(spec, &source, on_event),
@@ -537,6 +539,54 @@ fn create_from_container(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool
 }
 
 // ---------------------------------------------------------------------------
+// Cartridge dumps: NES / N64 / SNES into the settings' layout
+// ---------------------------------------------------------------------------
+
+/// Whether two paths name one file: same folder, and the same name (ignoring case where the
+/// file system does).
+fn same_file_path(a: &Path, b: &Path) -> bool {
+    let folder = |path: &Path| path.parent().map(|dir| if dir.as_os_str().is_empty() { Path::new(".") } else { dir }).and_then(|dir| dir.canonicalize().ok());
+    let (Some(da), Some(db)) = (folder(a), folder(b)) else { return false };
+    let (Some(na), Some(nb)) = (a.file_name(), b.file_name()) else { return false };
+    let (na, nb) = (na.to_string_lossy(), nb.to_string_lossy());
+    da == db && if cfg!(any(windows, target_os = "macos")) { na.eq_ignore_ascii_case(&nb) } else { na == nb }
+}
+
+/// Lite and Comp alike: a cartridge dump is not compressed, only rewritten into the layout the
+/// settings pick for its platform. One already in it -- content and extension -- is skipped,
+/// even with an output folder set; one whose content is already right but whose extension is
+/// not gets a copy under the right name.
+fn convert_cartridge(spec: &JobSpec, cart: Cart, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
+    let converted = crate::cart::convert(cart, &spec.input, &spec.settings.cartridge)?;
+    let dir = output_dir(spec)?;
+    let output = dir.join(format!("{}.{}", stem(&spec.input), converted.extension));
+    // Already there: nothing is written, wherever the output would go.
+    if !converted.changed && crate::classify::extension(&spec.input) == converted.extension {
+        return Ok(format!("skipped, already {}", converted.to));
+    }
+    let in_place = same_file_path(&output, &spec.input);
+    if in_place && !spec.settings.output.force {
+        return Ok(format!(
+            "skipped: {} would be written over the input itself -- choose an output folder, or turn on replacing outputs",
+            output.display()
+        ));
+    }
+    let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
+        return Ok(format!("skipped, {} already exists", output.display()));
+    };
+    on_event(Event::Message(format!("{} -> {}", cart.label(), output.display())));
+    // Not for the input itself: a failed job removes what it announced, and the claim has
+    // already put the input back by then.
+    if !in_place {
+        on_event(Event::Output(output.clone()));
+    }
+    std::fs::write(&output, &converted.data).map_err(|err| format!("{}: {err}", output.display()))?;
+    claim.finish();
+    let what = if converted.changed { format!("{} -> {}", converted.from, converted.to) } else { format!("already {}, copied as .{}", converted.to, converted.extension) };
+    Ok(format!("{}: {what} ({})", cart.label(), human(converted.data.len() as u64)))
+}
+
+// ---------------------------------------------------------------------------
 // Outputs: never a half-written file taken for a finished one
 // ---------------------------------------------------------------------------
 
@@ -795,7 +845,7 @@ fn identity_lines(path: &Path, hint: Option<Platform>) -> Vec<String> {
     lines
 }
 
-fn read(path: &Path, input: &Input) -> Result<String, String> {
+fn read(path: &Path, input: &Input, settings: &Settings) -> Result<String, String> {
     let file_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut lines = vec![format!("{}", path.display())];
     match input {
@@ -868,6 +918,16 @@ fn read(path: &Path, input: &Input) -> Result<String, String> {
                 lines.push(format!("  disc {}       {}: {} track{}, {}", disc + 1, layout.cue_name, layout.tracks.len(), if layout.tracks.len() == 1 { "" } else { "s" }, human(layout.total_bytes())));
             }
             lines.push("  converts to  CD CHD".to_string());
+        }
+        Input::Cartridge(cart) => {
+            lines.push(format!("  type         {} cartridge dump, {}", cart.label(), human(file_bytes)));
+            match crate::cart::convert(*cart, path, &settings.cartridge) {
+                Ok(converted) => {
+                    lines.push(format!("  layout       {}", converted.from));
+                    lines.push(if converted.changed { format!("  converts to  {}", converted.to) } else { format!("  converts to  nothing, already {}", converted.to) });
+                }
+                Err(err) => lines.push(format!("  layout       unknown: {err}")),
+            }
         }
         Input::Image { target: Target::Wua, .. } => {
             lines.push(format!("  type         Wii U disc image, {}", human(file_bytes)));

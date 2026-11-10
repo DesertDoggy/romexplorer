@@ -20,7 +20,8 @@ a git action is actually needed, give the user the exact command to run.
 Build and test only inside the repo folder itself. Norton quarantines builds made anywhere
 else on that PC, including a sibling worktree or `%TEMP%`. A scratch checkout, a separate
 target dir or test output goes in a subfolder of the repo whose name starts with `.test`
-(`.test`, `.test-music`, ...), which `.gitignore` keeps out of git.
+(`.test`, `.test-music`, ...), which `.gitignore` keeps out of git. Any other folder name
+must start with `.` and be added to `.gitignore` in the same change.
 
 ## Parallelism
 
@@ -100,15 +101,6 @@ the report can contain real sample data -- see "Sample data" above). A sample-ba
 skips cleanly (doesn't fail) when its samples root isn't populated, rather than requiring
 every dev to have the full sample set.
 
-
-## Where to build and test on the Windows PC
-
-On the user's Windows PC, every build and test runs inside the repo directory
-(`D:\Documents\GitHub\romexplorer`). Norton quarantines binaries built anywhere else, so a
-target dir, scratch checkout or test output in `%TEMP%`, another drive or a sibling folder
-breaks the build. When a separate directory is needed (a second `CARGO_TARGET_DIR`, a
-scratch build, test output), make it a subdirectory of the repo whose name starts with `.`
-(for example `.music-test/`) and add it to `.gitignore` in the same change.
 
 ## Job progress: always detailed, from the first second
 

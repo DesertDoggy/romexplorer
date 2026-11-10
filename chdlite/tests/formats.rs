@@ -182,3 +182,55 @@ fn a_pbp_becomes_a_cd_chd_and_extracts_to_cue_and_bin() {
     job(Mode::Extract, &chd, &back).unwrap();
     assert!(std::fs::read(back.join("Game.bin")).unwrap() == image);
 }
+
+fn convert_cart(input: &Path, out: Option<&Path>, set: impl FnOnce(&mut Settings)) -> Result<String, String> {
+    let mut settings = Settings::default();
+    if let Some(out) = out {
+        settings.output.dir = out.to_string_lossy().into_owned();
+    }
+    set(&mut settings);
+    run_one(&JobSpec { mode: Mode::Lite, input: input.to_path_buf(), settings, threads: Some(1) }, &mut |_| true)
+}
+
+#[test]
+fn a_cartridge_dump_goes_to_the_chosen_layout_and_one_already_in_it_is_skipped() {
+    let dir = Dir::new("cart");
+    let z64: Vec<u8> = [0x80u8, 0x37, 0x12, 0x40].into_iter().chain((0..8188u32).map(|i| (i * 7 % 251) as u8)).collect();
+    let input = dir.0.join("cart.z64");
+    std::fs::write(&input, &z64).unwrap();
+    assert!(matches!(classify(&input).unwrap(), Input::Cartridge(_)));
+
+    // Beside the input, under the new extension.
+    convert_cart(&input, None, |s| s.cartridge.n64 = "v64".into()).unwrap();
+    let v64 = std::fs::read(dir.0.join("cart.v64")).unwrap();
+    assert_eq!(&v64[..4], &[0x37, 0x80, 0x40, 0x12]);
+
+    // Already in the layout: nothing is written, even with an output folder.
+    let out = dir.0.join("out");
+    let skipped = convert_cart(&input, Some(&out), |s| s.cartridge.n64 = "z64".into()).unwrap();
+    assert!(skipped.starts_with("skipped, already"), "{skipped}");
+    assert!(!out.join("cart.z64").exists());
+
+    // The right content under the wrong extension gets a copy under the right one.
+    let misnamed = dir.0.join("misnamed.n64");
+    std::fs::write(&misnamed, &z64).unwrap();
+    convert_cart(&misnamed, Some(&out), |s| s.cartridge.n64 = "z64".into()).unwrap();
+    assert_eq!(std::fs::read(out.join("misnamed.z64")).unwrap(), z64);
+
+    // A file with the input's own name is only replaced when asked to be.
+    let mut rom = vec![0u8; 64 * 1024];
+    rom[0x7FC0..0x7FC0 + 21].copy_from_slice(b"CHDLITE TEST CART    ");
+    rom[0x7FD5] = 0x20;
+    rom[0x7FD9] = 0x01;
+    rom[0x7FDC..0x7FE0].copy_from_slice(&[0x34, 0x12, 0xCB, 0xED]);
+    let mut smc = vec![0u8; 512];
+    smc.extend_from_slice(&rom);
+    let named_sfc = dir.0.join("headered.sfc");
+    std::fs::write(&named_sfc, &smc).unwrap();
+    let refused = convert_cart(&named_sfc, None, |_| {}).unwrap();
+    assert!(refused.contains("over the input itself"), "{refused}");
+    assert_eq!(std::fs::read(&named_sfc).unwrap(), smc);
+    convert_cart(&named_sfc, None, |s| s.output.force = true).unwrap();
+    assert_eq!(std::fs::read(&named_sfc).unwrap(), rom);
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.')).count(), 0, "no marks left");
+}
