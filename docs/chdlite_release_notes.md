@@ -1,6 +1,10 @@
-# chdlite 0.3.1
+# chdlite 0.3.2
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
+
+No changes to chdlite itself. It is released alongside romexplorer 0.2.1.
+
+# chdlite 0.3.1
 
 ## Bug fixes
 
