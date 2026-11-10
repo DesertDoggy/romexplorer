@@ -4,7 +4,7 @@
 //! taken from its rips; a ROM is scanned once against the fingerprints of every set for its
 //! system, and a set whose runs are mostly found there belongs to it.
 //!
-//! Only rips that carry ROM bytes can be matched: NSF, NSFE, GBS, SPC, HES, KSS, SGC and WSR. VGM,
+//! Only rips that carry ROM bytes can be matched: NSF, NSFE, GBS, SPC, HES, KSS, SGC, WSR and GSF. VGM,
 //! GYM, AY and SAP are logs or other machines' memory and are never matched.
 
 use std::collections::HashMap;
@@ -37,6 +37,7 @@ pub enum RipSystem {
     GameGear,
     ColecoVision,
     WonderSwan,
+    Gba,
 }
 
 impl RipSystem {
@@ -54,6 +55,7 @@ impl RipSystem {
             Self::MasterSystem | Self::GameGear => &[P::SegaMasterSystem as u16, P::SegaGameGear as u16, P::Sg1000 as u16],
             Self::ColecoVision => &[P::ColecoVision as u16],
             Self::WonderSwan => &[P::WonderSwan as u16, P::WonderSwanColor as u16],
+            Self::Gba => &[P::GameBoyAdvance as u16],
         }
     }
 }
@@ -127,7 +129,13 @@ pub fn fingerprint<'a>(files: impl IntoIterator<Item = &'a [u8]>) -> Option<Fing
     let mut candidates: Vec<[u8; RUN]> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for data in files {
-        let Some((sys, image)) = rom_image(data) else { continue };
+        // A GSF's cartridge bytes are packed; they are unpacked to be matched.
+        let gsf = super::psf::gsf_cart_bytes(data);
+        let found = match &gsf {
+            Some(bytes) => Some((RipSystem::Gba, bytes.as_slice())),
+            None => rom_image(data),
+        };
+        let Some((sys, image)) = found else { continue };
         match system {
             None => system = Some(sys),
             Some(s) if s != sys => continue,

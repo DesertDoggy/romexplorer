@@ -47,6 +47,8 @@ const HES_MAP: &str = "hesmap";
 /// `wsmap@<map key>@<body ms>@<fade ms>`: the same for the WonderSwan
 /// ([`super::ws_map::Map`]).
 const WS_MAP: &str = "wsmap";
+/// A Game Boy Advance song played from the ROM by its music map ([`super::gba_map`]).
+const GBA_MAP: &str = "gbamap";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -285,6 +287,13 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
         }
     }
     let rom = read_rom(path)?;
+    let key = gb_key(&rom);
+    if let Some(m) = load_gba_map(&key).filter(|_| super::gba_map::available()) {
+        let found = index_gba_map(&key, &m, t);
+        if !found.is_empty() {
+            return Ok((found, None));
+        }
+    }
     let mut player = match agbplay::Player::open(&rom, MEASURE_RATE) {
         Ok(p) => p,
         // No standard engine: the game's own sound code is run instead.
@@ -501,6 +510,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(SGC_MAP) => open_sgc_map(path, engine, song),
         Some(HES_MAP) => open_hes_map(path, engine, song),
         Some(WS_MAP) => open_ws_map(path, engine, song),
+        Some(GBA_MAP) => open_gba_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -610,7 +620,7 @@ pub fn pack_bundle(dir: &Path) -> Result<(Vec<u8>, Vec<(String, usize)>), String
 }
 
 /// Each kind of map: its folder under the maps dir and its file extension.
-const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap")];
+const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap"), ("gba", "gbamap")];
 
 /// A kept map's text: one built here first, then the bundled one.
 fn kept_map(kind: &str, key: &str) -> Option<String> {
@@ -671,6 +681,7 @@ pub fn builds_maps(platform: u16) -> bool {
             || platform == P::WonderSwan as u16
             || platform == P::WonderSwanColor as u16)
             && super::vgm_chips::available())
+        || (platform == P::GameBoyAdvance as u16 && super::gba_map::available())
 }
 
 fn sgc_map_path(key: &str) -> Option<PathBuf> {
@@ -864,6 +875,146 @@ fn open_ws_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
     Ok(Box::new(MapPcm { song: AnyMapSong::Ws(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
+fn gba_map_path(key: &str) -> Option<PathBuf> {
+    Some(MAPS_DIR.get()?.join("gba").join(format!("{key}.gbamap")))
+}
+
+fn load_gba_map(key: &str) -> Option<super::gba_map::Map> {
+    super::gba_map::Map::decode(&kept_map("gba", key)?)
+}
+
+/// The map of the GBA ROM `rom` from the first of `sets` whose GSF tracks are this ROM's,
+/// unless one is kept already. False when no set holds a GSF.
+fn gba_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
+    let key = gb_key(rom);
+    let file = gba_map_path(&key).ok_or("no folder for music maps")?;
+    let mut any = false;
+    for set in sets {
+        let mut tracks = Vec::new();
+        let mut theirs = true;
+        super::rip_sets::for_each_gsf(set, |loaded| {
+            if !theirs {
+                return;
+            }
+            let info = loaded.info();
+            match super::gba_map::track_runs(loaded, rom) {
+                Some(runs) => tracks.push((runs, info.length_ms, info.fade_ms)),
+                None => theirs = false,
+            }
+        });
+        if tracks.is_empty() && theirs {
+            continue;
+        }
+        any = true;
+        if kept_map("gba", &key).is_some() {
+            return Ok(true);
+        }
+        if !theirs {
+            continue;
+        }
+        let Some(m) = super::gba_map::Map::from_tracks(rom.len(), tracks) else { continue };
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()))?;
+        return Ok(true);
+    }
+    Ok(any)
+}
+
+/// A GBA map's songs, timed by the set's own tags: mGBA gives no sound writes to find a
+/// loop in.
+fn index_gba_map(key: &str, m: &super::gba_map::Map, t: &Thresholds) -> Vec<FoundTrack> {
+    let r = u64::from(super::psf::GbaImage::RATE);
+    m.tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, tr)| tr.length_ms > 0)
+        .map(|(i, tr)| {
+            let (body, fade) = (u64::from(tr.length_ms), u64::from(tr.fade_ms));
+            let name = format!("Track {}", i + 1);
+            // A fade means the song loops and was cut off.
+            let shape = Shape { looping: fade > 0, duration_ms: body, channels: 2, cd_track: 0, rip: true };
+            let kind = classify(&shape, &name, t);
+            FoundTrack {
+                location: TrackLocation::RomSong { engine: format!("{GBA_MAP}@{key}@{body}@{fade}"), song: i as u32 },
+                name,
+                kind,
+                sample_rate: super::psf::GbaImage::RATE,
+                channels: 2,
+                duration_ms: body + fade,
+                looping: false,
+                loop_start: 0,
+                loop_end: 0,
+                codec: "Game Boy Advance".into(),
+                format: format!("song {}", i + 1),
+                bytes: 0,
+                video: false,
+            }
+        })
+        .filter(|_| r > 0)
+        .collect()
+}
+
+/// A GBA song played from the ROM by its map ([`GBA_MAP`]).
+fn open_gba_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_gba_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let image = m.image(&rom, song as usize)?;
+    let player = super::psf::GbaImage::open(&image)?;
+    let r = u64::from(super::psf::GbaImage::RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(GbaMapPcm { player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000 }))
+}
+
+struct GbaMapPcm {
+    player: super::psf::GbaImage,
+    left: u64,
+    fade: u64,
+    tail: u64,
+}
+
+impl PcmStream for GbaMapPcm {
+    fn sample_rate(&self) -> u32 {
+        super::psf::GbaImage::RATE
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+    fn total_samples(&self) -> Option<u64> {
+        Some(self.left)
+    }
+    fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        if self.left == 0 {
+            return Ok(None);
+        }
+        let n = self.left.min(4096) as usize;
+        let mut buf = vec![0i16; n * 2];
+        if self.player.render(&mut buf).is_err() {
+            // A minute of silence: the song is over.
+            self.left = 0;
+            return Ok(None);
+        }
+        if self.fade > 0 {
+            for (i, frame) in buf.chunks_exact_mut(2).enumerate() {
+                let g = super::track_timing::fade_gain(self.left - i as u64, self.fade, self.tail);
+                if g < 1.0 {
+                    for s in frame {
+                        *s = (f32::from(*s) * g) as i16;
+                    }
+                }
+            }
+        }
+        self.left -= n as u64;
+        Ok(Some(buf))
+    }
+}
+
 /// A Game Boy track's notes as a loop is found in them: each note started (its channel and
 /// pitch to the semitone) and each volume envelope set. Pitch moves within a note (vibrato,
 /// slides), duty and length, panning and wave memory are left out: drivers run those on
@@ -1031,6 +1182,9 @@ pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
         return Ok(());
     }
     if ws_map_from_sets(&rom, sets)? {
+        return Ok(());
+    }
+    if gba_map_from_sets(&rom, sets)? {
         return Ok(());
     }
     sgc_map_from_sets(&rom, sets)

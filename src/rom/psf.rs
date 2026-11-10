@@ -288,6 +288,18 @@ fn gsf_image(sections: &[PsfFile]) -> Result<Vec<u8>, String> {
     Ok(image)
 }
 
+/// The cartridge bytes a GSF file carries itself (its program area past the entry point,
+/// offset and size), for matching it to ROMs. `None` for anything else.
+pub fn gsf_cart_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    let file = parse(data).ok()?;
+    if System::of(file.version) != Some(System::Gba) {
+        return None;
+    }
+    let size = u32_at(&file.program, 8)? as usize;
+    let bytes = file.program.get(12..)?;
+    Some(bytes[..size.min(bytes.len())].to_vec())
+}
+
 /// A file and the libraries it builds on, in load order, with the top file's tags.
 #[derive(Debug, Clone)]
 pub struct Loaded {
@@ -335,6 +347,25 @@ pub fn load(data: &[u8], read_lib: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> R
 }
 
 impl Loaded {
+    /// A GBA file's sections in load order: each one's offset into the cartridge and its
+    /// bytes. Empty for other consoles.
+    pub fn gba_sections(&self) -> Vec<(usize, &[u8])> {
+        if self.system != System::Gba {
+            return Vec::new();
+        }
+        self.sections
+            .iter()
+            .filter_map(|s| {
+                let p = &s.program;
+                let offset = (u32_at(p, 4)? & 0x01FF_FFFF) as usize;
+                let size = u32_at(p, 8)? as usize;
+                let data = p.get(12..)?;
+                Some((offset, &data[..size.min(data.len())]))
+            })
+            .filter(|(o, d)| !d.is_empty() && o + d.len() <= 0x0200_0000)
+            .collect()
+    }
+
     fn flag(&self, name: &str) -> bool {
         self.flags.iter().any(|(k, v)| k.eq_ignore_ascii_case(name) && v.trim() != "0")
     }
@@ -496,6 +527,50 @@ fn gsf_api() -> Option<&'static GsfApi> {
         }
     })
     .as_ref()
+}
+
+/// A GBA cartridge image played as it is (a ROM with a music map's bytes laid over it), by
+/// the same mGBA core the GSF files play on, at 44,100 Hz stereo.
+pub struct GbaImage {
+    state: *mut c_void,
+}
+
+// The state is only used through `&mut self`.
+unsafe impl Send for GbaImage {}
+
+impl GbaImage {
+    pub const RATE: u32 = 44_100;
+
+    pub fn open(image: &[u8]) -> Result<Self, String> {
+        let api = gsf_api().ok_or("the GBA music player (rommusic) is not installed")?;
+        let state = unsafe { (api.new)(image.as_ptr(), image.len()) };
+        if state.is_null() {
+            return Err("the GBA player would not start this cartridge".into());
+        }
+        Ok(GbaImage { state })
+    }
+
+    /// Fills `out` (interleaved stereo). An error when a minute passed with no sound.
+    pub fn render(&mut self, out: &mut [i16]) -> Result<(), String> {
+        let api = gsf_api().ok_or("the GBA music player (rommusic) is not installed")?;
+        if unsafe { (api.render)(self.state, out.as_mut_ptr(), out.len() / 2) } < 0 {
+            return Err("the music stopped making sound".into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for GbaImage {
+    fn drop(&mut self) {
+        if let Some(api) = gsf_api() {
+            unsafe { (api.free)(self.state) };
+        }
+    }
+}
+
+/// Whether the GBA player is installed.
+pub fn gba_available() -> bool {
+    gsf_api().is_some()
 }
 
 /// The size of a PS2 BIOS image, the only kind the PS1/PS2 player can build its kernel from.
