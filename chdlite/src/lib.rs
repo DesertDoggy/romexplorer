@@ -15,6 +15,7 @@ pub mod cart;
 pub mod classify;
 pub mod cli;
 pub mod job;
+pub mod ra;
 pub mod natives;
 pub mod settings;
 

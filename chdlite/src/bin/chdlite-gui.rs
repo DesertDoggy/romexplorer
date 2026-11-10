@@ -745,6 +745,7 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                     }
                 }
                 Codecs { label: "Hashes", all: HASHES.to_vec(), chosen: s.hash.algorithms.clone(), disabled: false, max: HASHES.len(), on_change: move |next| draft.write().hash.algorithms = next }
+                div { class: "note", "rahash: the RetroAchievements hash, and whether it has achievements. {chdlite::ra::list_summary()}." }
 
                 h3 { "Cartridges — NES / N64 / SNES" }
                 div { class: "row",

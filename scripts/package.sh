@@ -373,10 +373,10 @@ done
 mkdir -p "$APP/lib/$OS/$ARCH"
 if [[ "$KIND" == "chdlite" ]]; then
     # Only what chdlite loads: chdman and dolphinrvz, and the optional cemuwua (Wii U,
-    # .zar), exiso (XISO), psxpbp (PBP) and zlib-ng (CSO), each self-contained apart from
-    # the C runtime. No MariaDB, 7-Zip or RAHasher. OpenSSL only for chdlite-gui off Windows,
-    # below: its window's toolkit links libssl/libcrypto.
-    for f in "$SRC_LIB"/*cemuwua* "$SRC_LIB"/*exiso* "$SRC_LIB"/*psxpbp* "$SRC_LIB"/libz.* "$SRC_LIB"/zlib.dll; do
+    # .zar), exiso (XISO), psxpbp (PBP), zlib-ng (CSO) and RAHasher (the RetroAchievements
+    # hash), each self-contained apart from the C runtime. No MariaDB or 7-Zip. OpenSSL only
+    # for chdlite-gui off Windows, below: its window's toolkit links libssl/libcrypto.
+    for f in "$SRC_LIB"/*cemuwua* "$SRC_LIB"/*exiso* "$SRC_LIB"/*psxpbp* "$SRC_LIB"/libz.* "$SRC_LIB"/zlib.dll "$SRC_LIB"/libRAHasher.*; do
         [[ -f "$f" ]] || continue
         cp -a "$f" "$APP/lib/$OS/$ARCH/"; note "lib/$OS/$ARCH/$(basename "$f")"
     done
@@ -395,7 +395,7 @@ if [[ "$KIND" == "chdlite" ]]; then
     fi
     [[ "$have_chdman" -eq 1 && "$have_dolphin" -eq 1 ]] || die "chdman and dolphinrvz are not both in $SRC_LIB -- build them with scripts/build_native_deps.sh --only chdman-simd,dolphin $OS $ARCH, then scripts/move_libs_to_app_root.sh"
     mkdir -p "$APP/lib/LICENSES"
-    for l in chdman-simd mame libchdr dolphin cemu ZArchive zstd fmt extract-xiso beetle-psx-libretro zlib-ng openssl; do
+    for l in chdman-simd mame libchdr dolphin cemu ZArchive zstd fmt extract-xiso beetle-psx-libretro zlib-ng RALibretro openssl; do
         [[ -f "$LIB_ROOT/LICENSES/$l.LICENSE" ]] && cp -a "$LIB_ROOT/LICENSES/$l.LICENSE" "$APP/lib/LICENSES/"
     done
     note "lib/LICENSES/"
