@@ -16,14 +16,17 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use romexplorer::common::models::Platform;
+
+use crate::cart::Cart;
 use romexplorer::rom::detect::descriptor::descriptor_payload_paths;
 use romexplorer::rom::detect::disc_dispatch::nintendo_disc_magic_offset;
 use romexplorer::rom::models::ChdTrackType;
 use romexplorer::rom::sheet_build::probe_track;
 use romexplorer::rom::xbox;
 
-/// Extensions a directory walk picks up.
-pub const SUPPORTED_EXTENSIONS: [&str; 13] = ["cue", "gdi", "toc", "iso", "bin", "img", "gcm", "chd", "rvz", "wud", "wux", "cso", "pbp"];
+/// Extensions a directory walk picks up: disc images and containers, then cartridge dumps.
+pub const SUPPORTED_EXTENSIONS: [&str; 21] =
+    ["cue", "gdi", "toc", "iso", "bin", "img", "gcm", "chd", "rvz", "wud", "wux", "cso", "pbp", "nes", "unh", "z64", "v64", "n64", "sfc", "smc", "swc"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -81,6 +84,8 @@ pub enum Input {
     Rvz,
     /// A PS2 / PSP ISO in compressed blocks: extracted to the ISO, or made a DVD CHD.
     Cso,
+    /// A NES, N64 or SNES cartridge dump: rewritten into the settings' layout, not compressed.
+    Cartridge(Cart),
     /// A PlayStation disc (or several) in Sony's EBOOT.PBP: extracted to cue + bin, or made
     /// a CD CHD.
     Pbp,
@@ -102,6 +107,9 @@ pub fn classify(path: &Path) -> Result<Input, String> {
         return Err(format!("not a file: {}", path.display()));
     }
     let image = |target, source: &Path, needs_cue| Ok(Input::Image { target, source: source.to_path_buf(), needs_cue });
+    if let Some(cart) = Cart::of(path) {
+        return Ok(Input::Cartridge(cart));
+    }
     match extension(path).as_str() {
         "chd" => Ok(Input::Chd),
         "rvz" => Ok(Input::Rvz),

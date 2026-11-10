@@ -14,6 +14,7 @@
 //!   operation and isn't implemented here.)
 //! - NDS/3DS crypt: placeholders only.
 
+pub mod cartridge;
 pub mod nes;
 
 use std::fmt;
@@ -244,7 +245,7 @@ pub fn converter_for(meta: &RomMetadata, args: &ConvertArgs) -> Option<Box<dyn C
 pub const INES_HEADER_LEN: u64 = 16;
 
 /// Adds or strips the 16-byte iNES header. Buffered: the header to add comes from the
-/// header database keyed by the bare ROM's hash ([`nes::add`]); stripping also goes through
+/// header database keyed by the bare ROM's hash ([`nes::relayer`]); stripping also goes through
 /// the database so a file that isn't a known NES ROM is refused rather than blindly cut.
 pub struct NesConverter {
     pub target: NesHeader,
@@ -290,10 +291,9 @@ impl Convert for NesConverter {
     }
 
     fn finish_buffered(&mut self, input: Vec<u8>) -> Result<Vec<u8>, ConvertError> {
-        match self.target {
-            NesHeader::Headered => nes::add(&input).ok_or_else(|| ConvertError::Failed("ROM hash is not in the NES header database".to_string())),
-            NesHeader::Unheadered => nes::strip(&input).ok_or_else(|| ConvertError::Failed("file is not a known headered NES ROM".to_string())),
-        }
+        let db = nes::shared_fcdb().ok_or_else(|| ConvertError::Failed("the NES header database (fcdb.bin) could not be loaded".to_string()))?;
+        let relayered = nes::relayer(db, input, self.target == NesHeader::Headered).map_err(ConvertError::Failed)?;
+        Ok(relayered.data)
     }
 }
 
@@ -375,9 +375,30 @@ pub struct SnesConverter {
     pub known_headered: Option<bool>,
 }
 
+/// Whether an SNES dump of `input_len` bytes carries a 512-byte copier header. Copier headers
+/// are always exactly 512 bytes and a cartridge is whole KB, so the size says it; `internal`
+/// is where detection found the cartridge's own header (`RomMetadata::headered`, from
+/// `read_snes_rom_metadata`), and has to agree. A dump with no readable internal header (some
+/// prototypes and homebrew) goes by size alone.
+pub fn snes_copier_header(input_len: u64, internal: Option<bool>) -> Result<bool, String> {
+    let by_size = match input_len % 1024 {
+        0 => false,
+        512 => true,
+        rest => return Err(format!("{input_len} bytes is neither whole KB nor whole KB plus a 512-byte copier header ({rest} over)")),
+    };
+    match internal {
+        Some(by_header) if by_header != by_size => Err(format!(
+            "its size ({input_len} bytes) says {} copier header, but the cartridge's own header sits where it would {}",
+            if by_size { "a" } else { "no" },
+            if by_header { "with one" } else { "without one" }
+        )),
+        _ => Ok(by_size),
+    }
+}
+
 impl SnesConverter {
     fn currently_headered(&self, input_len: u64) -> bool {
-        self.known_headered.unwrap_or(input_len % 1024 == 512)
+        snes_copier_header(input_len, self.known_headered).unwrap_or(input_len % 1024 == 512)
     }
 
     fn header(kind: SnesHeader, rom_len: u64) -> Vec<u8> {
@@ -434,7 +455,7 @@ impl Convert for SnesConverter {
         if matches!(self.target, SnesHeader::Fig | SnesHeader::Ufo | SnesHeader::Gd7) {
             return Err(ConvertError::Failed(format!("{} headers are not implemented yet (placeholder)", self.output_extension())));
         }
-        let headered = self.currently_headered(input_len);
+        let headered = snes_copier_header(input_len, self.known_headered).map_err(ConvertError::Failed)?;
         if self.target == SnesHeader::Sfc && !headered {
             return Err(ConvertError::NotApplicable("already a bare ROM".to_string()));
         }
