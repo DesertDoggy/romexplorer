@@ -93,6 +93,15 @@ requirement — never a reason to write deflate.
 Measure on real data from this repo before choosing, and put the numbers in the comment. The
 defaults are usually wrong in a way that is invisible until something takes minutes.
 
+## Where to build and test on the Windows PC
+
+On the user's Windows PC, every build and test runs inside the repo directory
+(`D:\Documents\GitHub\romexplorer`). Norton quarantines binaries built anywhere else, so a
+target dir, scratch checkout or test output in `%TEMP%`, another drive or a sibling folder
+breaks the build. When a separate directory is needed (a second `CARGO_TARGET_DIR`, a
+scratch build, test output), make it a subdirectory of the repo whose name starts with `.`
+(for example `.music-test/`) and add it to `.gitignore` in the same change.
+
 ## Release notes: short, user-facing, Japanese written as Japanese
 
 `docs/release_notes.md` and `docs/release_notes.ja.md`. The existing entries are the model;

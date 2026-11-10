@@ -94,6 +94,15 @@ skips cleanly (doesn't fail) when its samples root isn't populated, rather than 
 every dev to have the full sample set.
 
 
+## Where to build and test on the Windows PC
+
+On the user's Windows PC, every build and test runs inside the repo directory
+(`D:\Documents\GitHub\romexplorer`). Norton quarantines binaries built anywhere else, so a
+target dir, scratch checkout or test output in `%TEMP%`, another drive or a sibling folder
+breaks the build. When a separate directory is needed (a second `CARGO_TARGET_DIR`, a
+scratch build, test output), make it a subdirectory of the repo whose name starts with `.`
+(for example `.music-test/`) and add it to `.gitignore` in the same change.
+
 ## Job progress: always detailed, from the first second
 
 A running job must never sit at 0 with nothing said. Every job's progress (`jobs::Progress`)
