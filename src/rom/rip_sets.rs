@@ -311,7 +311,10 @@ fn collect_set(set: &Path) -> Vec<RipFile> {
 /// ROM bytes (VGM logs and the like).
 pub fn set_fingerprint(set: &Path) -> Option<super::rip_match::Fingerprint> {
     let files = collect_set(set);
-    super::rip_match::fingerprint(files.iter().map(|f| f.data.as_slice()))
+    // A minigsf carries no cartridge bytes; its set's libraries do.
+    let libs = files.first().map(|f| f.libs.clone());
+    let lib_data = libs.iter().flat_map(|l| l.iter().map(|(_, d)| d.as_slice()));
+    super::rip_match::fingerprint(files.iter().map(|f| f.data.as_slice()).chain(lib_data))
 }
 
 /// A set's first file starting with `magic` (an NSF's "NESM\x1a", a GBS's "GBS"), read whole:
