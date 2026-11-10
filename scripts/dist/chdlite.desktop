@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=chdlite
+GenericName=Disc Image Converter
+Comment=Convert disc images to and from CHD and RVZ, and check them
+# Rewritten by AppRun --install to the AppImage's real path; appimagetool also requires the
+# key to be present here.
+Exec=chdlite-gui %F
+TryExec=chdlite-gui
+Icon=chdlite
+Terminal=false
+Categories=Utility;Archiving;
+Keywords=CHD;RVZ;ISO;CUE;GDI;disc;image;convert;

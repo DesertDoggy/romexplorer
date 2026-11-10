@@ -31,6 +31,11 @@ run. The window remembers them.
 access on first start, so it can read your ROMs and write the music; files and folders are
 chosen in its own browser, and a run keeps going with the screen off.
 
+**macOS and Linux apps.** `rommusic.app` (macOS) and the rommusic AppImage (Linux) open the
+window. The command-line tool is inside them: `rommusic.app/Contents/MacOS/rommusic`, or
+`rommusic.AppImage rommusic ...`. `rommusic.AppImage --install` adds the window to the desktop
+menu. The Mac app is not notarized, so its first launch needs right-click > Open.
+
 **Command line.**
 
 ```

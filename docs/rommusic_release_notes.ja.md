@@ -5,6 +5,7 @@ rommusic は romexplorer とは別にリリースします。このノートは 
 ## 変更点
 
 - **ROM から直接書き出せる曲が増えました。** ファミコン・ディスクシステム・ゲームボーイ・PCエンジン・ワンダースワンは、rommusic に同梱のマップがあるゲームなら、原音ファイルなしで ROM から曲を書き出せます。
+- **Mac アプリと Linux の AppImage。** macOS 用の `rommusic.app` と、Linux 用の 1 ファイルの AppImage を用意しました。開くとウィンドウが起動します。コンソール版も中に入っています（`rommusic.AppImage rommusic ...`）。
 
 ## バグ修正
 
