@@ -7,9 +7,9 @@
 #
 # What gets built, and what does not:
 #
-#   linux/x64     server + desktop + AppImage
-#   windows/x64   server + desktop
-#   macos/arm64   server + desktop + .app
+#   linux/x64     server + desktop + AppImage, chdlite + its AppImage
+#   windows/x64   server + desktop, chdlite
+#   macos/arm64   server + desktop + .app, chdlite + chdlite.app
 #
 #   linux/arm64 and windows/arm64 are absent here although every submodule script now has an
 #   arm64 arm: build_native_deps.sh refuses them until its SUPPORTS_ARM64_{LINUX,WINDOWS}
@@ -246,6 +246,16 @@ jobs:
       - name: Package chdlite
         run: scripts/package.sh --kind chdlite --os ${{ matrix.os }} --arch ${{ matrix.arch }}
 
+      # The window with the console tools inside, as the desktop app gets: each script reads
+      # chdlite's own version and finds the package staged above.
+      - name: Build the chdlite AppImage
+        if: matrix.os == 'linux'
+        run: scripts/appimage.sh --kind chdlite --arch ${{ matrix.arch }} --stage "release/chdlite/$(sed -n 's/^version = "\(.*\)"/\1/p' chdlite/Cargo.toml | head -1)/linux/${{ matrix.arch }}"
+
+      - name: Build chdlite.app
+        if: matrix.os == 'macos'
+        run: scripts/macos_app.sh --kind chdlite --arch ${{ matrix.arch }} --stage "release/chdlite/$(sed -n 's/^version = "\(.*\)"/\1/p' chdlite/Cargo.toml | head -1)/macos/${{ matrix.arch }}"
+
       - name: Upload chdlite
         uses: actions/upload-artifact@v4
         with:
@@ -253,6 +263,7 @@ jobs:
           path: |
             release/chdlite/*/dist/*.tar.gz
             release/chdlite/*/dist/*.zip
+            release/chdlite/*/dist/*.AppImage
           if-no-files-found: error
 
   gather:

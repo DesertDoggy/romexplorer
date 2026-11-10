@@ -18,8 +18,9 @@
 #   3. gui_web    build_gui_web.sh: one wasm build, served by every server package.
 #   4. packages   package.sh per (platform, arch, mode) -> release/<version>/<os>/<arch>/<mode>/
 #                 and release/<version>/dist/.
-#   5. bundles    appimage.sh for linux desktop, macos_app.sh for macOS desktop, where the
-#                 host can run them.
+#   5. bundles    appimage.sh on Linux, macos_app.sh on macOS, where the host can run them:
+#                 for the desktop app, and for chdlite and rommusic (their window with the
+#                 console tools inside), each into its own release tree's dist/.
 #   5b. android   build_chdlite_android.sh --release --cli, with the chdlite mode: the chdlite
 #                 app (APK) and its command-line tool (chdlite alone) for android/arm64, into
 #                 release/chdlite/<chdlite version>/dist/ as
@@ -352,7 +353,22 @@ for t in "${TARGETS[@]}"; do
         if [[ "$m" == "chdlite" || "$m" == "rommusic" ]]; then
             # No --version: each carries its own (chdlite/Cargo.toml, rommusic-cli/Cargo.toml),
             # not the workspace's.
-            step "package $t $m" bash "$SCRIPTS/package.sh" --kind "$m" --os "$p" --arch "$a" || true
+            step "package $t $m" bash "$SCRIPTS/package.sh" --kind "$m" --os "$p" --arch "$a" || continue
+            # The same bundles as the desktop app, for the window and its console tools: an
+            # AppImage on Linux, a .app on macOS, beside the plain archive in their own dist/.
+            tool_pkg="$m"; [[ "$m" == rommusic ]] && tool_pkg="rommusic-cli"
+            tool_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/$tool_pkg/Cargo.toml" | head -1)"
+            stage="$ROOT_DIR/release/$m/$tool_version/$p/$a"
+            case "$p" in
+                linux)
+                    if [[ "$HOST_OS" == "linux" ]]; then
+                        step "appimage $t $m" bash "$SCRIPTS/appimage.sh" --kind "$m" --stage "$stage" --arch "$a" --version "$tool_version" || true
+                    fi ;;
+                macos)
+                    if [[ "$HOST_OS" == "macos" ]]; then
+                        step "macos .app $t $m" bash "$SCRIPTS/macos_app.sh" --kind "$m" --stage "$stage" --arch "$a" --version "$tool_version" || true
+                    fi ;;
+            esac
             continue
         fi
         step "package $t $m" bash "$SCRIPTS/package.sh" --kind "$m" --os "$p" --arch "$a" --version "$VERSION" || continue

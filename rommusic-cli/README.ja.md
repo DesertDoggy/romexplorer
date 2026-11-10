@@ -22,6 +22,8 @@ romexplorer とは別にリリースします（バージョン 0.1.0）。
 
 **Android**　rommusic アプリ（Android 9 以降）も同じ画面です。最初の起動で「すべてのファイルへのアクセス」を求めます。ROM を読んで音楽を書き出すためです。ファイルとフォルダーはアプリ内のブラウザーで選びます。画面を消しても書き出しは続きます。
 
+**macOS・Linux のアプリ**　`rommusic.app`（macOS）と rommusic の AppImage（Linux）を開くとウィンドウが起動します。コマンドライン版も中に入っています。`rommusic.app/Contents/MacOS/rommusic` か、`rommusic.AppImage rommusic ...` で使えます。`rommusic.AppImage --install` でデスクトップのメニューに追加できます。macOS 版は公証していないので、最初は右クリック ›「開く」で起動します。
+
 **コマンドライン**
 
 ```
