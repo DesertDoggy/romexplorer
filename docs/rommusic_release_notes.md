@@ -11,6 +11,8 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 ## Bug fixes
 
 - Writing the music files on some discs never finished: discs with a ";" inside a file name.
+- In the Android app, allowing file access failed with "Java exception was thrown" instead of
+  opening the system's access screen.
 
 # rommusic 0.1.0
 
