@@ -238,3 +238,113 @@ static FCDB: OnceLock<Option<FcDb>> = OnceLock::new();
 pub fn shared_fcdb() -> Option<&'static FcDb> {
     FCDB.get_or_init(|| FcDb::load().ok()).as_ref()
 }
+
+/// What [`relayer`] made of a dump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relayered {
+    /// Whether the input had a header, by the database.
+    pub was_headered: bool,
+    /// The output: the input itself when it was already in the layout asked for.
+    pub data: Vec<u8>,
+    pub changed: bool,
+}
+
+/// The iNES header's own length, trainer included -- for a known headered dump the database
+/// keeps no header for.
+pub fn ines_header_len(bytes: &[u8]) -> Option<usize> {
+    if bytes.get(..4)? != b"NES\x1A" {
+        return None;
+    }
+    Some(16 + if bytes.get(6)? & 0x04 != 0 { 512 } else { 0 })
+}
+
+/// Puts a whole dump into the layout asked for, headered or not. Whether it has a header now
+/// is the database's answer, never the magic's: a dump whose hash is not there is an error that
+/// names the hash, so it can be looked up or added.
+pub fn relayer(db: &FcDb, bytes: Vec<u8>, want_header: bool) -> Result<Relayered, String> {
+    let hash = xxh3_128(&bytes);
+    let tag = format!("xxh3-128 {hash:032x}");
+    let done = |was_headered, data, changed| Ok(Relayered { was_headered, data, changed });
+    match db.classify(hash) {
+        NesHashMatch::NotNes => Err(format!("not in the NES header database (fcdb.bin), so whether it has a header can't be told: {tag}")),
+        NesHashMatch::Headered if want_header => done(true, bytes, false),
+        NesHashMatch::Headerless if !want_header => done(false, bytes, false),
+        NesHashMatch::Headered => {
+            let len = db
+                .header_for_headered_hash(hash)
+                .map(<[u8]>::len)
+                .or_else(|| ines_header_len(&bytes))
+                .ok_or_else(|| format!("a known headered dump, but not an iNES one, so its header can't be removed: {tag}"))?;
+            let rom = bytes.get(len..).filter(|rom| !rom.is_empty()).ok_or_else(|| format!("shorter than its own header: {tag}"))?;
+            done(true, rom.to_vec(), true)
+        }
+        NesHashMatch::Headerless => {
+            let header = db.header_for_unheadered_hash(hash).ok_or_else(|| format!("a known headerless dump, but the database has no header for it: {tag}"))?;
+            let mut data = Vec::with_capacity(header.len() + bytes.len());
+            data.extend_from_slice(header);
+            data.extend_from_slice(&bytes);
+            done(false, data, true)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A database of one game, in `fcdb.bin`'s own format, so both directions run without a
+    /// real dump.
+    pub(crate) fn one_game_db(header: &[u8], rom: &[u8]) -> FcDb {
+        let mut headered = header.to_vec();
+        headered.extend_from_slice(rom);
+        let mut db = b"FCDB\x03".to_vec();
+        db.extend_from_slice(&1u32.to_le_bytes());
+        db.extend_from_slice(&xxh3_128(rom).to_le_bytes());
+        db.extend_from_slice(&xxh3_128(&headered).to_le_bytes());
+        db.extend_from_slice(&(header.len() as u16).to_le_bytes());
+        db.extend_from_slice(header);
+        db.extend_from_slice(&0u32.to_le_bytes());
+        db.extend_from_slice(&0u32.to_le_bytes());
+        FcDb::parse(&db).unwrap()
+    }
+
+    fn game() -> (Vec<u8>, Vec<u8>) {
+        let rom: Vec<u8> = (0..(40 * 1024u32)).map(|i| (i * 31 % 253) as u8).collect();
+        let mut header = b"NES\x1A".to_vec();
+        header.extend_from_slice(&[2, 1, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        (header, rom)
+    }
+
+    #[test]
+    fn header_comes_from_the_database_both_ways() {
+        let (header, rom) = game();
+        let db = one_game_db(&header, &rom);
+        let added = relayer(&db, rom.clone(), true).unwrap();
+        assert_eq!((&added.data[..16], &added.data[16..], added.was_headered, added.changed), (&header[..], &rom[..], false, true));
+        let stripped = relayer(&db, added.data.clone(), false).unwrap();
+        assert_eq!((stripped.data, stripped.was_headered, stripped.changed), (rom.clone(), true, true));
+        assert!(!relayer(&db, rom, false).unwrap().changed, "already headerless");
+        assert!(!relayer(&db, added.data, true).unwrap().changed, "already headered");
+    }
+
+    #[test]
+    fn a_hash_not_in_the_database_is_an_error_naming_it() {
+        let (header, rom) = game();
+        let db = one_game_db(&header, &rom);
+        // Magic and all, but not this game: the database decides, not the magic.
+        let mut other = header.clone();
+        other.extend_from_slice(&[0x5A; 1024]);
+        let err = relayer(&db, other.clone(), false).unwrap_err();
+        assert!(err.contains(&format!("{:032x}", xxh3_128(&other))), "{err}");
+    }
+
+    #[test]
+    fn ines_header_length_counts_the_trainer() {
+        let mut head = b"NES\x1A".to_vec();
+        head.extend_from_slice(&[2, 1, 0, 0]);
+        assert_eq!(ines_header_len(&head), Some(16));
+        head[6] = 0x04;
+        assert_eq!(ines_header_len(&head), Some(528));
+        assert_eq!(ines_header_len(b"UNIF"), None);
+    }
+}

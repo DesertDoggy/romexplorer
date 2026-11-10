@@ -18,6 +18,9 @@ Faites une sauvegarde avant de remplacer une version.
 - L'indexation de la musique des ROM ne se terminait jamais sur certaines images de disque,
   celles dont un nom de fichier contient un « ; ». Une ROM qui prend plus de 20 minutes est
   désormais ignorée.
+- En convertissant des dumps SNES lors d'une copie, un fichier était converti même si sa taille
+  et son en-tête interne n'étaient pas d'accord sur l'en-tête de copieur. Il est maintenant
+  signalé comme erreur. Un dump NES absent de la base d'en-têtes est signalé avec son hash.
 
 # romexplorer 0.2.0 (alpha)
 

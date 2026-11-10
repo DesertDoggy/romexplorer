@@ -18,6 +18,9 @@ zapasową przed podmianą wersji.
 
 - Indeksowanie muzyki z ROM-ów nigdy się nie kończyło na niektórych obrazach płyt, tych ze
   znakiem „;” w środku nazwy pliku. ROM, który zajmuje ponad 20 minut, jest teraz pomijany.
+- Przy konwersji zrzutów SNES podczas kopiowania plik był konwertowany, nawet gdy rozmiar i
+  wewnętrzny nagłówek nie zgadzały się co do nagłówka kopiarki. Teraz jest zgłaszany jako błąd.
+  Zrzut NES, którego nie ma w bazie nagłówków, jest zgłaszany z jego hashem.
 
 # romexplorer 0.2.0 (alpha)
 
