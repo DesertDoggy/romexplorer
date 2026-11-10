@@ -241,7 +241,7 @@ native_flags=()
 # they depend on.
 only_tools=1
 for m in "${M_LIST[@]}"; do [[ "$m" == chdlite || "$m" == rommusic ]] || only_tools=0; done
-[[ "$only_tools" -eq 1 && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu,extract-xiso)
+[[ "$only_tools" -eq 1 && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,RALibretro,ffmpeg,vgmstream,rommusic,cemu,extract-xiso)
 [[ -n "$JOBS" ]] && native_flags+=(--jobs "$JOBS")
 [[ "$UNVERIFIED" -eq 1 ]] && native_flags+=(--unverified-arm64)
 

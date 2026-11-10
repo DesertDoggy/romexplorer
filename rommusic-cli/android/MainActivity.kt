@@ -32,6 +32,7 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
+import androidx.annotation.Keep
 
 // The generated classes refer to BuildConfig in this package. Must match Dioxus.toml's
 // `[bundle] identifier`.
@@ -83,7 +84,12 @@ class MainActivity : WryActivity() {
     }
 }
 
-/** Called from Rust (src/android.rs) through the activity's class loader. */
+/**
+ * Called from Rust (src/android.rs) through the activity's class loader. Nothing in Java or
+ * Kotlin calls it, so a release build's R8 would drop it (Rust then got "Java exception was
+ * thrown" from loadClass) without @Keep, which the default ProGuard rules honour.
+ */
+@Keep
 object RommusicBridge {
     @JvmStatic
     fun hasAllFilesAccess(context: Context): Boolean =

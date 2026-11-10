@@ -36,7 +36,7 @@ pub const EXE_ROOT_OVERRIDE_ENV: &str = "ROMEXPLORER_EXE_ROOT";
 /// filename convention (no `lib` prefix, matching upstream 7-Zip's own naming) doesn't
 /// fit [`dynamic_lib_filename`]'s generic `lib<name>.<ext>` shape that
 /// [`find_app_root_library`] assumes for every other native library here.
-pub(crate) fn exe_root() -> Option<PathBuf> {
+pub fn exe_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(EXE_ROOT_OVERRIDE_ENV) {
         return Some(PathBuf::from(dir));
     }

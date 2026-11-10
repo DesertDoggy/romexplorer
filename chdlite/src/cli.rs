@@ -83,7 +83,8 @@ Options:
   --rvz-level <n>             zstd 1-22, others 1-9
   --rvz-block <size>          {rvz_blocks}
   --rvz-scrub                 drop junk data (not reversible)
-  --hash <list>               sha1,md5,crc32,sha256,xxh3
+  --hash <list>               sha1,md5,crc32,sha256,xxh3,rahash (default sha1,rahash;
+                              rahash also says whether RetroAchievements has achievements for it)
   --cue-style <style>         {cue_styles}: the extracted cue sheet's dialect
   --gdrom-sheet <kind>        {gdrom_sheets}: an extracted GD-ROM's sheet (default gdi)
   --nes <format>              {nes}: with the iNES header (.nes), without
@@ -282,6 +283,7 @@ pub fn main(default: DefaultMode) -> i32 {
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("{name} {}", crate::VERSION);
+        println!("{}", crate::ra::list_summary());
         return 0;
     }
     if let Err(err) = crate::natives::ensure() {
