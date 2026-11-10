@@ -2,6 +2,8 @@
 
 [English](README.md) · **日本語** · [Français](README.fr.md) · [Español](README.es.md) · [Italiano](README.it.md) · [Português](README.pt.md) · [Deutsch](README.de.md) · [한국어](README.ko.md) · [Polski](README.pl.md)
 
+**ダウンロード:** [Rom Explorer](https://github.com/DesertDoggy/romexplorer/releases?q=v0) · [CHD Lite](https://github.com/DesertDoggy/romexplorer/releases?q=c0) · [Rom Music](https://github.com/DesertDoggy/romexplorer/releases?q=m0)
+
 *これは英語版 README の翻訳です。内容に違いがある場合は英語版が正となります。*
 
 > **romexplorer は ROM・BIOS・鍵の配布もダウンロードもしません。違法コピーを支援するものでは
