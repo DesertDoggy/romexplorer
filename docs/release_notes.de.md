@@ -1,5 +1,24 @@
-*Dies ist eine Übersetzung der Versionshinweise zu 0.2.0 und 0.1.8. Ältere Versionen stehen in
+*Dies ist eine Übersetzung der Versionshinweise zu 0.2.1, 0.2.0 und 0.1.8. Ältere Versionen stehen in
 [release_notes.md](release_notes.md) (Englisch), die bei Abweichungen maßgeblich ist.*
+
+# romexplorer 0.2.1 (alpha)
+
+Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
+Sie ein Backup, bevor Sie einen Build ersetzen.
+
+## Änderungen
+
+**ROM-Audio**
+- Beim Öffnen einer Titelseite wird zuerst die ROM-Musik dieses Spiels indiziert. Bis dahin zeigt
+  die Seite den Fortschritt, statt Musik eines anderen Spiels abzuspielen.
+- Ein ROM mit demselben Inhalt wie ein bereits indiziertes übernimmt dessen Titel, statt erneut
+  gelesen zu werden.
+
+## Fehlerbehebungen
+
+- Die Indizierung der ROM-Musik wurde bei einigen Disc-Images nie fertig, und zwar bei solchen
+  mit einem „;“ mitten im Dateinamen. Ein ROM, das länger als 20 Minuten braucht, wird jetzt
+  übersprungen.
 
 # romexplorer 0.2.0 (alpha)
 

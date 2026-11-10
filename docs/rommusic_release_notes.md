@@ -1,6 +1,18 @@
-# rommusic 0.1.0
+# rommusic 0.2.0
 
 rommusic is released separately from romexplorer; these notes cover rommusic only.
+
+## Changes
+
+- **More music straight from the ROM.** NES, Famicom Disk System, Game Boy, PC Engine and
+  WonderSwan games whose music map ships with rommusic play their songs from the ROM, with no
+  original audio format files needed.
+
+## Bug fixes
+
+- Writing the music files on some discs never finished: discs with a ";" inside a file name.
+
+# rommusic 0.1.0
 
 ## Changes
 
