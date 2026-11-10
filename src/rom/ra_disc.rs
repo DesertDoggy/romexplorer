@@ -68,6 +68,19 @@ pub fn handles(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("chd" | "rvz" | "wia" | "gcz" | "cso" | "pbp" | "zip" | "7z"))
 }
 
+/// The RetroAchievements hash of `path` for `console`: a CHD, RVZ, CSO, PBP or an archived
+/// cartridge read in memory ([`hash_of`]), anything else read by RAHasher where it lies (a cue
+/// finds its tracks). Nothing is extracted to disk.
+pub fn ra_hash(path: &Path, console: u32) -> Result<hash::RahashOutcome, RahashError> {
+    if handles(path) {
+        // N64, SNES, NES, PC Engine, Lynx, DS, 7800, DSi, FDS: the cartridge (or disk) systems
+        // whose RA hash is not the file's MD5.
+        let cartridge = matches!(console, 2 | 3 | 7 | 8 | 13 | 18 | 51 | 78 | 81);
+        return hash_of(path, console, cartridge).map(hash::RahashOutcome::Done);
+    }
+    hash::rahash_file(path, console, 0)
+}
+
 /// The RA hash of the ROM in container `path` for `console`. `cartridge`: a zip or 7z holds
 /// one cartridge (its largest member is hashed); a disc in an archive is not hashed.
 pub fn hash_of(path: &Path, console: u32, cartridge: bool) -> Result<String, RahashError> {

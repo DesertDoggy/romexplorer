@@ -65,3 +65,7 @@ target/
 
 # Local test runs on real files (kept inside the repo so antivirus leaves them alone)
 /.music-test/
+
+# RetroAchievements' hash list for chdlite (scripts/update_ra_db.sh). RetroAchievements' data,
+# so it goes into builds, not into this public repository.
+/app_root_ex/assets/radb.bin

@@ -726,6 +726,7 @@ pub fn hash_flags(names: &[String]) -> Result<HashFlags, String> {
             "crc32" | "crc" => HashFlags::CRC32,
             "sha256" => HashFlags::SHA256,
             "xxh3" | "xxh3_128" => HashFlags::XXH3_128,
+            "rahash" | "ra" => HashFlags::RAHASH,
             "" => HashFlags::empty(),
             other => return Err(format!("unknown hash '{other}'")),
         };
@@ -782,9 +783,13 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
         }
     }
 
+    // The RA hash is worked out apart (`crate::ra`). For most cartridge systems it is the
+    // file's MD5, so the pass works one out for it, shown only when asked for.
+    let want_ra = flags.contains(HashFlags::RAHASH);
+    let shown = flags.difference(HashFlags::RAHASH);
     let args = SingleArgs {
         stages: StageSwitches { extract: extracting, hash: !extracting, ..StageSwitches::NONE },
-        hash_flags: flags,
+        hash_flags: if want_ra { shown | HashFlags::MD5 } else { shown },
         output_dir: out_dir,
         detect: Detect::Trust(Platform::Unknown),
         decode_threads: decode_threads(spec),
@@ -802,13 +807,31 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
     }
     stage_ok(&outcome.stages.hash, "hash")?;
     let mut lines = Vec::new();
-    for record in outcome.input_hashes.map(|r| r.content_hashes).unwrap_or_default() {
+    let records = outcome.input_hashes.map(|r| r.content_hashes).unwrap_or_default();
+    for record in &records {
         lines.push(format!("{}  ({} bytes)", record.path, record.size_bytes.unwrap_or(0)));
-        for (label, value) in [("crc32", &record.crc32), ("md5", &record.md5), ("sha1", &record.sha1), ("sha256", &record.sha256), ("xxh3", &record.xxh3_128)] {
-            if let Some(value) = value {
+        for (label, value, flag) in [
+            ("crc32", &record.crc32, HashFlags::CRC32),
+            ("md5", &record.md5, HashFlags::MD5),
+            ("sha1", &record.sha1, HashFlags::SHA1),
+            ("sha256", &record.sha256, HashFlags::SHA256),
+            ("xxh3", &record.xxh3_128, HashFlags::XXH3_128),
+        ] {
+            if let Some(value) = value.as_ref().filter(|_| shown.contains(flag)) {
                 lines.push(format!("  {label:<7}{value}"));
             }
         }
+    }
+    if want_ra {
+        // A cue and its tracks, or a CHD's several files, have no one MD5 to stand for them.
+        let file_md5 = match records.as_slice() {
+            [one] => one.md5.as_deref(),
+            _ => None,
+        };
+        if records.len() > 1 {
+            lines.push(spec.input.display().to_string());
+        }
+        lines.extend(crate::ra::lines(&spec.input, file_md5));
     }
     Ok(lines.join("\n"))
 }

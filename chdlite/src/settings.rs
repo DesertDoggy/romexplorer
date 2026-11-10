@@ -23,7 +23,8 @@ pub const MAX_CODECS: usize = 4;
 pub const RVZ_CODECS: [&str; 5] = ["zstd", "lzma2", "lzma", "bzip2", "none"];
 pub const RVZ_BLOCKS: [(&str, u32); 7] =
     [("32k", 32 << 10), ("64k", 64 << 10), ("128k", 128 << 10), ("256k", 256 << 10), ("512k", 512 << 10), ("1m", 1 << 20), ("2m", 2 << 20)];
-pub const HASHES: [&str; 5] = ["sha1", "md5", "crc32", "sha256", "xxh3"];
+/// `rahash`: the RetroAchievements hash, and whether the bundled list has achievements for it.
+pub const HASHES: [&str; 6] = ["sha1", "md5", "crc32", "sha256", "xxh3", "rahash"];
 pub const CUE_STYLES: [&str; 3] = ["redump", "redump_catalog", "chdman"];
 /// The sheet an extracted GD-ROM gets.
 pub const GDROM_SHEETS: [&str; 2] = ["gdi", "cue"];
@@ -160,7 +161,7 @@ pub struct Hash {
 
 impl Default for Hash {
     fn default() -> Self {
-        Self { algorithms: vec!["sha1".into()] }
+        Self { algorithms: vec!["sha1".into(), "rahash".into()] }
     }
 }
 
