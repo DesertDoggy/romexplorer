@@ -11,6 +11,9 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
   `--n64` and `--snes`.
 - Whether a NES dump has a header is looked up in the NES header database. A dump that is not
   in it is reported with its hash.
+- **A Mac app and a Linux AppImage.** chdlite now comes as `chdlite.app` for macOS and as a
+  single-file AppImage for Linux. Both open the window; the console tools are inside too
+  (`chdlite.AppImage chdcomp ...`).
 - **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
   RetroAchievements has achievements for it, with the game's name. The list it checks is
   bundled; its date is shown in Settings and by `--version`.
