@@ -717,6 +717,12 @@ pub fn CopyOutputForm(output: Signal<Option<OutputSettings>>, unavailable: Vec<O
                         td { class: "muted", "9" }
                         td { class: "muted", {state::tr("PS2 / PSP .iso only")} }
                     }
+                    tr {
+                        td { "cci · 3ds · zcci · cxi · zcxi" crate::ui::Explain { {state::tr("A 3DS title, decrypted with your own keys: aes_keys.txt (or boot9.bin), and seeddb.bin for a title that needs it, beside the file, beside romexplorer or in its assets folder. A game becomes a .cci or .3ds, or a .cxi: its main part alone, without the manual and download-play parts. zcci and zcxi are the same compressed for Azahar (zstd level 3). An update, DLC or demo stays a .cia (.zcia), homebrew a .3dsx (.z3dsx).")} } }
+                        td { class: "muted", "zstd (z…)" }
+                        td { class: "muted", "3" }
+                        td { class: "muted", {state::tr("3DS files + your keys only")} }
+                    }
                     tr { class: if chd_off { "muted" } else { "" },
                         td { "chd" crate::ui::Explain { p { {state::tr("pc: zstd. A CD gets cdzs (zstd) with cdfl for its audio tracks; a DVD gets zstd. Fast to read, and every current PC emulator reads it.")} } p { {state::tr("mobile: the same, except PlayStation 2, which gets zlib (cdzl + cdfl for a CD, zlib for a DVD): some mobile emulators have trouble with zstd CHDs, and PS2 is where that shows.")} } p { {state::tr("Both presets choose the hunk size: for a CD, 2448 bytes (one sector) for Neo Geo CD, PC Engine CD and Dreamcast, which read in small scattered pieces, and 19584 (chdman's own) elsewhere; for a DVD, 4096, or 2048 for PSP.")} } p { {state::tr("chdman default: no codec list or hunk size, chdman decides. custom: your own codecs (up to 4) and hunk size, separately for CDs and DVDs.")} } } }
                         td { colspan: "2",
