@@ -235,6 +235,23 @@ struct Options {
     /// `--write-maps <dir>`: with `--originals`, build each matched ROM's music map the way the
     /// app does and keep it under `<dir>` (`nes/<key>.nesmap`, ...), for `--pack-maps`.
     write_maps: Option<PathBuf>,
+    /// `--spcprobe`: with `--originals`, boot each SNES ROM, then start songs by writing each
+    /// value to each port of its sound chip, and count the `.spc` tracks that start that way.
+    spcprobe: bool,
+    /// `--spcsearch`: with `--originals`, run each SNES ROM, find the work RAM byte it asks
+    /// for songs with, play each value of it and count the matched set's tracks heard.
+    spcsearch: bool,
+    /// `--spcpoke <hex address>`: play values 0-127 through that work RAM byte, for diagnosis.
+    spcpoke: Option<u32>,
+    /// `--wstrace <song>`: with `--mapcheck`, a WonderSwan song as the file and the map play it,
+    /// up to where they first differ.
+    wstrace: Option<u8>,
+    /// `--wsplay`: with `--mapcheck`, each kept WonderSwan song played by its saved map as the
+    /// app plays it: how long it runs and how it is timed.
+    wsplay: bool,
+    /// `--spcbank`: boot each SNES ROM, lay each track's song and samples in from the ROM,
+    /// send the driver the track's command, and count the tracks heard.
+    spcbank: bool,
 }
 
 fn run<M: Machine>(path: &Path, rom: &[u8], what: &str, o: &Options, t: &mut Tally) {
@@ -347,6 +364,171 @@ fn print_layout(path: &Path, rom: &[u8], nsf: &[u8], t: &mut Tally) {
         _ => "under 50%",
     };
     *t.reasons.entry(format!("needed bytes in the ROM: {bucket}")).or_default() += 1;
+}
+
+/// Whether `d` is a WSR: `WSRF` 32 bytes from its end.
+fn is_wsr(d: &[u8]) -> bool {
+    d.len() >= 32 && &d[d.len() - 32..d.len() - 28] == b"WSRF"
+}
+
+/// `--layout` for a WonderSwan ROM and its matched set's WSR files: how much of each WSR
+/// (filler aside) is the ROM's own bytes, and how big the part the file's author wrote is.
+/// The WSR's top sits at the cartridge's top, as the ROM's last bank does.
+fn print_ws_layout(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let wsrs = rip_sets::all_where(set, is_wsr);
+    if wsrs.is_empty() {
+        println!("{name}: layout: no WSR in the matched set");
+        *t.reasons.entry("no WSR in the set".into()).or_default() += 1;
+        return;
+    }
+    let mut worst = 100.0f64;
+    for (i, w) in wsrs.iter().enumerate() {
+        let l = music_map::layout(w, &[], rom);
+        let filler = |s: usize, n: usize| w[s..s + n].iter().filter(|&&b| b == 0xFF || b == 0x00).count();
+        // Bytes the author wrote: unplaced, and not padding.
+        let written: usize = l.missing.iter().map(|&(s, n)| n - filler(s, n)).sum();
+        let real = w.len() - filler(0, w.len());
+        let placed_real = real.saturating_sub(written);
+        let share = placed_real as f64 * 100.0 / real.max(1) as f64;
+        worst = worst.min(share);
+        let biggest = l.missing.iter().map(|&(s, n)| n - filler(s, n)).max().unwrap_or(0);
+        // Where the written stretches are, from the file's top (the header's bank).
+        let spots: Vec<String> = l
+            .missing
+            .iter()
+            .filter(|&&(s, n)| n - filler(s, n) >= 16)
+            .take(8)
+            .map(|&(s, n)| format!("-{:X}+{}", w.len() - s, n - filler(s, n)))
+            .collect();
+        // Do the runs keep the ROM's places counted from the top?
+        let tail_aligned = l.runs.iter().filter(|r| rom.len() as isize - r.rom as isize == w.len() as isize - r.data as isize).map(|r| r.len).sum::<usize>();
+        let first_song = w[w.len() - 32 + 5];
+        println!(
+            "{name}: wsr {i} ({} KB, first song {first_song}): {:.1}% of {} non-filler bytes in the ROM ({} runs, {} bytes at the ROM's own place from the top); written {} bytes, biggest {}; at {}",
+            w.len() / 1024,
+            share,
+            real,
+            l.runs.len(),
+            tail_aligned,
+            written,
+            biggest,
+            spots.join(" ")
+        );
+    }
+    if worst >= 99.0 {
+        t.with_music += 1;
+    }
+    let bucket = match worst {
+        s if s >= 99.0 => "99-100%",
+        s if s >= 95.0 => "95-99%",
+        s if s >= 80.0 => "80-95%",
+        s if s >= 50.0 => "50-80%",
+        _ => "under 50%",
+    };
+    *t.reasons.entry(format!("WSR bytes in the ROM: {bucket}")).or_default() += 1;
+}
+
+/// `--mapcheck` for a WonderSwan ROM and its matched set's WSR: the map built, and each song
+/// played from the ROM by it against the file's own, with the file's unplaced bytes zeroed,
+/// bridged from the ROM, and (an oracle) the file's own.
+fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, play: bool, t: &mut Tally) {
+    use romexplorer::rom::ws_map;
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let Some((wsr, listed)) = rip_sets::wsrs_with_songs(set).into_iter().next() else {
+        println!("{name}: map: no WSR in the matched set");
+        *t.reasons.entry("no WSR in the set".into()).or_default() += 1;
+        return;
+    };
+    let songs: Vec<u8> = if listed.is_empty() {
+        let first = ws_map::first_song(&wsr);
+        (first..first.saturating_add(64)).collect()
+    } else {
+        listed.clone()
+    };
+    let started = std::time::Instant::now();
+    if play {
+        let Some(m) = ws_map::build_map(&wsr, rom, songs.iter().copied()) else {
+            println!("{name}: no map kept");
+            return;
+        };
+        let m = ws_map::Map::decode(&m.encode()).expect("the map reads back");
+        println!("{name}: map kept with {} songs, {} KB, built in {:.1} s", m.songs.len(), m.encode().len() / 1024, started.elapsed().as_secs_f32());
+        for &(v, _) in &m.songs {
+            let Ok(mut song) = ws_map::MapSong::open(&m, rom, v, 44_100) else {
+                println!("  song {v}: doesn't open");
+                continue;
+            };
+            let rate = song.frame_rate();
+            let mut played = 0usize;
+            let mut buf = Vec::new();
+            let mut loud = 0usize;
+            while played < (rate * 300.0) as usize {
+                buf.clear();
+                if song.frame(&mut buf).is_none() {
+                    break;
+                }
+                if buf.iter().any(|s| s.unsigned_abs() > 64) {
+                    loud = played;
+                }
+                played += 1;
+            }
+            let Ok(mut song) = ws_map::MapSong::open(&m, rom, v, 8000) else { continue };
+            let timing = music_search::measure_frames_by_writes(rate, music_search::every_write, |b| song.frame(b).ok_or_else(|| "the song stopped".to_string()));
+            let timing = match timing {
+                Ok(t) => format!("{:.1} s, loop {:?}", t.frames as f64 / rate, t.looping.map(|(a, l)| (format!("{:.1} s", a as f64 / rate), format!("{:.1} s", l as f64 / rate)))),
+                Err(e) => e,
+            };
+            println!("  song {v}: runs {:.1} s (last sound at {:.1} s); timed: {timing}", played as f64 / rate, loud as f64 / rate);
+        }
+        return;
+    }
+    let Some(m) = ws_map::map(&wsr, rom, songs.iter().copied()) else {
+        println!("{name}: map: nothing of the WSR is in the ROM");
+        *t.reasons.entry("nothing placed".into()).or_default() += 1;
+        return;
+    };
+    let built = started.elapsed().as_secs_f32();
+    if let Some(song) = trace {
+        for line in ws_map::trace(&wsr, &m, rom, song, CHECK_FRAMES) {
+            println!("{line}");
+        }
+        return;
+    }
+    let right = |fill| ws_map::map_check(&wsr, &m, rom, CHECK_FRAMES, fill).iter().filter(|s| s.1 >= MAP_RIGHT).count();
+    let zeros = ws_map::map_check(&wsr, &m, rom, CHECK_FRAMES, ws_map::Fill::Zeros);
+    let right_zeros = zeros.iter().filter(|s| s.1 >= MAP_RIGHT).count();
+    let bridged = right(ws_map::Fill::Bridged);
+    let oracle = right(ws_map::Fill::File(&wsr));
+    // Past what was recorded: the scripts' cycles carry the song on.
+    let long = ws_map::map_check(&wsr, &m, rom, ws_map::RECORD_FRAMES * 2, ws_map::Fill::Bridged).iter().filter(|s| s.1 >= MAP_RIGHT).count();
+    let entries: usize = m.songs.iter().map(|s| s.1.at.len()).max().unwrap_or(0);
+    let ops: usize = m.scripts.iter().map(|s| s.ops.len()).sum();
+    let wrong: Vec<String> = zeros.iter().filter(|s| s.1 < MAP_RIGHT).take(10).map(|s| format!("{}:{:.2}", s.0, s.1)).collect();
+    println!(
+        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read; map text {} KB){}",
+        started.elapsed().as_secs_f32(),
+        m.songs.len(),
+        ws_map::RECORD_FRAMES * 2,
+        songs.len(),
+        if listed.is_empty() { ", no playlist" } else { "" },
+        m.scripts.len(),
+        m.patches.len(),
+        m.encode().len() / 1024,
+        if wrong.is_empty() { String::new() } else { format!("; wrong {}", wrong.join(" ")) }
+    );
+    t.songs += m.songs.len();
+    t.checked[0] += 1;
+    t.checked[1] += m.songs.len();
+    t.checked[2] += right_zeros;
+    t.checked[3] += bridged;
+    t.checked[4] += oracle;
+    t.board += long;
+    if right_zeros > 0 {
+        t.with_music += 1;
+    }
 }
 
 /// A track the map plays this alike the NSF's own is played right.
@@ -529,12 +711,13 @@ fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
     let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, sgc_map::Op::Call { .. })).count()).max().unwrap_or(0);
     let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps; {} bytes of the file's read){}",
         started.elapsed().as_secs_f32(),
         m.header.songs,
         m.runs.len(),
         m.tracks.iter().filter(|s| s.is_none()).count(),
         m.play.len(),
+        m.patches.len(),
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
     );
     t.checked[0] += 1;
@@ -624,6 +807,314 @@ fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         _ => "sound memory in the ROM: under 50%",
     };
     *t.reasons.entry(cover.into()).or_default() += 1;
+}
+
+/// `--spcprobe` for a SNES ROM and its matched set: after the game's own boot (Start pressed
+/// now and then), each value 0-127 written to each of the four ports, and the tracks of the
+/// set whose melody the chip then plays.
+fn print_spc_probe(path: &Path, rom: &[u8], set: &Path, seconds: u32, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
+    let real: Vec<std::collections::HashSet<u64>> = spcs
+        .iter()
+        .map(|s| spc_map::frames(s, CHECK_FRAMES).map(|f| spc_map::melody(&f)).unwrap_or_default())
+        .filter(|m| m.len() >= music_search::MIN_MELODY)
+        .collect();
+    if real.is_empty() {
+        println!("{name}: probe: no .spc with a melody in the set");
+        *t.reasons.entry("no .spc with a melody".into()).or_default() += 1;
+        return;
+    }
+    let options = romexplorer::rom::snes_capture::Options { seconds: seconds as f32, keep_audio: false, press_start: true, watch_register: None };
+    let capture = match romexplorer::rom::snes_capture::capture(rom, &options) {
+        Ok(c) if !c.driver_starts.is_empty() => c,
+        Ok(_) => {
+            println!("{name}: probe: no sound driver started");
+            *t.reasons.entry("no sound driver started".into()).or_default() += 1;
+            return;
+        }
+        Err(e) => {
+            println!("{name}: probe: {e}");
+            *t.reasons.entry("the boot failed".into()).or_default() += 1;
+            return;
+        }
+    };
+    let boot_s = started.elapsed().as_secs_f32();
+    // Which track each (port, value) starts, best match only.
+    let mut right = vec![None::<(usize, u8)>; real.len()];
+    let at_boot = spc_map::melody(&spc_map::frames(&capture.spc, CHECK_FRAMES).unwrap_or_default());
+    let booted = real.iter().filter(|r| music_search::alike(r, &at_boot) >= MAP_RIGHT).count();
+    for port in 0..4 {
+        for value in 0..=0x7Fu8 {
+            let m = spc_map::probe(&capture.spc, port, value, CHECK_FRAMES);
+            if m.len() < music_search::MIN_MELODY {
+                continue;
+            }
+            for (i, r) in real.iter().enumerate() {
+                if right[i].is_none() && music_search::alike(r, &m) >= MAP_RIGHT {
+                    right[i] = Some((port, value));
+                }
+            }
+        }
+    }
+    let found = right.iter().flatten().count();
+    let mut by_port = [0usize; 4];
+    right.iter().flatten().for_each(|(p, _)| by_port[*p] += 1);
+    println!(
+        "{name}: probe, {:.1} s (boot {boot_s:.1} s): {found} of {} tracks started by a port write (by port 0-3: {by_port:?}); playing at boot: {booted}",
+        started.elapsed().as_secs_f32(),
+        real.len()
+    );
+    t.checked[0] += 1;
+    t.checked[3] += real.len();
+    t.checked[4] += found;
+    t.saved += found;
+    let bucket = match found as f64 / real.len() as f64 {
+        s if s >= 1.0 => "all tracks started",
+        s if s >= 0.9 => "90-99% started",
+        s if s >= 0.5 => "50-90% started",
+        s if s > 0.0 => "under 50% started",
+        _ => "none started",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--spcbank` for a SNES ROM and its matched set: the boot's sound chip with each track's
+/// banks laid in from the ROM, then the track's port command.
+fn print_spc_bank(path: &Path, file: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let spcs = rip_sets::all_with_magic(set, b"SNES-SPC700");
+    let options = romexplorer::rom::snes_capture::Options { seconds: 30.0, keep_audio: false, press_start: true, watch_register: None };
+    let capture = match romexplorer::rom::snes_capture::capture(file, &options) {
+        Ok(c) if !c.driver_starts.is_empty() => c,
+        Ok(_) => {
+            println!("{name}: bank: no sound driver started");
+            *t.reasons.entry("no sound driver started".into()).or_default() += 1;
+            return;
+        }
+        Err(e) => {
+            println!("{name}: bank: {e}");
+            *t.reasons.entry("the boot failed".into()).or_default() += 1;
+            return;
+        }
+    };
+    let boot = &capture.spc;
+    // The game's own commands after its driver started: bursts of port writes, each write
+    // with its wait in sound clocks. Long ones are uploads.
+    let bursts: Vec<Vec<(i32, usize, u8)>> = {
+        let from = capture.driver_starts.last().map_or(0, |d| d.at);
+        let clocks = |master: u64| (master as f64 * 1_024_000.0 / 21_477_272.0) as i32;
+        let mut out: Vec<Vec<(i32, usize, u8)>> = Vec::new();
+        let mut last_at = 0u64;
+        for w in capture.port_writes.iter().filter(|w| w.at >= from) {
+            let gap = w.at.saturating_sub(last_at);
+            if out.is_empty() || gap > 21_477_272 / 20 {
+                out.push(Vec::new());
+            }
+            let wait = if out.last().unwrap().is_empty() { 1 } else { clocks(gap) };
+            out.last_mut().unwrap().push((wait, w.port as usize, w.value));
+            last_at = w.at;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut kept: Vec<_> = out
+            .into_iter()
+            .filter(|b| b.len() <= 32)
+            .filter(|b| seen.insert(b.iter().map(|&(_, p, v)| (p, v)).collect::<Vec<_>>()))
+            .collect();
+        let n = kept.len();
+        kept.drain(..n.saturating_sub(8));
+        kept
+    };
+    let rom = snes_sound::rom_image(file);
+    let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
+    let maps = spc_map::tracks(&refs, rom);
+    let (mut tracks, mut heard, mut by) = (0usize, 0usize, [0usize; 5]);
+    let (mut searched, mut learned) = (0usize, Vec::new());
+    // Which burst, and which of its writes, carries the song number, once learned.
+    let mut rule: Option<(usize, usize)> = None;
+    for (i, (spc, m)) in spcs.iter().zip(&maps).enumerate() {
+        let Some(m) = m else { continue };
+        let real = spc_map::melody(&spc_map::frames(spc, CHECK_FRAMES).unwrap_or_default());
+        if real.len() < music_search::MIN_MELODY {
+            continue;
+        }
+        tracks += 1;
+        let state = spc_map::with_bank(&boot, spc, &m.runs, rom);
+        let ports = spc_map::ports_of(spc);
+        // The command as the four ports, then each port alone, then the bank alone.
+        let all: Vec<(usize, u8)> = ports.iter().enumerate().map(|(p, &v)| (p, v)).collect();
+        let tries: Vec<Vec<(usize, u8)>> = std::iter::once(all.clone()).chain((0..4).map(|p| vec![(p, ports[p])])).chain(std::iter::once(Vec::new())).collect();
+        let mut ok = false;
+        for (k, w) in tries.iter().enumerate() {
+            if music_search::alike(&real, &spc_map::command(&state, w, CHECK_FRAMES)) >= MAP_RIGHT {
+                heard += 1;
+                by[match k { 0 => 0, 5 => 2, _ => 1 }] += 1;
+                ok = true;
+                break;
+            }
+        }
+        // The game's own commands, as it sent them.
+        if !ok {
+            if bursts.iter().any(|b| music_search::alike(&real, &spc_map::replay(&state, b, CHECK_FRAMES)) >= MAP_RIGHT) {
+                heard += 1;
+                by[3] += 1;
+                ok = true;
+            }
+        }
+        // One write of one of them varied: learned on the first tracks, then used for all.
+        if !ok && rule.is_none() && searched < 3 {
+            searched += 1;
+            'learn: for (b, burst) in bursts.iter().enumerate() {
+                for j in 0..burst.len().min(8) {
+                    for v in 0..=0x7Fu8 {
+                        let mut w = burst.clone();
+                        w[j].2 = v;
+                        if music_search::alike(&real, &spc_map::replay(&state, &w, 300)) >= MAP_RIGHT {
+                            rule = Some((b, j));
+                            learned.push(format!("learned on track {i}: write {j} of command {b} ({:02X?}) = {v:02X}", burst.iter().map(|w| (w.1, w.2)).collect::<Vec<_>>()));
+                            break 'learn;
+                        }
+                    }
+                }
+            }
+            if rule.is_none() {
+                learned.push(format!("track {i}: no command learned ({} commands)", bursts.len()));
+            }
+        }
+        if !ok {
+            if let Some((b, j)) = rule {
+                for v in 0..=0x7Fu8 {
+                    let mut w = bursts[b].clone();
+                    w[j].2 = v;
+                    if music_search::alike(&real, &spc_map::replay(&state, &w, CHECK_FRAMES)) >= MAP_RIGHT {
+                        heard += 1;
+                        by[4] += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "{name}: bank, {:.1} s: {heard} of {tracks} tracks heard (by all four ports {}, one port {}, the bank alone {}, the game's own command {}, a learned command {}){}",
+        started.elapsed().as_secs_f32(),
+        by[0],
+        by[1],
+        by[2],
+        by[3],
+        by[4],
+        if learned.is_empty() { String::new() } else { format!("; {}", learned.join("; ")) }
+    );
+    t.checked[0] += 1;
+    t.checked[3] += tracks;
+    t.checked[4] += heard;
+    t.saved += heard;
+    let bucket = match heard as f64 / tracks.max(1) as f64 {
+        _ if tracks == 0 => "no track with a melody",
+        s if s >= 1.0 => "all tracks heard",
+        s if s >= 0.9 => "90-99% heard",
+        s if s >= 0.5 => "50-90% heard",
+        s if s > 0.0 => "under 50% heard",
+        _ => "none heard",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--spcpoke`: each value 0-127 through `var`, and the track of the set each one plays.
+fn print_spc_poke(path: &Path, rom: &[u8], set: &Path, var: u32) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let started = std::time::Instant::now();
+    let real: Vec<std::collections::HashSet<u64>> = rip_sets::all_with_magic(set, b"SNES-SPC700")
+        .iter()
+        .map(|s| spc_map::frames(s, CHECK_FRAMES).map(|f| spc_map::melody(&f)).unwrap_or_default())
+        .collect();
+    match romexplorer::rom::snes_songs::try_var(rom, var, 0..=0x7Fu8, CHECK_FRAMES) {
+        Err(e) => println!("{name}: poke: {e}"),
+        Ok((same, songs)) => {
+            println!("{name}: poke ${var:05X}, {:.1} s: after a restore the game sounds {same:.2} alike to straight on", started.elapsed().as_secs_f32());
+            let mut tracks = std::collections::BTreeSet::new();
+            for (v, m) in &songs {
+                let best = real.iter().enumerate().map(|(i, r)| (i, music_search::alike(r, m))).max_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((i, a)) = best {
+                    if a >= MAP_RIGHT {
+                        tracks.insert(i);
+                    }
+                    println!("  {v:02X}: melody {} notes; best track {i} at {a:.2}", m.len());
+                }
+            }
+            println!("  {} of {} tracks heard", tracks.len(), real.len());
+        }
+    }
+}
+
+/// `--spcsearch` for a SNES ROM and its matched set (see [`snes_songs`]).
+fn print_spc_search(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let real: Vec<std::collections::HashSet<u64>> = rip_sets::all_with_magic(set, b"SNES-SPC700")
+        .iter()
+        .map(|s| spc_map::frames(s, CHECK_FRAMES).map(|f| spc_map::melody(&f)).unwrap_or_default())
+        .filter(|m| m.len() >= music_search::MIN_MELODY)
+        .collect();
+    if real.is_empty() {
+        println!("{name}: search: no .spc with a melody in the set");
+        *t.reasons.entry("no .spc with a melody".into()).or_default() += 1;
+        return;
+    }
+    let track_of = |m: &std::collections::HashSet<u64>| {
+        real.iter()
+            .enumerate()
+            .map(|(i, r)| (i, music_search::alike(r, m)))
+            .filter(|&(_, a)| a >= MAP_RIGHT)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    };
+    let found = match romexplorer::rom::snes_songs::find(rom, 0..=0x7Fu8, CHECK_FRAMES, &track_of) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("{name}: search, {:.1} s: {e}", started.elapsed().as_secs_f32());
+            *t.reasons.entry(e).or_default() += 1;
+            return;
+        }
+    };
+    let mut right = vec![None::<u8>; real.len()];
+    for (v, m) in &found.songs {
+        for (i, r) in real.iter().enumerate() {
+            if right[i].is_none() && music_search::alike(r, m) >= MAP_RIGHT {
+                right[i] = Some(*v);
+            }
+        }
+    }
+    let n = right.iter().flatten().count();
+    let mut values: Vec<u8> = right.iter().flatten().copied().collect();
+    values.sort_unstable();
+    values.dedup();
+    println!(
+        "{name}: search, {:.1} s: {n} of {} tracks by the request at ${:05X} (candidate {}; {} values with a melody; values heard right: {})",
+        started.elapsed().as_secs_f32(),
+        real.len(),
+        found.var,
+        found.tried,
+        found.songs.len(),
+        values.iter().map(|v| format!("{v:02X}")).collect::<Vec<_>>().join(" ")
+    );
+    t.checked[0] += 1;
+    t.checked[3] += real.len();
+    t.checked[4] += n;
+    t.saved += n;
+    let bucket = match n as f64 / real.len() as f64 {
+        s if s >= 1.0 => "all tracks heard",
+        s if s >= 0.9 => "90-99% heard",
+        s if s >= 0.5 => "50-90% heard",
+        s if s > 0.0 => "under 50% heard",
+        _ => "none heard",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
 /// `--mapcheck` for a PC Engine HuCard and its matched HES.
@@ -860,6 +1351,8 @@ fn write_map(
         Some("PCE") => (Platform::TurboGrafx16, "PC Engine"),
         Some("SMS") => (Platform::SegaMasterSystem, "Master System"),
         Some("GG") => (Platform::SegaGameGear, "Game Gear"),
+        Some("WS") => (Platform::WonderSwan, "WonderSwan"),
+        Some("WSC") => (Platform::WonderSwanColor, "WonderSwan Color"),
         _ => return,
     };
     let t = tally.entry(what).or_default();
@@ -887,7 +1380,7 @@ fn write_map(
 }
 
 fn count_maps(dir: &Path) -> usize {
-    ["nes", "gb", "hes", "sgc"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+    ["nes", "gb", "hes", "sgc", "ws"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
 }
 
 fn main() {
@@ -901,7 +1394,23 @@ fn main() {
         layout: args.iter().any(|a| a == "--layout"),
         mapcheck: args.iter().any(|a| a == "--mapcheck"),
         write_maps: None,
+        spcprobe: args.iter().any(|a| a == "--spcprobe"),
+        spcsearch: args.iter().any(|a| a == "--spcsearch"),
+        spcpoke: None,
+        wstrace: None,
+        wsplay: args.iter().any(|a| a == "--wsplay"),
+        spcbank: args.iter().any(|a| a == "--spcbank"),
     };
+    args.retain(|a| a != "--spcbank" && a != "--wsplay");
+    if let Some(i) = args.iter().position(|a| a == "--wstrace") {
+        o.wstrace = args.get(i + 1).and_then(|a| a.parse().ok());
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--spcpoke") {
+        o.spcpoke = args.get(i + 1).and_then(|a| u32::from_str_radix(a.trim_start_matches('$'), 16).ok());
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
     // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
     // rommusic ship (assets/music_maps.zst).
     if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
@@ -1085,6 +1594,17 @@ fn main() {
             }
             Some(c @ ("WS" | "WSC")) => {
                 let what = if c == "WS" { "WonderSwan" } else { "WonderSwan Color" };
+                if o.layout || o.mapcheck {
+                    let platform = if c == "WS" { Platform::WonderSwan } else { Platform::WonderSwanColor };
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, platform, o.verbose) {
+                        if o.layout {
+                            print_ws_layout(&path, &rom, &set, tally.entry(what).or_default());
+                        } else {
+                            print_ws_mapcheck(&path, &rom, &set, o.wstrace, o.wsplay, tally.entry(what).or_default());
+                        }
+                    }
+                    continue;
+                }
                 run::<WonderSwan>(&path, &rom, what, &o, tally.entry(what).or_default())
             }
             Some(c @ ("NGP" | "NGPC")) => {
@@ -1119,7 +1639,23 @@ fn main() {
                 tally.entry("Virtual Boy").or_default(),
             ),
             Some("SNES") => {
-                if o.mapcheck {
+                if o.spcbank {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_bank(&path, &rom, &set, tally.entry("SNES").or_default());
+                    }
+                } else if let Some(var) = o.spcpoke {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_poke(&path, &rom, &set, var);
+                    }
+                } else if o.spcsearch {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_search(&path, &rom, &set, tally.entry("SNES").or_default());
+                    }
+                } else if o.spcprobe {
+                    if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
+                        print_spc_probe(&path, &rom, &set, o.seconds, tally.entry("SNES").or_default());
+                    }
+                } else if o.mapcheck {
                     if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Snes, o.verbose) {
                         print_spc_mapcheck(&path, &rom, &set, tally.entry("SNES").or_default());
                     }

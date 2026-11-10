@@ -100,6 +100,17 @@ fn playlist_tracks(playlist: &[u8]) -> Vec<Track> {
     out
 }
 
+/// The song numbers a NEZplug playlist lists, each once, in its order.
+pub fn listed_songs(playlist: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for t in playlist_tracks(playlist) {
+        if !out.contains(&(t.song as u8)) {
+            out.push(t.song as u8);
+        }
+    }
+    out
+}
+
 /// A playlist line's comma-separated fields; `\,` is a comma inside a field.
 fn split_fields(text: &str) -> Vec<String> {
     let mut out = vec![String::new()];

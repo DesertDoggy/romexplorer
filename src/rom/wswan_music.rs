@@ -17,7 +17,7 @@ use super::vgm_chips::{Chips, Kind};
 const CLOCK: u32 = 3_072_000;
 const LINE: u32 = 256;
 const LINES: u32 = 159;
-const FRAME: u32 = LINE * LINES;
+pub(super) const FRAME: u32 = LINE * LINES;
 pub const RATE: f64 = CLOCK as f64 / FRAME as f64;
 /// The scanline the vertical blank starts on.
 const VBLANK_LINE: u32 = 144;
@@ -85,6 +85,10 @@ struct Board {
     stack: (u32, u32),
     /// RAM accesses, when traced: (address, written, value).
     trace: Option<Vec<(u32, bool, u8)>>,
+    /// Port writes, when logged (for `ws_map`).
+    outs: Option<Vec<(u8, u8)>>,
+    /// Cartridge bytes read (offsets), when logged (for `ws_map`).
+    cart_reads: Option<Vec<u32>>,
 }
 
 impl Board {
@@ -236,8 +240,14 @@ impl Bus for Board {
                 self.sram[at]
             }
             1 => 0,
-            b @ (2 | 3) => self.rom_bank(self.banks[b as usize] as u32, off),
-            b => self.rom_bank(((self.banks[0] as u32 & 0x0F) << 4) | b, off),
+            b => {
+                let bank = if b < 4 { self.banks[b as usize] as u32 } else { ((self.banks[0] as u32 & 0x0F) << 4) | b };
+                if let Some(r) = self.cart_reads.as_mut() {
+                    let n = (self.rom.len() >> 16) as u32;
+                    r.push(((bank & (n - 1)) << 16) | off);
+                }
+                self.rom_bank(bank, off)
+            }
         }
     }
 
@@ -325,6 +335,9 @@ impl Bus for Board {
 
     fn output(&mut self, port: u16, v: u8) {
         let p = (port & 0xFF) as usize;
+        if let Some(o) = self.outs.as_mut() {
+            o.push((p as u8, v));
+        }
         self.ports[p] = v;
         match p {
             0x03 => self.line_compare = v,
@@ -415,6 +428,155 @@ pub struct WonderSwan {
 }
 
 impl WonderSwan {
+    /// A console with `image` (a power of two in size, the start in its last bank) in the
+    /// cartridge slot, in the state the boot ROM leaves.
+    pub(super) fn with_image(image: Vec<u8>, color: bool, sram: usize) -> Self {
+        let mut board = Board {
+            rom: Arc::new(image),
+            color,
+            ram: vec![0; 0x10000],
+            sram: vec![0; sram],
+            banks: [0; 4],
+            int_base: 0,
+            int_enable: 0,
+            int_status: 0,
+            line_compare: 0,
+            timer_ctl: 0,
+            hb_period: 0,
+            hb_count: 0,
+            vb_period: 0,
+            vb_count: 0,
+            keys_sel: 0,
+            start: false,
+            dma: (0, 0, 0),
+            sdma: (0, 0, 0, 0),
+            sdma_ctl: 0,
+            sdma_wait: 0,
+            ports: [0; 256],
+            eeprom_cmd: [0; 2],
+            cycle: 0,
+            sound: Vec::new(),
+            stack: (u32::MAX, 0),
+            trace: None,
+            outs: None,
+            cart_reads: None,
+        };
+        for (p, v) in START_PORTS {
+            board.output(p as u16, v);
+        }
+        board.sound.clear();
+        let mut cpu = Cpu::reset();
+        cpu.seg[SS] = 0;
+        cpu.r[SP] = 0x2000;
+        Self { cpu, board }
+    }
+
+    // For `ws_map`, which steps the console itself.
+
+    /// The cartridge byte `addr` reads, as the banks stand now; None for RAM and save RAM.
+    pub(super) fn rom_offset(&self, addr: u32) -> Option<usize> {
+        let n = (self.board.rom.len() >> 16) as u32;
+        let bank = match addr >> 16 {
+            0 | 1 => return None,
+            b @ (2 | 3) => self.board.banks[b as usize] as u32,
+            b => ((self.board.banks[0] as u32 & 0x0F) << 4) | b,
+        };
+        Some((((bank & (n - 1)) << 16) | (addr & 0xFFFF)) as usize)
+    }
+
+    pub(super) fn cpu(&self) -> &Cpu {
+        &self.cpu
+    }
+
+    pub(super) fn cpu_mut(&mut self) -> &mut Cpu {
+        &mut self.cpu
+    }
+
+    /// The start of a frame's work: its first scanline.
+    pub(super) fn begin_frame(&mut self) {
+        if self.board.cycle < LINE {
+            self.board.new_line(0);
+        }
+    }
+
+    /// Whether the frame is over (and the next begun counting).
+    pub(super) fn frame_over(&mut self) -> bool {
+        let over = self.board.cycle >= FRAME;
+        if over {
+            self.board.cycle -= FRAME;
+        }
+        over
+    }
+
+    /// Whether an interrupt will be taken now.
+    pub(super) fn interrupt_due(&self) -> bool {
+        self.board.pending().is_some() && self.cpu.interrupts_on()
+    }
+
+    /// Takes an interrupt that is due (or wakes the CPU for one it masks).
+    pub(super) fn dispatch(&mut self) -> bool {
+        let Some(vector) = self.board.pending() else { return false };
+        if self.cpu.interrupts_on() {
+            let t = self.cpu.interrupt(&mut self.board, vector);
+            self.board.advance(t);
+            true
+        } else {
+            self.cpu.halted = false;
+            false
+        }
+    }
+
+    /// One instruction, or asleep to the next scanline.
+    pub(super) fn exec(&mut self) -> u32 {
+        let t = if self.cpu.halted { LINE - self.board.cycle % LINE } else { self.cpu.step(&mut self.board) };
+        self.board.advance(t);
+        t
+    }
+
+    pub(super) fn advance(&mut self, cycles: u32) {
+        self.board.advance(cycles);
+    }
+
+    /// CPU cycles into the frame.
+    pub(super) fn cycle(&self) -> u32 {
+        self.board.cycle
+    }
+
+    /// Cycles to the next scanline.
+    pub(super) fn to_next_line(&self) -> u32 {
+        LINE - self.board.cycle % LINE
+    }
+
+    /// Logs RAM writes and port writes from now on (or stops).
+    pub(super) fn log(&mut self, on: bool) {
+        self.board.trace = on.then(Vec::new);
+        self.board.outs = on.then(Vec::new);
+    }
+
+    /// Logs the cartridge bytes read from now on (or stops); returns those logged so far.
+    pub(super) fn log_cart(&mut self, on: bool) -> Vec<u32> {
+        std::mem::replace(&mut self.board.cart_reads, on.then(Vec::new)).unwrap_or_default()
+    }
+
+    /// The RAM writes and port writes logged since the last call.
+    pub(super) fn take_log(&mut self) -> (Vec<(u16, u8)>, Vec<(u8, u8)>) {
+        let ram = self.board.trace.as_mut().map(|t| t.drain(..).filter(|a| a.1).map(|a| (a.0 as u16, a.2)).collect()).unwrap_or_default();
+        let outs = self.board.outs.as_mut().map(std::mem::take).unwrap_or_default();
+        (ram, outs)
+    }
+
+    pub(super) fn out(&mut self, port: u8, v: u8) {
+        self.board.output(port as u16, v);
+    }
+
+    pub(super) fn ram_write(&mut self, addr: u16, v: u8) {
+        self.board.write(addr as u32, v);
+    }
+
+    pub(super) fn sound_writes(&mut self) -> Vec<Write> {
+        std::mem::take(&mut self.board.sound)
+    }
+
     fn step_once(&mut self) -> u32 {
         let mut t = 0;
         if let Some(vector) = self.board.pending() {
@@ -495,42 +657,7 @@ impl Machine for WonderSwan {
             0x05 => 0x80000,
             _ => 0,
         };
-        let mut board = Board {
-            rom: Arc::new(r),
-            color,
-            ram: vec![0; 0x10000],
-            sram: vec![0; sram],
-            banks: [0; 4],
-            int_base: 0,
-            int_enable: 0,
-            int_status: 0,
-            line_compare: 0,
-            timer_ctl: 0,
-            hb_period: 0,
-            hb_count: 0,
-            vb_period: 0,
-            vb_count: 0,
-            keys_sel: 0,
-            start: false,
-            dma: (0, 0, 0),
-            sdma: (0, 0, 0, 0),
-            sdma_ctl: 0,
-            sdma_wait: 0,
-            ports: [0; 256],
-            eeprom_cmd: [0; 2],
-            cycle: 0,
-            sound: Vec::new(),
-            stack: (u32::MAX, 0),
-            trace: None,
-        };
-        for (p, v) in START_PORTS {
-            board.output(p as u16, v);
-        }
-        board.sound.clear();
-        let mut cpu = Cpu::reset();
-        cpu.seg[SS] = 0;
-        cpu.r[SP] = 0x2000;
-        Ok(Self { cpu, board })
+        Ok(Self::with_image(r, color, sram))
     }
 
     fn run_frame(
@@ -691,7 +818,7 @@ impl Machine for WonderSwan {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::music_search::{measure, search, Trigger};
     use super::*;
 
@@ -699,7 +826,7 @@ mod tests {
     /// calls a sound routine that plays song N (N written to 0200 by the main program, 1
     /// at boot) on channel 1, loading a square waveform and changing note every 8 frames
     /// through 16 notes, then round again.
-    fn tiny_game() -> Vec<u8> {
+    pub(in super::super) fn tiny_game() -> Vec<u8> {
         let mut rom = vec![0xFFu8; 0x10000];
         // CLI; SS = DS = ES = 0; SP = 2000; vector 26h (base 20h + vertical blank) to
         // F000:0100; [0200] = 1; interrupt base 20h, vertical blank on; STI; HLT; JMP $-3

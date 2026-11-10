@@ -201,6 +201,11 @@ impl Apu {
         unsafe { (self.api.pc)(self.handle) as u16 }
     }
 
+    /// Clocks run into the current frame.
+    pub fn clocks_into_frame(&self) -> i32 {
+        self.time
+    }
+
     /// The chip's state as an `.spc` file, taken at the next frame boundary.
     pub fn save_spc(&mut self) -> Vec<u8> {
         if self.time > 0 {

@@ -166,31 +166,101 @@ pub fn rebuilt(t: &Track, rom: &[u8], fill: Fill) -> Vec<u8> {
 /// Each 1/60 s frame's pitch of every voice playing, from the DSP's registers, as writes
 /// [`melody`] reads.
 pub fn frames(spc: &[u8], count: usize) -> Option<Vec<Vec<Write>>> {
-    let mut apu = Apu::from_spc(spc).ok()?;
+    frames_of(&mut Apu::from_spc(spc).ok()?, count)
+}
+
+/// The melody a booted game's sound chip plays (`boot`, its `.spc` snapshot) once `value` is
+/// written to `port`, as the game's main CPU would to start a song.
+pub fn probe(boot: &[u8], port: usize, value: u8, count: usize) -> HashSet<u64> {
+    let Ok(mut apu) = Apu::from_spc(boot) else { return HashSet::new() };
+    apu.write_port(port, value);
+    // A frame for the driver to take the command in before listening.
+    apu.advance(FRAME_CLOCKS * 4);
+    frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
+}
+
+/// A booted game's sound chip (`boot`, its `.spc` snapshot: the driver running, from the
+/// user's ROM) with a track's song and samples laid in from the ROM: of the track's runs,
+/// the bytes where its sound memory differs from the boot's, outside the driver's zero page
+/// and stack (its live state, which stays the boot's).
+pub fn with_bank(boot: &[u8], spc: &[u8], runs: &[Run], rom: &[u8]) -> Vec<u8> {
+    let mut out = boot.to_vec();
+    for r in runs {
+        let Some(src) = rom.get(r.rom..r.rom + r.len) else { continue };
+        for (i, &b) in src.iter().enumerate() {
+            let at = r.data + i;
+            if at < 0x200 || (0xF0..0x100).contains(&at) {
+                continue;
+            }
+            if spc[ARAM + at] != boot[ARAM + at] {
+                out[ARAM + at] = b;
+            }
+        }
+    }
+    out
+}
+
+/// The melody the chip `state` plays once the main CPU's `writes` (port, value) reach it.
+pub fn command(state: &[u8], writes: &[(usize, u8)], count: usize) -> HashSet<u64> {
+    let Ok(mut apu) = Apu::from_spc(state) else { return HashSet::new() };
+    for &(port, value) in writes {
+        apu.write_port(port, value);
+        apu.advance(FRAME_CLOCKS);
+    }
+    apu.advance(FRAME_CLOCKS * 4);
+    frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
+}
+
+/// The melody the chip `state` plays once the main CPU's `writes` reach it, each after its
+/// wait (sound clocks since the one before): a command replayed as the game sent it.
+pub fn replay(state: &[u8], writes: &[(i32, usize, u8)], count: usize) -> HashSet<u64> {
+    let Ok(mut apu) = Apu::from_spc(state) else { return HashSet::new() };
+    for &(wait, port, value) in writes {
+        apu.advance(wait.max(1));
+        apu.write_port_now(port, value);
+    }
+    apu.advance(FRAME_CLOCKS * 4);
+    frames_of(&mut apu, count).map(|f| melody(&f)).unwrap_or_default()
+}
+
+/// The four ports' values as the main CPU last wrote them, in an `.spc`.
+pub fn ports_of(spc: &[u8]) -> [u8; 4] {
+    [spc[ARAM + 0xF4], spc[ARAM + 0xF5], spc[ARAM + 0xF6], spc[ARAM + 0xF7]]
+}
+
+fn frames_of(apu: &mut Apu, count: usize) -> Option<Vec<Vec<Write>>> {
     let mut out = Vec::with_capacity(count);
     let mut last = [u16::MAX; 8];
     for _ in 0..count {
         apu.advance(FRAME_CLOCKS);
         let state = apu.save_spc();
-        let dsp = state.get(DSP..DSP + 128)?;
-        let mut f = Vec::new();
-        for v in 0..8 {
-            // A voice sounds while its envelope is above zero.
-            let pitch = u16::from_le_bytes([dsp[v * 16 + 2], dsp[v * 16 + 3] & 0x3F]);
-            let env = dsp[v * 16 + 8];
-            let p = if env == 0 { 0 } else { pitch };
-            if p != last[v] {
-                last[v] = p;
-                // 14-bit pitch, kept to 11 bits for the fingerprint.
-                let q = p >> 3;
-                f.push(Write { at: 0, port: 0x2000 + v as u32 * 2, value: q & 0xFF });
-                f.push(Write { at: 0, port: 0x2001 + v as u32 * 2, value: q >> 8 });
-            }
-        }
-        out.push(f);
+        out.push(dsp_frame(state.get(DSP..DSP + 128)?, &mut last));
     }
     Some(out)
 }
+
+/// A frame's writes, as [`melody`] reads them, from the DSP's registers (`dsp`, 128 bytes) at
+/// its end: each voice's pitch where it changed since `last`.
+pub fn dsp_frame(dsp: &[u8], last: &mut [u16; 8]) -> Vec<Write> {
+    let mut f = Vec::new();
+    for v in 0..8 {
+        // A voice sounds while its envelope is above zero.
+        let pitch = u16::from_le_bytes([dsp[v * 16 + 2], dsp[v * 16 + 3] & 0x3F]);
+        let env = dsp[v * 16 + 8];
+        let p = if env == 0 { 0 } else { pitch };
+        if p != last[v] {
+            last[v] = p;
+            // 14-bit pitch, kept to 11 bits for the fingerprint.
+            let q = p >> 3;
+            f.push(Write { at: 0, port: 0x2000 + v as u32 * 2, value: q & 0xFF });
+            f.push(Write { at: 0, port: 0x2001 + v as u32 * 2, value: q >> 8 });
+        }
+    }
+    f
+}
+
+/// Where the DSP's registers are in an `.spc`.
+pub const SPC_DSP: usize = DSP;
 
 pub fn melody(frames: &[Vec<Write>]) -> HashSet<u64> {
     let pairs: Vec<(u32, u32)> = (0..8).map(|v| (0x2000 + v * 2, 0x2001 + v * 2)).collect();
