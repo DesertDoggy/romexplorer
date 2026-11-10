@@ -7,6 +7,9 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 - **More music straight from the ROM.** NES, Famicom Disk System, Game Boy, PC Engine and
   WonderSwan games whose music map ships with rommusic play their songs from the ROM, with no
   original audio format files needed.
+- **A Mac app and a Linux AppImage.** rommusic now comes as `rommusic.app` for macOS and as a
+  single-file AppImage for Linux. Both open the window; the console tool is inside too
+  (`rommusic.AppImage rommusic ...`).
 
 ## Bug fixes
 

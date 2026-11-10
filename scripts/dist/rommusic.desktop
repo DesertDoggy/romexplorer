@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=rommusic
+GenericName=Game Music Extractor
+Comment=Save the music in game ROMs and disc images as FLAC
+# Rewritten by AppRun --install to the AppImage's real path; appimagetool also requires the
+# key to be present here.
+Exec=rommusic-gui %F
+TryExec=rommusic-gui
+Icon=rommusic
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=music;soundtrack;ROM;FLAC;game;

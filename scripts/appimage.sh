@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Turn a staged desktop package into a single-file AppImage.
+# Turn a staged desktop, chdlite or rommusic package into a single-file AppImage.
 #
 #   scripts/appimage.sh                          # stage the desktop package, then build
 #   scripts/appimage.sh --stage release/<version>/linux/x64/desktop   # one already staged
+#   scripts/appimage.sh --kind chdlite           # chdlite: the window, with the console tools inside
+#   scripts/appimage.sh --kind rommusic          # rommusic: the same
 #   scripts/appimage.sh --appdir-only            # build the AppDir, skip appimagetool
 #
 # The AppDir this assembles:
@@ -13,6 +15,11 @@
 #   AppDir/.DirIcon                  <- what file managers show for the image itself
 #   AppDir/romexplorer, lib/, assets/ <- the desktop package, unchanged
 #
+# chdlite and rommusic are the same shape with their own names (chdlite.desktop, chdlite.png),
+# their own versions (chdlite/Cargo.toml, rommusic-cli/Cargo.toml) and their own trees
+# (release/chdlite/<version>/), and scripts/dist/AppRun.tool as the entry point: it starts
+# the window, or a console tool named as the first argument (chdlite.AppImage chdcomp ...).
+#
 # The package goes in exactly as scripts/package.sh staged it, so the bundle's relative
 # rpaths keep resolving: romexplorer still finds lib/linux/<arch>/ beside itself. That
 # is the reason this wraps package.sh rather than assembling its own tree.
@@ -21,7 +28,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/scripts/dist"
 
-STAGE="" ARCH="" VERSION="" OUT="" APPDIR_ONLY=0 APPIMAGETOOL="${APPIMAGETOOL:-}"
+KIND="desktop" STAGE="" ARCH="" VERSION="" OUT="" APPDIR_ONLY=0 APPIMAGETOOL="${APPIMAGETOOL:-}"
 
 die() { echo "error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
@@ -31,11 +38,14 @@ usage() {
     cat <<'EOF'
 
 Options:
-  --stage DIR         a desktop package already staged by package.sh
-                      (default: stage one now into release/<version>/linux/<arch>/desktop)
+  --kind K            desktop (romexplorer), chdlite or rommusic   (default: desktop)
+  --stage DIR         a package of that kind already staged by package.sh
+                      (default: stage one now: release/<version>/linux/<arch>/desktop, or
+                      release/chdlite/<version>/linux/<arch> and the rommusic equivalent)
   --arch x64|arm64    (default: this host)
-  --version V         (default: the workspace version)
-  --out FILE          where to write the .AppImage (default: release/<version>/dist/<name>.AppImage)
+  --version V         (default: the kind's own version: the workspace, chdlite/Cargo.toml
+                      or rommusic-cli/Cargo.toml)
+  --out FILE          where to write the .AppImage (default: <tree>/dist/<name>.AppImage)
   --appdir-only       assemble the AppDir and stop; useful when appimagetool cannot run
   --appimagetool P    use this appimagetool instead of downloading one
 EOF
@@ -44,6 +54,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --kind) KIND="${2:-}"; shift 2 ;;
         --stage) STAGE="${2:-}"; shift 2 ;;
         --arch) ARCH="${2:-}"; shift 2 ;;
         --version) VERSION="${2:-}"; shift 2 ;;
@@ -71,55 +82,92 @@ case "$ARCH" in
     *) die "--arch must be x64 or arm64" ;;
 esac
 
+# Per kind: the app's name (desktop file, icon, AppImage), the executable AppRun starts, the
+# console tools beside it, the committed icon, the Cargo package that carries the version,
+# and the release tree everything lands in.
+case "$KIND" in
+    desktop)
+        APP=romexplorer GUI=romexplorer TOOLS="" ICON="$DIST_DIR/romexplorer.png" PKG=romexplorer
+        ICON_HINT="regenerate it with scripts/render_icon.sh" ;;
+    chdlite)
+        APP=chdlite GUI=chdlite-gui TOOLS="chdlite chdcomp chdread chdhash" ICON="$ROOT_DIR/chdlite/assets/icon.png" PKG=chdlite
+        ICON_HINT="it is committed with chdlite" ;;
+    rommusic)
+        APP=rommusic GUI=rommusic-gui TOOLS="rommusic" ICON="$ROOT_DIR/rommusic-cli/assets/icon.png" PKG=rommusic-cli
+        ICON_HINT="it is committed with rommusic-cli" ;;
+    *) die "--kind must be desktop, chdlite or rommusic" ;;
+esac
+
 if [[ -z "$VERSION" ]]; then
     VERSION="$(cargo metadata --no-deps --format-version 1 --manifest-path "$ROOT_DIR/Cargo.toml" 2>/dev/null \
-        | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="romexplorer"))' 2>/dev/null)" \
-        || die "couldn't read the workspace version; pass --version"
+        | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]==sys.argv[1]))' "$PKG" 2>/dev/null)" \
+        || die "couldn't read the $PKG version; pass --version"
 fi
-[[ -n "$VERSION" ]] || die "couldn't read the workspace version; pass --version"
+[[ -n "$VERSION" ]] || die "couldn't read the $PKG version; pass --version"
 
-echo "=== AppImage $VERSION for linux/$ARCH ==="
+# The AppDir goes beside the staged package, never inside it: chdlite's and rommusic's
+# packages are staged straight into <tree>/linux/<arch>/, with no kind level to sit under.
+if [[ "$KIND" == "desktop" ]]; then
+    TREE="$ROOT_DIR/release/$VERSION"
+    DEFAULT_STAGE="$TREE/linux/$ARCH/desktop"
+    APPDIR="$TREE/linux/$ARCH/appimage/$APP.AppDir"
+else
+    TREE="$ROOT_DIR/release/$APP/$VERSION"
+    DEFAULT_STAGE="$TREE/linux/$ARCH"
+    APPDIR="$TREE/bundles/linux/$ARCH/$APP.AppDir"
+fi
 
-# --- the desktop package ---------------------------------------------------------------------
+echo "=== $APP AppImage $VERSION for linux/$ARCH ==="
+
+# --- the package ------------------------------------------------------------------------------
 if [[ -z "$STAGE" ]]; then
-    STAGE="$ROOT_DIR/release/$VERSION/linux/$ARCH/desktop"
-    note "staging the desktop package first"
-    "$ROOT_DIR/scripts/package.sh" --kind desktop --os linux --arch "$ARCH" --version "$VERSION" \
-        --out "$STAGE" --no-archive >/dev/null || die "packaging the desktop build failed"
+    STAGE="$DEFAULT_STAGE"
+    note "staging the $KIND package first"
+    "$ROOT_DIR/scripts/package.sh" --kind "$KIND" --os linux --arch "$ARCH" --version "$VERSION" \
+        --out "$STAGE" --no-archive >/dev/null || die "packaging the $KIND build failed"
 fi
 [[ -d "$STAGE" ]] || die "no staged package at $STAGE"
-[[ -f "$STAGE/romexplorer" ]] || die "$STAGE has no romexplorer -- is that a desktop package? (the server one has romexplorer_server instead)"
+[[ -f "$STAGE/$GUI" ]] || die "$STAGE has no $GUI -- is that a $KIND package? (the server one has romexplorer_server instead)"
 note "package: $STAGE"
 
 # --- assemble the AppDir ----------------------------------------------------------------------
-APPDIR="$ROOT_DIR/release/$VERSION/linux/$ARCH/appimage/romexplorer.AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR"
 cp -a "$STAGE/." "$APPDIR/"
 # install.sh is for the server; an AppImage installs nothing.
 rm -f "$APPDIR/install.sh" "$APPDIR/romexplorer.conf.example"
 
-install -m 755 "$DIST_DIR/AppRun" "$APPDIR/AppRun"
-install -m 644 "$DIST_DIR/romexplorer.desktop" "$APPDIR/romexplorer.desktop"
-note "AppRun + romexplorer.desktop"
+# AppRun: romexplorer's own, or the tools' one, filled in below once the icon size is known.
+if [[ "$KIND" == "desktop" ]]; then
+    install -m 755 "$DIST_DIR/AppRun" "$APPDIR/AppRun"
+fi
+install -m 644 "$DIST_DIR/$APP.desktop" "$APPDIR/$APP.desktop"
+note "AppRun + $APP.desktop"
 
 # The committed icon, at the top level under the name the desktop file's Icon= key names,
-# which is what appimagetool checks for. Required rather than generated: the artwork is
+# which is what appimagetool checks for. Required rather than generated: romexplorer's is
 # rendered from scripts/dist/romexplorer.svg by scripts/render_icon.sh on a dev machine and
 # committed, because no build host has a rasterizer. A missing one is a broken checkout, not
 # a cue to invent a placeholder and ship it.
-[[ -f "$DIST_DIR/romexplorer.png" ]] || die "no icon at scripts/dist/romexplorer.png -- regenerate it with scripts/render_icon.sh"
-cp -f "$DIST_DIR/romexplorer.png" "$APPDIR/romexplorer.png"
-note "icon: scripts/dist/romexplorer.png"
+[[ -f "$ICON" ]] || die "no icon at ${ICON#"$ROOT_DIR"/} -- $ICON_HINT"
+cp -f "$ICON" "$APPDIR/$APP.png"
+note "icon: ${ICON#"$ROOT_DIR"/}"
 # Some file managers show .DirIcon for the image itself; a copy, not a symlink, because a
 # dangling one inside a squashfs is a worse failure than a duplicated 30 KB.
-cp -f "$APPDIR/romexplorer.png" "$APPDIR/.DirIcon"
+cp -f "$APPDIR/$APP.png" "$APPDIR/.DirIcon"
 
 # The freedesktop locations as well, for the case where the user installs the .desktop file
-# into their menu: the menu looks up Icon=romexplorer in the theme, not inside the image.
-mkdir -p "$APPDIR/usr/share/icons/hicolor/512x512/apps" "$APPDIR/usr/share/applications"
-cp -f "$APPDIR/romexplorer.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/romexplorer.png"
-cp -f "$APPDIR/romexplorer.desktop" "$APPDIR/usr/share/applications/romexplorer.desktop"
+# into their menu: the menu looks up Icon=<app> in the theme, not inside the image. The size
+# directory has to match the picture (chdlite's is 256 px, the others 512).
+icon_px="$(python3 -c 'import struct,sys; d=open(sys.argv[1],"rb").read(24); print(struct.unpack(">I",d[16:20])[0])' "$ICON")"
+if [[ "$KIND" != "desktop" ]]; then
+    sed -e "s|@APP@|$APP|g" -e "s|@GUI@|$GUI|g" -e "s|@TOOLS@|$TOOLS|g" -e "s|@ICON_SIZE@|$icon_px|g" \
+        "$DIST_DIR/AppRun.tool" > "$APPDIR/AppRun"
+    chmod 755 "$APPDIR/AppRun"
+fi
+mkdir -p "$APPDIR/usr/share/icons/hicolor/${icon_px}x${icon_px}/apps" "$APPDIR/usr/share/applications"
+cp -f "$APPDIR/$APP.png" "$APPDIR/usr/share/icons/hicolor/${icon_px}x${icon_px}/apps/$APP.png"
+cp -f "$APPDIR/$APP.desktop" "$APPDIR/usr/share/applications/$APP.desktop"
 
 # --- gates ------------------------------------------------------------------------------------
 # Everything appimagetool would reject, plus the two things it would happily accept and
@@ -127,10 +175,13 @@ cp -f "$APPDIR/romexplorer.desktop" "$APPDIR/usr/share/applications/romexplorer.
 fail=0
 [[ -x "$APPDIR/AppRun" ]] || { echo "error: AppRun is not executable" >&2; fail=1; }
 sh -n "$APPDIR/AppRun" || { echo "error: AppRun does not parse as POSIX sh" >&2; fail=1; }
-[[ -x "$APPDIR/romexplorer" ]] || { echo "error: romexplorer is not executable" >&2; fail=1; }
-grep -q '^Icon=romexplorer$' "$APPDIR/romexplorer.desktop" || { echo "error: the desktop file's Icon= does not name romexplorer.png" >&2; fail=1; }
-grep -q '^Categories=' "$APPDIR/romexplorer.desktop" || { echo "error: the desktop file needs Categories=" >&2; fail=1; }
-[[ -f "$APPDIR/romexplorer.png" ]] || { echo "error: no icon at the AppDir root" >&2; fail=1; }
+grep -q '@[A-Z][A-Z]*@' "$APPDIR/AppRun" && { echo "error: AppRun still has an unfilled @...@ value" >&2; fail=1; }
+for exe in $GUI $TOOLS; do
+    [[ -x "$APPDIR/$exe" ]] || { echo "error: $exe is not executable" >&2; fail=1; }
+done
+grep -q "^Icon=$APP\$" "$APPDIR/$APP.desktop" || { echo "error: the desktop file's Icon= does not name $APP.png" >&2; fail=1; }
+grep -q '^Categories=' "$APPDIR/$APP.desktop" || { echo "error: the desktop file needs Categories=" >&2; fail=1; }
+[[ -f "$APPDIR/$APP.png" ]] || { echo "error: no icon at the AppDir root" >&2; fail=1; }
 [[ -d "$APPDIR/lib/linux/$ARCH" ]] || { echo "error: the bundle has no lib/linux/$ARCH" >&2; fail=1; }
 [[ "$fail" -eq 0 ]] || die "the AppDir is not valid; not building an image from it"
 note "AppDir gates passed ($(du -sh "$APPDIR" | cut -f1))"
@@ -166,8 +217,8 @@ if [[ -z "$APPIMAGETOOL" ]]; then
 fi
 note "appimagetool: $APPIMAGETOOL"
 
-NAME="romexplorer-$VERSION-linux-$ARCH.AppImage"
-OUT="${OUT:-$ROOT_DIR/release/$VERSION/dist/$NAME}"
+NAME="$APP-$VERSION-linux-$ARCH.AppImage"
+OUT="${OUT:-$TREE/dist/$NAME}"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 
