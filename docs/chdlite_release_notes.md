@@ -1,4 +1,4 @@
-# chdlite 0.3.2
+# chdlite 0.3.3
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
 
@@ -22,6 +22,10 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 - **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
   RetroAchievements has achievements for it, with the game's name. The list it checks is
   bundled; its date is shown in Settings and by `--version`.
+
+# chdlite 0.3.2
+
+Android only.
 
 ## Bug fixes
 
