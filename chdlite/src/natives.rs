@@ -38,7 +38,7 @@ pub fn ensure() -> Result<(), String> {
 
 /// The libraries romexplorer looks for, under the names it looks for them.
 #[cfg(target_os = "android")]
-const APK_LIBRARIES: [&str; 6] = ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so"];
+const APK_LIBRARIES: [&str; 7] = ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so", "libRAHasher.so"];
 
 #[cfg(target_os = "android")]
 fn link_apk_libraries() -> Result<(), String> {

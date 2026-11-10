@@ -928,17 +928,8 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
     Ok(Some(rom_id))
 }
 
-/// The RetroAchievements hash of `path`: a CHD, RVZ, CSO, PBP or an archived cartridge read in
-/// memory (`rom::ra_disc`), anything else read by RAHasher where it lies (a cue finds its
-/// tracks). Nothing is extracted to disk.
 fn ra_hash_of(path: &Path, console: u32) -> std::result::Result<hash::RahashOutcome, hash::RahashError> {
-    if crate::rom::ra_disc::handles(path) {
-        // N64, SNES, NES, PC Engine, Lynx, DS, 7800, DSi, FDS: the cartridge (or disk) systems
-        // whose RA hash is not the file's MD5.
-        let cartridge = matches!(console, 2 | 3 | 7 | 8 | 13 | 18 | 51 | 78 | 81);
-        return crate::rom::ra_disc::hash_of(path, console, cartridge).map(hash::RahashOutcome::Done);
-    }
-    hash::rahash_file(path, console, 0)
+    crate::rom::ra_disc::ra_hash(path, console)
 }
 
 type RaHashResult = std::result::Result<hash::RahashOutcome, hash::RahashError>;
