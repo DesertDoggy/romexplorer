@@ -1,5 +1,24 @@
-*Esta es una traducción de las notas de las versiones 0.2.0 y 0.1.8. Las versiones anteriores
+*Esta es una traducción de las notas de las versiones 0.2.1, 0.2.0 y 0.1.8. Las versiones anteriores
 están en [release_notes.md](release_notes.md) (inglés), que prevalece en caso de diferencia.*
+
+# romexplorer 0.2.1 (alpha)
+
+Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
+Haz una copia de seguridad antes de sustituir una versión.
+
+## Cambios
+
+**Audio de las ROM**
+- Al abrir la página de un título se indexa primero la música de las ROM de ese juego. Mientras
+  tanto, la página muestra el progreso en lugar de reproducir música de otro juego.
+- Una ROM con el mismo contenido que otra ya indexada toma sus pistas en lugar de leerse de
+  nuevo.
+
+## Correcciones
+
+- La indexación de la música de las ROM no terminaba nunca con algunas imágenes de disco, las
+  que tienen un «;» dentro de un nombre de archivo. Ahora se omite una ROM que tarda más de 20
+  minutos.
 
 # romexplorer 0.2.0 (alpha)
 

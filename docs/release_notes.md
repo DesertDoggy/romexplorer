@@ -1,3 +1,21 @@
+# romexplorer 0.2.1 (alpha)
+
+Alpha: the database schema may change between releases with no upgrade path. Back up before
+replacing a build.
+
+## Changes
+
+**ROM audio**
+- Opening a title page indexes that game's ROM music first. Until it is done, the page shows
+  the progress instead of playing another game's music.
+- A ROM with the same content as one already indexed takes its tracks instead of being read
+  again.
+
+## Bug fixes
+
+- ROM music indexing never finished on some disc images, ones with a ";" inside a file name.
+  A ROM that takes more than 20 minutes is now skipped.
+
 # romexplorer 0.2.0 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
