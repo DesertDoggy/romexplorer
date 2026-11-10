@@ -108,9 +108,3 @@ match their length. When in doubt, shorter.
   sentence: ます調, short sentences, natural terms (照合, 記録, 反映), no nested conditional
   clauses copied from English structure. It may say less than the English if that reads
   better.
-
-## Builds and test runs stay inside the repo
-
-On the user's PC, build and test only inside this repo's directory: Norton quarantines
-anything built elsewhere. A separate tree (second worktree, scratch output) goes in a
-`.`-prefixed subdirectory of the repo, listed in `.gitignore` (see CODING_RULES.md, Tests).
