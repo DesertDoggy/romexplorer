@@ -15,6 +15,13 @@ The user runs all git commands themselves. Never run a git write command (`add`,
 filesystem commands (`mv`, `cp`, `rm`, `patch -R`) are fine for working-tree changes; when
 a git action is actually needed, give the user the exact command to run.
 
+## Building and testing on the user's Windows PC
+
+Build and test only inside the repo folder itself. Norton quarantines builds made anywhere
+else on that PC, including a sibling worktree or `%TEMP%`. A scratch checkout, a separate
+target dir or test output goes in a subfolder of the repo whose name starts with `.test`
+(`.test`, `.test-music`, ...), which `.gitignore` keeps out of git.
+
 ## Parallelism
 
 Default thread/worker counts always come from `available_parallelism()` (or the

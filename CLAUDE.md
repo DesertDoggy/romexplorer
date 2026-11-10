@@ -1,5 +1,12 @@
 # Coding rules
 
+## Building and testing on the user's PC: inside the repo
+
+On the user's Windows PC, build and test only inside the repo folder: Norton quarantines
+builds anywhere else (a sibling worktree, `%TEMP%`). Scratch checkouts, target dirs and test
+output go in a repo subfolder named `.test` or `.test-<name>`, which `.gitignore` ignores.
+See `CODING_RULES.md`.
+
 ## The app and the web console offer the same things
 
 There are two UIs over one API: the app (`romexplorer-gui`, desktop and its web build at
