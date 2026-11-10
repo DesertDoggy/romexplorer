@@ -127,6 +127,18 @@ elif [[ "$TARGET/$ARCH" == "linux/arm64" && "$HOST_ARCH" != "arm64" ]]; then
   prefix="${LINUX_ARM64_CROSS_PREFIX:-aarch64-linux-gnu-}"
   command -v "${prefix}g++" >/dev/null 2>&1 || { echo "Error: ${prefix}g++ not found. Install g++-aarch64-linux-gnu." >&2; exit 1; }
   MAKE_TOOLS=(CC="${prefix}gcc" CXX="${prefix}g++" AR="${prefix}ar")
+elif [[ "$TARGET" == "android" ]]; then
+  # The NDK's clang for API 21, found the way chdman-simd's build finds it (chdlite's APK
+  # loads this library). r26+, for the C++23 the sources use.
+  : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point to an installed Android NDK (r26+)}"
+  case "$(uname -s)" in
+    Darwin) host_tag="darwin-x86_64" ;;
+    Linux) host_tag="linux-x86_64" ;;
+    MINGW*|MSYS*|CYGWIN*) host_tag="windows-x86_64" ;;
+  esac
+  ndk_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$host_tag/bin"
+  [[ -x "$ndk_bin/aarch64-linux-android21-clang++" || -f "$ndk_bin/aarch64-linux-android21-clang++.cmd" ]] || { echo "Error: NDK clang not found in $ndk_bin" >&2; exit 1; }
+  MAKE_TOOLS=(CC="$ndk_bin/aarch64-linux-android21-clang" CXX="$ndk_bin/aarch64-linux-android21-clang++" AR="$ndk_bin/llvm-ar")
 fi
 
 case "$TYPE" in

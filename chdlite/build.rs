@@ -22,6 +22,24 @@ fn main() {
     if env::var_os("CARGO_FEATURE_BUNDLED_NATIVES").is_some() {
         bundle_natives(&target_os);
     }
+    bundle_ra_db();
+}
+
+/// Writes `$OUT_DIR/radb.rs`: `app_root_ex/assets/radb.bin`, the RetroAchievements hash list
+/// `scripts/update_ra_db.sh` writes, compiled in when it is there (`src/ra.rs`). A build
+/// without it still works out RA hashes; it only cannot say which have achievements.
+fn bundle_ra_db() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let source = manifest.join("..").join("app_root_ex").join("assets").join("radb.bin");
+    println!("cargo:rerun-if-changed={}", source.display());
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let code = if source.is_file() {
+        format!("pub static EMBEDDED: Option<&[u8]> = Some(include_bytes!({:?}));\n", path_str(&source))
+    } else {
+        println!("cargo:warning=no {} (scripts/update_ra_db.sh), so this build cannot say which RA hashes have achievements", source.display());
+        "pub static EMBEDDED: Option<&[u8]> = None;\n".to_string()
+    };
+    fs::write(out_dir.join("radb.rs"), code).expect("write radb.rs");
 }
 
 /// Writes `$OUT_DIR/natives.rs`: the target's chdman and dolphinrvz libraries, and the optional
@@ -46,15 +64,16 @@ fn bundle_natives(target_os: &str) {
     };
     // The first two are required. The rest are optional: without one the executable still
     // converts everything else, and says which library is missing when it is needed --
-    // cemuwua for Wii U discs and .zar, exiso for XISO, psxpbp for PBP, zlib-ng for CSO.
+    // cemuwua for Wii U discs and .zar, exiso for XISO, psxpbp for PBP, zlib-ng for CSO,
+    // RAHasher for the RetroAchievements hash (it keeps its lib prefix on Windows too).
     const REQUIRED: usize = 2;
-    let (os, names): (&str, [&str; 6]) = match target_os {
-        "windows" => ("windows", ["chdman.dll", "dolphinrvz.dll", "cemuwua.dll", "exiso.dll", "psxpbp.dll", "zlib.dll"]),
-        "macos" => ("macos", ["libchdman.dylib", "libdolphinrvz.dylib", "libcemuwua.dylib", "libexiso.dylib", "libpsxpbp.dylib", "libz.dylib"]),
+    let (os, names): (&str, [&str; 7]) = match target_os {
+        "windows" => ("windows", ["chdman.dll", "dolphinrvz.dll", "cemuwua.dll", "exiso.dll", "psxpbp.dll", "zlib.dll", "libRAHasher.dll"]),
+        "macos" => ("macos", ["libchdman.dylib", "libdolphinrvz.dylib", "libcemuwua.dylib", "libexiso.dylib", "libpsxpbp.dylib", "libz.dylib", "libRAHasher.dylib"]),
         // Android builds its own libraries (scripts/build_chdlite_android.sh --natives), named
         // as on Linux, into lib/android/<arch>/.
-        "android" => ("android", ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so"]),
-        _ => ("linux", ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so"]),
+        "android" => ("android", ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so", "libRAHasher.so"]),
+        _ => ("linux", ["libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libexiso.so", "libpsxpbp.so", "libz.so", "libRAHasher.so"]),
     };
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let lib_dir = env::var_os("CHDLITE_NATIVE_LIB_DIR")

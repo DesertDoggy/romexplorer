@@ -14,6 +14,14 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 - **A Mac app and a Linux AppImage.** chdlite now comes as `chdlite.app` for macOS and as a
   single-file AppImage for Linux. Both open the window; the console tools are inside too
   (`chdlite.AppImage chdcomp ...`).
+- **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
+  RetroAchievements has achievements for it, with the game's name. The list it checks is
+  bundled; its date is shown in Settings and by `--version`.
+
+## Bug fixes
+
+- In the Android app, allowing file access failed with "Java exception was thrown" instead of
+  opening the system's access screen.
 
 # chdlite 0.3.1
 

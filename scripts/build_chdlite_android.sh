@@ -8,7 +8,7 @@
 #
 # Usage: scripts/build_chdlite_android.sh [--natives] [--release] [--cli|--cli-only] [--check]
 #   --natives   first build every native library chdlite uses (zlib-ng, chdman-simd, dolphin,
-#               cemu, extract-xiso, beetle-psx-libretro) for android/arm64
+#               RALibretro's RAHasher, cemu, extract-xiso, beetle-psx-libretro) for android/arm64
 #               (scripts/build_native_deps.sh --only ...) and deploy them to
 #               app_root_ex/lib/android/arm64/. Needed once, and after a native change.
 #   --release   a release APK (`dx bundle`), signed when the environment names a keystore
@@ -122,7 +122,7 @@ fi
 # --- native libraries ---------------------------------------------------------------------------
 LIB_DIR="$ROOT_DIR/app_root_ex/lib/android/arm64"
 if [[ "$NATIVES" -eq 1 ]]; then
-    bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,chdman-simd,dolphin,cemu,extract-xiso,beetle-psx-libretro android arm64
+    bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,chdman-simd,dolphin,RALibretro,cemu,extract-xiso,beetle-psx-libretro android arm64
 fi
 for lib in libchdman.so libdolphinrvz.so; do
     [[ -f "$LIB_DIR/$lib" ]] || echo "warning: $LIB_DIR/$lib is not built (run with --natives); the APK can't convert without it" >&2
@@ -182,7 +182,7 @@ JNI_DIR="$PROJECT/app/src/main/jniLibs/$ABI"
 mkdir -p "$JNI_DIR"
 copied=0
 # Only chdlite's: app_root_ex/lib/android/arm64/ also holds rommusic's (scripts/build_rommusic_android.sh).
-for name in libchdman.so libdolphinrvz.so libcemuwua.so libexiso.so libpsxpbp.so libz.so; do
+for name in libchdman.so libdolphinrvz.so libcemuwua.so libexiso.so libpsxpbp.so libz.so libRAHasher.so; do
     lib="$LIB_DIR/$name"
     [[ -f "$lib" ]] || continue
     cp -f "$lib" "$JNI_DIR/"
