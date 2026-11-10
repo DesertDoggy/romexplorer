@@ -654,12 +654,13 @@ fn print_gb_mapcheck(path: &Path, rom: &[u8], gbs: &[u8], t: &mut Tally) {
     let calls = m.tracks.iter().flatten().map(|s| s.iter().filter(|o| matches!(o, gb_map::Op::Call { .. })).count()).max().unwrap_or(0);
     let wrong: Vec<String> = check.iter().enumerate().filter_map(|(i, c)| c.filter(|&a| a < MAP_RIGHT).map(|a| format!("{i}:{a:.2}"))).take(12).collect();
     println!(
-        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps){}",
+        "{name}: map, {:.1} s: {right} of {with_melody} tracks played right from the ROM (gaps from the ROM: {bridged}; gaps from the file: {oracle}; on the game's board: {board}; saved map: {saved}) ({} songs; {} runs; scripts up to {calls} calls; {} tracks unscripted; play {} steps; {} bytes of the file's read){}",
         started.elapsed().as_secs_f32(),
         m.header.songs,
         m.runs.len(),
         m.tracks.iter().filter(|s| s.is_none()).count(),
         m.play.len(),
+        m.patches.len(),
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.join(" ")) }
     );
     t.checked[0] += 1;
