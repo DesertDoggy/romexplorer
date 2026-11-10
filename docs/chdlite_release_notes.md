@@ -2,7 +2,12 @@
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
 
-No changes to chdlite itself. It is released alongside romexplorer 0.2.1.
+Released alongside romexplorer 0.2.1.
+
+## Bug fixes
+
+- In the Android app, allowing file access failed with "Java exception was thrown" instead of
+  opening the system's access screen.
 
 # chdlite 0.3.1
 
