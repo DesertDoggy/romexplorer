@@ -19,6 +19,10 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Die Indizierung der ROM-Musik wurde bei einigen Disc-Images nie fertig, und zwar bei solchen
   mit einem „;“ mitten im Dateinamen. Ein ROM, das länger als 20 Minuten braucht, wird jetzt
   übersprungen.
+- Beim Konvertieren von SNES-Dumps in einer Kopie wurde eine Datei trotzdem konvertiert, wenn
+  Größe und interner Header beim Kopierer-Header nicht übereinstimmten. Sie wird jetzt als
+  Fehler gemeldet. Ein NES-Dump, der nicht in der Header-Datenbank steht, wird mit seinem Hash
+  gemeldet.
 
 # romexplorer 0.2.0 (alpha)
 

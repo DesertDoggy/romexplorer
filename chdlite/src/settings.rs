@@ -37,6 +37,7 @@ pub struct Settings {
     pub rvz: Rvz,
     pub extract: Extract,
     pub hash: Hash,
+    pub cartridge: Cartridge,
     pub jobs: Jobs,
 }
 
@@ -160,6 +161,28 @@ pub struct Hash {
 impl Default for Hash {
     fn default() -> Self {
         Self { algorithms: vec!["sha1".into()] }
+    }
+}
+
+/// The layout each cartridge platform's dumps are written in (`crate::cart`). Chosen, never
+/// automatic: a dump already in it is skipped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cartridge {
+    /// One of `cart::NES_FORMATS`: `headered` (.nes), `headerless` (.nes) or `unh`
+    /// (headerless, .unh).
+    pub nes: String,
+    /// One of `cart::N64_FORMATS`: `z64` (big-endian), `v64` (byte-swapped), `n64`
+    /// (little-endian).
+    pub n64: String,
+    /// One of `cart::SNES_FORMATS`: `sfc` (no copier header) or `smc` (512-byte copier header).
+    pub snes: String,
+}
+
+impl Default for Cartridge {
+    fn default() -> Self {
+        // What current emulators and No-Intro expect.
+        Self { nes: "headered".into(), n64: "z64".into(), snes: "sfc".into() }
     }
 }
 

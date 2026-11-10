@@ -18,6 +18,9 @@ de segurança antes de substituir uma versão.
 
 - A indexação da música das ROM nunca terminava em algumas imagens de disco, as que têm um «;» no
   meio de um nome de ficheiro. Uma ROM que demore mais de 20 minutos passa a ser ignorada.
+- Ao converter dumps de SNES numa cópia, um ficheiro era convertido mesmo quando o tamanho e o
+  cabeçalho interno não concordavam quanto ao cabeçalho de copiador. Agora é indicado como erro.
+  Um dump de NES que não está na base de dados de cabeçalhos é indicado com o seu hash.
 
 # romexplorer 0.2.0 (alpha)
 

@@ -18,6 +18,9 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 - L'indicizzazione della musica delle ROM non finiva mai con alcune immagini disco, quelle con
   un «;» all'interno di un nome di file. Ora una ROM che richiede più di 20 minuti viene saltata.
+- Convertendo dump SNES in una copia, un file veniva convertito anche se dimensione e header
+  interno non concordavano sull'header del copier. Ora viene segnalato come errore. Un dump NES
+  assente dal database degli header viene segnalato con il suo hash.
 
 # romexplorer 0.2.0 (alpha)
 

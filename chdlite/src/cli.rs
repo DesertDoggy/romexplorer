@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use crate::batch::{self, Batch, BatchEvent, WORKER_FLAG};
+use crate::cart::{N64_FORMATS, NES_FORMATS, SNES_FORMATS};
 use crate::classify::expand;
 use crate::job::Mode;
 use crate::settings::{CompMode, LitePreset, Settings, CUE_STYLES, GDROM_SHEETS, RVZ_BLOCKS, RVZ_CODECS};
@@ -39,7 +40,8 @@ impl DefaultMode {
 
 fn usage(name: &str) -> String {
     format!(
-        "{name} {version} -- disc images to CHD / RVZ, and back; Wii U and Xbox discs to WUA / ZAR / XISO
+        "{name} {version} -- disc images to CHD / RVZ, and back; Wii U and Xbox discs to WUA / ZAR / XISO;
+NES / N64 / SNES cartridge dumps into the header or byte order you pick
 
 Usage: {name} [command] <file|dir>... [options]
        drop files or folders onto the executable
@@ -58,6 +60,12 @@ emulators read no lossless container: Wii U .wud/.wux -> WUA, Xbox 360 -> ZAR, X
 XISO. Those keep the game's files but not the disc, so they can't be turned back into
 the original image. A Wii U disc needs its key: the .key file beside it, or a keys.txt
 beside it or this program. Only lossless inputs are taken: not .wua, .zar or an XISO.
+
+Cartridge dumps (.nes .unh .z64 .v64 .n64 .sfc .smc .swc) are not compressed: create and
+comp write them in the layout set for their platform, and skip one already in it. Whether
+a NES dump has a header is looked up by its hash in the NES header database; a hash that
+is not there is an error. An SNES copier header is told by the size (whole KB + 512), and
+the cartridge's own header has to agree.
 
 Options:
   -o, --output <dir>          write here instead of next to each input
@@ -78,6 +86,10 @@ Options:
   --hash <list>               sha1,md5,crc32,sha256,xxh3
   --cue-style <style>         {cue_styles}: the extracted cue sheet's dialect
   --gdrom-sheet <kind>        {gdrom_sheets}: an extracted GD-ROM's sheet (default gdi)
+  --nes <format>              {nes}: with the iNES header (.nes), without
+                              it (.nes), or without it as .unh
+  --n64 <format>              {n64}: big-endian, byte-swapped, little-endian
+  --snes <format>             {snes}: without or with a 512-byte copier header
   --version, --help
 
 Defaults come from {settings}",
@@ -92,6 +104,9 @@ Defaults come from {settings}",
         rvz_blocks = RVZ_BLOCKS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join("|"),
         cue_styles = CUE_STYLES.join("|"),
         gdrom_sheets = GDROM_SHEETS.join("|"),
+        nes = NES_FORMATS.join("|"),
+        n64 = N64_FORMATS.join("|"),
+        snes = SNES_FORMATS.join("|"),
         settings = Settings::path().display(),
     )
 }
@@ -198,6 +213,18 @@ fn parse(args: &[String], default: DefaultMode, mut settings: Settings) -> Resul
                 }
                 settings.extract.gdrom_sheet = sheet;
             }
+            "--nes" | "--n64" | "--snes" => {
+                let format = value(arg)?.to_ascii_lowercase();
+                let (all, field): (&[&str], &mut String) = match arg.as_str() {
+                    "--nes" => (&NES_FORMATS, &mut settings.cartridge.nes),
+                    "--n64" => (&N64_FORMATS, &mut settings.cartridge.n64),
+                    _ => (&SNES_FORMATS, &mut settings.cartridge.snes),
+                };
+                if !all.contains(&format.as_str()) {
+                    return Err(format!("{arg}: '{format}' is not one of {}", all.join(", ")));
+                }
+                *field = format;
+            }
             "-i" | "--input" => paths.push(PathBuf::from(value(arg)?)),
             flag if flag.starts_with('-') && !Path::new(flag).exists() => return Err(format!("unknown option {flag}")),
             path => paths.push(PathBuf::from(path)),
@@ -277,7 +304,7 @@ pub fn main(default: DefaultMode) -> i32 {
     }
     let inputs = expand(&parsed.paths);
     if inputs.is_empty() {
-        eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso or .pbp in what was given");
+        eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso, .pbp or cartridge dumps in what was given");
         return finish(2);
     }
     if matches!(parsed.mode, Mode::Lite | Mode::Comp) && parsed.settings.output.lossy_warning {
