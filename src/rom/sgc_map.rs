@@ -73,6 +73,8 @@ struct Player {
     used: Option<Vec<bool>>,
     /// Every write (memory, or a port as `0x10000 | port`), while recording.
     log: Option<Vec<(u32, u8)>>,
+    /// Data offsets the game's own code reads, while recording.
+    game_reads: Option<std::collections::BTreeSet<usize>>,
 }
 
 impl Player {
@@ -98,6 +100,7 @@ impl Player {
             writes: Vec::new(),
             used: None,
             log: None,
+            game_reads: None,
         };
         for (i, &v) in h.mapping.iter().enumerate() {
             p.map(0xFFFC + i as u16, v);
@@ -169,6 +172,9 @@ impl Bus for Player {
             if let Some(u) = used.get_mut(d) {
                 *u = true;
             }
+        }
+        if let (Some(r), Some(d)) = (self.game_reads.as_mut(), i.checked_sub(self.load)) {
+            r.insert(d);
         }
         self.rom.get(i).copied().unwrap_or(0xFF)
     }
@@ -271,6 +277,9 @@ pub struct Map {
     pub tracks: Vec<Option<Vec<Op>>>,
     pub plays: Vec<Option<Vec<Op>>>,
     pub ways: Vec<Way>,
+    /// Bytes of the file the game's code reads that differ from the ROM's where the layout
+    /// puts them (a bank number or pointer its author changed): data offset and value.
+    pub patches: Vec<(u32, u8)>,
 }
 
 impl Map {
@@ -280,6 +289,8 @@ impl Map {
 }
 
 const PATCHED_BYTES: u16 = 3;
+/// Frames each track is played to find what the game's code reads of the file.
+const PATCH_FRAMES: usize = 1800;
 const PLAY_CALLS: usize = 6;
 
 /// Calls, jumps, returns and restarts (not relative branches): the opcode and the byte
@@ -520,7 +531,23 @@ pub fn map(sgc: &[u8], rom: &[u8]) -> Option<Map> {
     }
     let play = play?;
     let plays = steadies.into_iter().map(|s| s.filter(|s| !same_steps(s, &play))).collect();
-    Some(Map { header: h, data_len: data.len(), runs: layout.runs, play, tracks, plays, ways: Vec::new() })
+    let mut m = Map { header: h, data_len: data.len(), runs: layout.runs, play, tracks, plays, ways: Vec::new(), patches: Vec::new() };
+    // What the game's code reads of the file as its tracks play (the scripts call only the
+    // game's code), kept where the file differs from the layout bridged from the ROM.
+    let mut reads = std::collections::BTreeSet::new();
+    for t in 0..h.songs {
+        if let Some(mut s) = LayoutSong::open_reading(&m, data, t) {
+            for _ in 0..PATCH_FRAMES {
+                if s.frame().is_none() {
+                    break;
+                }
+            }
+            reads.append(&mut s.p.game_reads.take().unwrap_or_default());
+        }
+    }
+    let bridged = rebuilt(&m, rom, Fill::Bridged);
+    m.patches = reads.into_iter().filter(|&d| d < data.len() && !placed[d] && data[d] != bridged[d]).map(|d| (d as u32, data[d])).collect();
+    Some(m)
 }
 
 fn rebuilt(m: &Map, rom: &[u8], fill: Fill) -> Vec<u8> {
@@ -545,6 +572,13 @@ fn rebuilt(m: &Map, rom: &[u8], fill: Fill) -> Vec<u8> {
             }
         }
     }
+    if !matches!(fill, Fill::File(_)) {
+        for &(d, v) in &m.patches {
+            if let Some(b) = data.get_mut(d as usize) {
+                *b = v;
+            }
+        }
+    }
     data
 }
 
@@ -561,6 +595,19 @@ impl LayoutSong {
     pub fn open(m: &Map, rom: &[u8], song: u8, fill: Fill) -> Option<Self> {
         let script = m.tracks.get(song as usize)?.as_ref()?;
         let mut p = Player::new(&m.header, &rebuilt(m, rom, fill));
+        let mut cpu = Cpu::default();
+        if !replay(&mut p, &mut cpu, m.header.sp, script) {
+            return None;
+        }
+        let first = std::mem::take(&mut p.writes);
+        Some(Self { p, cpu, sp: m.header.sp, play: m.play_of(song).to_vec(), first })
+    }
+
+    /// The song on the file's own data, noting what the game's code reads of it.
+    fn open_reading(m: &Map, data: &[u8], song: u8) -> Option<Self> {
+        let script = m.tracks.get(song as usize)?.as_ref()?;
+        let mut p = Player::new(&m.header, data);
+        p.game_reads = Some(Default::default());
         let mut cpu = Cpu::default();
         if !replay(&mut p, &mut cpu, m.header.sp, script) {
             return None;
@@ -723,6 +770,9 @@ impl Map {
             }
         }
         out.push(format!("s {}", self.ways.iter().map(|w| match w { Way::Layout => 'l', Way::Zeros => 'z', Way::None => '-' }).collect::<String>()));
+        if !self.patches.is_empty() {
+            out.push(format!("x {}", self.patches.iter().map(|(d, v)| format!("{d:x}:{v:x}")).collect::<Vec<_>>().join(" ")));
+        }
         out.join("\n")
     }
 
@@ -760,6 +810,7 @@ impl Map {
             tracks: Vec::new(),
             plays: Vec::new(),
             ways: Vec::new(),
+            patches: Vec::new(),
         };
         for line in lines {
             let f: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
@@ -800,6 +851,13 @@ impl Map {
                     let i: usize = f.get(1)?.parse().ok()?;
                     let list = if k == "t" { &mut m.tracks } else { &mut m.plays };
                     *list.get_mut(i)? = Some(ops(&f[2..])?);
+                }
+                Some("x") => {
+                    for t in &f[1..] {
+                        let v = list(t)?;
+                        let [d, b] = v[..] else { return None };
+                        m.patches.push((d, b as u8));
+                    }
                 }
                 Some("s") => {
                     m.ways = f.get(1).unwrap_or(&"").chars().map(|c| match c { 'l' => Way::Layout, 'z' => Way::Zeros, _ => Way::None }).collect();
