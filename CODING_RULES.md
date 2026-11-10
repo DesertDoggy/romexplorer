@@ -93,12 +93,6 @@ the report can contain real sample data -- see "Sample data" above). A sample-ba
 skips cleanly (doesn't fail) when its samples root isn't populated, rather than requiring
 every dev to have the full sample set.
 
-On the user's PC, build and test only inside this repo's own directory. Norton quarantines
-build output and test binaries anywhere else (a sibling worktree, a temp folder). When a
-separate tree is needed -- a second worktree, scratch output, a test run's files -- put it in
-a subdirectory of the repo whose name starts with `.` (such as `.music-test/`) and add that
-name to `.gitignore`.
-
 
 ## Job progress: always detailed, from the first second
 
