@@ -2954,5 +2954,7 @@
   "split off": "separa",
   "Listed and copied with this release.": "Elencate e copiate con questa uscita.",
   "Indexing this game's music: {progress}": "Indicizzazione della musica di questo gioco: {progress}",
-  "waiting to start": "in attesa di avvio"
+  "waiting to start": "in attesa di avvio",
+  "A 3DS title, decrypted with your own keys: aes_keys.txt (or boot9.bin), and seeddb.bin for a title that needs it, beside the file, beside romexplorer or in its assets folder. A game becomes a .cci or .3ds, or a .cxi: its main part alone, without the manual and download-play parts. zcci and zcxi are the same compressed for Azahar (zstd level 3). An update, DLC or demo stays a .cia (.zcia), homebrew a .3dsx (.z3dsx).": "Un titolo 3DS, decifrato con le tue chiavi: aes_keys.txt (o boot9.bin) e, per i titoli che lo richiedono, seeddb.bin, accanto al file, accanto a romexplorer o nella sua cartella assets. Un gioco diventa .cci o .3ds, oppure .cxi: solo la parte principale, senza manuale né parte per il download play. zcci e zcxi sono gli stessi compressi per Azahar (zstd livello 3). Un aggiornamento, un DLC o una demo resta .cia (.zcia), l'homebrew .3dsx (.z3dsx).",
+  "3DS files + your keys only": "solo file 3DS + le tue chiavi"
 }

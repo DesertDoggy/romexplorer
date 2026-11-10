@@ -47,7 +47,7 @@ const ART: [(&str, &[u8]); 4] = [
 ];
 
 const MODES: [(Mode, &str, &str, &str); 4] = [
-    (Mode::Lite, "lite.png", "Lite", "Lite: fast. Disc image, .cso or .pbp → CHD / RVZ; Wii U / Xbox → WUA / ZAR / XISO. NES / N64 / SNES dumps → the layout set in Settings. A .chd or .rvz is extracted."),
+    (Mode::Lite, "lite.png", "Lite", "Lite: fast. Disc image, .cso or .pbp → CHD / RVZ; Wii U / Xbox → WUA / ZAR / XISO. NES / N64 / SNES dumps → the layout set in Settings; 3DS titles decrypted into the format set there. A .chd or .rvz is extracted."),
     (Mode::Comp, "comp.png", "Comp", "Comp: smallest file, slow. A .chd or .rvz is extracted."),
     (Mode::Read, "read.png", "Read", "Read: show what a file is."),
     (Mode::Hash, "hash.png", "Hash", "Hash: hash the disc inside a .chd / .rvz / .cso / .pbp, or the image itself."),
@@ -230,7 +230,7 @@ fn App() -> Element {
                     Ui::Expanded { with, inputs, lossy } => {
                         preparing.set(false);
                         if inputs.is_empty() {
-                            log.write().push(line("err", "Nothing to do: no disc images, .chd, .rvz, .cso, .pbp or cartridge dumps in what was dropped."));
+                            log.write().push(line("err", "Nothing to do: no disc images, .chd, .rvz, .cso, .pbp, cartridge dumps or 3DS titles in what was dropped."));
                         } else if !lossy.is_empty() {
                             asking.set(Some((with, inputs, lossy)));
                         } else {
@@ -335,7 +335,7 @@ fn App() -> Element {
     let overall = snapshot.overall();
     let status = if snapshot.names.is_empty() { String::new() } else { format!("{:.0}%  ·  {}/{}", overall, snapshot.done, snapshot.names.len()) };
     let output_dir = settings().output.dir.clone();
-    let cartridges = chdlite::cart::summary(&settings().cartridge);
+    let cartridges = format!("{} · {}", chdlite::cart::summary(&settings().cartridge), chdlite::n3ds::summary(&settings().n3ds.format));
 
     #[cfg(target_os = "android")]
     let needs_access = !file_access();
@@ -466,7 +466,7 @@ fn App() -> Element {
                         });
                     },
                     b { "Drop files or folders here" }
-                    "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO · NES / N64 / SNES → the layout in Settings — or click to choose files"
+                    "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO · NES / N64 / SNES → the layout in Settings · 3DS + keys → decrypted, the format in Settings — or click to choose files"
                 }
             }
             div { class: "row",
@@ -494,7 +494,7 @@ fn App() -> Element {
                 }
             }
             div { class: "row",
-                label { title: "What Lite and Comp write a NES, N64 or SNES dump as", "Cartridges" }
+                label { title: "What Lite and Comp write a NES, N64 or SNES dump and a 3DS title as", "Cartridges" }
                 span { class: "cartridges", style: "flex:1", "{cartridges}" }
                 button { onclick: move |_| show_settings.set(true), "Change…" }
             }
@@ -776,6 +776,18 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                     }
                 }
                 div { class: "note", "Lite and Comp write a dropped cartridge dump in this layout; one already in it is skipped." }
+
+                h3 { "3DS" }
+                div { class: "row",
+                    label { title: "What Lite and Comp write a 3DS game as. Updates, DLC, demos and system titles stay a decrypted .cia (.zcia with the compressed formats).", "Games" }
+                    select {
+                        onchange: move |event| draft.write().n3ds.format = event.value(),
+                        for (format, text) in chdlite::n3ds::FORMATS.into_iter().zip(["Decrypted cartridge image (.cci)", "Decrypted cartridge image (.3ds)", "Compressed for Azahar (.zcci)", "Main part only (.cxi)", "Main part only, compressed (.zcxi)"]) {
+                            option { key: "{format}", value: "{format}", selected: s.n3ds.format == format, "{text}" }
+                        }
+                    }
+                }
+                div { class: "note", "No keys come with chdlite. Put your aes_keys.txt (or boot9.bin) and, for titles with seed crypto, seeddb.bin beside the files, beside chdlite, or in its assets folder. Updates and DLC stay a decrypted .cia (.zcia when compressed); homebrew .3dsx becomes .z3dsx." }
 
                 h3 { "Performance and output" }
                 {

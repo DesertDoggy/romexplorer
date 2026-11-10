@@ -41,7 +41,7 @@ impl DefaultMode {
 fn usage(name: &str) -> String {
     format!(
         "{name} {version} -- disc images to CHD / RVZ, and back; Wii U and Xbox discs to WUA / ZAR / XISO;
-NES / N64 / SNES cartridge dumps into the header or byte order you pick
+NES / N64 / SNES cartridge dumps into the header or byte order you pick; 3DS titles decrypted
 
 Usage: {name} [command] <file|dir>... [options]
        drop files or folders onto the executable
@@ -50,7 +50,8 @@ Commands (default for {name}: {default}):
   auto      .chd/.rvz -> extract, anything else -> create (fast preset)
   create    create with the fast preset
   comp      create for the smallest file
-  extract   .chd -> cue+bin / gdi+bin (GD-ROM) / iso, .rvz -> iso, .cso -> iso, .pbp -> cue+bin
+  extract   .chd -> cue+bin / gdi+bin (GD-ROM) / iso, .rvz -> iso, .cso -> iso, .pbp -> cue+bin,
+            .zcci / .zcia / .zcxi / .z3dsx -> .cci / .cia / .cxi / .3dsx
   read      show what a file is
   hash      hash the content inside a .chd/.rvz/.cso/.pbp (or the files themselves)
 
@@ -66,6 +67,13 @@ comp write them in the layout set for their platform, and skip one already in it
 a NES dump has a header is looked up by its hash in the NES header database; a hash that
 is not there is an error. An SNES copier header is told by the size (whole KB + 512), and
 the cartridge's own header has to agree.
+
+3DS titles (.cia .3ds .cci .cxi .3dsx and the compressed .zcci .zcia .zcxi .z3dsx) are
+decrypted into the format set with --3ds: a game becomes .cci / .3ds, its main part alone
+.cxi, or either compressed for Azahar (.zcci, .zcxi); updates, DLC, demos and system titles
+stay a decrypted .cia (.zcia when compressed). No keys come with this program: put your
+aes_keys.txt (or boot9.bin) and, for titles with seed crypto, seeddb.bin beside the files,
+beside this program, or in its assets folder.
 
 Options:
   -o, --output <dir>          write here instead of next to each input
@@ -91,6 +99,7 @@ Options:
                               it (.nes), or without it as .unh
   --n64 <format>              {n64}: big-endian, byte-swapped, little-endian
   --snes <format>             {snes}: without or with a 512-byte copier header
+  --3ds <format>              {n3ds}: what a 3DS game becomes
   --version, --help
 
 Defaults come from {settings}",
@@ -108,6 +117,7 @@ Defaults come from {settings}",
         nes = NES_FORMATS.join("|"),
         n64 = N64_FORMATS.join("|"),
         snes = SNES_FORMATS.join("|"),
+        n3ds = crate::n3ds::FORMATS.join("|"),
         settings = Settings::path().display(),
     )
 }
@@ -226,6 +236,11 @@ fn parse(args: &[String], default: DefaultMode, mut settings: Settings) -> Resul
                 }
                 *field = format;
             }
+            "--3ds" => {
+                let format = value(arg)?.to_ascii_lowercase();
+                crate::n3ds::target(&format).map_err(|err| format!("{arg}: {err}"))?;
+                settings.n3ds.format = format;
+            }
             "-i" | "--input" => paths.push(PathBuf::from(value(arg)?)),
             flag if flag.starts_with('-') && !Path::new(flag).exists() => return Err(format!("unknown option {flag}")),
             path => paths.push(PathBuf::from(path)),
@@ -306,7 +321,7 @@ pub fn main(default: DefaultMode) -> i32 {
     }
     let inputs = expand(&parsed.paths);
     if inputs.is_empty() {
-        eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso, .pbp or cartridge dumps in what was given");
+        eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso, .pbp, cartridge dumps or 3DS titles in what was given");
         return finish(2);
     }
     if matches!(parsed.mode, Mode::Lite | Mode::Comp) && parsed.settings.output.lossy_warning {

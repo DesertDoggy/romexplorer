@@ -25,8 +25,10 @@ use romexplorer::rom::sheet_build::probe_track;
 use romexplorer::rom::xbox;
 
 /// Extensions a directory walk picks up: disc images and containers, then cartridge dumps.
-pub const SUPPORTED_EXTENSIONS: [&str; 21] =
-    ["cue", "gdi", "toc", "iso", "bin", "img", "gcm", "chd", "rvz", "wud", "wux", "cso", "pbp", "nes", "unh", "z64", "v64", "n64", "sfc", "smc", "swc"];
+pub const SUPPORTED_EXTENSIONS: [&str; 31] = [
+    "cue", "gdi", "toc", "iso", "bin", "img", "gcm", "chd", "rvz", "wud", "wux", "cso", "pbp", "nes", "unh", "z64", "v64", "n64", "sfc", "smc", "swc", "cia", "3ds", "cci", "cxi", "cfa",
+    "3dsx", "zcci", "zcia", "zcxi", "z3dsx",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -86,6 +88,8 @@ pub enum Input {
     Cso,
     /// A NES, N64 or SNES cartridge dump: rewritten into the settings' layout, not compressed.
     Cartridge(Cart),
+    /// A 3DS title (`crate::n3ds`): decrypted into the settings' format.
+    N3ds,
     /// A PlayStation disc (or several) in Sony's EBOOT.PBP: extracted to cue + bin, or made
     /// a CD CHD.
     Pbp,
@@ -109,6 +113,9 @@ pub fn classify(path: &Path) -> Result<Input, String> {
     let image = |target, source: &Path, needs_cue| Ok(Input::Image { target, source: source.to_path_buf(), needs_cue });
     if let Some(cart) = Cart::of(path) {
         return Ok(Input::Cartridge(cart));
+    }
+    if crate::n3ds::is_3ds(path) {
+        return Ok(Input::N3ds);
     }
     match extension(path).as_str() {
         "chd" => Ok(Input::Chd),

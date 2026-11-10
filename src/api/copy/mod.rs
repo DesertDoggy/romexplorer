@@ -530,9 +530,23 @@ pub fn output_formats_for(platform: Platform) -> Vec<OutputFormat> {
         Platform::Xbox360 => v.push(OutputFormat::Zar),
         Platform::Xbox => v.push(OutputFormat::Xiso),
         Platform::PlayStation2 | Platform::PlayStationPortable => v.push(OutputFormat::Cso),
+        Platform::Nintendo3ds | Platform::NewNintendo3ds => v.extend([OutputFormat::Cci, OutputFormat::ThreeDs, OutputFormat::Zcci, OutputFormat::Cxi, OutputFormat::Zcxi]),
         _ => {}
     }
     v
+}
+
+/// The `rom::n3ds` target a 3DS output format stands for.
+pub fn n3ds_target(format: OutputFormat) -> Option<crate::rom::n3ds::Target> {
+    use crate::rom::n3ds::Target;
+    Some(match format {
+        OutputFormat::Cci => Target::Cci,
+        OutputFormat::ThreeDs => Target::ThreeDs,
+        OutputFormat::Zcci => Target::Zcci,
+        OutputFormat::Cxi => Target::Cxi,
+        OutputFormat::Zcxi => Target::Zcxi,
+        _ => return None,
+    })
 }
 
 /// True for the disc consoles neither CHD nor RVZ covers (Wii U, PS3 and later, the Xbox
@@ -703,13 +717,14 @@ pub fn archive_args(settings: &OutputSettings, platform: Platform, format: Outpu
         OutputFormat::Rvz => settings.rvz.re_archive,
         OutputFormat::Gcz => settings.gcz.re_archive,
         OutputFormat::Wia => settings.wia.re_archive,
-        OutputFormat::Same | OutputFormat::Raw | OutputFormat::Wua | OutputFormat::Zar | OutputFormat::Xiso | OutputFormat::Cso => false,
+        // The rest are converters of their own (or no conversion at all).
+        _ => false,
     };
     if format == OutputFormat::Same {
         return Ok(None);
     }
-    if matches!(format, OutputFormat::Raw | OutputFormat::Wua | OutputFormat::Zar | OutputFormat::Xiso | OutputFormat::Cso) {
-        // Unpacking is an extract, and .wua, .zar, XISO and CSO have converters of their own,
+    if matches!(format, OutputFormat::Raw | OutputFormat::Wua | OutputFormat::Zar | OutputFormat::Xiso | OutputFormat::Cso) || format.is_3ds() {
+        // Unpacking is an extract, and .wua, .zar, XISO, CSO and 3DS have converters of their own,
         // not the archiver's: no ArchiveArgs, all handled by the run.
         return Ok(None);
     }
@@ -767,7 +782,7 @@ pub fn archive_args(settings: &OutputSettings, platform: Platform, format: Outpu
                 }
             }
         }
-        OutputFormat::Same | OutputFormat::Raw | OutputFormat::Wua | OutputFormat::Zar | OutputFormat::Xiso | OutputFormat::Cso => unreachable!("handled above"),
+        _ => unreachable!("handled above"),
     }
     args.validate().map_err(|e| Error::invalid(e.to_string()))?;
     let _ = platform;
@@ -1085,6 +1100,9 @@ mod tests {
         assert!(!gc.contains(&OutputFormat::Chd));
         let snes = output_formats_for(Platform::Snes);
         assert_eq!(snes, vec![OutputFormat::Same, OutputFormat::Raw, OutputFormat::Zip, OutputFormat::SevenZip]);
+        let n3ds = output_formats_for(Platform::Nintendo3ds);
+        assert!([OutputFormat::Cci, OutputFormat::ThreeDs, OutputFormat::Zcci, OutputFormat::Cxi, OutputFormat::Zcxi].iter().all(|f| n3ds.contains(f)));
+        assert!(!snes.iter().any(|f| f.is_3ds()));
     }
 
     #[test]

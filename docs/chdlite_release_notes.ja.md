@@ -4,6 +4,7 @@ chdlite は romexplorer とは別にリリースされます。このノート�
 
 ## 変更点
 
+- **3DS。** Lite と Comp に .cia・.3ds・.cci・.cxi を入れると、復号して設定で選んだ形式で書き出します。.cci・.3ds・.cxi、または Azahar 用に圧縮した .zcci・.zcxi から選べます。更新データと DLC は .cia（.zcia）のままです。圧縮したファイルは Extract で元に戻せます。鍵は同梱していません。お手持ちの aes_keys.txt（必要なタイトルには seeddb.bin も）を、ファイルと同じフォルダ、chdlite と同じフォルダ、またはその assets フォルダに置いてください。コンソール版は `--3ds` で指定できます。
 - **NES・N64・SNES のダンプ。** Lite と Comp に ROM カートリッジのダンプを入れると、設定で選んだ形式で書き出します。NES はヘッダー付き（.nes）、ヘッダーなし（.nes）、ヘッダーなし（.unh）、N64 は .z64・.v64・.n64、SNES は .sfc・.smc から選べます。今の選択はメイン画面に表示します。すでにその形式のファイルは飛ばします。Read では今の形式を表示します。コンソール版は `--nes`・`--n64`・`--snes` で指定できます。
 - NES のヘッダーの有無は NES ヘッダーデータベースで判定します。データベースにないダンプは、ハッシュを表示してエラーにします。
 - **Mac アプリと Linux の AppImage。** macOS 用の `chdlite.app` と、Linux 用の 1 ファイルの AppImage を用意しました。開くとウィンドウが起動します。コンソール版も中に入っています（`chdlite.AppImage chdcomp ...`）。

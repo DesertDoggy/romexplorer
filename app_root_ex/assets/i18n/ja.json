@@ -2954,5 +2954,7 @@
   "split off": "分離",
   "Listed and copied with this release.": "このリリースと一緒に表示・コピーされます。",
   "Indexing this game's music: {progress}": "このゲームの音楽を索引しています: {progress}",
-  "waiting to start": "開始待ち"
+  "waiting to start": "開始待ち",
+  "A 3DS title, decrypted with your own keys: aes_keys.txt (or boot9.bin), and seeddb.bin for a title that needs it, beside the file, beside romexplorer or in its assets folder. A game becomes a .cci or .3ds, or a .cxi: its main part alone, without the manual and download-play parts. zcci and zcxi are the same compressed for Azahar (zstd level 3). An update, DLC or demo stays a .cia (.zcia), homebrew a .3dsx (.z3dsx).": "3DS のタイトルを、お手持ちの鍵で復号します。aes_keys.txt(または boot9.bin)と、必要なタイトルには seeddb.bin を、ファイルと同じフォルダ、romexplorer と同じフォルダ、またはその assets フォルダに置いてください。ゲームは .cci か .3ds、または .cxi になります。.cxi は本体部分だけで、説明書とダウンロードプレイの部分は含みません。zcci と zcxi は Azahar 用に圧縮したものです(zstd レベル 3)。更新データ・DLC・体験版は .cia(.zcia)、自作ソフトは .3dsx(.z3dsx)のままです。",
+  "3DS files + your keys only": "3DS のファイルと鍵があるときのみ"
 }
