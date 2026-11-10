@@ -913,7 +913,8 @@ fn gba_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
         if !theirs {
             continue;
         }
-        let Some(m) = super::gba_map::Map::from_tracks(rom.len(), tracks) else { continue };
+        let Some(mut m) = super::gba_map::Map::from_tracks(rom.len(), tracks) else { continue };
+        super::gba_map::slim(&mut m, rom)?;
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
