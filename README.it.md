@@ -2,6 +2,8 @@
 
 [English](README.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · **Italiano** · [Português](README.pt.md) · [Deutsch](README.de.md) · [한국어](README.ko.md) · [Polski](README.pl.md)
 
+**Download:** [Rom Explorer](https://github.com/DesertDoggy/romexplorer/releases?q=v0) · [CHD Lite](https://github.com/DesertDoggy/romexplorer/releases?q=c0) · [Rom Music](https://github.com/DesertDoggy/romexplorer/releases?q=m0)
+
 *Questa è una traduzione. In caso di differenze, fa fede il README in inglese.*
 
 > **romexplorer non distribuisce né scarica ROM, BIOS o chiavi, e non sostiene la
