@@ -393,9 +393,10 @@ namespace {
 /* TinySoundFont plays VGMTrans's SoundFonts louder than the consoles did: measured against
  * the same songs rendered from original audio format files by the console's own sound
  * chip, Sony's SEQ/VAB came out about 13 dB louder in RMS (and clipped), Square's AKAO and
- * FF Tactics engines 2 to 8 dB. */
+ * FF Tactics engines 2 to 8 dB, tri-Ace's 8 to 15 dB. */
 float format_gain_db(const std::string &format) {
   if (format == "PS1") return -12.0f;
+  if (format == "TriAcePS1") return -16.0f;
   return -6.0f;
 }
 

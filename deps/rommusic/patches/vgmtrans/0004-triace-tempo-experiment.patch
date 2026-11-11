@@ -1,0 +1,26 @@
+diff --git a/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp b/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
+index a945ec4a..609b7cb8 100644
+--- a/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
++++ b/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
+@@ -2,6 +2,7 @@
+ // author of so2mml. The code is based on his write-up of the format specifications.  Many thanks to him.
+ 
+ #include "TriAcePS1Seq.h"
++#include <cstdlib>
+ 
+ #include "base/Types.h"
+ #include "SeqEvent.h"
+@@ -213,8 +214,11 @@ bool TriAcePS1Track::readEvent(void) {
+       case 0x8A : {
+         event_dur = readByte(curOffset++);
+         // Operand: u8 val.
+-        curOffset++;
+-        addUnknown(beginOffset, curOffset - beginOffset, "Unknown Event (tempo?)");
++        u8 val = readByte(curOffset++);
++        if (getenv("RVT_TRIACE_8A_TEMPO") && val != 0)
++          addTempoBPM(beginOffset, curOffset - beginOffset, val);
++        else
++          addUnknown(beginOffset, curOffset - beginOffset, "Unknown Event (tempo?)");
+         break;
+       }
+ 
