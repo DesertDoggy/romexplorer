@@ -12,6 +12,7 @@
  * everything VGMTrans holds before it returns. A player owns its own copies and plays
  * alongside further scans. */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -132,6 +133,64 @@ uint32_t midi_length_ms(const std::vector<uint8_t> &midi) {
 
 }  // namespace
 
+/* Sequences their format's matcher left without instruments, paired with the Sony VABs in
+   the same file: Konami's KDT1 sequences play on plain VABs, which VGMTrans files under
+   another format, so its per-format matchers never put the two together. Each such sequence
+   gets the VAB nearest after it (else the nearest before); with RVT_ORPHAN_BANKS=all set,
+   one song per VAB in its file, for working out which bank a game uses. */
+static std::vector<std::unique_ptr<VGMColl>> pair_orphans(Root &r, const std::vector<VGMColl *> &colls) {
+  std::vector<std::unique_ptr<VGMColl>> out;
+  std::set<VGMSeq *> placed;
+  for (VGMColl *c : colls)
+    if (c->seq()) placed.insert(c->seq());
+  std::vector<VGMSeq *> orphans;
+  std::vector<VGMInstrSet *> vabs;
+  for (const auto &v : r.vgmFiles()) {
+    if (auto seq = std::get_if<VGMSeq *>(&v)) {
+      if (*seq && !placed.count(*seq)) orphans.push_back(*seq);
+    } else if (auto set = std::get_if<VGMInstrSet *>(&v)) {
+      if (*set && (*set)->format() && (*set)->format()->getName() == "PS1" && (*set)->sampColl()) vabs.push_back(*set);
+    }
+  }
+  if (orphans.empty() || vabs.empty()) return out;
+  const char *mode = getenv("RVT_ORPHAN_BANKS");
+  bool all = mode && strcmp(mode, "all") == 0;
+  for (VGMSeq *seq : orphans) {
+    std::vector<VGMInstrSet *> same;
+    for (VGMInstrSet *v : vabs)
+      if (v->rawFile() == seq->rawFile()) same.push_back(v);
+    if (same.empty()) continue;
+    std::vector<VGMInstrSet *> picks;
+    if (all) {
+      picks = same;
+    } else {
+      VGMInstrSet *after = nullptr, *before = nullptr;
+      for (VGMInstrSet *v : same) {
+        if (v->offset() >= seq->offset()) {
+          if (!after || v->offset() < after->offset()) after = v;
+        } else if (!before || v->offset() > before->offset()) {
+          before = v;
+        }
+      }
+      picks.push_back(after ? after : before);
+    }
+    for (VGMInstrSet *v : picks) {
+      std::string name = seq->name();
+      if (all) {
+        char at[32];
+        snprintf(at, sizeof at, " +bank@%x", (unsigned)v->offset());
+        name += at;
+      }
+      auto coll = std::make_unique<VGMColl>(name);
+      coll->attachSeq(seq);
+      coll->attachInstrSet(v);
+      coll->attachSampColl(v->sampColl());
+      out.push_back(std::move(coll));
+    }
+  }
+  return out;
+}
+
 /* Scans `n` files (`datas[i]`, `lens[i]` bytes, named `names[i]`) for sequenced music in the
  * named formats (comma-separated VGMTrans format names, e.g. "PS1"; null or "" for every
  * format) and converts each sequence that has instruments to a MIDI file. The files are
@@ -183,7 +242,10 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
     std::map<std::vector<VGMInstrSet *>, int> bank_of;
     std::set<std::vector<uint8_t>> seen_midi;
     int index = 0;
-    for (VGMColl *coll : r.vgmColls()) {
+    std::vector<VGMColl *> colls(r.vgmColls().begin(), r.vgmColls().end());
+    std::vector<std::unique_ptr<VGMColl>> paired = pair_orphans(r, colls);
+    for (auto &extra : paired) colls.push_back(extra.get());
+    for (VGMColl *coll : colls) {
       VGMSeq *seq = coll->seq();
       if (!seq || coll->instrSets().empty()) continue;
       Song song;
