@@ -52,7 +52,6 @@ main_root="$(cd "$user_dir/../.." && pwd)"
 repo_root="$(cd "${GME_SOURCE_DIR:-$main_root/external/game-music-emu}" && pwd)"
 fork_root="$(cd "${GME_FORK_DIR:-$main_root/external/gme-kode54}" && pwd)"
 agb_root="$(cd "${AGBPLAY_SOURCE_DIR:-$main_root/external/agbplay}" && pwd)"
-fmt_root="$(cd "${FMT_SOURCE_DIR:-$main_root/external/fmt}" && pwd)"
 sseq_root="$(cd "${SSEQ_SOURCE_DIR:-$main_root/external/SSEQPlayer}" && pwd)"
 usf_root="$(cd "${USF_SOURCE_DIR:-$main_root/external/lazyusf2}" && pwd)"
 he_root="$(cd "${HE_SOURCE_DIR:-$main_root/external/highly_experimental}" && pwd)"
@@ -159,7 +158,7 @@ apply_patches "$user_dir/patches/agb" "$agb_root"
 apply_patches "$user_dir/patches/ht" "$ht_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
-  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root" "-DVGMTRANS_ROOT=$vgmtrans_root" "-DTSF_ROOT=$tsf_root")
+  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root" "-DVGMTRANS_ROOT=$vgmtrans_root" "-DTSF_ROOT=$tsf_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 # Android: the NDK's own CMake toolchain file, which picks its compilers and sysroot. API level
