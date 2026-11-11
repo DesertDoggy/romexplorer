@@ -77,6 +77,7 @@ struct Song {
   std::string name;
   std::string format;
   uint32_t offset = 0;
+  int file = 0; /* which of the scanned files the sequence is in */
   bool looping = false;
   uint32_t length_ms = 0;
   std::vector<uint8_t> midi;
@@ -115,34 +116,47 @@ uint32_t midi_length_ms(const std::vector<uint8_t> &midi) {
 
 }  // namespace
 
-/* Scans `len` bytes for sequenced music in the named formats (comma-separated VGMTrans
- * format names, e.g. "PS1"; null or "" for every format) and converts each sequence that
- * has instruments to a MIDI file. `loops` is how many times a looping song plays its loop
- * again after the first time through. `bank_for` picks whose instruments are converted to a
- * SoundFont, which is the slow and large part: -1 every song's, -2 none (names and lengths
- * only), or one song's index. Null when nothing was found. */
-RVT_API void *rvt_scan(const uint8_t *data, size_t len, const char *name, const char *formats,
-                       int loops, int bank_for) {
-  if (!data || len == 0 || len > 0xFFFFFFFFu) return nullptr;
+/* Scans `n` files (`datas[i]`, `lens[i]` bytes, named `names[i]`) for sequenced music in the
+ * named formats (comma-separated VGMTrans format names, e.g. "PS1"; null or "" for every
+ * format) and converts each sequence that has instruments to a MIDI file. The files are
+ * scanned as separate files of one disc, so a format that pairs a sequence with
+ * instruments from another file (by id or by name) finds them; Sony's SEQ/VAB pairs only
+ * within one file. `loops` is how many times a looping song plays its loop again after the
+ * first time through. `bank_for` picks whose instruments are converted to a SoundFont,
+ * which is the slow and large part: -1 every song's, -2 none (names and lengths only), or
+ * one song's index. Null when nothing was found. */
+RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, const char *const *names, size_t n,
+                             const char *formats, int loops, int bank_for) {
+  if (!datas || !lens || n == 0) return nullptr;
+  for (size_t i = 0; i < n; i++) {
+    if (!datas[i] || lens[i] == 0 || lens[i] > 0xFFFFFFFFu) return nullptr;
+  }
   std::lock_guard<std::mutex> guard(g_lock);
   Root &r = root();
   auto wanted = format_set(formats);
   auto scan = std::make_unique<Scan>();
-  /* Outlives everything VGMTrans finds in it, which is let go of below. */
-  std::unique_ptr<VirtFile> file;
+  /* Outlive everything VGMTrans finds in them, which is let go of below. */
+  std::vector<std::unique_ptr<VirtFile>> files;
+  std::map<RawFile *, int> file_index;
   try {
     ConversionOptions::the().setNumSequenceLoops(loops < 0 ? 0 : loops);
-    file = std::make_unique<VirtFile>(data, (uint32_t)len, name ? name : "data.bin");
+    auto scanners = ScannerManager::get().scanners();
     r.pushLoadRawFile();
-    for (auto &scanner : ScannerManager::get().scanners()) {
-      Format *format = scanner->format();
-      if (!format) continue;
-      if (!wanted.empty() && !wanted.count(format->getName())) continue;
-      try {
-        scanner->scan(file.get());
-      } catch (...) {
+    for (size_t i = 0; i < n; i++) {
+      const char *name = names && names[i] ? names[i] : "data.bin";
+      files.push_back(std::make_unique<VirtFile>(datas[i], (uint32_t)lens[i], name));
+      VirtFile *file = files.back().get();
+      file_index[file] = (int)i;
+      for (auto &scanner : scanners) {
+        Format *format = scanner->format();
+        if (!format) continue;
+        if (!wanted.empty() && !wanted.count(format->getName())) continue;
+        try {
+          scanner->scan(file);
+        } catch (...) {
+        }
+        if (auto matcher = format->matcher.get()) matcher->onFinishedScan(file);
       }
-      if (auto matcher = format->matcher.get()) matcher->onFinishedScan(file.get());
     }
     r.popLoadRawFile();
 
@@ -156,6 +170,10 @@ RVT_API void *rvt_scan(const uint8_t *data, size_t len, const char *name, const 
       song.name = coll->name();
       song.format = seq->format() ? seq->format()->getName() : std::string();
       song.offset = seq->offset();
+      {
+        auto known = file_index.find(seq->rawFile());
+        song.file = known == file_index.end() ? 0 : known->second;
+      }
       auto midi = seq->convertToMidi(coll, context);
       if (!midi) continue;
       midi->writeMidiToBuffer(song.midi);
@@ -186,6 +204,12 @@ RVT_API void *rvt_scan(const uint8_t *data, size_t len, const char *name, const 
   return scan.release();
 }
 
+/* One file: rvt_scan_files with n = 1. */
+RVT_API void *rvt_scan(const uint8_t *data, size_t len, const char *name, const char *formats, int loops,
+                       int bank_for) {
+  return rvt_scan_files(&data, &len, &name, 1, formats, loops, bank_for);
+}
+
 RVT_API int rvt_count(void *s) { return s ? (int)((Scan *)s)->songs.size() : 0; }
 
 static const Song *song_at(void *s, int i) {
@@ -203,10 +227,18 @@ RVT_API const char *rvt_format(void *s, int i) {
   return song ? song->format.c_str() : "";
 }
 
-/* Where the sequence starts in the scanned bytes. */
+/* Which of the scanned files the sequence is in. */
+RVT_API int rvt_file(void *s, int i);
+
+/* Where the sequence starts in its file. */
 RVT_API uint32_t rvt_offset(void *s, int i) {
   const Song *song = song_at(s, i);
   return song ? song->offset : 0;
+}
+
+RVT_API int rvt_file(void *s, int i) {
+  const Song *song = song_at(s, i);
+  return song ? song->file : 0;
 }
 
 RVT_API int rvt_looping(void *s, int i) {
