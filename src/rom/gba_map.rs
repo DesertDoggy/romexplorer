@@ -451,37 +451,53 @@ impl Map {
     }
 }
 
-/// How long each track is played while [`slim`] tries leaving bytes out.
-const SLIM_SECONDS: u32 = 4;
+/// How long each track is played while [`slim`] tries leaving runs out.
+const SLIM_SECONDS: u32 = 8;
+/// [`slim`] stops halving a group below this share of the runs it started with, and keeps
+/// the group: it bounds the plays a game costs.
+const SLIM_FINEST: usize = 128;
 
-/// Leaves out the shared byte runs the music does not need: a set's image often differs from
-/// the ROM in code and data its songs never read. Runs are left out in groups, halving a
-/// group whose loss changes any track's sound, so a game whose songs need a few runs costs a
-/// few dozen plays. Returns how many bytes it left out.
+/// Leaves out the shared byte and fill runs the music does not need: a set's image often
+/// differs from the ROM in code and data its songs never read, and fills areas the ROM keeps
+/// its own data in. First all of them are left out at once, which is often enough; otherwise
+/// they are left out in groups in ROM order, a group whose loss changes any track's sound
+/// halved down to 1/[`SLIM_FINEST`] of the runs. Copy runs always stay. Returns how many of
+/// the file's bytes it left out.
 pub fn slim(map: &mut Map, rom: &[u8]) -> Result<usize, String> {
-    let tracks: Vec<usize> = (0..map.tracks.len()).collect();
-    let mut wanted = Vec::with_capacity(tracks.len());
-    for &t in &tracks {
+    use std::collections::HashSet;
+    let mut wanted = Vec::with_capacity(map.tracks.len());
+    for t in 0..map.tracks.len() {
         wanted.push(render(&map.image(rom, t)?, SLIM_SECONDS).ok());
     }
-    let bytes: Vec<usize> = map.common.iter().enumerate().filter(|(_, r)| matches!(r, Run::Bytes(..))).map(|(i, _)| i).collect();
-    if bytes.is_empty() {
+    let candidates: Vec<usize> = map.common.iter().enumerate().filter(|(_, r)| !matches!(r, Run::Copy(..))).map(|(i, _)| i).collect();
+    if candidates.is_empty() {
         return Ok(0);
     }
-    let mut dropped: std::collections::HashSet<usize> = Default::default();
-    let same_without = |dropped: &std::collections::HashSet<usize>, more: &[usize]| -> bool {
+    let finest = (candidates.len() / SLIM_FINEST).max(1);
+    // The track that last told a trial apart is played first: a failing trial ends sooner.
+    let mut order: Vec<usize> = (0..map.tracks.len()).filter(|&t| wanted[t].is_some()).collect();
+    let mut dropped: HashSet<usize> = HashSet::new();
+    let mut same_without = |dropped: &HashSet<usize>, more: &[usize], order: &mut Vec<usize>| -> bool {
+        let more: HashSet<usize> = more.iter().copied().collect();
         let mut trial = map.clone();
         trial.common = map.common.iter().enumerate().filter(|(i, _)| !dropped.contains(i) && !more.contains(i)).map(|(_, r)| r.clone()).collect();
-        tracks.iter().all(|&t| {
-            let Some(want) = &wanted[t] else { return true };
-            trial.image(rom, t).and_then(|img| render(&img, SLIM_SECONDS)).is_ok_and(|got| alike(want, &got) >= 0.999)
-        })
+        for k in 0..order.len() {
+            let t = order[k];
+            let want = wanted[t].as_ref().expect("only tracks with sound are played");
+            let same = trial.image(rom, t).and_then(|img| render(&img, SLIM_SECONDS)).is_ok_and(|got| alike(want, &got) >= 0.999);
+            if !same {
+                order.remove(k);
+                order.insert(0, t);
+                return false;
+            }
+        }
+        true
     };
-    let mut groups = vec![bytes];
+    let mut groups = vec![candidates];
     while let Some(group) = groups.pop() {
-        if same_without(&dropped, &group) {
+        if same_without(&dropped, &group, &mut order) {
             dropped.extend(group);
-        } else if group.len() > 1 {
+        } else if group.len() > finest {
             let (a, b) = group.split_at(group.len() / 2);
             groups.push(b.to_vec());
             groups.push(a.to_vec());
