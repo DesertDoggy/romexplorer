@@ -740,7 +740,7 @@ fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
 }
 
 /// How long each GBA track is played both ways in `--mapcheck`.
-const GBA_CHECK_SECONDS: u32 = 6;
+const GBA_CHECK_SECONDS: u32 = 15;
 
 /// `--mapcheck` for a GBA ROM and its matched GSF set: each track played from the set's own
 /// image and from the ROM with the map laid over it; right when the sound is the same.
