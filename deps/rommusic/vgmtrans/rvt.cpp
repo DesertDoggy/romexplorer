@@ -171,7 +171,10 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
           scanner->scan(file);
         } catch (...) {
         }
-        if (auto matcher = format->matcher.get()) matcher->onFinishedScan(file);
+        try {
+          if (auto matcher = format->matcher.get()) matcher->onFinishedScan(file);
+        } catch (...) {
+        }
       }
     }
     r.popLoadRawFile();
@@ -191,9 +194,14 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
         auto known = file_index.find(seq->rawFile());
         song.file = known == file_index.end() ? 0 : known->second;
       }
-      auto midi = seq->convertToMidi(coll, context);
-      if (!midi) continue;
-      midi->writeMidiToBuffer(song.midi);
+      /* A false hit can read past its file; reads throw then, and the song is left out. */
+      try {
+        auto midi = seq->convertToMidi(coll, context);
+        if (!midi) continue;
+        midi->writeMidiToBuffer(song.midi);
+      } catch (...) {
+        continue;
+      }
       /* A disc can hold one sequence many times over (in each pack that uses it). */
       if (!seen_midi.insert(events_key(song.midi)).second) continue;
       for (SeqTrack *track : seq->tracks()) {
@@ -205,10 +213,15 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
         auto known = bank_of.find(key);
         if (known != bank_of.end()) {
           song.bank = known->second;
-        } else if (auto sf2 = conversion::createSF2File(*coll, context)) {
-          scan->banks.push_back(sf2->saveToMem());
-          song.bank = (int)scan->banks.size() - 1;
-          bank_of.emplace(key, song.bank);
+        } else {
+          try {
+            if (auto sf2 = conversion::createSF2File(*coll, context)) {
+              scan->banks.push_back(sf2->saveToMem());
+              song.bank = (int)scan->banks.size() - 1;
+              bank_of.emplace(key, song.bank);
+            }
+          } catch (...) {
+          }
         }
       }
       scan->songs.push_back(std::move(song));
