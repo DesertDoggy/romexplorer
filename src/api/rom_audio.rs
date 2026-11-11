@@ -508,6 +508,25 @@ fn read_member(archive: &Path, member: &str) -> Option<Vec<u8>> {
     (0..opened.entry_count()).find(|&i| opened.entry(i).is_ok_and(|e| !e.is_dir && norm(&e.path) == want)).and_then(|i| opened.read_entry(i).ok())
 }
 
+/// The ROMs index runs are reading, across the runs going on at once.
+static READING: std::sync::LazyLock<std::sync::Mutex<HashSet<u64>>> = std::sync::LazyLock::new(Default::default);
+
+/// One run's claim on a ROM while it reads it; dropped, the claim ends.
+struct Reading(u64);
+
+impl Reading {
+    /// The claim, or `None` when another run holds it.
+    fn start(rom_id: u64) -> Option<Self> {
+        READING.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id).then_some(Self(rom_id))
+    }
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        READING.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.0);
+    }
+}
+
 /// How long one ROM may take before the index gives up on it. The longest honest reads (a
 /// cartridge's sound-engine search) stop by themselves well inside this.
 const ROM_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
@@ -572,6 +591,12 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         }
         let rom_id: u64 = row.try_get("id")?;
         let main_path: String = row.try_get("main_path")?;
+        // A ROM another run is reading right now (a title page's, beside this one) is that
+        // run's: the same disc is not read twice at once.
+        let Some(_reading) = Reading::start(rom_id) else {
+            summary.skipped_existing += 1;
+            continue;
+        };
         // A title page opened while this run goes on indexes its own ROMs first, beside it:
         // a quick run does not read them a second time when it gets there.
         if quick && sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rom_audio_index WHERE rom_id = ?").bind(rom_id).fetch_one(&app.pool).await? > 0 {

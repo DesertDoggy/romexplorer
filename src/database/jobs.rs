@@ -801,7 +801,7 @@ pub async fn position_in_lane(pool: &MySqlPool, id: u64) -> Result<Option<u64>, 
 /// Every pending job in `row`'s lane (same lane name and `in_turn` flag, `row` included),
 /// with its place in line.
 async fn lane_peers(pool: &MySqlPool, row: &JobRow) -> Result<Vec<(u64, i64)>, DatabaseError> {
-    let rows = sqlx::query("SELECT id, job_type, payload, priority, COALESCE(queue_order, id) AS q FROM jobs WHERE status = 'pending' AND in_turn = ?").bind(row.in_turn).fetch_all(pool).await?;
+    let rows = sqlx::query("SELECT id, job_type, payload, priority, CAST(COALESCE(queue_order, id) AS SIGNED) AS q FROM jobs WHERE status = 'pending' AND in_turn = ?").bind(row.in_turn).fetch_all(pool).await?;
     let mut out = Vec::new();
     for r in rows {
         let type_name: String = r.try_get("job_type")?;
