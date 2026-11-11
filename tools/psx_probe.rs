@@ -5,7 +5,7 @@
 //! ```text
 //! psx_probe <disc .cue/.chd/...> --core <beetle core library> --bios <BIOS folder> --out <folder>
 //!           [--seconds N] [--every S] [--formats F] [--press KEY@S,...] [--no-mash]
-//!           [--opt key=value]... [--dump] [--max-mb N] [--boot S]
+//!           [--opt key=value]... [--dump] [--max-mb N] [--boot S] [--spu]
 //! ```
 //!
 //! The core runs for `--seconds` (default 180) of console time. Unless `--no-mash`, Start and
@@ -22,7 +22,8 @@
 //!
 //! What it writes to `--out`: the sound as `sound.wav`, the memory cards the core saves, and
 //! with `--dump` each RAM snapshot as `ram_<seconds>.bin` (VGMTrans and `disc_music` read those)
-//! and the sound chip's RAM (its samples) as `spu_<seconds>.bin`, taken from a save state.
+//! and, with `--spu` too, the sound chip's RAM (its samples) as `spu_<seconds>.bin`, taken from a
+//! save state (taking one may upset a game, so it is not done by default).
 //! The BIOS is read from its folder as the core finds it there; nothing is copied.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -258,6 +259,7 @@ fn main() {
     };
     let no_mash = flag(&mut args, "--no-mash");
     let dump = flag(&mut args, "--dump");
+    let spu = flag(&mut args, "--spu");
     let take = |args: &mut Vec<String>, f: &str| -> Option<String> {
         let i = args.iter().position(|a| a == f)?;
         let v = args.get(i + 1).cloned();
@@ -395,7 +397,7 @@ fn main() {
         println!("  {t:>6}s sound rms {loud:6.0}{}{}", if news.is_empty() { "" } else { "  new: " }, news.join(", "));
         if dump {
             std::fs::write(out.join(format!("ram_{:05}.bin", t_tenths / 10)), &ram).expect("write RAM dump");
-            if let Some(spu) = spu_ram(&core) {
+            if let Some(spu) = spu.then(|| spu_ram(&core)).flatten() {
                 std::fs::write(out.join(format!("spu_{:05}.bin", t_tenths / 10)), &spu).expect("write SPU RAM dump");
             }
         }
