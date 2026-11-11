@@ -1,0 +1,41 @@
+diff --git a/src/main/formats/FFT/FFTSeq.cpp b/src/main/formats/FFT/FFTSeq.cpp
+index 90387b60..88cd4244 100644
+--- a/src/main/formats/FFT/FFTSeq.cpp
++++ b/src/main/formats/FFT/FFTSeq.cpp
+@@ -42,6 +42,8 @@ bool FFTSeq::parseHeader(void) {
+   u16 ptPercussionTbl = readShort(offset() + 0x20);    //u16 (16bit)	Pointer of Percussion struct
+ 
+   int titleLength = ptPercussionTbl - ptSongTitle;
++  if (titleLength < 1 || titleLength > 0x100 || nNumTracks == 0 || nNumTracks > 24)
++    return false;
+   char *songtitle = new char[titleLength];
+   readBytes(offset() + ptSongTitle, titleLength, songtitle);
+   setName(std::string(songtitle, songtitle + titleLength - 1));
+@@ -225,6 +227,9 @@ bool FFTTrack::readEvent() {
+       case 0x98: {
+         bInLoop = false;
+         u8 loopCount = readByte(curOffset++);
++        // The loop stack holds 5 levels; deeper nesting is not a real sequence.
++        if (loop_layer >= 4)
++          return false;
+         loop_layer++;
+         loop_begin_loc[loop_layer] = curOffset;
+         loop_counter[loop_layer] = 0;
+@@ -237,6 +242,8 @@ bool FFTTrack::readEvent() {
+ 
+         //Repeat End
+       case 0x99:
++        if (loop_layer <= 0)
++          return false;
+         addGenericEvent(beginOffset, curOffset - beginOffset, "Repeat End", "", Type::Loop);
+         //AddEventItem("Loop End", ICON_ENDREP, beginOffset, curOffset-beginOffset, BG_CLR_WHEAT);
+ 
+@@ -267,6 +274,8 @@ bool FFTTrack::readEvent() {
+ 
+         //Repeat break on last repeat
+       case 0x9A:
++        if (loop_layer <= 0)
++          return false;
+         addGenericEvent(beginOffset, curOffset - beginOffset, "Repeat Break", "", Type::Loop);
+         //AddEventItem("Loop Break", ICON_ENDREP, beginOffset, curOffset-beginOffset, BG_CLR_WHEAT);
+ 
