@@ -10,6 +10,10 @@
 //! formats, all together and each alone, and lists what is found: for working out how a
 //! custom engine's files sit on a disc.
 //!
+//! `--with A,B` also takes files whose path contains one of these (instrument files with no
+//! magic), `--max-mb N` raises the 64 MB size limit, and `--raw` scans each whole data
+//! track as one file instead, for music outside the file tree or inside packed archives.
+//!
 //! A folder is walked for `.chd`, `.cue`, `.iso` and `.bin` images (a `.bin` with a `.cue`
 //! beside it is left to the sheet).
 
@@ -42,6 +46,8 @@ fn images(path: &Path, out: &mut Vec<PathBuf>) {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let raw = args.iter().any(|a| a == "--raw");
+    args.retain(|a| a != "--raw");
     let mut take = |flag: &str| -> Option<String> {
         let i = args.iter().position(|a| a == flag)?;
         let v = args.get(i + 1).cloned();
@@ -55,6 +61,8 @@ fn main() {
     let seconds: u64 = take("--seconds").and_then(|s| s.parse().ok()).unwrap_or(30);
     let probe = take("--probe");
     let magic: Vec<Vec<u8>> = take("--magic").map(|m| m.split(',').map(|x| x.as_bytes().to_vec()).collect()).unwrap_or_default();
+    let with: Vec<String> = take("--with").map(|m| m.split(',').map(str::to_string).collect()).unwrap_or_default();
+    let max_bytes: u64 = take("--max-mb").and_then(|s| s.parse::<u64>().ok()).unwrap_or(64) << 20;
     let max_songs: usize = take("--songs").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     if args.is_empty() {
         eprintln!("usage: disc_music <disc or folder>... [--wav <out dir>] [--seconds N] [--songs N]");
@@ -66,7 +74,7 @@ fn main() {
     }
     if let Some(formats) = probe {
         for disc in &discs {
-            probe_disc(disc, &formats, &magic, wav.as_deref(), seconds, max_songs);
+            probe_disc(disc, &formats, &magic, &with, max_bytes, raw, wav.as_deref(), seconds, max_songs);
         }
         return;
     }
@@ -134,7 +142,8 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], wav: Option<&Path>, seconds: u64, max_songs: usize) {
+#[allow(clippy::too_many_arguments)]
+fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], with: &[String], max_bytes: u64, raw: bool, wav: Option<&Path>, seconds: u64, max_songs: usize) {
     let started = Instant::now();
     let rom = match rom_audio::open_rom(disc) {
         Ok(r) => r,
@@ -145,15 +154,26 @@ fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], wav: Option<&Path>,
     };
     println!("{}", disc.display());
     for (n, view) in rom.data.iter().enumerate() {
-        let Ok(listing) = disc_files::list(view) else { continue };
         let mut picked: Vec<(String, Vec<u8>)> = Vec::new();
-        for file in &listing.files {
-            if file.size < 16 || file.size > 64 << 20 || rom_audio::is_video(file.name()) {
+        if raw {
+            let mut bytes = vec![0u8; view.size() as usize];
+            if view.read(0, &mut bytes).is_err() {
+                println!("  view {n}: unreadable");
+                continue;
+            }
+            let hits: Vec<String> = magic.iter().filter_map(|m| find(&bytes, m).map(|at| format!("{}@{at:#x}", String::from_utf8_lossy(m)))).collect();
+            println!("  view {n} whole track ({} bytes) {}", bytes.len(), hits.join(" "));
+            picked.push((format!("track{n}.bin"), bytes));
+        }
+        let listing = if raw { Vec::new() } else { disc_files::list(view).map(|l| l.files).unwrap_or_default() };
+        for file in &listing {
+            if file.size < 16 || file.size > max_bytes || rom_audio::is_video(file.name()) {
                 continue;
             }
             let Ok(bytes) = disc_seq::read_whole(view, file) else { continue };
             let hits: Vec<String> = magic.iter().filter_map(|m| find(&bytes, m).map(|at| format!("{}@{at:#x}", String::from_utf8_lossy(m)))).collect();
-            if !magic.is_empty() && hits.is_empty() {
+            let wanted = with.iter().any(|w| file.path.contains(w.as_str()));
+            if !magic.is_empty() && hits.is_empty() && !wanted {
                 continue;
             }
             println!("  view {n} file {} ({} bytes) {}", file.path, bytes.len(), hits.join(" "));

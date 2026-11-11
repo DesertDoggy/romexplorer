@@ -29,6 +29,8 @@ const PLAY_RATE: u32 = 48_000;
 const FADE_MS: u64 = 8_000;
 /// After a song that does not loop: the release of its last notes.
 const RELEASE_MS: u64 = 2_000;
+/// Longer than this is data read as a sequence by mistake, not a song.
+const MAX_SONG_MS: u64 = 30 * 60 * 1000;
 /// A loop shorter than this is a held note, not the song coming round again.
 const MIN_LOOP_MS: u64 = 1_000;
 /// Files scanned together start at sector boundaries, as they would on the disc.
@@ -172,7 +174,7 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
         let twice = vgmtrans::songs(&data, &group[0], vgmtrans::PS1, 1).unwrap_or_default();
         let files = group.join("|");
         for (i, song) in once.iter().enumerate() {
-            if song.length_ms == 0 {
+            if song.length_ms == 0 || u64::from(song.length_ms) > MAX_SONG_MS {
                 continue;
             }
             let (body, fade, looping, intro, lp) = timing(song, twice.get(i).filter(|s| s.offset == song.offset));
