@@ -1568,6 +1568,10 @@ fn main() {
     }
     let mut files = Vec::new();
     for a in &args {
+        if !Path::new(a).exists() {
+            eprintln!("no such file or folder: {a:?}");
+            continue;
+        }
         collect(Path::new(a), &mut files);
     }
     let nsf_lib = o.nsf.as_ref().map(|dir| {
