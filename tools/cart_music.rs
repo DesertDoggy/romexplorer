@@ -506,9 +506,15 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, pla
     let long = ws_map::map_check(&wsr, &m, rom, ws_map::RECORD_FRAMES * 2, ws_map::Fill::Bridged).iter().filter(|s| s.1 >= MAP_RIGHT).count();
     let entries: usize = m.songs.iter().map(|s| s.1.at.len()).max().unwrap_or(0);
     let ops: usize = m.scripts.iter().map(|s| s.ops.len()).sum();
+    // The map as the app keeps it: the songs it plays right, written down and read back,
+    // played with the gaps bridged.
+    let saved = ws_map::keep_right(&wsr, m.clone(), rom).and_then(|k| ws_map::Map::decode(&k.encode())).map_or(0, |back| {
+        ws_map::map_check(&wsr, &back, rom, CHECK_FRAMES, ws_map::Fill::Bridged).iter().filter(|s| s.1 >= MAP_RIGHT).count()
+    });
+    t.saved += saved;
     let wrong: Vec<String> = zeros.iter().filter(|s| s.1 < MAP_RIGHT).take(10).map(|s| format!("{}:{:.2}", s.0, s.1)).collect();
     println!(
-        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read; map text {} KB){}",
+        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}; saved map: {saved}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read; map text {} KB){}",
         started.elapsed().as_secs_f32(),
         m.songs.len(),
         ws_map::RECORD_FRAMES * 2,
