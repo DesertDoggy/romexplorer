@@ -39,7 +39,10 @@ const MAX_TRACK_BYTES: u64 = 800 << 20;
 /// Larger files are not looked into: a disc's large files are movies and streamed audio, and
 /// a sound archive of this size would be one of those as well.
 const MAX_FILE_BYTES: u64 = 64 << 20;
-pub(super) const PLAY_RATE: u32 = 48_000;
+/// The PlayStation's own rate. Played at 48 kHz, TinySoundFont put some samples
+/// 147 cents (48/44.1) sharp in songs that are exactly in tune at 44.1 kHz, measured
+/// note by note against the console.
+pub(super) const PLAY_RATE: u32 = 44_100;
 const FADE_MS: u64 = 8_000;
 /// After a song that does not loop: the release of its last notes.
 const RELEASE_MS: u64 = 2_000;
