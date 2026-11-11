@@ -16,6 +16,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Die Indizierung der ROM-Musik liest die kleinsten ROMs zuerst. ROMs, aus denen sie noch nichts
   lesen kann, etwa Diskettenabbilder, werden ausgelassen und übernommen, sobald sie unterstützt werden.
 - Auch CloneCD- (.ccd) und Alcohol-Abbilder (.mds) werden gelesen.
+- Auch PlayStation-Spiele mit eigener Sound-Engine des Herstellers (Square, tri-Ace u. a.) spielen ihre Musik direkt von der Disc.
 - Ein ROM mit demselben Inhalt wie ein bereits indiziertes übernimmt dessen Titel, statt erneut
   gelesen zu werden.
 
