@@ -178,6 +178,7 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
     let mut custom_files: Vec<(String, Vec<u8>)> = Vec::new();
     let banks = super::akao_image::has_banks(listing);
     let mut akao_files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut triace_files: Vec<(String, Vec<u8>)> = Vec::new();
     for file in listing {
         if file.size < 16 || file.size > MAX_FILE_BYTES || rom_audio::is_video(file.name()) {
             continue;
@@ -186,6 +187,9 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
         let h = holds(&bytes);
         if custom(&bytes) {
             custom_files.push((file.path.clone(), bytes.clone()));
+        }
+        if !super::triace::headers(&bytes).is_empty() {
+            triace_files.push((file.path.clone(), bytes.clone()));
         }
         if banks && super::akao_image::candidate(&bytes) {
             akao_files.push((file.path.clone(), bytes.clone()));
@@ -237,6 +241,7 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
         }
     }
     super::akao_image::index(view, listing, akao_files, n, t, progress, out);
+    super::triace::index(view, listing, triace_files, MAX_FILE_BYTES, n, t, progress, out);
     let standard = out.len() - before;
     index_custom(view, listing, n, custom_files, standard == 0, t, progress, out);
 }
