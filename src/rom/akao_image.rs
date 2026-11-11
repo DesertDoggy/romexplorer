@@ -30,10 +30,10 @@ const NAME: &str = "sound.bin";
 /// position in a 4 KB window (starting at 0xFEE) and a 4-bit length + 3. `None` when the
 /// length does not match the file's size (allowing for sector padding).
 pub fn lzs(data: &[u8]) -> Option<Vec<u8>> {
-    let len = u32::from_le_bytes(data.get(..4)?.try_into().ok()?) as usize;
-    if len == 0 || len + 4 > data.len() || data.len() - (len + 4) >= 2048 {
+    if !lzs_header(data) {
         return None;
     }
+    let len = u32::from_le_bytes(data[..4].try_into().ok()?) as usize;
     let src = &data[4..4 + len];
     let mut window = [0u8; 4096];
     let mut pos = 0xFEEusize;
@@ -69,6 +69,22 @@ pub fn lzs(data: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// Whether the file starts with an LZS length matching its size.
+fn lzs_header(data: &[u8]) -> bool {
+    let Some(len) = data.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize) else { return false };
+    len != 0 && len + 4 <= data.len() && data.len() - (len + 4) < 2048
+}
+
+/// Whether the disc has the instrument banks, by name.
+pub fn has_banks(listing: &[DiscFile]) -> bool {
+    named(listing, "INSTR.ALL").is_some() && named(listing, "INSTR.DAT").is_some()
+}
+
+/// Whether a file read whole may hold sequences for [`index`].
+pub fn candidate(bytes: &[u8]) -> bool {
+    bytes.len() >= 16 && bytes.len() <= INSTR_ALL_AT && (has_akao(bytes) || lzs_header(bytes))
 }
 
 fn named<'a>(listing: &'a [DiscFile], name: &str) -> Option<&'a DiscFile> {
@@ -136,23 +152,17 @@ struct Block {
 
 /// Every song of the disc's files holding AKAO sequences, played over its banks. Each
 /// sequence is kept once (many files carry the same one), and as many as fit go into one
-/// image, scanned once.
-pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
+/// image, scanned once. `files`: the disc's files read whole that are [`candidate`]s.
+#[allow(clippy::too_many_arguments)]
+pub fn index(view: &DiscView, listing: &[DiscFile], files: Vec<(String, Vec<u8>)>, n: u32, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
     let Some((all, dat)) = banks(view, listing) else { return };
     let mut seen: HashSet<u64> = HashSet::new();
     let mut unique: Vec<Block> = Vec::new();
-    for file in listing {
-        if file.size < 16 || file.size > INSTR_ALL_AT as u64 {
-            continue;
-        }
-        let Ok(raw) = read_whole(view, file) else { continue };
-        if !has_akao(&raw) && lzs(&raw).is_none() {
-            continue;
-        }
+    for (path, raw) in files {
         let bytes = contents(raw);
         for (offset, seq) in blocks(&bytes) {
             if seen.insert(digest(seq)) {
-                unique.push(Block { file: file.path.clone(), offset, bytes: seq.to_vec() });
+                unique.push(Block { file: path.clone(), offset, bytes: seq.to_vec() });
             }
         }
     }
