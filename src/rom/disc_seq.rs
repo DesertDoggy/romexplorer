@@ -105,7 +105,7 @@ fn joined(parts: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-fn read_whole(view: &DiscView, file: &DiscFile) -> Result<Vec<u8>, String> {
+pub fn read_whole(view: &DiscView, file: &DiscFile) -> Result<Vec<u8>, String> {
     let mut bytes = vec![0u8; usize::try_from(file.size).map_err(|_| "too large")?];
     let n = file.read(view, 0, &mut bytes).map_err(|e| e.to_string())?;
     bytes.truncate(n);
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_looping_song_plays_its_loop_twice() {
-        let once = vgmtrans::Song { name: String::new(), format: "PS1".into(), offset: 0, looping: true, length_ms: 30_000 };
+        let once = vgmtrans::Song { name: String::new(), format: "PS1".into(), file: 0, offset: 0, looping: true, length_ms: 30_000 };
         let twice = vgmtrans::Song { length_ms: 50_000, ..once.clone() };
         assert_eq!(timing(&once, Some(&twice)), (10_000 + 2 * 20_000, FADE_MS, true, 10_000, 20_000));
     }
