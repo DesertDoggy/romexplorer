@@ -12,7 +12,8 @@
 #   rgb_*   the Game Boy sound chip from upstream libgme, fed by the game's own code running
 #           on the app's Game Boy CPU.
 #   ragb_*  GBA music from the ROM through agbplay (external/agbplay, LGPL-3.0): the playback
-#           core only, fmt header-only from external/fmt.
+#           core only, with the fmt VGMTrans builds (one fmt in the library: two versions
+#           of fmt v12 clash at link time on MinGW).
 #   rsseq_* DS sequenced music (SSEQ in a sound archive) through kode54's SSEQ Player
 #           (external/SSEQPlayer, WTFPL), with deps/rommusic/patches/sseq/ applied.
 #   rusf_*  N64 music from USF rips through lazyusf2 (external/lazyusf2, GPL-2.0+): the
@@ -41,9 +42,9 @@
 cmake_minimum_required(VERSION 3.25)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT VGMTRANS_ROOT TSF_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT VGMTRANS_ROOT TSF_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT, VGM_ROOT, VGMTRANS_ROOT and TSF_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT, VGM_ROOT, VGMTRANS_ROOT and TSF_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -117,8 +118,9 @@ if(ROMMUSIC_X86_64)
   set_source_files_properties(${AGB}/ResamplerAVX2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
 endif()
 add_library(rommusic_agb OBJECT ${AGB_SOURCES})
-target_include_directories(rommusic_agb PRIVATE ${AGB} ${CMAKE_CURRENT_SOURCE_DIR}/agbplay/compat ${FMT_ROOT}/include)
-target_compile_definitions(rommusic_agb PRIVATE FMT_HEADER_ONLY)
+target_include_directories(rommusic_agb PRIVATE ${AGB} ${CMAKE_CURRENT_SOURCE_DIR}/agbplay/compat)
+# fmt::fmt is VGMTrans's (added below; targets resolve at generate time).
+target_link_libraries(rommusic_agb PRIVATE fmt::fmt)
 set_target_properties(rommusic_agb PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
 # --- the DS sequence player ---------------------------------------------------------
