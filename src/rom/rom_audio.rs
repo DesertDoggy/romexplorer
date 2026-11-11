@@ -796,6 +796,17 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
         return;
     }
     drop(first);
+    // Each subsong is opened on its own, and some formats (CD-XA's channels) scan the whole
+    // file to find theirs: a file not too big is read once and held for all of them. Vandal
+    // Hearts II's 59 MB, 256-channel XA file: about 200 s from the CHD, 6 s held.
+    let held = (size <= HOLD_MAX_BYTES).then(|| Held::read(open(false), path)).flatten();
+    let held_open = |alone: bool| -> Box<dyn VgmSource> {
+        match &held {
+            Some(h) => Box::new(Held { bytes: h.bytes.clone(), name: h.name.clone(), base: open(alone) }),
+            None => open(alone),
+        }
+    };
+    let open: &dyn Fn(bool) -> Box<dyn VgmSource> = &held_open;
     let alone = count > NAMED_SUBSONGS;
     // Banks sometimes point two entries at the same sound: subsongs alike in length, loop
     // and format are compared by their first samples, and a repeat is left out.
@@ -827,6 +838,53 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
         let words = format!("{path}/{}", info.stream_name);
         let name = if info.stream_name.is_empty() { format!("{file_name} #{subsong}") } else { info.stream_name.clone() };
         out.push(found(TrackLocation::File { view, path: path.to_string(), subsong }, name, &info, size, &words, t));
+    }
+}
+
+/// A file of many subsongs up to this size is read once and held while they are indexed.
+const HOLD_MAX_BYTES: u64 = 128 << 20;
+
+/// A file's bytes, read once, with its companions still opened through `base`.
+struct Held {
+    bytes: Arc<Vec<u8>>,
+    name: String,
+    base: Box<dyn VgmSource>,
+}
+
+impl Held {
+    fn read(mut file: Box<dyn VgmSource>, name: &str) -> Option<Self> {
+        let mut bytes = vec![0u8; usize::try_from(file.size()).ok()?];
+        let mut done = 0;
+        while done < bytes.len() {
+            let n = file.read_at(done as u64, &mut bytes[done..]);
+            if n == 0 {
+                break;
+            }
+            done += n;
+        }
+        bytes.truncate(done);
+        Some(Self { bytes: Arc::new(bytes), name: name.to_string(), base: file })
+    }
+}
+
+impl VgmSource for Held {
+    fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> usize {
+        let Some(src) = usize::try_from(offset).ok().and_then(|o| self.bytes.get(o..)) else { return 0 };
+        let n = src.len().min(dst.len());
+        dst[..n].copy_from_slice(&src[..n]);
+        n
+    }
+
+    fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self, name: &str) -> Option<Box<dyn VgmSource>> {
+        if vgmstream::file_name_of(name).eq_ignore_ascii_case(vgmstream::file_name_of(&self.name)) {
+            let base = self.base.open(name)?;
+            return Some(Box::new(Held { bytes: self.bytes.clone(), name: self.name.clone(), base }));
+        }
+        self.base.open(name)
     }
 }
 
