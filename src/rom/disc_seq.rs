@@ -326,12 +326,39 @@ fn read_runs(view: &DiscView, listing: &[DiscFile], layout: Option<(u64, u64)>, 
     Ok(out)
 }
 
-/// The song a scan of its own runs finds as the one recorded: its sequence is the first run,
-/// from its start.
-fn song_in_runs(files: &[(String, Vec<u8>)], formats: &str, loops: u32) -> Option<(u32, vgmtrans::Song)> {
+/// The song a scan of its own runs finds as the one recorded: its sequence is in the first
+/// run, `at` bytes in.
+fn song_in_runs(files: &[(String, Vec<u8>)], formats: &str, loops: u32, at: u64) -> Option<(u32, vgmtrans::Song)> {
     let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     let songs = vgmtrans::songs_in(&refs, formats, loops).ok()?;
-    songs.into_iter().enumerate().find(|(_, s)| s.file == 0 && s.offset == 0).map(|(i, s)| (i as u32, s))
+    songs.into_iter().enumerate().find(|(_, s)| s.file == 0 && u64::from(s.offset) == at).map(|(i, s)| (i as u32, s))
+}
+
+/// A run longer than this is not made by joining a song's pieces of one file.
+const MAX_SPAN: u64 = 32 << 20;
+
+/// A song's pieces as runs to read: the pieces in one file joined into one run from the
+/// first to the end of the last (formats pair a sequence with instruments in the same file
+/// only, and find a bank by what follows it), the sequence's file first. Returns the runs
+/// and where the sequence is in the first.
+fn spans(pieces: &[Run]) -> (Vec<Run>, u64) {
+    let mut out: Vec<Run> = Vec::new();
+    for p in pieces {
+        match out.iter_mut().find(|r| r.file == p.file) {
+            Some(r) => {
+                let start = r.offset.min(p.offset);
+                let end = (r.offset + r.length).max(p.offset + p.length);
+                if end - start > MAX_SPAN {
+                    return (pieces.to_vec(), 0);
+                }
+                r.offset = start;
+                r.length = end - start;
+            }
+            None => out.push(p.clone()),
+        }
+    }
+    let at = pieces[0].offset - out[0].offset;
+    (out, at)
 }
 
 /// The custom engines' songs: the files holding their magic numbers, scanned together (an
@@ -340,6 +367,17 @@ fn song_in_runs(files: &[(String, Vec<u8>)], formats: &str, loops: u32) -> Optio
 /// recorded by the runs it is made of, checked by scanning just those again.
 #[allow(clippy::too_many_arguments)]
 fn index_custom(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(String, Vec<u8>)>, whole: bool, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
+    let before = out.len();
+    if !files.is_empty() {
+        index_custom_in(view, listing, n, files, false, t, progress, out);
+    }
+    if whole && out.len() == before {
+        index_custom_in(view, listing, n, Vec::new(), true, t, progress, out);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(String, Vec<u8>)>, whole: bool, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
     let formats = vgmtrans::PS1_CUSTOM_PLAYABLE;
     let layout = sector_layout(listing);
     let (names, datas, raw): (Vec<Option<String>>, Vec<Vec<u8>>, bool) = if !files.is_empty() {
@@ -371,7 +409,7 @@ fn index_custom(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(Strin
         if song.length_ms == 0 || u64::from(song.length_ms) > MAX_SONG_MS || song.parts.is_empty() {
             continue;
         }
-        let Some(runs) = song
+        let Some(pieces) = song
             .parts
             .iter()
             .map(|p| p.file.and_then(|f| names.get(f as usize)).map(|name| Run { file: name.clone(), offset: u64::from(p.offset), length: u64::from(p.length) }))
@@ -379,14 +417,15 @@ fn index_custom(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(Strin
         else {
             continue;
         };
-        if !seen.insert(runs.clone()) {
+        if !seen.insert(pieces.clone()) {
             continue;
         }
+        let (runs, at) = spans(&pieces);
         let place = runs[0].file.clone().unwrap_or_else(|| "track".into());
         progress(&place);
         let Ok(read) = read_runs(view, listing, layout, &runs) else { continue };
-        let Some((index, once)) = song_in_runs(&read, formats, 0) else { continue };
-        let twice = song_in_runs(&read, formats, 1).map(|(_, s)| s);
+        let Some((index, once)) = song_in_runs(&read, formats, 0, at) else { continue };
+        let twice = song_in_runs(&read, formats, 1, at).map(|(_, s)| s);
         let (body, fade, looping, intro, lp) = timing(&once, twice.as_ref());
         let duration_ms = if looping && lp > 0 { intro + lp } else { body };
         let name = if song.name.is_empty() { format!("{} {:x}", stem(&place), runs[0].offset) } else { song.name.clone() };
@@ -549,6 +588,14 @@ mod tests {
         assert_eq!(j.len(), 2048 + 2049 + 5);
         assert_eq!(j[2048], 2);
         assert_eq!(j[2048 + 2049], 3);
+    }
+
+    #[test]
+    fn pieces_of_one_file_join_into_one_run() {
+        let r = |f: Option<&str>, o: u64, l: u64| Run { file: f.map(String::from), offset: o, length: l };
+        let (runs, at) = spans(&[r(Some("A"), 0x900, 0x10), r(Some("B"), 0, 0x40), r(Some("A"), 0x100, 0x20), r(Some("A"), 0x2000, 0x100)]);
+        assert_eq!(runs, vec![r(Some("A"), 0x100, 0x2000), r(Some("B"), 0, 0x40)]);
+        assert_eq!(at, 0x800);
     }
 
     #[test]
