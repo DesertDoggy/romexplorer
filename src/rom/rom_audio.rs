@@ -785,6 +785,39 @@ const NAMED_SUBSONGS: u32 = 512;
 /// Every sound in one file, one per subsong. `open(alone)` gives a fresh reader of the
 /// file; `alone` leaves out its companion files.
 fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
+    let before = out.len();
+    index_file_inner(open, path, size, view, t, out);
+    // A PlayStation .STR of XA audio only is music, not a film's sound.
+    if out.len() > before && is_video(path) && is_audio_only_str(open(true).as_mut()) {
+        out[before..].iter_mut().for_each(|t| t.video = false);
+    }
+}
+
+/// Whether a PlayStation stream file (raw 2352-byte CD-XA sectors) holds audio sectors and
+/// no video frames, judged by its first sectors.
+fn is_audio_only_str(file: &mut dyn VgmSource) -> bool {
+    const RAW: usize = 2352;
+    const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
+    let mut sector = [0u8; RAW];
+    let mut audio = 0;
+    for i in 0..256u64 {
+        if file.read_at(i * RAW as u64, &mut sector) < 0x20 || sector[..12] != SYNC {
+            break;
+        }
+        // The subheader's submode: 0x04 audio, 0x02 video, 0x08 data. A film's frames are
+        // data sectors that open with the 0x0160 frame magic.
+        let submode = sector[0x12];
+        if submode & 0x02 != 0 || (submode & 0x04 == 0 && sector[0x18..0x1A] == [0x60, 0x01]) {
+            return false;
+        }
+        if submode & 0x04 != 0 {
+            audio += 1;
+        }
+    }
+    audio > 0
+}
+
+fn index_file_inner(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
     let Some(first) = Stream::open(open(false), path, 0, PlayConfig::AS_STORED) else { return };
     let count = first.info().subsong_count;
     let file_name = vgmstream::file_name_of(path).to_string();
@@ -885,6 +918,34 @@ impl VgmSource for Held {
             return Some(Box::new(Held { bytes: self.bytes.clone(), name: self.name.clone(), base }));
         }
         self.base.open(name)
+    }
+}
+
+#[cfg(test)]
+mod str_tests {
+    use super::*;
+
+    fn sectors(kinds: &[(u8, [u8; 2])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &(submode, start) in kinds {
+            let mut s = vec![0u8; 2352];
+            s[..12].copy_from_slice(&[0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0]);
+            s[0x12] = submode;
+            s[0x16] = submode;
+            s[0x18..0x1A].copy_from_slice(&start);
+            out.extend(s);
+        }
+        out
+    }
+
+    #[test]
+    fn a_stream_of_xa_audio_only_is_not_a_film() {
+        let mut music = vgmstream::MemorySource::new("MUSIC.STR", sectors(&[(0x64, [1, 2]); 8]));
+        assert!(is_audio_only_str(&mut music));
+        let mut film = vgmstream::MemorySource::new("MOVIE.STR", sectors(&[(0x48, [0x60, 0x01]), (0x64, [1, 2]), (0x48, [0x60, 0x01])]));
+        assert!(!is_audio_only_str(&mut film));
+        let mut other = vgmstream::MemorySource::new("OTHER.STR", vec![1u8; 4096]);
+        assert!(!is_audio_only_str(&mut other));
     }
 }
 
