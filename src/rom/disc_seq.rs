@@ -30,7 +30,7 @@ pub const ENGINE: &str = "disc-seq";
 pub const PARTS_ENGINE: &str = "disc-parts";
 
 /// The custom engines' magic numbers: a file holding one is scanned by them.
-const CUSTOM_MAGIC: [&[u8]; 5] = [b"AKAO", b"KDT1", b"smds", b"wds ", b"HOSA"];
+const CUSTOM_MAGIC: [&[u8]; 6] = [b"AKAO", b"KDT1", b"smds", b"wds ", b"dwds", b"HOSA"];
 
 /// A data track scanned whole (when no file holds music) is read into memory twice over:
 /// larger ones are left alone.
