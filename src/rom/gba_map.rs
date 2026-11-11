@@ -23,19 +23,23 @@ pub enum Run {
     /// That many of the ROM's own bytes from another offset: data a set made from another
     /// region or revision has elsewhere. Laid before the other runs.
     Copy(u32, u32, u32),
+    /// A copy from another offset with every cartridge pointer in it (an aligned word from
+    /// 0x08000000 to 0x09FFFFFF) moved by the given amount: code and tables another revision
+    /// has at other addresses. Laid after the plain copies.
+    Reloc(u32, u32, u32, u32),
 }
 
 impl Run {
     fn at(&self) -> u32 {
         match self {
-            Run::Bytes(a, _) | Run::Fill(a, _, _) | Run::Copy(a, _, _) => *a,
+            Run::Bytes(a, _) | Run::Fill(a, _, _) | Run::Copy(a, _, _) | Run::Reloc(a, _, _, _) => *a,
         }
     }
 
     fn end(&self) -> usize {
         match self {
             Run::Bytes(a, b) => *a as usize + b.len(),
-            Run::Fill(a, n, _) | Run::Copy(a, n, _) => (*a + *n) as usize,
+            Run::Fill(a, n, _) | Run::Copy(a, n, _) | Run::Reloc(a, n, _, _) => (*a + *n) as usize,
         }
     }
 
@@ -54,6 +58,22 @@ impl Run {
                     image[*a as usize..end].copy_from_slice(src);
                 }
             }
+            Run::Reloc(a, n, from, k) => {
+                let (a, from, n) = (*a as usize, *from as usize, *n as usize);
+                if let Some(src) = rom.get(from..from + n) {
+                    image[a..end].copy_from_slice(src);
+                    relocate_words(&mut image[a..end], a, *k);
+                }
+            }
+        }
+    }
+
+    /// When the run is laid: plain copies, then relocated copies, then the rest.
+    fn phase(&self) -> u8 {
+        match self {
+            Run::Copy(..) => 0,
+            Run::Reloc(..) => 1,
+            _ => 2,
         }
     }
 }
@@ -316,9 +336,84 @@ impl Placer {
             return None;
         }
         let mut runs: Vec<Run> = moved.iter().map(|&(s, len, r)| Run::Copy(s as u32, len as u32, r as u32)).collect();
-        runs.extend(diff(&image, &spans, source));
+        for run in diff(&image, &spans, source) {
+            runs.extend(relocated(run, &image, rom, moved));
+        }
         Some(runs)
     }
+}
+
+/// Whether a word is an address in the cartridge.
+fn is_pointer(w: u32) -> bool {
+    (0x0800_0000..0x0A00_0000).contains(&w)
+}
+
+/// Moves every cartridge pointer among the aligned words of `bytes` (laid at cartridge offset
+/// `at`) by `k`.
+fn relocate_words(bytes: &mut [u8], at: usize, k: u32) {
+    let first = (4 - at % 4) % 4;
+    let mut i = first;
+    while i + 4 <= bytes.len() {
+        let w = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        if is_pointer(w) {
+            bytes[i..i + 4].copy_from_slice(&w.wrapping_add(k).to_le_bytes());
+        }
+        i += 4;
+    }
+}
+
+/// A byte run as a relocated copy of the ROM where that covers most of it, with what it
+/// leaves as bytes; the run as it is otherwise. Tried at this offset and at the offsets of
+/// the moved pieces nearby, with the pointer shift most of its differing pointers agree on.
+fn relocated(run: Run, image: &[u8], rom: &[u8], moved: &[(usize, usize, usize)]) -> Vec<Run> {
+    const NEAR: usize = 1 << 16;
+    let Run::Bytes(at, bytes) = &run else { return vec![run] };
+    let (at, len) = (*at as usize, bytes.len());
+    if len < 8 {
+        return vec![run];
+    }
+    let mut deltas: Vec<isize> = vec![0];
+    for &(s, n, r) in moved {
+        if s + n + NEAR >= at && s <= at + len + NEAR {
+            let d = r as isize - s as isize;
+            if !deltas.contains(&d) {
+                deltas.push(d);
+            }
+        }
+    }
+    let mut best: Option<(usize, usize, u32, Vec<u8>)> = None;
+    for d in deltas.into_iter().take(16) {
+        let Some(from) = at.checked_add_signed(d).filter(|f| f + len <= rom.len()) else { continue };
+        let src = &rom[from..from + len];
+        let mut ks: std::collections::HashMap<u32, usize> = Default::default();
+        let mut i = (4 - at % 4) % 4;
+        while i + 4 <= len {
+            let rw = u32::from_le_bytes(src[i..i + 4].try_into().unwrap());
+            let iw = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+            if rw != iw && is_pointer(rw) && is_pointer(iw) {
+                *ks.entry(iw.wrapping_sub(rw)).or_default() += 1;
+            }
+            i += 4;
+        }
+        let k = ks.into_iter().max_by_key(|&(k, n)| (n, std::cmp::Reverse(k))).map_or(0, |(k, _)| k);
+        let mut laid = src.to_vec();
+        relocate_words(&mut laid, at, k);
+        let same = laid.iter().zip(bytes).filter(|(a, b)| a == b).count();
+        if best.as_ref().is_none_or(|b| same > b.0) {
+            best = Some((same, from, k, laid));
+        }
+    }
+    let Some((same, from, k, laid)) = best else { return vec![run] };
+    if same * 4 < len * 3 {
+        return vec![run];
+    }
+    let mut out = vec![Run::Reloc(at as u32, len as u32, from as u32, k)];
+    // What the copy leaves different stays as bytes.
+    let spans = [(at, at + len)];
+    let mut padded = vec![0u8; at];
+    padded.extend_from_slice(&laid);
+    out.extend(diff(image, &spans, &padded));
+    out
 }
 
 /// One track's runs on its own (see [`Placer`] for a whole set).
@@ -355,12 +450,10 @@ impl Map {
         }
         let mut image = rom.to_vec();
         // Copies first: the other runs patch what they bring.
-        let runs = || self.common.iter().chain(&track.runs);
-        for r in runs().filter(|r| matches!(r, Run::Copy(..))) {
-            r.apply(&mut image, rom);
-        }
-        for r in runs().filter(|r| !matches!(r, Run::Copy(..))) {
-            r.apply(&mut image, rom);
+        for phase in 0..3 {
+            for r in self.common.iter().chain(&track.runs).filter(|r| r.phase() == phase) {
+                r.apply(&mut image, rom);
+            }
         }
         Ok(image)
     }
@@ -382,6 +475,7 @@ impl Map {
                     Run::Fill(a, n, 0) => out.push_str(&format!(" {a:x}:z{n:x}")),
                     Run::Fill(a, n, b) => out.push_str(&format!(" {a:x}:r{b:02x}.{n:x}")),
                     Run::Copy(a, n, from) => out.push_str(&format!(" {a:x}:m{from:x}.{n:x}")),
+                    Run::Reloc(a, n, from, k) => out.push_str(&format!(" {a:x}:p{from:x}.{n:x}.{k:x}")),
                 }
             }
         }
@@ -404,6 +498,11 @@ impl Map {
                     let a = u32::from_str_radix(a, 16).ok()?;
                     if let Some(n) = v.strip_prefix('z') {
                         return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, 0));
+                    }
+                    if let Some(c) = v.strip_prefix('p') {
+                        let mut f = c.split('.');
+                        let (from, n, k) = (f.next()?, f.next()?, f.next()?);
+                        return Some(Run::Reloc(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?, u32::from_str_radix(k, 16).ok()?));
                     }
                     if let Some(c) = v.strip_prefix('m') {
                         let (from, n) = c.split_once('.')?;
@@ -469,7 +568,7 @@ pub fn slim(map: &mut Map, rom: &[u8]) -> Result<usize, String> {
     for t in 0..map.tracks.len() {
         wanted.push(render(&map.image(rom, t)?, SLIM_SECONDS).ok());
     }
-    let candidates: Vec<usize> = map.common.iter().enumerate().filter(|(_, r)| !matches!(r, Run::Copy(..))).map(|(i, _)| i).collect();
+    let candidates: Vec<usize> = map.common.iter().enumerate().filter(|(_, r)| matches!(r, Run::Bytes(..) | Run::Fill(..))).map(|(i, _)| i).collect();
     if candidates.is_empty() {
         return Ok(0);
     }
@@ -607,6 +706,25 @@ mod tests {
         assert!(m.file_bytes() < 8, "{}", m.file_bytes());
         let back = Map::decode(&m.encode()).unwrap();
         assert_eq!(&back.image(&rom, 0).unwrap()[..image.len()], &image[..]);
+    }
+
+    #[test]
+    fn code_another_revision_moved_is_a_relocated_copy() {
+        // The ROM's code at 0x100, with pointers into the cartridge; the set's image has it at
+        // 0x40 with every pointer 0x20 lower.
+        let mut rom = vec![0x11u8; 0x400];
+        for (n, i) in (0x100..0x200).step_by(8).enumerate() {
+            rom[i..i + 4].copy_from_slice(&(0x0800_1000u32 + n as u32 * 4).to_le_bytes());
+            rom[i + 4..i + 8].copy_from_slice(&[n as u8, 2, 3, 4]);
+        }
+        let mut image = rom.clone();
+        image[0x40..0x140].copy_from_slice(&rom[0x100..0x200]);
+        relocate_words(&mut image[0x40..0x140], 0x40, 0u32.wrapping_sub(0x20));
+        // A moved piece nearby gives the offset to try.
+        let runs = relocated(Run::Bytes(0x40, image[0x40..0x140].to_vec()), &image, &rom, &[(0x20, 0x10, 0xE0)]);
+        assert_eq!(runs, vec![Run::Reloc(0x40, 0x100, 0x100, 0u32.wrapping_sub(0x20))]);
+        let m = Map { rom_len: 0x400, common: runs, tracks: vec![Track { runs: vec![], length_ms: 1, fade_ms: 0 }] };
+        assert_eq!(Map::decode(&m.encode()).unwrap().image(&rom, 0).unwrap(), image);
     }
 
     #[test]

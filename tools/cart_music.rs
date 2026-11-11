@@ -801,7 +801,7 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         started.elapsed().as_secs_f32(),
         back.file_bytes(),
         back.common.len(),
-        back.common.iter().filter(|r| matches!(r, gba_map::Run::Copy(..))).count(),
+        back.common.iter().filter(|r| matches!(r, gba_map::Run::Copy(..) | gba_map::Run::Reloc(..))).count(),
         text.len() as f64 / 1024.0,
         if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) }
     );
