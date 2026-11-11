@@ -458,7 +458,10 @@ RVT_API int rvt_render(void *player, int16_t *out, size_t frames) {
       tml_message *m = p->next;
       switch (m->type) {
         case TML_PROGRAM_CHANGE: tsf_channel_set_presetnumber(p->font, m->channel, m->program, 0); break;
-        case TML_NOTE_ON: tsf_channel_note_on(p->font, m->channel, m->key, m->velocity / 127.0f); break;
+        case TML_NOTE_ON:
+          tsf_channel_note_on(p->font, m->channel, m->key, m->velocity / 127.0f);
+          if (getenv("RVT_DEBUG_CC")) fprintf(stderr, "note t=%u ch=%d key=%d vel=%d preset=%d\n", m->time, m->channel, m->key, m->velocity, tsf_channel_get_preset_index(p->font, m->channel));
+          break;
         case TML_NOTE_OFF: tsf_channel_note_off(p->font, m->channel, m->key); break;
         case TML_PITCH_BEND:
           tsf_channel_set_pitchwheel(p->font, m->channel, m->pitch_bend);
