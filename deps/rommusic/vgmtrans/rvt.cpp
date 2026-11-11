@@ -104,6 +104,22 @@ std::set<std::string> format_set(const char *formats) {
   return out;
 }
 
+/* What a song plays, without the names and markers VGMTrans writes into its MIDI (which
+ * carry where the sequence sat): two copies of one sequence give the same key. */
+std::vector<uint8_t> events_key(const std::vector<uint8_t> &midi) {
+  std::vector<uint8_t> key;
+  tml_message *first = tml_load_memory(midi.data(), (int)midi.size());
+  for (tml_message *m = first; m; m = m->next) {
+    if (m->type == TML_SET_TEMPO) continue;
+    uint32_t t = m->time;
+    uint8_t rec[8] = {(uint8_t)t, (uint8_t)(t >> 8), (uint8_t)(t >> 16), (uint8_t)(t >> 24), m->type, m->channel,
+                      (uint8_t)m->key, (uint8_t)m->velocity};
+    key.insert(key.end(), rec, rec + 8);
+  }
+  tml_free(first);
+  return key;
+}
+
 /* The MIDI's length to its last event, as TinyMidiLoader reads it. */
 uint32_t midi_length_ms(const std::vector<uint8_t> &midi) {
   tml_message *m = tml_load_memory(midi.data(), (int)midi.size());
@@ -179,7 +195,7 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
       if (!midi) continue;
       midi->writeMidiToBuffer(song.midi);
       /* A disc can hold one sequence many times over (in each pack that uses it). */
-      if (!seen_midi.insert(song.midi).second) continue;
+      if (!seen_midi.insert(events_key(song.midi)).second) continue;
       for (SeqTrack *track : seq->tracks()) {
         if (track->infiniteLoops > 0) song.looping = true;
       }
