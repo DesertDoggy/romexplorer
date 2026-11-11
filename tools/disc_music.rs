@@ -120,7 +120,7 @@ fn main() {
             }
             let stem = disc.file_stem().and_then(|s| s.to_str()).unwrap_or("disc");
             let out = dir.join(format!("{stem} - {i:03}.wav"));
-            match disc_seq::open(disc, engine, *song) {
+            match romexplorer::rom::rom_songs::open(disc, engine, *song) {
                 Ok(mut pcm) => {
                     let rate = pcm.sample_rate();
                     let mut samples: Vec<i16> = Vec::new();

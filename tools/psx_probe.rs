@@ -197,6 +197,7 @@ fn load_core(path: &Path, disc: &Path) -> Result<(Core, AvInfo), String> {
         let init = sym!("retro_init", unsafe extern "C" fn());
         let load_game = sym!("retro_load_game", unsafe extern "C" fn(*const GameInfo) -> bool);
         let av_info = sym!("retro_get_system_av_info", unsafe extern "C" fn(*mut AvInfo));
+        let set_port = sym!("retro_set_controller_port_device", unsafe extern "C" fn(c_uint, c_uint));
         let core = Core {
             run: sym!("retro_run", unsafe extern "C" fn()),
             memory_data: sym!("retro_get_memory_data", unsafe extern "C" fn(c_uint) -> *mut c_void),
@@ -218,6 +219,10 @@ fn load_core(path: &Path, disc: &Path) -> Result<(Core, AvInfo), String> {
         let info = GameInfo { path: path.as_ptr(), data: std::ptr::null(), size: 0, meta: std::ptr::null() };
         if !load_game(&info) {
             return Err("the core did not load the disc (BIOS missing from the folder?)".into());
+        }
+        // One standard pad on port 1 and nothing on the others, as a frontend sets them.
+        for port in 0..8 {
+            set_port(port, if port == 0 { DEVICE_JOYPAD } else { 0 });
         }
         let mut av = AvInfo::default();
         av_info(&mut av);
