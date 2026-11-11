@@ -11,6 +11,7 @@ rommusic は romexplorer とは別にリリースします。このノートは 
 
 - ファイル名の途中に「;」があるディスクで、音楽ファイルの書き出しが終わりませんでした。
 - Android アプリでファイルへのアクセスを許可しようとすると、設定画面が開かず「Java exception was thrown」と表示されました。
+- Android アプリのアイコンが rommusic のものではなく、Android の標準アイコンになっていました。
 
 # rommusic 0.1.0
 

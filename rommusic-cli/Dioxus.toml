@@ -11,6 +11,8 @@ android_main_activity = "android/MainActivity.kt"
 # Also hard-coded in android/MainActivity.kt (`typealias BuildConfig`).
 identifier = "com.desertdoggy.rommusic"
 publisher = "DesertDoggy"
+# The desktop bundles' icon. dx ignores it on Android: the launcher icon is android/res/
+# (scripts/make_android_icons.py), which the build script puts over dx's.
 icon = ["assets/icon.png"]
 
 [android]
