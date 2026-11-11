@@ -1496,23 +1496,27 @@ fn main() {
         args.drain(i..(i + 2).min(args.len()));
     }
     args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
-    // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
-    // rommusic ship (assets/music_maps.zst).
+    // `--pack-maps <dir> <out folder>`: the maps kept under <dir>, one bundle per kind
+    // (music_maps_<kind>.zst), as the app and rommusic ship them in assets/.
     if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
         let (Some(dir), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: cart_music --pack-maps <maps folder> <bundle file>");
+            eprintln!("usage: cart_music --pack-maps <maps folder> <output folder>");
             std::process::exit(2);
         };
-        match rom_songs::pack_bundle(Path::new(dir)) {
-            Ok((packed, counts)) => {
-                if let Err(e) = std::fs::write(out, &packed) {
+        match rom_songs::pack_bundles(Path::new(dir)) {
+            Ok(bundles) => {
+                if let Err(e) = std::fs::create_dir_all(out) {
                     eprintln!("{out}: {e}");
                     std::process::exit(1);
                 }
-                for (kind, n) in counts {
-                    println!("{kind}: {n} maps");
+                for (kind, packed, n) in bundles {
+                    let file = Path::new(out).join(rom_songs::bundle_file(&kind));
+                    if let Err(e) = std::fs::write(&file, &packed) {
+                        eprintln!("{}: {e}", file.display());
+                        std::process::exit(1);
+                    }
+                    println!("{}: {n} maps, {} bytes", file.display(), packed.len());
                 }
-                println!("{out}: {} bytes", packed.len());
                 return;
             }
             Err(e) => {
@@ -1545,7 +1549,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps <maps folder> <bundle file>"
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps <maps folder> <output folder>"
         );
         std::process::exit(2);
     }

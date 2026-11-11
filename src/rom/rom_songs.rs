@@ -554,25 +554,39 @@ pub fn set_maps_dir(dir: PathBuf) {
     let _ = MAPS_DIR.set(dir);
 }
 
-/// The maps that ship with the app and rommusic, under `<app root>/assets/`: every kept map in
-/// one zstd stream, read once on first use. Numbers only, like each map.
+/// The maps that ship with the app and rommusic, under `<app root>/assets/`: one zstd stream
+/// per kind ([`bundle_file`]), each read on first use of that kind, so a console's maps cost
+/// nothing until one of its ROMs is played. Numbers only, like each map. An older single
+/// bundle of every kind ([`BUNDLE_FILE`]) is still read after them.
 pub const BUNDLE_FILE: &str = "music_maps.zst";
 const BUNDLE_MAGIC: &str = "romexplorer music maps 1";
 
-fn bundled() -> &'static std::collections::HashMap<String, String> {
-    static BUNDLE: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
-    BUNDLE.get_or_init(|| {
+/// The bundle file of one kind of map: `music_maps_gba.zst`.
+pub fn bundle_file(kind: &str) -> String {
+    format!("music_maps_{kind}.zst")
+}
+
+type Bundle = std::collections::HashMap<String, String>;
+
+/// The bundle in `<app root>/assets/<file>`, read once; empty when there is none.
+fn bundled(file: &str) -> &'static Bundle {
+    static BUNDLES: std::sync::Mutex<Option<std::collections::HashMap<String, &'static Bundle>>> = std::sync::Mutex::new(None);
+    let mut all = BUNDLES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(b) = all.get_or_insert_with(Default::default).get(file) {
+        return b;
+    }
+    let read = || -> Bundle {
         let Some(root) = super::native_lib::exe_root() else { return Default::default() };
-        let path = root.join("assets").join(BUNDLE_FILE);
+        let path = root.join("assets").join(file);
         let Ok(packed) = std::fs::read(&path) else { return Default::default() };
-        match read_bundle(&packed) {
-            Ok(maps) => maps,
-            Err(e) => {
-                log::warn!("{}: {e}", path.display());
-                Default::default()
-            }
-        }
-    })
+        read_bundle(&packed).unwrap_or_else(|e| {
+            log::warn!("{}: {e}", path.display());
+            Default::default()
+        })
+    };
+    let b: &'static Bundle = Box::leak(Box::new(read()));
+    all.get_or_insert_with(Default::default).insert(file.to_string(), b);
+    b
 }
 
 /// A bundle's maps by `<kind>/<key>` (`nes/<sha1>`).
@@ -595,12 +609,27 @@ pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, St
     Ok(maps)
 }
 
-/// Packs every map kept under `dir` (as [`set_maps_dir`] lays them out) into one bundle.
-/// Returns how many maps of each kind went in.
-pub fn pack_bundle(dir: &Path) -> Result<(Vec<u8>, Vec<(String, usize)>), String> {
+/// Packs the maps of each kind kept under `dir` (as [`set_maps_dir`] lays them out) into its
+/// own bundle ([`bundle_file`]). Returns each kind with maps: its bundle and how many maps went
+/// in.
+pub fn pack_bundles(dir: &Path) -> Result<Vec<(String, Vec<u8>, usize)>, String> {
+    let mut out = Vec::new();
+    for (kind, _) in MAP_KINDS {
+        let (packed, counts) = pack_bundle(dir, &[kind])?;
+        let n = counts.iter().map(|(_, n)| n).sum::<usize>();
+        if n > 0 {
+            out.push((kind.to_string(), packed, n));
+        }
+    }
+    Ok(out)
+}
+
+/// Packs every map of `kinds` kept under `dir` into one bundle. Returns how many maps of each
+/// kind went in.
+pub fn pack_bundle(dir: &Path, kinds: &[&str]) -> Result<(Vec<u8>, Vec<(String, usize)>), String> {
     let mut text = format!("{BUNDLE_MAGIC}\n");
     let mut counts = Vec::new();
-    for (kind, ext) in MAP_KINDS {
+    for (kind, ext) in MAP_KINDS.iter().filter(|(k, _)| kinds.contains(k)) {
         let Ok(entries) = std::fs::read_dir(dir.join(kind)) else { continue };
         let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext)).collect();
         // Sorted, so the same maps always pack to the same bytes.
@@ -630,7 +659,8 @@ fn kept_map(kind: &str, key: &str) -> Option<String> {
             return Some(text);
         }
     }
-    bundled().get(&format!("{kind}/{key}")).cloned()
+    let name = format!("{kind}/{key}");
+    bundled(&bundle_file(kind)).get(&name).or_else(|| bundled(BUNDLE_FILE).get(&name)).cloned()
 }
 
 /// What a NES ROM's map is kept under: the SHA-1 of its program data (a Disk System image's
@@ -1458,12 +1488,16 @@ mod bundle_tests {
         std::fs::write(dir.join("nes").join("aa.nesmap"), "nesmap 1\nline two\n").unwrap();
         std::fs::write(dir.join("hes").join("bb.hesmap"), "hesmap 1\n").unwrap();
         std::fs::write(dir.join("nes").join("stray.txt"), "not a map").unwrap();
-        let (packed, counts) = pack_bundle(&dir).unwrap();
+        let (packed, counts) = pack_bundle(&dir, &["nes", "hes"]).unwrap();
+        let split = pack_bundles(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(counts.iter().map(|(_, n)| n).sum::<usize>(), 2);
         let maps = read_bundle(&packed).unwrap();
         assert_eq!(maps.len(), 2);
         assert_eq!(maps["nes/aa"], "nesmap 1\nline two\n");
         assert_eq!(maps["hes/bb"], "hesmap 1\n");
+        // One bundle per kind, each holding only its own.
+        assert_eq!(split.iter().map(|(k, _, n)| (k.as_str(), *n)).collect::<Vec<_>>(), vec![("nes", 1), ("hes", 1)]);
+        assert_eq!(read_bundle(&split[1].1).unwrap().keys().collect::<Vec<_>>(), vec!["hes/bb"]);
     }
 }
