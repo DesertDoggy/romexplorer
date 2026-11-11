@@ -16,6 +16,7 @@ Faites une sauvegarde avant de remplacer une version.
 - L'indexation de la musique des ROM lit d'abord les plus petites. Les ROM dont elle ne peut encore
   rien lire, comme les images de disquette, sont laissées de côté et reprises une fois prises en charge.
 - Les images disque CloneCD (.ccd) et Alcohol (.mds) sont aussi lues.
+- Les jeux PlayStation dotés du moteur sonore propre à leur éditeur (Square, tri-Ace, etc.) jouent aussi leur musique directement depuis le disque.
 - Une ROM au contenu identique à une ROM déjà indexée reprend ses pistes au lieu d'être relue.
 
 ## Corrections
