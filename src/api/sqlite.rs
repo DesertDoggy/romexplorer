@@ -28,7 +28,7 @@ pub use romexplorer_types::sqlite::{CacheFile, ImportSummary, SqliteSummary};
 
 /// Where a cache records which installation produced it. Underscore-prefixed so it cannot
 /// collide with a table name from the schema.
-const META_TABLE: &str = "_romexplorer_meta";
+pub(crate) const META_TABLE: &str = "_romexplorer_meta";
 
 /// MariaDB's declared type for a column -> the SQLite affinity that makes it behave the same
 /// in a `WHERE`. Anything unrecognised is TEXT, which is SQLite's own default and never
@@ -123,54 +123,13 @@ pub async fn export(app: &App, tables: &[&str], path: &Path, progress: &crate::d
     let mut written = Vec::new();
     for (i, table) in tables.iter().enumerate() {
         progress.force(rows_done, Some(total_rows.max(1)), &format!("table {} of {} ({table})", i + 1, tables.len())).await;
-        let (columns, key) = shape(app, table).await?;
-        // A JSON column is stored as its JSON *text* here, so `false` stays `false` and a
-        // string keeps its quotes -- and `import` reads it back with SQLite's `json()` so
-        // both databases produce the identical nested shape for the writer.
-        let json_cols = super::rows::json_columns(app, table).await?;
-        let defs = columns.iter().map(|(c, a)| format!("\"{c}\" {a}")).collect::<Vec<_>>().join(", ");
-        let pk = if key.is_empty() { String::new() } else { format!(", PRIMARY KEY ({})", key.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")) };
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TABLE \"{table}\" ({defs}{pk})"))).execute(&out).await?;
-
-        let names = columns.iter().map(|(c, _)| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
-        let placeholders = format!("({})", vec!["?"; columns.len()].join(", "));
-        // SQLite's own variable limit is 32,766 in modern builds; stay well inside it.
-        let batch = (20_000 / columns.len().max(1)).max(1);
-
-        let mut rows = 0u64;
-        let mut after: Option<Vec<String>> = None;
-        loop {
-            let page = super::sync::export_page(app, table, after.as_deref(), 2_000).await?;
-            for chunk in page.rows.chunks(batch) {
-                let values = vec![placeholders.as_str(); chunk.len()].join(", ");
-                let mut query = sqlx::query(sqlx::AssertSqlSafe(format!("INSERT OR REPLACE INTO \"{table}\" ({names}) VALUES {values}")));
-                for row in chunk {
-                    let object = row.as_object().ok_or_else(|| Error::invalid(format!("{table}: a row was not a JSON object")))?;
-                    for (column, _) in &columns {
-                        let value = object.get(column.as_str());
-                        query = query.bind(if json_cols.contains(column.as_str()) {
-                            super::rows::json_column_text(value)
-                        } else {
-                            super::rows::json_text(value)
-                        });
-                    }
-                }
-                query.execute(&out).await?;
-                rows += chunk.len() as u64;
-                rows_done += chunk.len() as u64;
-            }
-            progress
-                .report(
-                    rows_done,
-                    Some(total_rows.max(rows_done).max(1)),
-                    &format!("table {} of {} ({table}) {rows}/~{} -- {rows_done}/~{total_rows} overall", i + 1, tables.len(), estimate[i]),
-                )
-                .await;
-            match page.next {
-                Some(cursor) => after = Some(cursor),
-                None => break,
-            }
-        }
+        let (done_before, n, est) = (rows_done, tables.len(), estimate[i]);
+        let rows = copy_table(app, &out, table, None, progress, &|rows| {
+            let overall = done_before + rows;
+            (overall, Some(total_rows.max(overall).max(1)), format!("table {} of {n} ({table}) {rows}/~{est} -- {overall}/~{total_rows} overall", i + 1))
+        })
+        .await?;
+        rows_done += rows;
         written.push((table.to_string(), rows));
     }
     out.close().await;
@@ -179,6 +138,90 @@ pub async fn export(app: &App, tables: &[&str], path: &Path, progress: &crate::d
 
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     Ok(SqliteSummary { file: path.file_name().unwrap_or_default().to_string_lossy().into_owned(), bytes, tables: written })
+}
+
+/// Creates `table` in `out` with MariaDB's shape (columns, affinities, primary key) and
+/// copies its rows, or only those matching `filter` (a `WHERE` fragment over the MariaDB
+/// table, **built by the caller from constants and integers only**: it is interpolated).
+/// `report` turns the rows copied so far into the progress line. Returns the rows copied.
+pub(crate) async fn copy_table(
+    app: &App,
+    out: &sqlx::SqlitePool,
+    table: &str,
+    filter: Option<&str>,
+    progress: &crate::database::jobs::Progress,
+    report: &(dyn Fn(u64) -> (u64, Option<u64>, String) + Send + Sync),
+) -> Result<u64> {
+    let (columns, key) = shape(app, table).await?;
+    // A JSON column is stored as its JSON *text* here, so `false` stays `false` and a
+    // string keeps its quotes -- and `import` reads it back with SQLite's `json()` so
+    // both databases produce the identical nested shape for the writer.
+    let json_cols = super::rows::json_columns(app, table).await?;
+    let defs = columns
+        .iter()
+        .map(|(c, a)| format!("\"{c}\" {a}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let pk = if key.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", PRIMARY KEY ({})",
+            key.iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE TABLE \"{table}\" ({defs}{pk})"
+    )))
+    .execute(out)
+    .await?;
+
+    let names = columns
+        .iter()
+        .map(|(c, _)| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let placeholders = format!("({})", vec!["?"; columns.len()].join(", "));
+    // SQLite's own variable limit is 32,766 in modern builds; stay well inside it.
+    let batch = (20_000 / columns.len().max(1)).max(1);
+
+    let mut rows = 0u64;
+    let mut after: Option<Vec<String>> = None;
+    loop {
+        let page =
+            super::sync::export_page_filtered(app, table, filter, after.as_deref(), 2_000).await?;
+        for chunk in page.rows.chunks(batch) {
+            let values = vec![placeholders.as_str(); chunk.len()].join(", ");
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT OR REPLACE INTO \"{table}\" ({names}) VALUES {values}"
+            )));
+            for row in chunk {
+                let object = row.as_object().ok_or_else(|| {
+                    Error::invalid(format!("{table}: a row was not a JSON object"))
+                })?;
+                for (column, _) in &columns {
+                    let value = object.get(column.as_str());
+                    query = query.bind(if json_cols.contains(column.as_str()) {
+                        super::rows::json_column_text(value)
+                    } else {
+                        super::rows::json_text(value)
+                    });
+                }
+            }
+            query.execute(out).await?;
+            rows += chunk.len() as u64;
+        }
+        let (done, total, message) = report(rows);
+        progress.report(done, total, &message).await;
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+    Ok(rows)
 }
 
 /// The tables a SQLite cache actually contains, in the order they were created.
@@ -388,15 +431,21 @@ pub async fn remove(app: &App, name: &str) -> Result<()> {
     std::fs::remove_file(&path).map_err(|e| Error::internal(format!("delete {}: {e}", path.display())))
 }
 
-/// `database` | `catalog` | `all` -> the tables that kind covers.
+/// The cache kind of a phone's synced copy, built by `super::mobile` rather than [`export`].
+pub const MOBILE_KIND: &str = "mobile";
+
+/// `database` | `catalog` | `all` -> the tables that kind covers (`mobile`: none of them as
+/// tables; see [`MOBILE_KIND`]).
 pub fn tables_for(kind: &str) -> Result<Vec<&'static str>> {
     match kind {
+        // A phone's synced copy (`super::mobile`): responses, not tables.
+        MOBILE_KIND => Ok(Vec::new()),
         "database" => Ok(super::backup::DATABASE_TABLES.to_vec()),
         "catalog" => Ok(super::backup::CATALOG_TABLES.to_vec()),
         // The default for a phone: it browses the catalogue *and* wants to see what is held,
         // so a cache of only one half would not render a single screen properly.
         "all" => Ok(super::backup::CATALOG_TABLES.iter().copied().chain(super::backup::DATABASE_TABLES.iter().copied()).collect()),
-        other => Err(Error::invalid(format!("kind must be database, catalog or all (not {other:?})"))),
+        other => Err(Error::invalid(format!("kind must be database, catalog, all or mobile (not {other:?})"))),
     }
 }
 
@@ -427,6 +476,7 @@ mod tests {
         assert_eq!(cache_kind_of(Path::new("/x/romexplorer-cache-all-20260928-162136.sqlite")).as_deref(), Some("all"));
         assert_eq!(cache_kind_of(Path::new("romexplorer-cache-database-20260928-162136.sqlite")).as_deref(), Some("database"));
         assert_eq!(cache_kind_of(Path::new("romexplorer-cache-catalog-20260928-162136.sqlite")).as_deref(), Some("catalog"));
+        assert_eq!(cache_kind_of(Path::new("romexplorer-cache-mobile-20260928-162136.sqlite")).as_deref(), Some("mobile"));
         assert_eq!(cache_kind_of(Path::new("romexplorer-catalog-20260928-152845.zip")), None, "a backup, not a cache");
         assert_eq!(cache_kind_of(Path::new("romexplorer-cache-banana-20260928-162136.sqlite")), None, "unknown kind");
         assert_eq!(cache_kind_of(Path::new("romexplorer-cache-all.sqlite")), None, "no timestamp");

@@ -8,6 +8,7 @@ mod audio;
 mod backup;
 pub mod bigpicture;
 mod collection;
+pub mod companion;
 pub mod definitive;
 pub mod config_copy;
 pub mod copy;

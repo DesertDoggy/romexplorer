@@ -1,7 +1,7 @@
 [workspace]
 # The GUI (Dioxus) is its own crate so its dependencies stay out of every existing lib /
 # bin / test build here; `cargo build` in this directory still builds just `romexplorer`.
-members = [".", "romexplorer-gui", "romexplorer-types", "chdlite", "rommusic-cli", "cia-tool"]
+members = [".", "romexplorer-gui", "romexplorer-types", "chdlite", "rommusic-cli", "cia-tool", "romcompanion"]
 default-members = ["."]
 resolver = "2"
 

@@ -11,8 +11,12 @@
 #[cfg(feature = "local")]
 pub mod assets;
 pub mod backend;
+#[cfg(feature = "mobile")]
+pub mod companion;
 #[cfg(feature = "local")]
 pub mod local;
+#[cfg(feature = "mobile")]
+pub mod offline;
 pub mod rest;
 
 // Part of this module's surface whichever build this is, but only the desktop one installs
@@ -75,6 +79,8 @@ pub fn normalize_base(base: &str) -> String {
 fn device_name() -> String {
     if cfg!(target_arch = "wasm32") {
         "web browser".to_string()
+    } else if cfg!(feature = "mobile") {
+        format!("romcompanion ({})", std::env::consts::OS)
     } else {
         format!("romexplorer app ({})", std::env::consts::OS)
     }
@@ -148,11 +154,12 @@ pub fn url(path: &str) -> String {
 /// it does over HTTP, and no bearer token ends up in the DOM. Web and mobile go over HTTP
 /// with the token in the query, because an `<img>` cannot send an `Authorization` header.
 pub fn media_url(path: &str) -> String {
-    #[cfg(feature = "local")]
+    // The phone serves its synced covers itself, and fetches the rest from the server.
+    #[cfg(any(feature = "local", feature = "mobile"))]
     {
         format!("/rxasset{path}")
     }
-    #[cfg(not(feature = "local"))]
+    #[cfg(not(any(feature = "local", feature = "mobile")))]
     {
         // A web session is a cookie the browser sends with the image request by itself.
         let token = endpoint().token;
@@ -296,13 +303,21 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn config_file() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let dir = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))?;
-    Some(dir.join("romexplorer").join("gui.json"))
+    // A phone has no HOME or APPDATA to speak of: its own files directory.
+    #[cfg(feature = "mobile")]
+    {
+        Some(companion::data_dir().join("gui.json"))
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        use std::path::PathBuf;
+        let dir = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))?;
+        Some(dir.join("romexplorer").join("gui.json"))
+    }
 }
 
 /// Set by a queue button just before it presses the job button beside it (`ui::QueueButton`):

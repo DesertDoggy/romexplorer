@@ -24,6 +24,7 @@ pub mod backup;
 pub mod copy;
 pub mod integrity;
 pub mod jobs;
+pub mod mobile;
 #[cfg(feature = "pinning")]
 pub mod pinning;
 #[cfg(feature = "private-files")]

@@ -150,3 +150,67 @@ impl Backend for RestBackend {
         })
     }
 }
+
+/// A file from the server into `dest`, chunk by chunk (a phone's synced copy is tens of MB:
+/// never held in memory whole). `on_bytes(done, total)` after each chunk.
+#[cfg(feature = "mobile")]
+pub async fn download(
+    path: &str,
+    dest: &std::path::Path,
+    mut on_bytes: impl FnMut(u64, Option<u64>),
+) -> ApiResult<u64> {
+    use std::io::Write;
+    let ep = endpoint();
+    let mut req = client().get(url(path));
+    if !ep.token.is_empty() {
+        req = req.bearer_auth(&ep.token);
+    }
+    let mut res = req.send().await.map_err(transport_error)?;
+    let status = res.status().as_u16();
+    if status >= 400 {
+        let text = res.text().await.unwrap_or_default();
+        return decode_text(status, text).map(|_| 0);
+    }
+    let total = res.content_length();
+    let mut file = std::fs::File::create(dest).map_err(|e| ApiError {
+        status: 500,
+        message: format!("{}: {e}", dest.display()),
+    })?;
+    let mut done = 0u64;
+    while let Some(chunk) = res.chunk().await.map_err(transport_error)? {
+        file.write_all(&chunk).map_err(|e| ApiError {
+            status: 500,
+            message: format!("{}: {e}", dest.display()),
+        })?;
+        done += chunk.len() as u64;
+        on_bytes(done, total);
+    }
+    file.sync_all().ok();
+    Ok(done)
+}
+
+/// A server path's bytes and content type: an image the synced copy doesn't hold.
+#[cfg(feature = "mobile")]
+pub async fn get_bytes(path: &str) -> ApiResult<(String, Vec<u8>)> {
+    let ep = endpoint();
+    let mut req = client().get(url(path));
+    if !ep.token.is_empty() {
+        req = req.bearer_auth(&ep.token);
+    }
+    let res = req.send().await.map_err(transport_error)?;
+    let status = res.status().as_u16();
+    let mime = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = res.bytes().await.map_err(transport_error)?;
+    if status >= 400 {
+        return Err(ApiError {
+            status,
+            message: String::from_utf8_lossy(&bytes).into_owned(),
+        });
+    }
+    Ok((mime, bytes.to_vec()))
+}
