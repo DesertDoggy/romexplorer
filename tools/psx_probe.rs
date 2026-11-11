@@ -4,13 +4,13 @@
 //!
 //! ```text
 //! psx_probe <disc .cue/.chd/...> --core <beetle core library> --bios <BIOS folder> --out <folder>
-//!           [--seconds N] [--every S] [--formats F] [--press KEY@S,...] [--no-mash]
+//!           [--seconds N] [--every S] [--formats F] [--press KEY@S,...] [--mash]
 //!           [--opt key=value]... [--dump] [--max-mb N] [--boot S] [--spu]
 //! ```
 //!
-//! The core runs for `--seconds` (default 180) of console time. Unless `--no-mash`, Start and
-//! Cross are pressed in turn every 1.5 s from 8 s on to get past logos and menus; `--press`
-//! adds presses of its own (`START@20,CROSS@22.5`, keys: CROSS CIRCLE SQUARE TRIANGLE START
+//! The core runs for `--seconds` (default 180) of console time. With `--mash`, Start and
+//! Cross are pressed in turn every 1.5 s from 8 s on to get past logos and menus (it can
+//! hang a game's opening, so it is off by default); `--press` adds presses of its own (`START@20,CROSS@22.5`, keys: CROSS CIRCLE SQUARE TRIANGLE START
 //! SELECT UP DOWN LEFT RIGHT L1 R1 L2 R2).
 //!
 //! Every `--every` seconds (default 5) main RAM is searched for the sound formats' magic
@@ -257,7 +257,9 @@ fn main() {
         args.retain(|a| a != f);
         had
     };
-    let no_mash = flag(&mut args, "--no-mash");
+    // Pressing buttons on a timer hung a game in its opening: only with --mash.
+    let no_mash = !flag(&mut args, "--mash");
+    flag(&mut args, "--no-mash");
     let dump = flag(&mut args, "--dump");
     let spu = flag(&mut args, "--spu");
     let take = |args: &mut Vec<String>, f: &str| -> Option<String> {
@@ -293,7 +295,7 @@ fn main() {
         }
     }
     let (Some(core_path), Some(bios), Some(out), Some(disc)) = (core_path, bios, out, args.first().map(PathBuf::from)) else {
-        eprintln!("usage: psx_probe <disc> --core <library> --bios <folder> --out <folder> [--seconds N] [--every S] [--formats F] [--press KEY@S,...] [--no-mash] [--opt key=value] [--dump] [--max-mb N]");
+        eprintln!("usage: psx_probe <disc> --core <library> --bios <folder> --out <folder> [--seconds N] [--every S] [--formats F] [--press KEY@S,...] [--mash] [--opt key=value] [--dump] [--max-mb N]");
         std::process::exit(2);
     };
     let saves = out.join("saves");

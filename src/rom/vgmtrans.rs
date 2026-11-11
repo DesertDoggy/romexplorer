@@ -21,6 +21,7 @@ type FlagFn = unsafe extern "C" fn(*mut c_void, i32) -> i32;
 type FreeFn = unsafe extern "C" fn(*mut c_void);
 type PlayFn = unsafe extern "C" fn(*mut c_void, i32, i32, f32) -> *mut c_void;
 type RenderFn = unsafe extern "C" fn(*mut c_void, *mut i16, usize) -> i32;
+type PartFn = unsafe extern "C" fn(*mut c_void, i32, i32, *mut u32, *mut u32) -> i32;
 
 struct Api {
     _lib: Library,
@@ -36,6 +37,8 @@ struct Api {
     play: PlayFn,
     render: RenderFn,
     play_free: FreeFn,
+    part_count: FlagFn,
+    part: PartFn,
 }
 
 fn api() -> Option<&'static Api> {
@@ -57,6 +60,8 @@ fn api() -> Option<&'static Api> {
                 play: *lib.get(b"rvt_play\0").ok()?,
                 render: *lib.get(b"rvt_render\0").ok()?,
                 play_free: *lib.get(b"rvt_play_free\0").ok()?,
+                part_count: *lib.get(b"rvt_part_count\0").ok()?,
+                part: *lib.get(b"rvt_part\0").ok()?,
                 _lib: lib,
             })
         }
@@ -72,6 +77,10 @@ pub fn available() -> bool {
 pub const PS1: &str = "PS1";
 /// The disc consoles' custom engines VGMTrans knows (Square's, Konami's, tri-Ace's, ...).
 pub const PS1_CUSTOM: &str = "Akao,FFT,HOSA,KonamiPS1,TriAcePS1,HeartBeatPS1,TamSoftPS1";
+/// The custom engines whose songs play right from the bytes as stored (tri-Ace's unpacks
+/// its sequences and is left out until its songs match; Heartbeat's has no instruments),
+/// with Sony's VABs that Konami's sequences play on.
+pub const PS1_CUSTOM_PLAYABLE: &str = "Akao,FFT,HOSA,KonamiPS1,TamSoftPS1,PS1";
 pub const PS2: &str = "SonyPS2,SquarePS2";
 
 /// One song a scan found.
@@ -87,6 +96,18 @@ pub struct Song {
     pub looping: bool,
     /// To its last event, with the loop played again `loops` times.
     pub length_ms: u32,
+    /// The runs of the scanned files it is made of: sequence first, then instruments and
+    /// samples. Scanning just these again finds the song.
+    pub parts: Vec<Part>,
+}
+
+/// A run of one of the scanned files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Part {
+    /// Which file; `None` for data VGMTrans unpacked itself (not in any file as stored).
+    pub file: Option<u32>,
+    pub offset: u32,
+    pub length: u32,
 }
 
 /// What a scan converts besides the MIDI.
@@ -154,6 +175,13 @@ pub fn songs_in(files: &[(&str, &[u8])], formats: &str, loops: u32) -> Result<Ve
                 offset: (api.offset)(scan.handle, i),
                 looping: (api.looping)(scan.handle, i) != 0,
                 length_ms: (api.length_ms)(scan.handle, i),
+                parts: (0..(api.part_count)(scan.handle, i))
+                    .map(|k| {
+                        let (mut offset, mut length) = (0u32, 0u32);
+                        let file = (api.part)(scan.handle, i, k, &mut offset, &mut length);
+                        Part { file: u32::try_from(file).ok(), offset, length }
+                    })
+                    .collect(),
             }
         })
         .collect())

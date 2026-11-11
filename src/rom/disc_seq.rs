@@ -22,6 +22,20 @@ use super::vgmtrans;
 /// the files `|`-separated in the order they are scanned.
 pub const ENGINE: &str = "disc-seq";
 
+/// A song of a custom engine (Square's, Konami's, ...), recorded by the runs of the disc it
+/// is made of: `disc-parts@<view>@<body ms>@<fade ms>@<formats>@<runs>`, each run
+/// `<file>|<hex offset>|<hex length>` and `;`-separated, sequence first; `*` as the file is
+/// the data track itself (its user data), for music outside the file tree. Playing scans
+/// just these runs again.
+pub const PARTS_ENGINE: &str = "disc-parts";
+
+/// The custom engines' magic numbers: a file holding one is scanned by them.
+const CUSTOM_MAGIC: [&[u8]; 5] = [b"AKAO", b"KDT1", b"smds", b"wds ", b"HOSA"];
+
+/// A data track scanned whole (when no file holds music) is read into memory twice over:
+/// larger ones are left alone.
+const MAX_TRACK_BYTES: u64 = 800 << 20;
+
 /// Larger files are not looked into: a disc's large files are movies and streamed audio, and
 /// a sound archive of this size would be one of those as well.
 const MAX_FILE_BYTES: u64 = 64 << 20;
@@ -41,6 +55,10 @@ const ALIGN: usize = 2048;
 pub struct Holds {
     pub seq: bool,
     pub vab: bool,
+}
+
+fn custom(bytes: &[u8]) -> bool {
+    CUSTOM_MAGIC.iter().any(|m| bytes.windows(m.len()).any(|w| w == *m))
 }
 
 pub fn holds(bytes: &[u8]) -> Holds {
@@ -157,17 +175,22 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
     }
     let mut found = Vec::new();
     let mut bytes_of: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut custom_files: Vec<(String, Vec<u8>)> = Vec::new();
     for file in listing {
         if file.size < 16 || file.size > MAX_FILE_BYTES || rom_audio::is_video(file.name()) {
             continue;
         }
         let Ok(bytes) = read_whole(view, file) else { continue };
         let h = holds(&bytes);
+        if custom(&bytes) {
+            custom_files.push((file.path.clone(), bytes.clone()));
+        }
         if h.seq || h.vab {
             found.push((file.path.clone(), h));
             bytes_of.insert(file.path.clone(), bytes);
         }
     }
+    let before = out.len();
     let all: Vec<String> = listing.iter().map(|f| f.path.clone()).collect();
     for group in groups(&found, &all) {
         progress(&group[0]);
@@ -207,6 +230,183 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
                 video: false,
             });
         }
+    }
+    let standard = out.len() - before;
+    index_custom(view, listing, n, custom_files, standard == 0, t, progress, out);
+}
+
+/// Where a disc's 2048-byte user data sits in its data track: (bytes before each sector's
+/// data, bytes from one sector to the next), from where its files' sectors start. `None`:
+/// the track is user data already.
+pub fn sector_layout(listing: &[DiscFile]) -> Option<(u64, u64)> {
+    listing.iter().find_map(|f| match f.extent {
+        disc_files::Extent::Sectors { first, stride } => Some((first % stride, stride)),
+        _ => None,
+    })
+}
+
+/// `len` bytes of the track's user data from `offset` on.
+pub fn read_user_data(view: &DiscView, layout: Option<(u64, u64)>, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+    let mut out = vec![0u8; len];
+    match layout {
+        None => view.read(offset, &mut out).map_err(|e| e.to_string())?,
+        Some((head, stride)) => {
+            let mut done = 0usize;
+            while done < len {
+                let pos = offset + done as u64;
+                let (sector, within) = (pos / 2048, pos % 2048);
+                let take = ((2048 - within) as usize).min(len - done);
+                view.read(sector * stride + head + within, &mut out[done..done + take]).map_err(|e| e.to_string())?;
+                done += take;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The size of the track's user data.
+pub fn user_data_size(view: &DiscView, layout: Option<(u64, u64)>) -> u64 {
+    match layout {
+        None => view.size(),
+        Some((_, stride)) => view.size() / stride * 2048,
+    }
+}
+
+fn escape(path: &str) -> String {
+    path.replace('%', "%25").replace('|', "%7C").replace(';', "%3B")
+}
+
+fn unescape(path: &str) -> String {
+    path.replace("%3B", ";").replace("%7C", "|").replace("%25", "%")
+}
+
+/// One run of a disc a custom song is made of.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Run {
+    /// A file of the disc, or `None` for the data track's user data.
+    file: Option<String>,
+    offset: u64,
+    length: u64,
+}
+
+fn runs_text(runs: &[Run]) -> String {
+    runs.iter().map(|r| format!("{}|{:x}|{:x}", r.file.as_deref().map(escape).unwrap_or_else(|| "*".into()), r.offset, r.length)).collect::<Vec<_>>().join(";")
+}
+
+fn parse_runs(text: &str) -> Option<Vec<Run>> {
+    text.split(';')
+        .map(|r| {
+            let mut f = r.split('|');
+            let file = f.next()?;
+            let offset = u64::from_str_radix(f.next()?, 16).ok()?;
+            let length = u64::from_str_radix(f.next()?, 16).ok()?;
+            Some(Run { file: (file != "*").then(|| unescape(file)), offset, length })
+        })
+        .collect()
+}
+
+fn read_runs(view: &DiscView, listing: &[DiscFile], layout: Option<(u64, u64)>, runs: &[Run]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out = Vec::with_capacity(runs.len());
+    for (i, run) in runs.iter().enumerate() {
+        let len = usize::try_from(run.length).map_err(|_| "a run too large")?;
+        let bytes = match &run.file {
+            Some(name) => {
+                let file = listing.iter().find(|f| &f.path == name).ok_or_else(|| format!("{name} is not on the disc"))?;
+                let mut buf = vec![0u8; len];
+                let got = file.read(view, run.offset, &mut buf).map_err(|e| e.to_string())?;
+                if got != len {
+                    return Err(format!("{name} is shorter than the song needs"));
+                }
+                buf
+            }
+            None => read_user_data(view, layout, run.offset, len)?,
+        };
+        out.push((format!("run{i}.bin"), bytes));
+    }
+    Ok(out)
+}
+
+/// The song a scan of its own runs finds as the one recorded: its sequence is the first run,
+/// from its start.
+fn song_in_runs(files: &[(String, Vec<u8>)], formats: &str, loops: u32) -> Option<(u32, vgmtrans::Song)> {
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    let songs = vgmtrans::songs_in(&refs, formats, loops).ok()?;
+    songs.into_iter().enumerate().find(|(_, s)| s.file == 0 && s.offset == 0).map(|(i, s)| (i as u32, s))
+}
+
+/// The custom engines' songs: the files holding their magic numbers, scanned together (an
+/// engine may keep its sequences and its samples in files of their own); when no file of
+/// the disc holds music (`whole`), its data track's user data scanned whole. Each song is
+/// recorded by the runs it is made of, checked by scanning just those again.
+#[allow(clippy::too_many_arguments)]
+fn index_custom(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(String, Vec<u8>)>, whole: bool, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
+    let formats = vgmtrans::PS1_CUSTOM_PLAYABLE;
+    let layout = sector_layout(listing);
+    let (names, datas, raw): (Vec<Option<String>>, Vec<Vec<u8>>, bool) = if !files.is_empty() {
+        let (n, d) = files.into_iter().map(|(p, b)| (Some(p), b)).unzip();
+        (n, d, false)
+    } else if whole && user_data_size(view, layout) <= MAX_TRACK_BYTES {
+        progress("the whole data track");
+        match read_user_data(view, layout, 0, user_data_size(view, layout) as usize) {
+            Ok(bytes) => (vec![None], vec![bytes], true),
+            Err(_) => return,
+        }
+    } else {
+        return;
+    };
+    let songs = {
+        let refs: Vec<(&str, &[u8])> = names.iter().zip(&datas).map(|(n, d)| (n.as_deref().unwrap_or("track.bin"), d.as_slice())).collect();
+        match vgmtrans::songs_in(&refs, formats, 0) {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    };
+    drop(datas);
+    let mut seen = std::collections::HashSet::new();
+    for song in songs {
+        // Sony's own SEQ/VAB songs are the standard pass's, except over a whole track.
+        if song.format == vgmtrans::PS1 && !raw {
+            continue;
+        }
+        if song.length_ms == 0 || u64::from(song.length_ms) > MAX_SONG_MS || song.parts.is_empty() {
+            continue;
+        }
+        let Some(runs) = song
+            .parts
+            .iter()
+            .map(|p| p.file.and_then(|f| names.get(f as usize)).map(|name| Run { file: name.clone(), offset: u64::from(p.offset), length: u64::from(p.length) }))
+            .collect::<Option<Vec<Run>>>()
+        else {
+            continue;
+        };
+        if !seen.insert(runs.clone()) {
+            continue;
+        }
+        let place = runs[0].file.clone().unwrap_or_else(|| "track".into());
+        progress(&place);
+        let Ok(read) = read_runs(view, listing, layout, &runs) else { continue };
+        let Some((index, once)) = song_in_runs(&read, formats, 0) else { continue };
+        let twice = song_in_runs(&read, formats, 1).map(|(_, s)| s);
+        let (body, fade, looping, intro, lp) = timing(&once, twice.as_ref());
+        let duration_ms = if looping && lp > 0 { intro + lp } else { body };
+        let name = if song.name.is_empty() { format!("{} {:x}", stem(&place), runs[0].offset) } else { song.name.clone() };
+        let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
+        let rate = u64::from(PLAY_RATE);
+        out.push(FoundTrack {
+            location: TrackLocation::RomSong { engine: format!("{PARTS_ENGINE}@{n}@{body}@{fade}@{formats}@{}", runs_text(&runs)), song: index },
+            kind: classify(&shape, &format!("{place}/{name}"), t),
+            name,
+            sample_rate: PLAY_RATE,
+            channels: 2,
+            duration_ms,
+            looping,
+            loop_start: intro * rate / 1000,
+            loop_end: (intro + lp) * rate / 1000,
+            codec: "PlayStation sequence".into(),
+            format: song.format.clone(),
+            bytes: 0,
+            video: false,
+        });
     }
 }
 
@@ -260,6 +460,27 @@ impl PcmStream for SeqPcm {
         self.left -= frames as u64;
         Ok(Some(buf))
     }
+}
+
+/// Opens song `song` of a custom engine's track stored as `engine` ([`PARTS_ENGINE`]).
+pub fn open_parts(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let mut f = engine.splitn(6, '@');
+    let (_, view, body, fade, formats, runs) = (f.next(), f.next(), f.next(), f.next(), f.next(), f.next());
+    let bad = || format!("a damaged disc song record: {engine}");
+    let view: usize = view.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let body: u64 = body.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let fade: u64 = fade.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let formats = formats.ok_or_else(bad)?;
+    let runs = runs.and_then(parse_runs).ok_or_else(bad)?;
+    let rom = rom_audio::open_rom(path)?;
+    let disc = rom.data.get(view).ok_or_else(|| format!("the ROM has no data track {}", view + 1))?;
+    let listing = disc_files::list(disc).map(|l| l.files).unwrap_or_default();
+    let read = read_runs(disc, &listing, sector_layout(&listing), &runs)?;
+    let refs: Vec<(&str, &[u8])> = read.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    let player = vgmtrans::Player::open_in(&refs, formats, 3, song, PLAY_RATE)?;
+    let rate = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(SeqPcm { player, left: (body + fade + tail) * rate / 1000, fade: fade * rate / 1000, tail: tail * rate / 1000, stop_at_end: fade == 0 }))
 }
 
 /// Opens song `song` of the track stored as `engine` on the disc at `path`.
@@ -331,8 +552,19 @@ mod tests {
     }
 
     #[test]
+    fn runs_round_trip() {
+        let runs = vec![
+            Run { file: Some("SOUND/A;B|C%.BIN".into()), offset: 0x1234, length: 0x80 },
+            Run { file: None, offset: 0x1_0000_0000, length: 0x10 },
+        ];
+        let text = runs_text(&runs);
+        assert!(!text.contains("A;B"));
+        assert_eq!(parse_runs(&text), Some(runs));
+    }
+
+    #[test]
     fn a_looping_song_plays_its_loop_twice() {
-        let once = vgmtrans::Song { name: String::new(), format: "PS1".into(), file: 0, offset: 0, looping: true, length_ms: 30_000 };
+        let once = vgmtrans::Song { name: String::new(), format: "PS1".into(), file: 0, offset: 0, looping: true, length_ms: 30_000, parts: Vec::new() };
         let twice = vgmtrans::Song { length_ms: 50_000, ..once.clone() };
         assert_eq!(timing(&once, Some(&twice)), (10_000 + 2 * 20_000, FADE_MS, true, 10_000, 20_000));
     }

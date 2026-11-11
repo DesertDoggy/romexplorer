@@ -32,6 +32,7 @@
 #include "ScannerManager.h"
 #include "VGMColl.h"
 #include "VGMInstrSet.h"
+#include "VGMSampColl.h"
 #include "VGMSeq.h"
 #include "SeqTrack.h"
 #include "conversion/MidiFile.h"
@@ -83,6 +84,13 @@ struct Song {
   uint32_t length_ms = 0;
   std::vector<uint8_t> midi;
   int bank = -1; /* index into Scan::banks, or -1 when its instruments were not asked for */
+  /* The runs of the scanned files the song is made of: its sequence first, then its
+     instrument sets and sample collections. file -1: data VGMTrans made itself (unpacked). */
+  struct Part {
+    int file;
+    uint32_t offset, length;
+  };
+  std::vector<Part> parts;
 };
 
 struct Scan {
@@ -256,6 +264,22 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
         auto known = file_index.find(seq->rawFile());
         song.file = known == file_index.end() ? 0 : known->second;
       }
+      {
+        auto part = [&](VGMFile *f) {
+          if (!f) return;
+          auto known = file_index.find(f->rawFile());
+          int idx = known == file_index.end() ? -1 : known->second;
+          for (const auto &p : song.parts)
+            if (p.file == idx && p.offset == f->offset() && p.length == f->length()) return;
+          song.parts.push_back({idx, f->offset(), f->length()});
+        };
+        part(seq);
+        for (VGMInstrSet *set : coll->instrSets()) {
+          part(set);
+          part(set->sampColl());
+        }
+        for (VGMSampColl *samp : coll->sampColls()) part(samp);
+      }
       /* A false hit can read past its file; reads throw then, and the song is left out. */
       try {
         auto midi = seq->convertToMidi(coll, context);
@@ -344,6 +368,22 @@ RVT_API int rvt_looping(void *s, int i) {
 RVT_API uint32_t rvt_length_ms(void *s, int i) {
   const Song *song = song_at(s, i);
   return song ? song->length_ms : 0;
+}
+
+/* How many runs song `i` is made of (Song::parts), and run `k`'s file, offset and length. */
+RVT_API int rvt_part_count(void *s, int i) {
+  Scan *scan = (Scan *)s;
+  if (!scan || i < 0 || i >= (int)scan->songs.size()) return 0;
+  return (int)scan->songs[i].parts.size();
+}
+
+RVT_API int rvt_part(void *s, int i, int k, uint32_t *offset, uint32_t *length) {
+  Scan *scan = (Scan *)s;
+  if (!scan || i < 0 || i >= (int)scan->songs.size() || k < 0 || k >= (int)scan->songs[i].parts.size()) return -1;
+  const auto &p = scan->songs[i].parts[k];
+  *offset = p.offset;
+  *length = p.length;
+  return p.file;
 }
 
 RVT_API void rvt_free(void *s) { delete (Scan *)s; }
