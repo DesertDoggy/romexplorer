@@ -1,5 +1,5 @@
 diff --git a/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp b/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
-index a945ec4a..609b7cb8 100644
+index a945ec4a..4ba3e4de 100644
 --- a/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
 +++ b/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
 @@ -2,6 +2,7 @@
@@ -10,17 +10,13 @@ index a945ec4a..609b7cb8 100644
  
  #include "base/Types.h"
  #include "SeqEvent.h"
-@@ -213,8 +214,11 @@ bool TriAcePS1Track::readEvent(void) {
-       case 0x8A : {
-         event_dur = readByte(curOffset++);
-         // Operand: u8 val.
--        curOffset++;
--        addUnknown(beginOffset, curOffset - beginOffset, "Unknown Event (tempo?)");
-+        u8 val = readByte(curOffset++);
-+        if (getenv("RVT_TRIACE_8A_TEMPO") && val != 0)
-+          addTempoBPM(beginOffset, curOffset - beginOffset, val);
-+        else
-+          addUnknown(beginOffset, curOffset - beginOffset, "Unknown Event (tempo?)");
-         break;
-       }
+@@ -22,7 +23,8 @@ TriAcePS1Seq::TriAcePS1Seq(RawFile *file, u32 offset, const std::string &name)
+ }
  
+ bool TriAcePS1Seq::parseHeader() {
+-  setPPQN(0x30);
++  const char *ppqn = getenv("RVT_TRIACE_PPQN");
++  setPPQN(ppqn ? (u16)strtoul(ppqn, nullptr, 0) : 0x30);
+ 
+   header = addHeader(offset(), 0xD5);
+   header->addChild(offset() + 2, 2, "Size");
