@@ -260,7 +260,17 @@ pub fn PagePlayer(query: String) -> Element {
         let query = query.clone();
         move || {
             let query = query.clone();
-            async move { api::get(&format!("/api/v1/audio/playlist?{query}")).await.unwrap_or_else(|_| json!({})) }
+            async move {
+                let mut list = api::get(&format!("/api/v1/audio/playlist?{query}")).await.unwrap_or_else(|_| json!({}));
+                // Each answer told apart from the last: while the page's ROMs are indexed the
+                // playlist can come back the same (the same progress line), and the effect
+                // below, which asks again, runs only on a change.
+                static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                if let Some(o) = list.as_object_mut() {
+                    o.insert("_fetch".into(), json!(FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+                }
+                list
+            }
         }
     });
     let resource = playlist;
