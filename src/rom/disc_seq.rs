@@ -367,6 +367,28 @@ fn spans(pieces: &[Run]) -> (Vec<Run>, u64) {
     (out, at)
 }
 
+/// A file up to this size is read whole for each of its songs.
+const MAX_WHOLE_FILE: u64 = 64 << 20;
+
+/// A song's pieces as whole files (the sequence's first), when every file is small enough:
+/// every song of a bank then has the same runs, so they are read and checked once for all.
+/// Returns the runs and where the sequence is in the first.
+fn whole_files(pieces: &[Run], listing: &[DiscFile]) -> Option<(Vec<Run>, u64)> {
+    let mut out: Vec<Run> = Vec::new();
+    for p in pieces {
+        let name = p.file.as_ref()?;
+        if out.iter().any(|r| r.file.as_ref() == Some(name)) {
+            continue;
+        }
+        let size = listing.iter().find(|f| &f.path == name)?.size;
+        if size > MAX_WHOLE_FILE {
+            return None;
+        }
+        out.push(Run { file: Some(name.clone()), offset: 0, length: size });
+    }
+    Some((out, pieces[0].offset))
+}
+
 /// The custom engines' songs: the files holding their magic numbers, scanned together (an
 /// engine may keep its sequences and its samples in files of their own); when no file of
 /// the disc holds music (`whole`), its data track's user data scanned whole. Each song is
@@ -407,7 +429,8 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
     };
     drop(datas);
     let mut seen = std::collections::HashSet::new();
-    // Songs of one bank share their runs (a file's pieces joined): scanned once for all.
+    // Songs of one bank share their runs (its files whole, or a file's pieces joined):
+    // scanned once for all.
     let mut scanned: HashMap<Vec<Run>, Option<RunScan>> = HashMap::new();
     for song in songs {
         // Sony's own SEQ/VAB songs are the standard pass's, except over a whole track.
@@ -428,7 +451,7 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
         if !seen.insert(pieces.clone()) {
             continue;
         }
-        let (runs, at) = spans(&pieces);
+        let (runs, at) = whole_files(&pieces, listing).unwrap_or_else(|| spans(&pieces));
         let place = runs[0].file.clone().unwrap_or_else(|| "track".into());
         progress(&place);
         let scan = scanned.entry(runs.clone()).or_insert_with(|| read_runs(view, listing, layout, &runs).ok().map(|read| scan_runs(&read, formats)));
@@ -605,6 +628,18 @@ mod tests {
         let (runs, at) = spans(&[r(Some("A"), 0x900, 0x10), r(Some("B"), 0, 0x40), r(Some("A"), 0x100, 0x20), r(Some("A"), 0x2000, 0x100)]);
         assert_eq!(runs, vec![r(Some("A"), 0x100, 0x2000), r(Some("B"), 0, 0x40)]);
         assert_eq!(at, 0x800);
+    }
+
+    #[test]
+    fn small_files_are_read_whole() {
+        let r = |f: Option<&str>, o: u64, l: u64| Run { file: f.map(String::from), offset: o, length: l };
+        let file = |p: &str, size: u64| DiscFile { path: p.into(), size, extent: disc_files::Extent::Linear { offset: 0 } };
+        let listing = [file("A", 0x3000), file("B", 0x40), file("BIG", MAX_WHOLE_FILE + 1)];
+        let (runs, at) = whole_files(&[r(Some("A"), 0x900, 0x10), r(Some("B"), 0, 0x40), r(Some("A"), 0x100, 0x20)], &listing).unwrap();
+        assert_eq!(runs, vec![r(Some("A"), 0, 0x3000), r(Some("B"), 0, 0x40)]);
+        assert_eq!(at, 0x900);
+        assert!(whole_files(&[r(Some("BIG"), 0, 0x10)], &listing).is_none());
+        assert!(whole_files(&[r(None, 0, 0x10)], &listing).is_none());
     }
 
     #[test]
