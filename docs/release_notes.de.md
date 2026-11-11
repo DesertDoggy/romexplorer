@@ -15,6 +15,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   geöffneten an die Reihe.
 - Die Indizierung der ROM-Musik liest die kleinsten ROMs zuerst. ROMs, aus denen sie noch nichts
   lesen kann, etwa Diskettenabbilder, werden ausgelassen und übernommen, sobald sie unterstützt werden.
+- Auch CloneCD- (.ccd) und Alcohol-Abbilder (.mds) werden gelesen.
 - Ein ROM mit demselben Inhalt wie ein bereits indiziertes übernimmt dessen Titel, statt erneut
   gelesen zu werden.
 

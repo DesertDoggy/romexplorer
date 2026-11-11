@@ -15,6 +15,7 @@ Faites une sauvegarde avant de remplacer une version.
   ouverte plus tôt.
 - L'indexation de la musique des ROM lit d'abord les plus petites. Les ROM dont elle ne peut encore
   rien lire, comme les images de disquette, sont laissées de côté et reprises une fois prises en charge.
+- Les images disque CloneCD (.ccd) et Alcohol (.mds) sont aussi lues.
 - Une ROM au contenu identique à une ROM déjà indexée reprend ses pistes au lieu d'être relue.
 
 ## Corrections
