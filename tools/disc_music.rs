@@ -13,6 +13,9 @@
 //! `--with A,B` also takes files whose path contains one of these (instrument files with no
 //! magic), `--max-mb N` raises the 64 MB size limit, and `--raw` scans each whole data
 //! track as one file instead, for music outside the file tree or inside packed archives.
+//! `--split MAGIC[:BACK]` cuts what is scanned into one piece per hit of MAGIC, each starting
+//! BACK bytes before its hit: for an engine whose scanner expects one song (and its bank)
+//! per file, such as tri-Ace's (`--split SLZ:4`).
 //!
 //! A folder is walked for `.chd`, `.cue`, `.iso` and `.bin` images (a `.bin` with a `.cue`
 //! beside it is left to the sheet).
@@ -63,6 +66,10 @@ fn main() {
     let magic: Vec<Vec<u8>> = take("--magic").map(|m| m.split(',').map(|x| x.as_bytes().to_vec()).collect()).unwrap_or_default();
     let with: Vec<String> = take("--with").map(|m| m.split(',').map(str::to_string).collect()).unwrap_or_default();
     let max_bytes: u64 = take("--max-mb").and_then(|s| s.parse::<u64>().ok()).unwrap_or(64) << 20;
+    let split: Option<(Vec<u8>, usize)> = take("--split").map(|v| match v.rsplit_once(':') {
+        Some((m, b)) if b.parse::<usize>().is_ok() => (m.as_bytes().to_vec(), b.parse().unwrap()),
+        _ => (v.as_bytes().to_vec(), 0),
+    });
     let max_songs: usize = take("--songs").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     if args.is_empty() {
         eprintln!("usage: disc_music <disc or folder>... [--wav <out dir>] [--seconds N] [--songs N]");
@@ -74,7 +81,7 @@ fn main() {
     }
     if let Some(formats) = probe {
         for disc in &discs {
-            probe_disc(disc, &formats, &magic, &with, max_bytes, raw, wav.as_deref(), seconds, max_songs);
+            probe_disc(disc, &formats, &magic, &with, max_bytes, raw, split.as_ref(), wav.as_deref(), seconds, max_songs);
         }
         return;
     }
@@ -142,8 +149,22 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// One piece per hit of `magic`, from `back` bytes before it to the next piece (at most `max`).
+fn pieces_at<'a>(bytes: &'a [u8], magic: &[u8], back: usize, max: usize) -> Vec<(usize, &'a [u8])> {
+    if magic.is_empty() {
+        return Vec::new();
+    }
+    let starts: Vec<usize> = bytes.windows(magic.len()).enumerate().filter(|(_, w)| *w == magic).map(|(i, _)| i.saturating_sub(back)).collect();
+    let mut out = Vec::new();
+    for (k, &start) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).copied().unwrap_or(bytes.len()).min(start.saturating_add(max)).max(start);
+        out.push((start, &bytes[start..end]));
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
-fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], with: &[String], max_bytes: u64, raw: bool, wav: Option<&Path>, seconds: u64, max_songs: usize) {
+fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], with: &[String], max_bytes: u64, raw: bool, split: Option<&(Vec<u8>, usize)>, wav: Option<&Path>, seconds: u64, max_songs: usize) {
     let started = Instant::now();
     let rom = match rom_audio::open_rom(disc) {
         Ok(r) => r,
@@ -182,8 +203,21 @@ fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], with: &[String], ma
         if picked.is_empty() {
             continue;
         }
+        if let Some((m, back)) = split {
+            let mut pieces = Vec::new();
+            for (path, bytes) in &picked {
+                for (at, piece) in pieces_at(bytes, m, *back, max_bytes as usize) {
+                    pieces.push((format!("{path}@{at:#x}"), piece.to_vec()));
+                }
+            }
+            println!("  split into {} pieces at {:?}", pieces.len(), String::from_utf8_lossy(m));
+            picked = pieces;
+        }
         let files: Vec<(&str, &[u8])> = picked.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
         for (i, f) in files.iter().enumerate() {
+            if split.is_some() {
+                break;
+            }
             let alone = vgmtrans::songs_in(&files[i..=i], formats, 0).map(|s| s.len()).unwrap_or(0);
             if alone > 0 {
                 println!("    alone: {} -> {alone} songs", f.0);
