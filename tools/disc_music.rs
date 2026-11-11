@@ -49,6 +49,9 @@ fn main() {
         v
     };
     let wav = take("--wav").map(PathBuf::from);
+    if let Some(dir) = &wav {
+        std::fs::create_dir_all(dir).expect("create the --wav folder");
+    }
     let seconds: u64 = take("--seconds").and_then(|s| s.parse().ok()).unwrap_or(30);
     let probe = take("--probe");
     let magic: Vec<Vec<u8>> = take("--magic").map(|m| m.split(',').map(|x| x.as_bytes().to_vec()).collect()).unwrap_or_default();
