@@ -162,6 +162,7 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
 
     const auto context = ConversionContext::fromOptions(ConversionOptions::the(), SynthTarget::SoundFont);
     std::map<std::vector<VGMInstrSet *>, int> bank_of;
+    std::set<std::vector<uint8_t>> seen_midi;
     int index = 0;
     for (VGMColl *coll : r.vgmColls()) {
       VGMSeq *seq = coll->seq();
@@ -177,6 +178,8 @@ RVT_API void *rvt_scan_files(const uint8_t *const *datas, const size_t *lens, co
       auto midi = seq->convertToMidi(coll, context);
       if (!midi) continue;
       midi->writeMidiToBuffer(song.midi);
+      /* A disc can hold one sequence many times over (in each pack that uses it). */
+      if (!seen_midi.insert(song.midi).second) continue;
       for (SeqTrack *track : seq->tracks()) {
         if (track->infiniteLoops > 0) song.looping = true;
       }
@@ -256,6 +259,15 @@ RVT_API void rvt_free(void *s) { delete (Scan *)s; }
 
 namespace {
 
+/* TinySoundFont plays VGMTrans's SoundFonts louder than the consoles did: measured against
+ * the same songs rendered from original audio format files by the console's own sound
+ * chip, Sony's SEQ/VAB came out about 13 dB louder in RMS (and clipped), Square's AKAO and
+ * FF Tactics engines 2 to 8 dB. */
+float format_gain_db(const std::string &format) {
+  if (format == "PS1") return -12.0f;
+  return -6.0f;
+}
+
 struct Player {
   tsf *font = nullptr;
   tml_message *messages = nullptr;
@@ -283,7 +295,7 @@ RVT_API void *rvt_play(void *s, int i, int rate, float gain_db) {
   if (!p->font || !p->messages) return nullptr;
   p->next = p->messages;
   p->rate = rate;
-  tsf_set_output(p->font, TSF_STEREO_INTERLEAVED, rate, gain_db);
+  tsf_set_output(p->font, TSF_STEREO_INTERLEAVED, rate, gain_db + format_gain_db(song->format));
   /* VGMTrans leaves channel 10 alone (no GM drums), so every channel is melodic. */
   for (int c = 0; c < 16; c++) tsf_channel_set_presetindex(p->font, c, 0);
   return p.release();
