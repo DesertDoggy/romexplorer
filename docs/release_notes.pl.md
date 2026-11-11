@@ -11,6 +11,10 @@ zapasową przed podmianą wersji.
 **Dźwięk z ROM-ów**
 - Otwarcie strony tytułu najpierw indeksuje muzykę z ROM-ów tej gry. Do tego czasu strona
   pokazuje postęp zamiast odtwarzać muzykę innej gry.
+- To samo dotyczy strony Definitywne. Strona otwarta później ma pierwszeństwo przed otwartą
+  wcześniej.
+- Indeksowanie muzyki z ROM-ów czyta najpierw najmniejsze. ROM-y, z których nie da się jeszcze nic
+  odczytać, np. obrazy dyskietek, są pomijane i zostaną odczytane, gdy pojawi się obsługa.
 - ROM o tej samej zawartości co już zindeksowany przejmuje jego utwory zamiast być czytany od
   nowa.
 

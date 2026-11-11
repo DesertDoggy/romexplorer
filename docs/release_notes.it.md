@@ -11,6 +11,10 @@ aggiornamento. Fai un backup prima di sostituire una build.
 **Audio delle ROM**
 - Aprendo la pagina di un titolo si indicizza prima la musica delle ROM di quel gioco. Nel
   frattempo la pagina mostra l'avanzamento invece di riprodurre la musica di un altro gioco.
+- Lo stesso vale per la pagina Definitiva. Una pagina aperta dopo passa davanti a una aperta
+  prima.
+- L'indicizzazione della musica delle ROM legge prima le più piccole. Le ROM da cui non sa ancora
+  leggere nulla, come le immagini di floppy, vengono saltate e riprese quando saranno supportate.
 - Una ROM con lo stesso contenuto di una già indicizzata ne riprende le tracce invece di essere
   riletta.
 

@@ -236,7 +236,12 @@ pub fn Family(id: u64) -> Element {
             }
         });
     };
+    // The music of the version the family recommends, indexed first like a title page's.
+    let definitive = u(&f, "definitive_title_id");
     rsx! {
+        if definitive > 0 {
+            super::PagePlayer { key: "{definitive}", query: format!("title_id={definitive}") }
+        }
         div { class: "crumbs", a { onclick: move |_| { navigator().push(Route::Definitive {}); }, {state::tr("Definitive")} } " › {base_name}" }
         div { class: "card",
             h2 { "{base_name}" " " span { class: "muted", style: "font-size:14px", {state::trf("{n} versions", &[("n", &members.len().to_string())])} } }
