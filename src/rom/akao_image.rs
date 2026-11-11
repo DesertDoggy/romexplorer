@@ -13,8 +13,8 @@ use super::disc_seq::{read_whole, seq_pcm, timing, MAX_SONG_MS, PLAY_RATE};
 use super::rom_audio::{self, classify, FoundTrack, PcmStream, Shape, Thresholds, TrackLocation};
 use super::vgmtrans;
 
-/// Stored as `disc-akao-image@<view>@<body ms>@<fade ms>@<file>`, the song its number in
-/// the file's image.
+/// Stored as `disc-akao-image@<view>@<body ms>@<fade ms>@<hex offset>@<file>`: the sequence
+/// at that offset of the file's contents.
 pub const ENGINE: &str = "disc-akao-image";
 
 const FORMATS: &str = "Akao";
@@ -114,74 +114,134 @@ fn digest(b: &[u8]) -> u64 {
     h.finish()
 }
 
-/// Every song of the disc's files holding AKAO sequences, played over its banks. Songs seen
-/// in an earlier file (the same sequence bytes) are left out.
+/// The AKAO sequences in a file's contents: (offset, bytes).
+fn blocks(b: &[u8]) -> Vec<(usize, &[u8])> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(k) = b[at..].windows(4).position(|w| w == b"AKAO") {
+        let start = at + k;
+        let seq = sequence(b, start);
+        out.push((start, seq));
+        at = start + seq.len().max(4);
+    }
+    out
+}
+
+/// One sequence of a file, by where it starts in the file's contents.
+struct Block {
+    file: String,
+    offset: usize,
+    bytes: Vec<u8>,
+}
+
+/// Every song of the disc's files holding AKAO sequences, played over its banks. Each
+/// sequence is kept once (many files carry the same one), and as many as fit go into one
+/// image, scanned once.
 pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
     let Some((all, dat)) = banks(view, listing) else { return };
     let mut seen: HashSet<u64> = HashSet::new();
+    let mut unique: Vec<Block> = Vec::new();
     for file in listing {
         if file.size < 16 || file.size > INSTR_ALL_AT as u64 {
             continue;
         }
         let Ok(raw) = read_whole(view, file) else { continue };
-        let bytes = contents(raw);
-        if !has_akao(&bytes) {
+        if !has_akao(&raw) && lzs(&raw).is_none() {
             continue;
         }
-        let Some(img) = image(&bytes, &all, &dat) else { continue };
-        progress(&file.path);
-        let refs = [(NAME, img.as_slice())];
-        let Ok(once) = vgmtrans::songs_in(&refs, FORMATS, 0) else { continue };
-        let twice = vgmtrans::songs_in(&refs, FORMATS, 1).unwrap_or_default();
-        for (i, song) in once.iter().enumerate() {
-            let at = song.offset as usize;
-            if song.file != 0 || at >= bytes.len() || song.length_ms == 0 || u64::from(song.length_ms) > MAX_SONG_MS {
-                continue;
+        let bytes = contents(raw);
+        for (offset, seq) in blocks(&bytes) {
+            if seen.insert(digest(seq)) {
+                unique.push(Block { file: file.path.clone(), offset, bytes: seq.to_vec() });
             }
-            if !seen.insert(digest(sequence(&bytes, at))) {
-                continue;
-            }
-            let (body, fade, looping, intro, lp) = timing(song, twice.iter().find(|s| s.file == 0 && s.offset == song.offset));
-            let duration_ms = if looping && lp > 0 { intro + lp } else { body };
-            let stem = file.name().split('.').next().unwrap_or(file.name());
-            let name = format!("{stem} {:x}", at);
-            let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
-            let rate = u64::from(PLAY_RATE);
-            out.push(FoundTrack {
-                location: TrackLocation::RomSong { engine: format!("{ENGINE}@{n}@{body}@{fade}@{}", file.path), song: i as u32 },
-                kind: classify(&shape, &format!("{}/{name}", file.path), t),
-                name,
-                sample_rate: PLAY_RATE,
-                channels: 2,
-                duration_ms,
-                looping,
-                loop_start: intro * rate / 1000,
-                loop_end: (intro + lp) * rate / 1000,
-                codec: "PlayStation sequence".into(),
-                format: song.format.clone(),
-                bytes: 0,
-                video: false,
-            });
         }
+    }
+    let mut batch: Vec<&Block> = Vec::new();
+    let mut size = 0;
+    for block in &unique {
+        let len = block.bytes.len().div_ceil(16) * 16;
+        if size + len > INSTR_ALL_AT && !batch.is_empty() {
+            scan(&batch, &all, &dat, n, t, progress, out);
+            batch.clear();
+            size = 0;
+        }
+        if len <= INSTR_ALL_AT {
+            batch.push(block);
+            size += len;
+        }
+    }
+    if !batch.is_empty() {
+        scan(&batch, &all, &dat, n, t, progress, out);
     }
 }
 
-/// Opens song `song` of the track stored as `engine` ([`ENGINE`]).
-pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
-    let mut f = engine.splitn(5, '@');
-    let (_, view, body, fade, file) = (f.next(), f.next(), f.next(), f.next(), f.next());
+#[allow(clippy::too_many_arguments)]
+fn scan(batch: &[&Block], all: &[u8], dat: &[u8], n: u32, t: &Thresholds, progress: &mut dyn FnMut(&str), out: &mut Vec<FoundTrack>) {
+    progress(&batch[0].file);
+    let mut seqs = Vec::new();
+    let mut starts = Vec::with_capacity(batch.len());
+    for b in batch {
+        starts.push(seqs.len());
+        seqs.extend_from_slice(&b.bytes);
+        seqs.resize(seqs.len().div_ceil(16) * 16, 0);
+    }
+    let Some(img) = image(&seqs, all, dat) else { return };
+    let refs = [(NAME, img.as_slice())];
+    let Ok(once) = vgmtrans::songs_in(&refs, FORMATS, 0) else { return };
+    let twice = vgmtrans::songs_in(&refs, FORMATS, 1).unwrap_or_default();
+    for song in &once {
+        let Some(k) = starts.iter().position(|&s| s as u32 == song.offset) else { continue };
+        if song.file != 0 || song.length_ms == 0 || u64::from(song.length_ms) > MAX_SONG_MS {
+            continue;
+        }
+        let block = batch[k];
+        let (body, fade, looping, intro, lp) = timing(song, twice.iter().find(|s| s.file == 0 && s.offset == song.offset));
+        let duration_ms = if looping && lp > 0 { intro + lp } else { body };
+        let name_of = block.file.rsplit('/').next().unwrap_or(&block.file);
+        let stem = name_of.split('.').next().unwrap_or(name_of);
+        let name = format!("{stem} {:x}", block.offset);
+        let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
+        let rate = u64::from(PLAY_RATE);
+        out.push(FoundTrack {
+            location: TrackLocation::RomSong { engine: format!("{ENGINE}@{n}@{body}@{fade}@{:x}@{}", block.offset, block.file), song: 0 },
+            kind: classify(&shape, &format!("{}/{name}", block.file), t),
+            name,
+            sample_rate: PLAY_RATE,
+            channels: 2,
+            duration_ms,
+            looping,
+            loop_start: intro * rate / 1000,
+            loop_end: (intro + lp) * rate / 1000,
+            codec: "PlayStation sequence".into(),
+            format: song.format.clone(),
+            bytes: 0,
+            video: false,
+        });
+    }
+}
+
+/// Opens the song stored as `engine` ([`ENGINE`]): the sequence at its offset in its file,
+/// alone in an image with the banks.
+pub fn open(path: &Path, engine: &str, _song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let mut f = engine.splitn(6, '@');
+    let (_, view, body, fade, offset, file) = (f.next(), f.next(), f.next(), f.next(), f.next(), f.next());
     let bad = || format!("a damaged disc song record: {engine}");
     let view: usize = view.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
     let body: u64 = body.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
     let fade: u64 = fade.and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let offset = offset.and_then(|v| usize::from_str_radix(v, 16).ok()).ok_or_else(bad)?;
     let file = file.ok_or_else(bad)?;
     let rom = rom_audio::open_rom(path)?;
     let disc = rom.data.get(view).ok_or_else(|| format!("the ROM has no data track {}", view + 1))?;
     let listing = disc_files::list(disc)?.files;
     let (all, dat) = banks(disc, &listing).ok_or("the disc has no instrument banks")?;
     let entry = listing.iter().find(|f| f.path == file).ok_or_else(|| format!("{file} is not on the disc"))?;
-    let img = image(&contents(read_whole(disc, entry)?), &all, &dat).ok_or("the file is too large for sound memory")?;
-    let player = vgmtrans::Player::open_in(&[(NAME, img.as_slice())], FORMATS, 3, song, PLAY_RATE)?;
+    let bytes = contents(read_whole(disc, entry)?);
+    if bytes.get(offset..offset + 4) != Some(b"AKAO") {
+        return Err(format!("{file} has no sequence at {offset:x}"));
+    }
+    let img = image(sequence(&bytes, offset), &all, &dat).ok_or("the sequence is too large for sound memory")?;
+    let player = vgmtrans::Player::open_in(&[(NAME, img.as_slice())], FORMATS, 3, 0, PLAY_RATE)?;
     Ok(seq_pcm(player, body, fade))
 }
 
@@ -201,6 +261,17 @@ mod tests {
     #[test]
     fn lzs_rejects_a_mismatched_length() {
         assert!(lzs(&[0xFF, 0, 0, 0, 1, 2]).is_none());
+    }
+
+    #[test]
+    fn blocks_take_their_length_from_the_header() {
+        let mut b = vec![0u8; 8];
+        b.extend_from_slice(b"AKAO\x01\x00\x04\x00");
+        b.extend_from_slice(&[9; 8 + 4]);
+        b.extend_from_slice(b"AKAO\x02\x00\x00\x00");
+        b.extend_from_slice(&[7; 8]);
+        let found = blocks(&b);
+        assert_eq!(found.iter().map(|(o, s)| (*o, s.len())).collect::<Vec<_>>(), vec![(8, 20), (28, 16)]);
     }
 
     #[test]
