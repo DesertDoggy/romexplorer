@@ -15,6 +15,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
   prima.
 - L'indicizzazione della musica delle ROM legge prima le più piccole. Le ROM da cui non sa ancora
   leggere nulla, come le immagini di floppy, vengono saltate e riprese quando saranno supportate.
+- Vengono lette anche le immagini disco CloneCD (.ccd) e Alcohol (.mds).
 - Una ROM con lo stesso contenuto di una già indicizzata ne riprende le tracce invece di essere
   riletta.
 

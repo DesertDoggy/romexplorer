@@ -15,6 +15,7 @@ de segurança antes de substituir uma versão.
   antes.
 - A indexação da música das ROM lê primeiro as mais pequenas. As ROM de que ainda não consegue ler
   nada, como imagens de disquete, ficam de fora e serão lidas quando houver suporte.
+- As imagens de disco CloneCD (.ccd) e Alcohol (.mds) também são lidas.
 - Uma ROM com o mesmo conteúdo de outra já indexada fica com as faixas dessa, em vez de ser lida
   outra vez.
 

@@ -15,6 +15,7 @@ zapasową przed podmianą wersji.
   wcześniej.
 - Indeksowanie muzyki z ROM-ów czyta najpierw najmniejsze. ROM-y, z których nie da się jeszcze nic
   odczytać, np. obrazy dyskietek, są pomijane i zostaną odczytane, gdy pojawi się obsługa.
+- Odczytywane są też obrazy płyt CloneCD (.ccd) i Alcohol (.mds).
 - ROM o tej samej zawartości co już zindeksowany przejmuje jego utwory zamiast być czytany od
   nowa.
 
