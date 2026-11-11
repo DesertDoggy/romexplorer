@@ -526,11 +526,12 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     };
     let skip = if quick { " AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)" } else { "" };
     // Smallest first: cartridges and small discs are playable within minutes, and big disc
-    // images, which take longest to read, come last.
+    // images, which take longest to read, come last. A ROM with no file sizes recorded goes
+    // last too, not first.
     let all = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT r.id, r.main_path, r.app_platform_id, s.files, s.bytes FROM local_rom r \
          LEFT JOIN (SELECT rf.rom_id, COUNT(*) AS files, CAST(SUM(f.size) AS UNSIGNED) AS bytes FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE GROUP BY rf.rom_id) s ON s.rom_id = r.id \
-         WHERE r.deleted = FALSE{scope}{skip} ORDER BY COALESCE(s.bytes, 0), r.main_path"
+         WHERE r.deleted = FALSE{scope}{skip} ORDER BY s.bytes IS NULL, s.bytes, r.main_path"
     )))
     .fetch_all(&app.pool)
     .await?;
