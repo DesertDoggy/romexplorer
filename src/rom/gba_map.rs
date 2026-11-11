@@ -618,7 +618,7 @@ fn leave_out(
     let mut dropped = dropped.clone();
     let finest = (candidates.len() / SLIM_FINEST).max(1);
     // The track that last told a trial apart is played first: a failing trial ends sooner.
-    let mut same_without = |dropped: &std::collections::HashSet<usize>, more: &[usize], order: &mut Vec<usize>| -> bool {
+    let same_without = |dropped: &std::collections::HashSet<usize>, more: &[usize], order: &mut Vec<usize>| -> bool {
         let mut out = dropped.clone();
         out.extend(more.iter().copied());
         let trial = without(map, &out);
