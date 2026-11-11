@@ -797,8 +797,8 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
     }
     drop(first);
     // Each subsong is opened on its own, and some formats (CD-XA's channels) scan the whole
-    // file to find theirs: a file not too big is read once and held for all of them. Vandal
-    // Hearts II's 59 MB, 256-channel XA file: about 200 s from the CHD, 6 s held.
+    // file to find theirs: a file not too big is read once and held for all of them. A 59 MB
+    // XA file of 256 channels: about 200 s from a CHD, 6 s held.
     let held = (size <= HOLD_MAX_BYTES).then(|| Held::read(open(false), path)).flatten();
     let held_open = |alone: bool| -> Box<dyn VgmSource> {
         match &held {
