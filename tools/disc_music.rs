@@ -17,7 +17,7 @@
 //! BACK bytes before its hit: for an engine whose scanner expects one song (and its bank)
 //! per file, such as tri-Ace's (`--split SLZ:4`).
 //!
-//! A folder is walked for `.chd`, `.cue`, `.iso` and `.bin` images (a `.bin` with a `.cue`
+//! A folder is walked for `.chd`, `.cue`, `.ccd`, `.mds`, `.iso` and `.bin` images (a `.bin` with a `.cue`
 //! beside it is left to the sheet).
 
 use std::io::Write;
@@ -38,7 +38,7 @@ fn images(path: &Path, out: &mut Vec<PathBuf>) {
     }
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let keep = match ext.as_str() {
-        "chd" | "cue" | "iso" => true,
+        "chd" | "cue" | "iso" | "ccd" | "mds" => true,
         "bin" => !path.with_extension("cue").exists(),
         _ => false,
     };

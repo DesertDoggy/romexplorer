@@ -10,6 +10,7 @@ pub mod convert;
 pub mod decode_threads;
 pub mod detect;
 pub mod disc_files;
+pub mod cd_images;
 pub mod disc_seq;
 pub mod inner_archives;
 pub mod disk_kind;
