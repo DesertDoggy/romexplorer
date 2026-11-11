@@ -20,12 +20,14 @@ use crate::ui::{self, MenuItem};
 use crate::Route;
 
 /// The list tabs: the collection's browse lists, then the RetroAchievements lists.
-const TABS: [(&str, &str); 11] = [
+const TABS: [(&str, &str); 13] = [
     ("crossplatform", "Cross-platform"),
+    ("definitive", "Definitive"),
     ("titles", "Titles"),
     ("releases", "Releases"),
     ("games", "Games"),
     ("files", "Files"),
+    ("contents", "Contents"),
     ("ra-titles", "Titles"),
     ("ra-mastery", "Mastery"),
     ("ra-complete", "Complete"),
@@ -35,6 +37,43 @@ const TABS: [(&str, &str); 11] = [
 ];
 
 const PAGE: u64 = 60;
+
+/// Whether this build starts games. The phone (romcompanion) browses its synced copy and
+/// starts nothing yet: launching through Android's emulators is a later step.
+const CAN_START: bool = cfg!(not(feature = "mobile"));
+
+/// Whether a list tab is shown. On the phone, the tabs it synced (Games, Files and Contents
+/// are off by default there: they clutter a phone); everywhere else, all of them.
+fn tab_shown(key: &str) -> bool {
+    #[cfg(feature = "mobile")]
+    {
+        let t = crate::api::companion::settings().options.tabs;
+        match key {
+            "crossplatform" => t.crossplatform,
+            "definitive" => t.definitive,
+            "titles" => t.titles,
+            "releases" => t.releases,
+            "games" => t.games,
+            "files" => t.files,
+            "contents" => t.contents,
+            _ => t.ra,
+        }
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        let _ = key;
+        true
+    }
+}
+
+/// The tab a list opens on: the first one shown.
+pub fn first_tab() -> String {
+    TABS.iter()
+        .map(|(k, _)| *k)
+        .find(|k| tab_shown(k))
+        .unwrap_or("titles")
+        .to_string()
+}
 
 /// How the covers are laid out. Auto follows the screen: one column in portrait, one row in
 /// landscape. Single does the same whatever the size; Multi is a grid.
@@ -272,6 +311,51 @@ fn cross_item(r: &Value) -> Item {
     }
 }
 
+fn definitive_item(r: &Value) -> Item {
+    let lead = r.get("lead").cloned().unwrap_or(Value::Null);
+    let other = r.get("other").cloned().unwrap_or(Value::Null);
+    let id = u(&lead, "title_id");
+    let mut details = Vec::new();
+    detail(&mut details, "platforms", platforms_line(&lead));
+    detail(&mut details, "versions", u(r, "members").to_string());
+    detail(&mut details, "base game", s(&other, "name"));
+    detail(&mut details, "rank", s(r, "note_rank"));
+    Item {
+        key: format!("d{}", u(r, "id")),
+        name: s(&lead, "name"),
+        sub: platforms_line(&lead),
+        cover: cover(api::uo(&lead, "cover_media_id")),
+        open: Some(Route::BpTitle { id }),
+        held: u(r, "local_games") > 0,
+        play: Play::Title(id),
+        details,
+    }
+}
+
+fn content_item(r: &Value) -> Item {
+    let id = u(r, "id");
+    let platform = state::platform_label(&s(r, "platform"));
+    let mut details = Vec::new();
+    detail(&mut details, "platform", platform.clone());
+    detail(
+        &mut details,
+        "size",
+        crate::html::fmt_size(api::uo(r, "size")),
+    );
+    Item {
+        key: format!("c{id}"),
+        name: api::so(r, "name")
+            .or_else(|| api::so(r, "release_name"))
+            .unwrap_or_else(|| format!("#{id}")),
+        sub: platform,
+        cover: None,
+        open: api::uo(r, "release_id").map(|id| Route::BpRelease { id }),
+        held: false,
+        play: Play::None,
+        details,
+    }
+}
+
 fn file_item(r: &Value) -> Item {
     let id = u(r, "id");
     let path = s(r, "path");
@@ -325,6 +409,8 @@ async fn fetch_list(tab: &str, q: &ListQuery, offset: u64) -> api::ApiResult<(Ve
         "crossplatform" => (format!("/api/v1/catalog/crossplatform{}", base(vec![])), cross_item),
         "titles" => (format!("/api/v1/catalog/titles{}", base(vec![("view", q.view.clone())])), title_item),
         "releases" => (format!("/api/v1/catalog/releases{}", base(vec![("view", q.view.clone())])), release_item),
+        "definitive" => (format!("/api/v1/catalog/definitive{}", base(vec![])), definitive_item),
+        "contents" => (format!("/api/v1/catalog/contents{}", base(vec![])), content_item),
         "games" => (format!("/api/v1/catalog/games{}", base(vec![])), game_item),
         "files" => (format!("/api/v1/catalog/files{}", base(vec![])), file_item),
         ra => {
@@ -353,6 +439,9 @@ async fn first_held_release(path: String) -> Option<u64> {
 }
 
 async fn resolve(play: &Play) -> Option<Target> {
+    if !CAN_START {
+        return None;
+    }
     let release = match play {
         Play::None => return None,
         Play::Game(g, None) => return Some(Target { game: Some(*g), ..Default::default() }),
@@ -496,6 +585,37 @@ fn item_menu(item: Item, x: f64, y: f64) {
                 navigator().push(to.clone());
             }));
         }
+        // The phone asks the machine it syncs from to fetch metadata and art, by hand only:
+        // nothing on the phone queues these by itself.
+        if !CAN_START {
+            let refresh = match item.open.clone() {
+                Some(Route::BpTitle { id }) => Some(format!("/api/v1/catalog/titles/{id}/refresh")),
+                Some(Route::BpRelease { id }) => {
+                    Some(format!("/api/v1/catalog/releases/{id}/refresh"))
+                }
+                _ => None,
+            };
+            if let Some(path) = refresh {
+                items.push(MenuItem::new(
+                    state::tr("Fetch metadata and art (on the server)"),
+                    move || {
+                        let path = path.clone();
+                        spawn(async move {
+                            match api::post(&path, Value::Null).await {
+                                Ok(v) => ui::toast(
+                                    state::trf(
+                                        "{n} job(s) queued on the server; sync to see the results",
+                                        &[("n", &api::items(&v).len().to_string())],
+                                    ),
+                                    false,
+                                ),
+                                Err(e) => ui::toast(e.message, true),
+                            }
+                        });
+                    },
+                ));
+            }
+        }
         if let Some(to) = app_page(&item) {
             items.push(MenuItem::new(state::tr("Open in the app"), move || {
                 navigator().push(to.clone());
@@ -507,6 +627,10 @@ fn item_menu(item: Item, x: f64, y: f64) {
 
 /// The same item's page in the normal app.
 fn app_page(item: &Item) -> Option<Route> {
+    // The phone has no app pages to go to: its whole UI is this one.
+    if !CAN_START {
+        return None;
+    }
     match item.open.clone()? {
         Route::BpTitle { id } => Some(Route::TitleDetail { id }),
         Route::BpRelease { id } => Some(Route::Release { id }),
@@ -639,12 +763,17 @@ pub fn BigPictureShell() -> Element {
             div { class: "bp-top",
                 button { id: "bp-back", class: "bp-btn", title: state::tr("back (B)"),
                     onclick: move |_| {
-                        if on_list || !navigator().can_go_back() { navigator().push(Route::Status {}); } else { navigator().go_back(); }
+                        if on_list || !navigator().can_go_back() {
+                            // The phone's lists are its home: there is nowhere further back.
+                            if CAN_START { navigator().push(Route::Status {}); }
+                        } else {
+                            navigator().go_back();
+                        }
                     },
                     "◀"
                 }
                 nav { class: "bp-tabs",
-                    for (key, label) in TABS {
+                    for (key, label) in TABS.into_iter().filter(|(k, _)| tab_shown(k)) {
                         button { key: "{key}", "data-tab": "{key}", class: if key == current { "active" } else { "" },
                             onclick: move |_| { navigator().replace(Route::BigPicture { tab: key.to_string() }); },
                             {tab_label(key, label)}
@@ -652,9 +781,15 @@ pub fn BigPictureShell() -> Element {
                     }
                 }
                 button { class: "bp-btn", title: state::tr("layout"), onclick: move |_| { let n = LAYOUT().next(); *LAYOUT.write() = n; set_pref(PREF_LAYOUT, n.key()); ui::toast(n.label(), false); }, "▦" }
-                button { class: "bp-btn", title: state::tr("Big Picture settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), "⚙" }
-                button { class: "bp-btn", title: state::tr("leave Big Picture"), onclick: move |_| { navigator().push(Route::Status {}); }, "✕" }
+                if cfg!(feature = "mobile") {
+                    button { class: "bp-btn", title: state::tr("Sync"), onclick: move |_| ui::open_modal(|| rsx! { super::companion::SyncSheet {} }), "⟳" }
+                    button { class: "bp-btn", title: state::tr("Settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), "⚙" }
+                } else {
+                    button { class: "bp-btn", title: state::tr("Big Picture settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), "⚙" }
+                    button { class: "bp-btn", title: state::tr("leave Big Picture"), onclick: move |_| { navigator().push(Route::Status {}); }, "✕" }
+                }
             }
+            super::companion::SyncLine {}
             Outlet::<Route> {}
             ui::MenuHost {}
             ui::ModalHost {}
@@ -675,14 +810,18 @@ fn Settings() -> Element {
             for l in [Layout::Auto, Layout::Single, Layout::Multi] {
                 button { class: if LAYOUT() == l { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { *LAYOUT.write() = l; set_pref(PREF_LAYOUT, l.key()); }, {l.label()} }
             }
-            h4 { {state::tr("Starting")} }
-            button { class: if start() { "bp-choice active" } else { "bp-choice" },
-                onclick: move |_| { let v = !start(); start.set(v); set_pref(PREF_START, if v { "1" } else { "0" }); },
-                if start() { "✓ " } {state::tr("Open the app in Big Picture mode")}
+            if CAN_START {
+                h4 { {state::tr("Starting")} }
+                button { class: if start() { "bp-choice active" } else { "bp-choice" },
+                    onclick: move |_| { let v = !start(); start.set(v); set_pref(PREF_START, if v { "1" } else { "0" }); },
+                    if start() { "✓ " } {state::tr("Open the app in Big Picture mode")}
+                }
+                h4 { {state::tr("Emulators")} }
+                p { class: "muted", {state::tr("Start uses each platform's default emulator. Choose the defaults in Config › Emulators, or from Open with… on any game.")} }
+                button { class: "bp-choice", onclick: move |_| { ui::close_modal(); navigator().push(Route::ConfigEmulators {}); }, {state::tr("Config › Emulators")} }
+            } else {
+                super::companion::PhoneSettings {}
             }
-            h4 { {state::tr("Emulators")} }
-            p { class: "muted", {state::tr("Start uses each platform's default emulator. Choose the defaults in Config › Emulators, or from Open with… on any game.")} }
-            button { class: "bp-choice", onclick: move |_| { ui::close_modal(); navigator().push(Route::ConfigEmulators {}); }, {state::tr("Config › Emulators")} }
             div { style: "margin-top:12px", button { class: "bp-choice", onclick: move |_| ui::close_modal(), {state::tr("close")} } }
         }
     }
@@ -797,10 +936,10 @@ fn FilterSheet(tab: String) -> Element {
     let start = QUERIES.read().get(&tab).cloned().unwrap_or_default();
     let mut draft = use_signal(|| start.clone());
     let mut open = use_signal(|| None::<&'static str>);
-    let has_view = matches!(tab.as_str(), "titles" | "releases");
+    let has_view = matches!(tab.as_str(), "titles" | "releases") || (cfg!(feature = "mobile") && matches!(tab.as_str(), "crossplatform" | "definitive"));
     let picked: std::collections::BTreeSet<String> = draft().platforms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect();
     let platforms: Vec<(String, String)> = state::platforms().iter().filter(|p| u(p, "id") > 0).map(|p| (u(p, "id").to_string(), state::platform_label(&s(p, "name")))).collect();
-    let views = [("", "anywhere"), ("local", "held here"), ("server", "on the main server only"), ("missing_on_server", "not on the main server")];
+    let views: Vec<(String, String)> = super::companion::held_views();
     let apply_tab = tab.clone();
     rsx! {
         h3 { {state::tr("Filter")} }
@@ -839,7 +978,7 @@ fn FilterSheet(tab: String) -> Element {
                 Some(_) => rsx! {
                     button { class: "bp-choice", onclick: move |_| open.set(None), "◀ " {state::tr("Held")} }
                     for (v, l) in views {
-                        button { key: "{v}", class: if draft().view == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().view = v.to_string(), {state::tr(l)} }
+                        button { key: "{v}", class: if draft().view == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().view = v.clone(), "{l}" }
                     }
                 },
             }
@@ -873,7 +1012,7 @@ fn Cover(item: Item) -> Element {
             onfocus: move |_| *FOCUSED.write() = Some(focus.clone()),
             div { class: "bp-art",
                 if let Some(src) = item.cover.clone() { img { loading: "lazy", src: "{src}", alt: "" } } else { div { class: "bp-noart", "{initial}" } }
-                if item.held {
+                if item.held && CAN_START {
                     button { class: "bp-start", "data-start": "1", tabindex: "-1", title: state::tr("Start (X)"),
                         onclick: move |e| { e.stop_propagation(); start(play.clone()); },
                         "▶"
@@ -905,12 +1044,12 @@ fn DetailsPanel() -> Element {
                 for (k, v) in item.details.iter().cloned() { div { class: "muted", "{k}" } div { "{v}" } }
             }
             div { class: "bp-actions",
-                if item.held {
+                if item.held && CAN_START {
                     button { class: "bp-choice primary", onclick: move |_| start(play.clone()), "▶ " {state::tr("Start")} }
                 }
                 button { class: "bp-choice",
                     onclick: move |e| { e.stop_propagation(); let p = e.client_coordinates(); item_menu(menu.clone(), p.x, p.y); },
-                    {state::tr("Open with… / more")}
+                    {state::tr(if CAN_START { "Open with… / more" } else { "More" })}
                 }
             }
         }
@@ -962,7 +1101,7 @@ fn Hero(item: Item, target: Option<TargetProp>) -> Element {
                             }
                         }
                     }
-                } else if item.held {
+                } else if item.held && CAN_START {
                     div { class: "muted", {state::tr("loading…")} }
                 }
             }

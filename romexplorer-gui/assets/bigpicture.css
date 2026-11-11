@@ -84,3 +84,26 @@
 #modal, #submodal { z-index: 30; }
 #ctxmenu { z-index: 40; font-size: 16px; }
 .bp ~ #ctxmenu div, .bp #ctxmenu div { padding: 10px 14px; }
+
+/* romcompanion (the phone build): the sync line under the top bar, and touch sizes. */
+.bp-syncline { display: flex; align-items: center; gap: 10px; padding: 6px 12px; font-size: 14px; color: var(--dim); border-bottom: 1px solid var(--line); }
+.bp-syncline.bad { color: var(--bad, #e66); cursor: pointer; }
+.bp-bar { flex: 1; max-width: 320px; height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
+.bp-bar > div { height: 100%; background: var(--acc); }
+/* Phones: the notch and the gesture bar, and room for a thumb. */
+.bp { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+@media (pointer: coarse) {
+  .bp-tabs button { padding: 12px 14px; }
+  .bp-btn { min-width: 44px; min-height: 44px; }
+  .bp-choice { min-height: 44px; }
+  .bp-card { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; user-select: none; }
+}
+@media (max-width: 560px) {
+  .bp-top { padding: 6px 8px; gap: 6px; }
+  .bp-toolbar { flex-wrap: wrap; padding: 6px 8px; }
+  .bp-search { flex: 1 1 100%; max-width: none; }
+  .layout-multi .bp-items { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+  .bp-hero-art { width: 100%; max-width: 320px; margin: 0 auto; }
+  .bp-hero-meta { min-width: 0; }
+  .bp-page { padding: 12px 12px 32px; }
+}

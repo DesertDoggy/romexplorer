@@ -1464,6 +1464,39 @@ struct ImportQuery {
     adopt_ownership: bool,
 }
 
+/// The machines a phone can count holdings on (`api::mobile`).
+async fn mobile_machines(State(s): State<Shared>) -> ApiResult<Vec<api::mobile::Machine>> {
+    Ok(Json(api::mobile::machines(&s.app).await?))
+}
+
+/// What a phone sync with these options would carry, before it runs.
+async fn mobile_estimate(
+    State(s): State<Shared>,
+    Json(o): Json<api::mobile::SyncOptions>,
+) -> ApiResult<api::mobile::SyncEstimate> {
+    Ok(Json(api::mobile::estimate(&s.app, &o).await?))
+}
+
+/// Builds a phone's synced copy as a job; the phone follows it and downloads the file it
+/// names (`GET /api/v1/cache/{file}`).
+async fn mobile_sync(
+    State(s): State<Shared>,
+    Json(o): Json<api::mobile::SyncOptions>,
+) -> ApiResult<api::jobs::JobEnqueued> {
+    let request = api::jobs::JobRequest::SqliteExport(api::jobs::SqliteExportRequest {
+        kind: api::sqlite::MOBILE_KIND.to_string(),
+        mobile: Some(o),
+    });
+    Ok(Json(api::jobs::JobEnqueued {
+        job_id: api::jobs::enqueue(&s.app, &request).await?,
+    }))
+}
+
+/// RetroAchievements progress alone, for a phone between full syncs.
+async fn mobile_ra(State(s): State<Shared>) -> ApiResult<api::mobile::RaSync> {
+    Ok(Json(api::mobile::ra_sync(&s.app).await?))
+}
+
 async fn cache_list(State(s): State<Shared>) -> ApiResult<Vec<api::sqlite::CacheFile>> {
     Ok(Json(api::sqlite::list(&s.app).await?))
 }
@@ -1472,7 +1505,7 @@ async fn cache_create(State(s): State<Shared>, Query(q): Query<BackupQuery>) -> 
     let kind = q.kind.unwrap_or_else(|| "all".into());
     // Checked here so a typo is a 400 with the accepted values, not a job that fails later.
     api::sqlite::tables_for(&kind)?;
-    let request = api::jobs::JobRequest::SqliteExport(api::jobs::SqliteExportRequest { kind });
+    let request = api::jobs::JobRequest::SqliteExport(api::jobs::SqliteExportRequest { kind, mobile: None });
     Ok(Json(api::jobs::JobEnqueued { job_id: api::jobs::enqueue(&s.app, &request).await? }))
 }
 
@@ -2772,6 +2805,10 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/cache", get(cache_list).post(cache_create))
         .route("/api/v1/cache/{name}", get(cache_download).delete(cache_delete))
         .route("/api/v1/cache/{name}/import", post(cache_import))
+        .route("/api/v1/mobile/machines", get(mobile_machines))
+        .route("/api/v1/mobile/estimate", post(mobile_estimate))
+        .route("/api/v1/mobile/sync", post(mobile_sync))
+        .route("/api/v1/mobile/ra", get(mobile_ra))
         .route("/api/v1/sync/manifest", get(sync_manifest))
         .route("/api/v1/sync/export/{table}", get(sync_export))
         .route("/api/v1/sync/deleted/{table}", get(sync_deleted))

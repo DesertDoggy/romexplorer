@@ -724,6 +724,33 @@ impl Worker {
             JobType::SqliteExport => {
                 let kind = payload_str(job, "kind").unwrap_or("all").to_string();
                 let progress = Progress::new(&self.app.pool, job.id);
+                if kind == api::sqlite::MOBILE_KIND {
+                    // A phone's synced copy (`api::mobile`): its own options, its own summary.
+                    let options: api::mobile::SyncOptions = job
+                        .payload
+                        .get("mobile")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|e| api::Error::invalid(format!("mobile options: {e}")))?
+                        .unwrap_or_default();
+                    let path = api::sqlite::cache_path(&self.app, &kind).await?;
+                    let summary =
+                        api::mobile::export(&self.app, &options, &path, &progress).await?;
+                    progress
+                        .finish(
+                            1,
+                            Some(1),
+                            &format!(
+                                "{} ({} bytes, {} page(s), {} cover(s))",
+                                summary.file, summary.bytes, summary.pages, summary.covers
+                            ),
+                            &summary,
+                        )
+                        .await;
+                    log::info!("sqlite_export job {} (mobile): {}", job.id, summary.file);
+                    return Ok(());
+                }
                 let summary = api::sqlite::export_kind(&self.app, &kind, &progress).await?;
                 progress.finish(1, Some(1), &format!("{} ({} table(s), {} bytes)", summary.file, summary.tables.len(), summary.bytes), &summary).await;
                 log::info!("sqlite_export job {}: {}", job.id, summary.file);
