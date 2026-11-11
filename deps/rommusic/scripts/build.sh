@@ -19,6 +19,8 @@ set -euo pipefail
 #   - libvgm for Neo Geo Pocket and Virtual Boy VGM logs (external/libvgm; SN76496 and VSU cores),
 #     and its SN76496, emu2413 (YM2413, MIT) and Nuked OPN2 (YM2612, LGPL-2.1+) cores driven a
 #     write at a time (rchip_).
+#   - VGMTrans's core (external/vgmtrans, zlib licence) and TinySoundFont (external/TinySoundFont,
+#     MIT) for sequenced music read from a disc's own files (rvt_).
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
@@ -29,8 +31,9 @@ set -euo pipefail
 #
 # Options fixed here, and why:
 #   - Nuked YM2612 (LGPL), not MAME's.
-#   - No zlib: .vgz is gunzipped on the Rust side through rom::zlib_ng, so the library has no
-#     dependency of its own to deploy.
+#   - No zlib of our own: .vgz is gunzipped on the Rust side through rom::zlib_ng. VGMTrans's
+#     vendored zlib is linked in statically for its own loaders, so there is still nothing
+#     to deploy beside the library.
 #   - On Windows the MinGW runtime (libstdc++, libgcc, winpthread) is linked in statically, so
 #     the DLL imports only system DLLs.
 #
@@ -57,6 +60,8 @@ ht_root="$(cd "${HT_SOURCE_DIR:-$main_root/external/highly_theoretical}" && pwd)
 mgba_root="$(cd "${MGBA_SOURCE_DIR:-$main_root/external/mgba}" && pwd)"
 wswan_root="$(cd "${WSWAN_SOURCE_DIR:-$main_root/external/beetle-wswan-libretro}" && pwd)"
 vgm_root="$(cd "${VGM_SOURCE_DIR:-$main_root/external/libvgm}" && pwd)"
+vgmtrans_root="$(cd "${VGMTRANS_SOURCE_DIR:-$main_root/external/vgmtrans}" && pwd)"
+tsf_root="$(cd "${TSF_SOURCE_DIR:-$main_root/external/TinySoundFont}" && pwd)"
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-rommusic-$(date +%Y%m%d-%H%M%S).log"
@@ -154,7 +159,7 @@ apply_patches "$user_dir/patches/agb" "$agb_root"
 apply_patches "$user_dir/patches/ht" "$ht_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
-  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root")
+  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DFMT_ROOT=$fmt_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root" "-DVGMTRANS_ROOT=$vgmtrans_root" "-DTSF_ROOT=$tsf_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 # Android: the NDK's own CMake toolchain file, which picks its compilers and sysroot. API level
