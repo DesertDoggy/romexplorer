@@ -779,6 +779,7 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     }
     let Some(mut m) = gba_map::Map::from_tracks(rom.len(), tracks) else { return };
     let full = m.file_bytes();
+    let unslimmed = m.clone();
     let slim_started = std::time::Instant::now();
     if let Err(e) = gba_map::slim(&mut m, rom) {
         println!("{name}: slimming failed: {e}");
@@ -801,15 +802,28 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
             (Ok(_), Err(e)) => wrong.push(format!("{i}:{e}")),
         }
     }
+    // The tracks played wrong, played again by the map before slimming: which of the two
+    // lost them.
+    let right_unslimmed: Vec<String> = wrong
+        .iter()
+        .filter_map(|w| w.split(':').next()?.parse::<usize>().ok())
+        .filter(|&i| {
+            let real = gba_map::render(&set_images[i], GBA_CHECK_SECONDS);
+            let mine = unslimmed.image(rom, i).and_then(|img| gba_map::render(&img, GBA_CHECK_SECONDS));
+            matches!((real, mine), (Ok(a), Ok(b)) if gba_map::alike(&a, &b) >= 0.99)
+        })
+        .map(|i| i.to_string())
+        .collect();
     let n = set_images.len() - silent;
     println!(
-        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file of {full} before slimming ({slim_s:.1} s), {} common runs, {} moved; map {:.1} KB){}",
+        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file of {full} before slimming ({slim_s:.1} s), {} common runs, {} moved; map {:.1} KB){}{}",
         started.elapsed().as_secs_f32(),
         back.file_bytes(),
         back.common.len(),
         back.common.iter().filter(|r| matches!(r, gba_map::Run::Copy(..) | gba_map::Run::Reloc(..))).count(),
         text.len() as f64 / 1024.0,
-        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) }
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) },
+        if wrong.is_empty() { String::new() } else { format!("; right before slimming: {}", if right_unslimmed.is_empty() { "none".into() } else { right_unslimmed.join(" ") }) }
     );
     t.checked[0] += 1;
     t.checked[3] += n;
