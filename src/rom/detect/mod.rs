@@ -725,7 +725,7 @@ pub fn infer_media_type_from_heuristics(ext: &str, platform: Platform) -> MediaT
             _ => MediaType::Unknown,
         },
         "nes" | "unf" | "unh" | "fds" | "qd" | "sfc" | "smc" | "st" | "fig" | "swc" | "gb" | "gbc" | "gba" | "nds" | "dsi"
-        | "3ds" | "cia" | "md" | "gen" | "smd" | "sms" | "gg" | "sg" | "ngp" | "ngpc" | "ngc" | "pce" | "pcfx" | "sgx" | "ws"
+        | "3ds" | "cia" | "cci" | "cxi" | "zcci" | "zcia" | "zcxi" | "md" | "gen" | "smd" | "sms" | "gg" | "sg" | "ngp" | "ngpc" | "ngc" | "pce" | "pcfx" | "sgx" | "ws"
         | "wsc" | "pico" | "v64" | "z64" | "rom" | "vb" | "32x" => MediaType::Cartridge,
         "pkg" | "vpk" | "pbp" => MediaType::Digital,
         _ => MediaType::Unknown,
@@ -889,6 +889,11 @@ pub const EXTENSION_TABLE: &[(&str, &[Platform])] = &[
     ("dsi", &[Platform::NintendoDsi]),
     ("3ds", THREE_DS),
     ("cia", THREE_DS),
+    ("cci", THREE_DS),
+    ("cxi", THREE_DS),
+    ("zcci", THREE_DS),
+    ("zcia", THREE_DS),
+    ("zcxi", THREE_DS),
     ("md", GENESIS),
     ("gen", GENESIS),
     ("smd", GENESIS),

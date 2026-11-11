@@ -70,7 +70,7 @@ pub fn read(path: &Path, platform: Platform) -> Vec<FoundSerial> {
         "vpk" | "pkg" | "psv" => sony_serials(path),
         "nsp" | "nsz" | "xci" | "xcz" => switch_serials(path),
         "img" if platform == Platform::PlayStationVita => sony_serials(path),
-        "cia" => cia_serials(path),
+        "cia" | "3ds" | "cci" | "cxi" | "zcci" | "zcia" | "zcxi" => n3ds_serials(path),
         "xiso" | "iso" => xdvdfs_serials(path),
         "zar" => zar_serials(path),
         "wua" => wua_serials(path),
@@ -286,11 +286,21 @@ pub fn wua_serials(path: &Path) -> Vec<FoundSerial> {
 // 3DS
 // ---------------------------------------------------------------------------
 
-/// A `.cia`: the product code, then the title id.
-pub fn cia_serials(path: &Path) -> Vec<FoundSerial> {
-    let Some(meta) = super::platforms::nintendo::read_3ds_cia_metadata(path) else { return Vec::new() };
+/// A 3DS title (`.cia`, `.3ds`, `.cci`, `.cxi`, or one compressed): the product code
+/// (`CTR-P-XXXX`), then the title id (`0004000000XXXX00`).
+///
+/// An encrypted CIA hides its product code inside its encrypted content, so only its title
+/// id is in the clear; with the user's own keys beside it or beside romexplorer
+/// (`n3ds::key_dirs`), the product code is read too.
+pub fn n3ds_serials(path: &Path) -> Vec<FoundSerial> {
+    let Some(meta) = super::platforms::nintendo::read_3ds_container_metadata(path) else { return Vec::new() };
     // `serial` is "<product code> / <title id>" when both were read.
     let mut serials: Vec<String> = meta.serial.iter().flat_map(|s| s.split(" / ")).map(|s| s.trim().to_ascii_uppercase()).filter(|s| !s.is_empty()).collect();
+    if !serials.iter().any(|s| s.contains('-')) {
+        if let Some(code) = super::n3ds::cia_product_code(path) {
+            serials.insert(0, code);
+        }
+    }
     serials.extend(meta.manufacturer_id.map(|s| s.to_ascii_uppercase()));
     found(serials, SerialOrigin::Header)
 }

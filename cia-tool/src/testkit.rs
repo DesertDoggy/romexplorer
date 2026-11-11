@@ -82,6 +82,8 @@ pub fn make_ncch(
     h[0x108..0x110].copy_from_slice(&pid.to_le_bytes());
     h[0x112..0x114].copy_from_slice(&2u16.to_le_bytes());
     h[0x118..0x120].copy_from_slice(&pid.to_le_bytes());
+    h[0x150..0x160].fill(0);
+    h[0x150..0x15A].copy_from_slice(b"CTR-P-TEST");
     h[0x180..0x184].copy_from_slice(&0x400u32.to_le_bytes());
     h[0x188..0x190].fill(0);
     h[0x18B] = method;

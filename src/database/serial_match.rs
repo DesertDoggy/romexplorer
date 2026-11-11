@@ -83,7 +83,8 @@ pub fn format_of(path: &Path, platform: Platform) -> Option<&'static str> {
         return Some("ps_disc");
     }
     match ext.as_str() {
-        "cia" => Some("cia"),
+        "cia" | "zcia" => Some("cia"),
+        "3ds" | "cci" | "cxi" | "zcci" | "zcxi" => Some("3ds"),
         "xiso" => Some("xiso"),
         "wua" => Some("wua"),
         "zar" => Some("zar"),
@@ -99,7 +100,7 @@ pub fn format_of(path: &Path, platform: Platform) -> Option<&'static str> {
 /// The platforms a format's releases are under, when the rom's own is not known yet.
 fn platforms_for(format: &str) -> &'static [Platform] {
     match format {
-        "cia" => &[Platform::Nintendo3ds, Platform::NewNintendo3ds],
+        "cia" | "3ds" => &[Platform::Nintendo3ds, Platform::NewNintendo3ds],
         "wua" => &[Platform::WiiU],
         "zar" => &[Platform::Xbox360],
         "xiso" => &[Platform::Xbox, Platform::Xbox360],

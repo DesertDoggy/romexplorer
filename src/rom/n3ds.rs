@@ -281,6 +281,26 @@ impl std::fmt::Display for Missing {
     }
 }
 
+/// An encrypted CIA's product code (`CTR-P-XXXX`), read with the keys found beside it or
+/// beside the program. `None` when it is not a CIA, the keys aren't there, or it has none.
+pub fn cia_product_code(path: &Path) -> Option<String> {
+    let mut f = open(path).ok()?;
+    let c = Cia::open(&mut f).ok()?;
+    let title_key = if c.any_encrypted() {
+        let keys = Keys::load(&KeyFiles::find(&key_dirs(path, &[]))).ok()?;
+        if !keys.has_keys() {
+            return None;
+        }
+        Some(c.title_key(&keys.keys).ok()?)
+    } else {
+        None
+    };
+    let first = c.contents.iter().position(|content| content.index == 0).unwrap_or(0);
+    let header = cia::content_headers(&mut f, &c, title_key.as_ref()).into_iter().nth(first)??;
+    let code = header.product_code.trim().trim_end_matches('\0').to_ascii_uppercase();
+    (code.len() > 3 && code.is_ascii()).then_some(code)
+}
+
 /// `Ok(None)` when `keys` are enough to convert the file. A compressed file is taken as
 /// decrypted, as Azahar only compresses decrypted ones.
 pub fn check(path: &Path, keys: &Keys) -> Result<Option<Missing>, String> {
@@ -741,6 +761,26 @@ pub fn z3ds_compress(plain: &Path, dst: &Path, underlying: [u8; 4], progress: &m
 }
 
 /// A Z3DS file back to the plain file it holds.
+/// The first `len` bytes of a compressed 3DS file, unpacked (fewer when it is shorter), or
+/// `None` when `path` is not one. For reading the headers inside without unpacking it all.
+pub fn z3ds_head(path: &Path, len: usize) -> Option<Vec<u8>> {
+    let mut f = File::open(path).ok()?;
+    let header = Z3dsHeader::read(&mut f).ok()??;
+    f.seek(SeekFrom::Start(header.header_size as u64 + header.metadata_size as u64)).ok()?;
+    let body = BufReader::new(f).take(header.compressed_size);
+    let mut decoder = zstd::stream::read::Decoder::with_buffer(body).ok()?;
+    let mut out = Vec::with_capacity(len.min(header.uncompressed_size as usize));
+    (&mut decoder).take(len as u64).read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+/// The title id a compressed 3DS file's metadata gives, if it has one.
+pub fn z3ds_title_id(path: &Path) -> Option<u64> {
+    let mut f = File::open(path).ok()?;
+    let header = Z3dsHeader::read(&mut f).ok()??;
+    header.title_id(&mut f)
+}
+
 pub fn z3ds_decompress(src: &Path, dst: &Path, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<(), String> {
     let mut f = open(src)?;
     let Some(header) = Z3dsHeader::read(&mut f)? else { return Err(format!("{}: not a compressed 3DS file", src.display())) };

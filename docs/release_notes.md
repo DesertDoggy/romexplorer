@@ -5,11 +5,14 @@ replacing a build.
 
 ## Changes
 
-**Copy: 3DS**
+**3DS**
 - A copy can decrypt 3DS titles into .cci, .3ds or .cxi, or the compressed .zcci and .zcxi
   that Azahar reads. Updates and DLC stay .cia (.zcia), homebrew .3dsx (.z3dsx).
 - No keys come with romexplorer. Put your own aes_keys.txt (and seeddb.bin when a title needs
   it) beside the files, beside romexplorer, or in its assets folder.
+- Scans find .cci, .cxi and the compressed .zcci, .zcia and .zcxi, so a copy can also turn a
+  .zcci into a .cci and back. Serial matching reads their product code and title id, with its
+  own checkbox for cartridge images.
 
 **ROM audio**
 - Opening a title page indexes that game's ROM music first. Until it is done, the page shows
