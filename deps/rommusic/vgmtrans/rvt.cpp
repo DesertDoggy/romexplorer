@@ -430,6 +430,8 @@ RVT_API void *rvt_play(void *s, int i, int rate, float gain_db) {
   tsf_set_output(p->font, TSF_STEREO_INTERLEAVED, rate, gain_db + format_gain_db(song->format));
   /* VGMTrans leaves channel 10 alone (no GM drums), so every channel is melodic. */
   for (int c = 0; c < 16; c++) tsf_channel_set_presetindex(p->font, c, 0);
+  if (const char *r = getenv("RVT_FORCE_BEND_RANGE"))
+    for (int c = 0; c < 16; c++) tsf_channel_set_pitchrange(p->font, c, (float)atof(r));
   return p.release();
 }
 
@@ -447,7 +449,12 @@ RVT_API int rvt_render(void *player, int16_t *out, size_t frames) {
         case TML_NOTE_ON: tsf_channel_note_on(p->font, m->channel, m->key, m->velocity / 127.0f); break;
         case TML_NOTE_OFF: tsf_channel_note_off(p->font, m->channel, m->key); break;
         case TML_PITCH_BEND: tsf_channel_set_pitchwheel(p->font, m->channel, m->pitch_bend); break;
-        case TML_CONTROL_CHANGE: tsf_channel_midi_control(p->font, m->channel, m->control, m->control_value); break;
+        case TML_CONTROL_CHANGE:
+          tsf_channel_midi_control(p->font, m->channel, m->control, m->control_value);
+          /* Temporary pitch-bend range check (tri-Ace): log CCs, or pin the range. */
+          if (getenv("RVT_DEBUG_CC")) fprintf(stderr, "cc t=%u ch=%d c=%d v=%d\n", m->time, m->channel, m->control, m->control_value);
+          if (const char *r = getenv("RVT_FORCE_BEND_RANGE")) tsf_channel_set_pitchrange(p->font, m->channel, (float)atof(r));
+          break;
         default: break;
       }
     }
