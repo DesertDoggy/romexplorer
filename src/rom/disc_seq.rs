@@ -389,6 +389,42 @@ fn whole_files(pieces: &[Run], listing: &[DiscFile]) -> Option<(Vec<Run>, u64)> 
     Some((out, pieces[0].offset))
 }
 
+/// Songs held in one run each, their runs overlapping, are given one run joining them (up to
+/// [`MAX_SPAN`]): over a whole track each song's span differs, and this way a bank is read
+/// and checked once for all its songs. `at` moves with the run's start.
+fn clusters(found: &mut [(vgmtrans::Song, Vec<Run>, u64)]) {
+    let mut single: Vec<usize> = (0..found.len()).filter(|&i| found[i].1.len() == 1).collect();
+    single.sort_by(|&a, &b| {
+        let (ra, rb) = (&found[a].1[0], &found[b].1[0]);
+        (&ra.file, ra.offset).cmp(&(&rb.file, rb.offset))
+    });
+    let mut group: Vec<usize> = Vec::new();
+    let mut joined: Option<Run> = None;
+    let flush = |found: &mut [(vgmtrans::Song, Vec<Run>, u64)], group: &mut Vec<usize>, joined: &Option<Run>| {
+        if let Some(j) = joined {
+            for &i in group.iter() {
+                let old = found[i].1[0].offset;
+                found[i].2 += old - j.offset;
+                found[i].1 = vec![j.clone()];
+            }
+        }
+        group.clear();
+    };
+    for i in single {
+        let r = found[i].1[0].clone();
+        let grow = joined.as_ref().filter(|j| j.file == r.file && r.offset <= j.offset + j.length && (r.offset + r.length).max(j.offset + j.length) - j.offset <= MAX_SPAN).is_some();
+        if grow {
+            let j = joined.as_mut().unwrap();
+            j.length = (r.offset + r.length).max(j.offset + j.length) - j.offset;
+        } else {
+            flush(found, &mut group, &joined);
+            joined = Some(r);
+        }
+        group.push(i);
+    }
+    flush(found, &mut group, &joined);
+}
+
 /// The custom engines' songs: the files holding their magic numbers, scanned together (an
 /// engine may keep its sequences and its samples in files of their own); when no file of
 /// the disc holds music (`whole`), its data track's user data scanned whole. Each song is
@@ -432,6 +468,7 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
     // Songs of one bank share their runs (its files whole, or a file's pieces joined):
     // scanned once for all.
     let mut scanned: HashMap<Vec<Run>, Option<RunScan>> = HashMap::new();
+    let mut found: Vec<(vgmtrans::Song, Vec<Run>, u64)> = Vec::new();
     for song in songs {
         // Sony's own SEQ/VAB songs are the standard pass's, except over a whole track.
         if song.format == vgmtrans::PS1 && !raw {
@@ -452,6 +489,10 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
             continue;
         }
         let (runs, at) = whole_files(&pieces, listing).unwrap_or_else(|| spans(&pieces));
+        found.push((song, runs, at));
+    }
+    clusters(&mut found);
+    for (song, runs, at) in found {
         let place = runs[0].file.clone().unwrap_or_else(|| "track".into());
         progress(&place);
         let scan = scanned.entry(runs.clone()).or_insert_with(|| read_runs(view, listing, layout, &runs).ok().map(|read| scan_runs(&read, formats)));
@@ -460,7 +501,7 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
         let twice = song_in(twice_list, at).map(|(_, s)| s);
         let (body, fade, looping, intro, lp) = timing(once, twice);
         let duration_ms = if looping && lp > 0 { intro + lp } else { body };
-        let name = if song.name.is_empty() { format!("{} {:x}", stem(&place), runs[0].offset) } else { song.name.clone() };
+        let name = if song.name.is_empty() { format!("{} {:x}", stem(&place), runs[0].offset + at) } else { song.name.clone() };
         let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
         let rate = u64::from(PLAY_RATE);
         out.push(FoundTrack {
@@ -640,6 +681,24 @@ mod tests {
         assert_eq!(at, 0x900);
         assert!(whole_files(&[r(Some("BIG"), 0, 0x10)], &listing).is_none());
         assert!(whole_files(&[r(None, 0, 0x10)], &listing).is_none());
+    }
+
+    #[test]
+    fn overlapping_runs_join_into_one() {
+        let r = |f: Option<&str>, o: u64, l: u64| Run { file: f.map(String::from), offset: o, length: l };
+        let song = || vgmtrans::Song { name: String::new(), format: "PS1".into(), file: 0, offset: 0, looping: false, length_ms: 1, parts: Vec::new() };
+        let mut found = vec![
+            (song(), vec![r(None, 0x1000, 0x800)], 0x10),
+            (song(), vec![r(None, 0x1400, 0x800)], 0x20),
+            (song(), vec![r(None, 0x9000, 0x100)], 0),
+            (song(), vec![r(Some("A"), 0, 0x10), r(Some("B"), 0, 0x10)], 0),
+        ];
+        clusters(&mut found);
+        assert_eq!(found[0].1, vec![r(None, 0x1000, 0xC00)]);
+        assert_eq!((found[0].2, found[1].2), (0x10, 0x420));
+        assert_eq!(found[1].1, found[0].1);
+        assert_eq!(found[2].1, vec![r(None, 0x9000, 0x100)]);
+        assert_eq!(found[3].1.len(), 2);
     }
 
     #[test]
