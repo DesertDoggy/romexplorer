@@ -11,6 +11,10 @@ Haz una copia de seguridad antes de sustituir una versión.
 **Audio de las ROM**
 - Al abrir la página de un título se indexa primero la música de las ROM de ese juego. Mientras
   tanto, la página muestra el progreso en lugar de reproducir música de otro juego.
+- Lo mismo ocurre en la página Definitiva. Una página abierta después pasa por delante de una
+  abierta antes.
+- La indexación de la música de las ROM lee primero las más pequeñas. Las ROM de las que aún no
+  puede leer nada, como las imágenes de disquete, se omiten y se leerán cuando haya soporte.
 - Una ROM con el mismo contenido que otra ya indexada toma sus pistas en lugar de leerse de
   nuevo.
 

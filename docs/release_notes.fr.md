@@ -11,6 +11,10 @@ Faites une sauvegarde avant de remplacer une version.
 **Audio des ROM**
 - Ouvrir la page d'un titre indexe d'abord la musique des ROM de ce jeu. En attendant, la page
   affiche la progression au lieu de jouer la musique d'un autre jeu.
+- Il en va de même pour la page Définitive. Une page ouverte plus tard passe avant une page
+  ouverte plus tôt.
+- L'indexation de la musique des ROM lit d'abord les plus petites. Les ROM dont elle ne peut encore
+  rien lire, comme les images de disquette, sont laissées de côté et reprises une fois prises en charge.
 - Une ROM au contenu identique à une ROM déjà indexée reprend ses pistes au lieu d'être relue.
 
 ## Corrections

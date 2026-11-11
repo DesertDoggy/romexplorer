@@ -4033,6 +4033,8 @@ async function showFamily(id) {
     <div class="card" id="fam-ai"></div>`;
   document.getElementById('fam-base').onclick = () => go('collection/titles/' + head);
   familyAiPanel(document.getElementById('fam-ai'), head, {});
+  // The music of the version the family recommends, indexed first like a title page's.
+  if (f.definitive_title_id) pagePlayer({ title_id: f.definitive_title_id });
   const reset = document.getElementById('fam-reset');
   if (reset) reset.onclick = async () => { try { await api('/api/v1/catalog/definitive/' + head + '/order', { method: 'DELETE' }); showFamily(head); } catch (e) { toast(e.message, true); } };
   const move = async (row, after) => { try { await api('/api/v1/catalog/definitive/' + head + '/order/move', { method: 'POST', body: { title_id: row.title_id, after_title_id: after ? after.title_id : null } }); showFamily(head); } catch (e) { toast(e.message, true); } };
