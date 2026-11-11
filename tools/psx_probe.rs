@@ -5,7 +5,7 @@
 //! ```text
 //! psx_probe <disc .cue/.chd/...> --core <beetle core library> --bios <BIOS folder> --out <folder>
 //!           [--seconds N] [--every S] [--formats F] [--press KEY@S,...] [--no-mash]
-//!           [--opt key=value]... [--dump] [--max-mb N]
+//!           [--opt key=value]... [--dump] [--max-mb N] [--boot S]
 //! ```
 //!
 //! The core runs for `--seconds` (default 180) of console time. Unless `--no-mash`, Start and
@@ -15,12 +15,14 @@
 //!
 //! Every `--every` seconds (default 5) main RAM is searched for the sound formats' magic
 //! strings and scanned by VGMTrans in `--formats` (default: every PlayStation format), and
-//! what is new is printed with the loudness of the sound since the last look. At the end
+//! what is new is printed with the loudness of the sound since the last look. Magic hits
+//! seen in the first `--boot` seconds (default 10) are the BIOS's own and left out. At the end
 //! the bytes of each find are searched for in every file of the disc: found means the music
 //! is stored as is (file and offset printed); not found means the game unpacks it.
 //!
 //! What it writes to `--out`: the sound as `sound.wav`, the memory cards the core saves, and
-//! with `--dump` each RAM snapshot as `ram_<seconds>.bin` (VGMTrans and `disc_music` read those).
+//! with `--dump` each RAM snapshot as `ram_<seconds>.bin` (VGMTrans and `disc_music` read those)
+//! and the sound chip's RAM (its samples) as `spu_<seconds>.bin`, taken from a save state.
 //! The BIOS is read from its folder as the core finds it there; nothing is copied.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -172,6 +174,8 @@ struct Core {
     memory_data: unsafe extern "C" fn(c_uint) -> *mut c_void,
     memory_size: unsafe extern "C" fn(c_uint) -> usize,
     unload: unsafe extern "C" fn(),
+    serialize_size: unsafe extern "C" fn() -> usize,
+    serialize: unsafe extern "C" fn(*mut c_void, usize) -> bool,
     deinit: unsafe extern "C" fn(),
 }
 
@@ -197,6 +201,8 @@ fn load_core(path: &Path, disc: &Path) -> Result<(Core, AvInfo), String> {
             memory_data: sym!("retro_get_memory_data", unsafe extern "C" fn(c_uint) -> *mut c_void),
             memory_size: sym!("retro_get_memory_size", unsafe extern "C" fn(c_uint) -> usize),
             unload: sym!("retro_unload_game", unsafe extern "C" fn()),
+            serialize_size: sym!("retro_serialize_size", unsafe extern "C" fn() -> usize),
+            serialize: sym!("retro_serialize", unsafe extern "C" fn(*mut c_void, usize) -> bool),
             deinit: sym!("retro_deinit", unsafe extern "C" fn()),
             _lib: lib,
         };
@@ -224,7 +230,7 @@ const MAGIC: &[&str] = &["pQES", "pBAV", "AKAO", "smds", "wds ", "SLZ", "KDT1", 
 /// A run of RAM worth looking for on the disc.
 struct Find {
     what: String,
-    at_s: f64,
+    at: String,
     ram_offset: usize,
     needle: Vec<u8>,
 }
@@ -264,6 +270,7 @@ fn main() {
     let seconds: f64 = take(&mut args, "--seconds").and_then(|s| s.parse().ok()).unwrap_or(180.0);
     let every: f64 = take(&mut args, "--every").and_then(|s| s.parse().ok()).unwrap_or(5.0);
     let formats = take(&mut args, "--formats").unwrap_or_else(|| format!("{},{}", vgmtrans::PS1, vgmtrans::PS1_CUSTOM));
+    let boot_seconds: f64 = take(&mut args, "--boot").and_then(|s| s.parse().ok()).unwrap_or(10.0);
     let max_bytes: u64 = take(&mut args, "--max-mb").and_then(|s| s.parse::<u64>().ok()).unwrap_or(256) << 20;
     let mut presses: Vec<(f64, u32)> = Vec::new();
     if let Some(list) = take(&mut args, "--press") {
@@ -300,28 +307,36 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let fps = if av.fps > 1.0 { av.fps } else { 59.94 };
-    let rate = if av.sample_rate > 1.0 { av.sample_rate } else { 44_100.0 };
+    // Held as plain integers: on the PC the floating-point times came out as garbage once the
+    // core ran (its code changing the FPU state, it seems), so time is counted in frames.
+    let fps = if (20.0..=100.0).contains(&av.fps) { av.fps } else { 59.94 };
+    let rate = if (8_000.0..=96_000.0).contains(&av.sample_rate) { av.sample_rate } else { 44_100.0 };
+    let fps_milli = (fps * 1000.0).round() as u64;
+    let rate_hz = rate.round() as u32;
+    // Seconds as tenths, from a frame count, in integers only.
+    let tenths = move |frames: u64| frames * 10_000 / fps_milli;
     println!("{}: {fps:.2} fps, {rate:.0} Hz", disc.display());
 
-    let frames = (seconds * fps) as u64;
-    let every_frames = ((every * fps) as u64).max(1);
+    let frames = (seconds.max(0.0) as u64) * fps_milli / 1000;
+    let every_frames = ((every.max(0.1) * 1000.0) as u64 * fps_milli / 1_000_000).max(1);
+    let boot_tenths = (boot_seconds.max(0.0) * 10.0) as u64;
+    let presses: Vec<(u64, u32)> = presses.into_iter().map(|(at, b)| ((at.max(0.0) * 10.0) as u64, b)).collect();
     let mut seen_magic: HashSet<(usize, &str)> = HashSet::new();
     let mut seen_song: HashSet<Vec<u8>> = HashSet::new();
     let mut finds: Vec<Find> = Vec::new();
     let mut last_sound = 0usize;
     for frame in 0..frames {
-        let t = frame as f64 / fps;
+        let now = tenths(frame);
         let mut held = 0u32;
-        if !no_mash && t >= 8.0 {
-            let phase = ((t - 8.0) / 1.5) as u64;
-            let into = (t - 8.0) - phase as f64 * 1.5;
-            if into < 0.1 {
-                held |= 1 << if phase % 2 == 0 { 3 } else { 0 };
+        // From 8 s on, every 1.5 s: Start, then Cross, held a tenth of a second.
+        if !no_mash && now >= 80 {
+            let since = now - 80;
+            if since % 15 == 0 {
+                held |= 1 << if (since / 15) % 2 == 0 { 3 } else { 0 };
             }
         }
         for &(at, b) in &presses {
-            if t >= at && t < at + 0.1 {
+            if now == at {
                 held |= 1 << b;
             }
         }
@@ -338,7 +353,8 @@ fn main() {
             }
             std::slice::from_raw_parts(p, n).to_vec()
         };
-        let t = (frame + 1) as f64 / fps;
+        let t_tenths = tenths(frame + 1);
+        let t = format!("{}.{}", t_tenths / 10, t_tenths % 10);
         let loud = with(|s| {
             let r = rms(&s.sound[last_sound..]);
             last_sound = s.sound.len();
@@ -350,9 +366,14 @@ fn main() {
             for (at, _) in ram.windows(mb.len()).enumerate().filter(|(_, w)| *w == mb) {
                 if seen_magic.insert((at, m)) {
                     let needle = ram[at..(at + NEEDLE).min(ram.len())].to_vec();
+                    // What is there before the game starts is the BIOS's own (its boot jingle).
+                    if t_tenths <= boot_tenths {
+                        news.push(format!("{m}@{at:#x} (BIOS, left out)"));
+                        continue;
+                    }
                     news.push(format!("{m}@{at:#x}"));
                     if interesting(&needle) {
-                        finds.push(Find { what: format!("{m} magic"), at_s: t, ram_offset: at, needle });
+                        finds.push(Find { what: format!("{m} magic"), at: t.clone(), ram_offset: at, needle });
                     }
                 }
             }
@@ -366,14 +387,17 @@ fn main() {
                         continue;
                     }
                     news.push(format!("song [{}] {} @{at:#x} {:.1}s", song.format, song.name, song.length_ms as f64 / 1000.0));
-                    finds.push(Find { what: format!("[{}] song {}", song.format, song.name), at_s: t, ram_offset: at, needle });
+                    finds.push(Find { what: format!("[{}] song {}", song.format, song.name), at: t.clone(), ram_offset: at, needle });
                 }
             }
             Err(e) => news.push(format!("scan error: {e}")),
         }
-        println!("  {t:6.1}s sound rms {loud:6.0}{}{}", if news.is_empty() { "" } else { "  new: " }, news.join(", "));
+        println!("  {t:>6}s sound rms {loud:6.0}{}{}", if news.is_empty() { "" } else { "  new: " }, news.join(", "));
         if dump {
-            std::fs::write(out.join(format!("ram_{:04}.bin", t as u64)), &ram).expect("write RAM dump");
+            std::fs::write(out.join(format!("ram_{:05}.bin", t_tenths / 10)), &ram).expect("write RAM dump");
+            if let Some(spu) = spu_ram(&core) {
+                std::fs::write(out.join(format!("spu_{:05}.bin", t_tenths / 10)), &spu).expect("write SPU RAM dump");
+            }
         }
     }
     unsafe {
@@ -383,7 +407,7 @@ fn main() {
     let sound = with(|s| std::mem::take(&mut s.sound));
     {
         let mut f = std::fs::File::create(out.join("sound.wav")).expect("create sound.wav");
-        f.write_all(&rom_audio::wav_header(rate as u32, 2, sound.len() as u64 / 2)).unwrap();
+        f.write_all(&rom_audio::wav_header(rate_hz, 2, sound.len() as u64 / 2)).unwrap();
         let bytes: Vec<u8> = sound.iter().flat_map(|s| s.to_le_bytes()).collect();
         f.write_all(&bytes).unwrap();
     }
@@ -392,6 +416,24 @@ fn main() {
         return;
     }
     locate(&disc, &finds, max_bytes);
+}
+
+/// The sound chip's 512 KB of RAM (its samples), out of a save state: Beetle writes each
+/// value after its name (length-prefixed) and its size.
+fn spu_ram(core: &Core) -> Option<Vec<u8>> {
+    let size = unsafe { (core.serialize_size)() };
+    if size == 0 {
+        return None;
+    }
+    let mut state = vec![0u8; size];
+    if !unsafe { (core.serialize)(state.as_mut_ptr() as *mut c_void, size) } {
+        return None;
+    }
+    const SPU_BYTES: usize = 512 * 1024;
+    let mut marker = b"\x06SPURAM".to_vec();
+    marker.extend_from_slice(&(SPU_BYTES as u32).to_le_bytes());
+    let at = state.windows(marker.len()).position(|w| w == marker)? + marker.len();
+    state.get(at..at + SPU_BYTES).map(<[u8]>::to_vec)
 }
 
 /// Searches every file of the disc for the finds' bytes.
@@ -437,8 +479,8 @@ fn locate(disc: &Path, finds: &[Find], max_bytes: u64) {
             format!("{}{more}", p.iter().take(4).cloned().collect::<Vec<_>>().join(", "))
         });
         println!(
-            "  {:6.1}s RAM {:#08x} {}: {}",
-            f.at_s,
+            "  {:>6}s RAM {:#08x} {}: {}",
+            f.at,
             f.ram_offset,
             f.what,
             places.unwrap_or_else(|| "not stored as is (packed or built at run time)".into())
