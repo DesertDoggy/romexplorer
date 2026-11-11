@@ -1,0 +1,177 @@
+diff --git a/src/main/formats/TriAcePS1/TriAcePS1InstrSet.cpp b/src/main/formats/TriAcePS1/TriAcePS1InstrSet.cpp
+index 9d128526..24a5b311 100644
+--- a/src/main/formats/TriAcePS1/TriAcePS1InstrSet.cpp
++++ b/src/main/formats/TriAcePS1/TriAcePS1InstrSet.cpp
+@@ -1,4 +1,5 @@
+ #include "TriAcePS1InstrSet.h"
++#include <cstdlib>
+ 
+ #include "base/Types.h"
+ #include "PSXSPU.h"
+@@ -127,7 +128,8 @@ bool TriAcePS1Instr::loadInstr() {
+     //rgn->loop.loopStatus = (rgninfo->loopOffset != rgninfo->sampOffset) && (rgninfo->loopOffset != 0);
+     rgn->loop.loopStart = rgninfo->loopOffset;
+     rgn->addChild(rgn->offset() + 12, 1, "Attenuation");
+-    rgn->addUnityKey((s8) 0x3B - rgninfo->pitchTuneSemitones,
++    rgn->addUnityKey(getenv("RVT_TRIACE_UNITY_PLUS") ? (s8) (0x3C + rgninfo->pitchTuneSemitones)
++                                                     : (s8) (0x3B - rgninfo->pitchTuneSemitones),
+                      rgn->offset() + 13);  //You would think it would be 0x3C (middle c)
+     rgn->addChild(rgn->offset() + 14, 1, "Pitch Fine Tune");
+     const int kTuningOffset = 22; // approx. 21.500638 from pitch table (0x10be vs 0x1000)
+diff --git a/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp b/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
+index a945ec4a..355f12da 100644
+--- a/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
++++ b/src/main/formats/TriAcePS1/TriAcePS1Seq.cpp
+@@ -2,6 +2,8 @@
+ // author of so2mml. The code is based on his write-up of the format specifications.  Many thanks to him.
+ 
+ #include "TriAcePS1Seq.h"
++#include <cstdlib>
++#include <algorithm>
+ 
+ #include "base/Types.h"
+ #include "SeqEvent.h"
+@@ -81,9 +83,28 @@ TriAcePS1Track::TriAcePS1Track(TriAcePS1Seq *parentSeq, u32 offset, u32 length)
+ 
+ void TriAcePS1Track::loadTrackMainLoop(u32 stopOffset, s32 stopTime) {
+   TriAcePS1Seq *seq = (TriAcePS1Seq *) parentSeq;
++  stopAt = stopTime;
++  segnoPtr = 0;
++  segnoEvent = 0;
+   u32 scorePatternPtrOffset = offset();
+-  u16 scorePatternOffset = readShort(scorePatternPtrOffset);
+-  while (scorePatternOffset != 0xFFFF) {
++  u32 listEnd = offset();
++  u32 resumeAt = 0;
++  bool looped = false;
++  // The pattern list ends at 0xFFFF. A song loops from its Dal Segno start (0x8D) at its end
++  // point (0x8E), or from its first pattern at the end of the list when it has none.
++  while (stopTime < 0 || getTime() < static_cast<u32>(stopTime)) {
++    u16 scorePatternOffset = readShort(scorePatternPtrOffset);
++    if (scorePatternOffset == 0xFFFF) {
++      listEnd = std::max(listEnd, scorePatternPtrOffset);
++      if (segnoPtr == 0 && addLoopForever(scorePatternPtrOffset, 2)) {
++        scorePatternPtrOffset = offset();
++        looped = true;
++        continue;
++      }
++      if (!looped)
++        addEndOfTrack(scorePatternPtrOffset, 2);
++      break;
++    }
+     if (seq->patternMap[scorePatternOffset])
+       seq->curScorePattern = NULL;
+     else {
+@@ -91,23 +112,35 @@ void TriAcePS1Track::loadTrackMainLoop(u32 stopOffset, s32 stopTime) {
+       seq->patternMap[scorePatternOffset] = pattern;
+       seq->curScorePattern = pattern;
+     }
+-    u32 endOffset = readScorePattern(scorePatternOffset);
++    curPatternPtr = scorePatternPtrOffset;
++    segnoEnd = false;
++    u32 endOffset = readScorePattern(scorePatternOffset, resumeAt);
++    resumeAt = 0;
+     if (seq->curScorePattern)
+       seq->curScorePattern->setLength(endOffset - seq->curScorePattern->offset());
+-    addChild(scorePatternPtrOffset, 2, "Score Pattern Ptr");
++    if (!looped)
++      addChild(scorePatternPtrOffset, 2, "Score Pattern Ptr");
++    listEnd = std::max(listEnd, scorePatternPtrOffset);
++    if (segnoEnd && segnoPtr != 0) {
++      if (addLoopForever(endOffset - 2, 2)) {
++        scorePatternPtrOffset = segnoPtr;
++        resumeAt = segnoEvent;
++        looped = true;
++        continue;
++      }
++      break;
++    }
+     scorePatternPtrOffset += 2;
+-    scorePatternOffset = readShort(scorePatternPtrOffset);
+   }
+-  addEndOfTrack(scorePatternPtrOffset, 2);
+-  setLength(scorePatternPtrOffset + 2 - offset());
++  setLength(listEnd + 2 - offset());
+ }
+ 
+ 
+-u32 TriAcePS1Track::readScorePattern(u32 offset) {
+-  curOffset = offset;    //start at beginning of track
++u32 TriAcePS1Track::readScorePattern(u32 offset, u32 resumeAt) {
++  curOffset = resumeAt ? resumeAt : offset;    //start at beginning of the pattern, or where a loop resumes
+   impliedNoteDur = 0;    //reset the implied values (from event 0x9E)
+   impliedVelocity = 0;
+-  while (readEvent());
++  while (readEvent() && (stopAt < 0 || getTime() < static_cast<u32>(stopAt)));
+   return curOffset;
+ }
+ 
+@@ -220,14 +253,23 @@ bool TriAcePS1Track::readEvent(void) {
+ 
+       //Dal Segno: start point
+       case 0x8D :
++        if (segnoPtr == 0) {
++          segnoPtr = curPatternPtr;
++          segnoEvent = curOffset;
++        }
+         addGenericEvent(beginOffset, curOffset - beginOffset, "Dal Segno: start point", "", Type::Unknown);
+         break;
+ 
+       //Dal Segno: end point
+-      case 0x8E :
+-        curOffset++;
++      case 0x8E : {
++        u8 count = readByte(curOffset++);
+         addGenericEvent(beginOffset, curOffset - beginOffset, "Dal Segno: end point", "", Type::Unknown);
++        if (count == 0 && segnoPtr != 0) {
++          segnoEnd = true;
++          return false;
++        }
+         break;
++      }
+ 
+       //rest
+       case 0x8F : {
+@@ -265,11 +307,15 @@ bool TriAcePS1Track::readEvent(void) {
+         break;
+ 
+       //unknown
+-      case 0x95 :
++      case 0x95 : {
+         event_dur = readByte(curOffset++);
+-        curOffset++;
+-        addUnknown(beginOffset, curOffset - beginOffset, "Unknown Event  (Tie?)");
++        s8 val = (s8) readByte(curOffset++);
++        if (getenv("RVT_TRIACE_95_TRANSPOSE"))
++          addTranspose(beginOffset, curOffset - beginOffset, val);
++        else
++          addUnknown(beginOffset, curOffset - beginOffset, "Unknown Event  (Tie?)");
+         break;
++      }
+ 
+       //Pitch Bend Range
+       case 0x96 : {
+diff --git a/src/main/formats/TriAcePS1/TriAcePS1Seq.h b/src/main/formats/TriAcePS1/TriAcePS1Seq.h
+index e70b4afc..fd4e88e2 100644
+--- a/src/main/formats/TriAcePS1/TriAcePS1Seq.h
++++ b/src/main/formats/TriAcePS1/TriAcePS1Seq.h
+@@ -62,11 +62,18 @@ class TriAcePS1Track
+   TriAcePS1Track(TriAcePS1Seq *parentSeq, u32 offset = 0, u32 length = 0);
+ 
+   void loadTrackMainLoop(u32 stopOffset, s32 stopTime) override;
+-  u32 readScorePattern(u32 offset);
++  u32 readScorePattern(u32 offset, u32 resumeAt = 0);
+   bool isOffsetUsed(u32 offset) override;
+   SeqEvent* sinkEvent(std::unique_ptr<SeqEvent>&& seqEvent) override;
+   bool readEvent() override;
+ 
+   u8 impliedNoteDur;
+   u8 impliedVelocity;
++  // Dal Segno: the pattern pointer and event its start point (0x8D) was read at, and
++  // whether its end point (0x8E) ended the pattern being read.
++  u32 segnoPtr = 0;
++  u32 segnoEvent = 0;
++  u32 curPatternPtr = 0;
++  bool segnoEnd = false;
++  s32 stopAt = -1;
+ };
