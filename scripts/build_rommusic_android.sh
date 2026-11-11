@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds the rommusic Android app (arm64 APK): the native libraries for android/arm64 if asked,
-# then the Dioxus app with `dx`, then the APK again with those libraries inside it. The same
-# steps as scripts/build_chdlite_android.sh, for rommusic-cli's `rommusic-gui`.
+# then the Dioxus app with `dx`, then the APK again with those libraries inside it. With --cli,
+# also the command-line tool for Android (rommusic) with the libraries in lib/ beside it. The
+# same steps and options as scripts/build_chdlite_android.sh, for rommusic-cli.
 #
-# Usage: scripts/build_rommusic_android.sh [--natives] [--release] [--check]
+# Usage: scripts/build_rommusic_android.sh [--natives] [--release] [--cli|--cli-only] [--check]
 #   --natives   first build every native library rommusic uses (the players: ffmpeg,
 #               vgmstream, rommusic; the disc readers: zlib-ng, chdman-simd, dolphin, cemu)
 #               for android/arm64 (scripts/build_native_deps.sh --only ...) and deploy them to
@@ -11,6 +12,12 @@
 #   --release   a release APK (`dx bundle`), signed when the environment names a keystore
 #               (below), otherwise unsigned (app-release-unsigned.apk, which Android will
 #               not install).
+#   --cli       also the command-line tool for android/arm64 (cargo, the NDK's clang as
+#               linker), into release/rommusic/<rommusic version>/android/arm64/, with the
+#               libraries it plays with in lib/android/arm64/ beside it -- copy the folder as
+#               a whole and run it from a terminal app on the device (Termux) or `adb shell`.
+#               Release builds with --release, debug otherwise.
+#   --cli-only  the command-line tool alone, no APK.
 #   --check     report what is found and missing, build nothing.
 #
 # What it needs (none of it is installed by this script): the same as
@@ -28,6 +35,7 @@
 # (`env:`), never on a command line. Every update must be signed with the same key.
 #
 # The APK ends up under target/dx/rommusic-gui/<debug|release>/android/app/app/build/outputs/.
+# The command-line tool (--cli) under release/rommusic/<rommusic version>/android/arm64/.
 # Sideload it (`adb install -r <apk>`). On first start rommusic asks for All files access.
 #
 
@@ -39,13 +47,17 @@ CRATE_DIR="$ROOT_DIR/rommusic-cli"
 TARGET=aarch64-linux-android
 ABI=arm64-v8a
 
-NATIVES=0 RELEASE=0 CHECK=0
+NATIVES=0 RELEASE=0 CHECK=0 CLI=0 APP=1
+# The API level the command-line tool is linked for: 28 (Android 9), as the libraries are.
+CLI_API=28
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --natives) NATIVES=1 ;;
         --release) RELEASE=1 ;;
+        --cli) CLI=1 ;;
+        --cli-only) CLI=1 APP=0 ;;
         --check) CHECK=1 ;;
-        -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "error: unknown option '$1' (try --help)" >&2; exit 2 ;;
     esac
     shift
@@ -91,7 +103,7 @@ fi
 if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
     MISSING+=("the Rust target (rustup target add $TARGET)")
 fi
-command -v dx >/dev/null 2>&1 || MISSING+=("the Dioxus CLI (cargo install dioxus-cli --version 0.7.10)")
+[[ "$APP" -eq 1 ]] && { command -v dx >/dev/null 2>&1 || MISSING+=("the Dioxus CLI (cargo install dioxus-cli --version 0.7.10)"); }
 
 echo "SDK:  ${ANDROID_HOME:-<none>}"
 echo "NDK:  ${ANDROID_NDK_HOME:-<none>}"
@@ -114,8 +126,40 @@ if [[ "$NATIVES" -eq 1 ]]; then
     ANDROID_API="${ANDROID_API:-28}" bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu android arm64
 fi
 for lib in librommusic.so librvgmstream.so; do
-    [[ -f "$LIB_DIR/$lib" ]] || echo "warning: $LIB_DIR/$lib is not built (run with --natives); the APK plays nothing without it" >&2
+    [[ -f "$LIB_DIR/$lib" ]] || echo "warning: $LIB_DIR/$lib is not built (run with --natives); rommusic plays nothing without it" >&2
 done
+
+# --- the command-line tool ---------------------------------------------------------------------
+if [[ "$CLI" -eq 1 ]]; then
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) HOST_TAG=windows-x86_64; EXE=.cmd ;;
+        Darwin) HOST_TAG=darwin-x86_64; EXE= ;;
+        *) HOST_TAG=linux-x86_64; EXE= ;;
+    esac
+    BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+    LINKER="$BIN/aarch64-linux-android${CLI_API}-clang$EXE"
+    [[ -f "$LINKER" ]] || { echo "error: no NDK linker at $LINKER" >&2; exit 1; }
+    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
+    export CC_aarch64_linux_android="$LINKER" CXX_aarch64_linux_android="$BIN/aarch64-linux-android${CLI_API}-clang++$EXE"
+    export AR_aarch64_linux_android="$BIN/llvm-ar${EXE:+.exe}"
+    CLI_PROFILE=debug CARGO_PROFILE=()
+    if [[ "$RELEASE" -eq 1 ]]; then CLI_PROFILE=release CARGO_PROFILE=(--release); fi
+    (cd "$ROOT_DIR" && cargo build -p rommusic-cli --target "$TARGET" "${CARGO_PROFILE[@]}" --bin rommusic)
+    CLI_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$CRATE_DIR/Cargo.toml" | head -1)"
+    CLI_OUT="$ROOT_DIR/release/rommusic/$CLI_VERSION/android/arm64"
+    # rommusic looks for its libraries in lib/<os>/<arch>/ beside itself, as on a desktop.
+    CLI_LIB="$CLI_OUT/lib/android/arm64"
+    rm -rf "$CLI_LIB"
+    mkdir -p "$CLI_LIB"
+    cp -f "$ROOT_DIR/target/$TARGET/$CLI_PROFILE/rommusic" "$CLI_OUT/rommusic"
+    for name in "${APK_LIBS[@]}"; do
+        [[ -f "$LIB_DIR/$name" ]] && cp -f "$LIB_DIR/$name" "$CLI_LIB/"
+    done
+    echo
+    echo "command-line tool ($CLI_PROFILE):"
+    (cd "$CLI_OUT" && find . -type f | sort | sed 's/^\./  /')
+fi
+[[ "$APP" -eq 1 ]] || exit 0
 
 # --- the app ------------------------------------------------------------------------------------
 # dx canonicalizes paths in its session cache under TEMP, which fails ("Incorrect function")
@@ -134,9 +178,11 @@ if [[ "$RELEASE" -eq 1 ]]; then
 fi
 (cd "$CRATE_DIR" && dx "${DX_CMD[@]}" --android --target "$TARGET" --bin rommusic-gui --features gui)
 
-# --- the libraries into the APK -----------------------------------------------------------------
-# dx packages only the Rust library. The natives go beside it in the Gradle project's jniLibs,
-# and Gradle runs again (incrementally) to put them in the APK.
+# --- the libraries and the launcher icon into the APK -------------------------------------------
+# dx packages only the Rust library, and on Android it ignores Dioxus.toml's `icon`: it always
+# writes its own launcher icon (the Android robot). The natives go beside the Rust library in
+# the Gradle project's jniLibs, rommusic-cli/android/res/ (scripts/make_android_icons.py) goes over
+# dx's icon, and Gradle runs again (incrementally) to put both in the APK.
 PROJECT="$ROOT_DIR/target/dx/rommusic-gui/$PROFILE/android/app"
 JNI_DIR="$PROJECT/app/src/main/jniLibs/$ABI"
 [[ -d "$PROJECT" ]] || { echo "error: dx left no Gradle project at $PROJECT" >&2; exit 1; }
@@ -150,15 +196,21 @@ for name in "${APK_LIBS[@]}"; do
 done
 echo "copied $copied native librar$([[ $copied -eq 1 ]] && echo y || echo ies) into $JNI_DIR"
 
-if [[ "$copied" -gt 0 ]]; then
-    TASK=assembleDebug
-    [[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease
-    if [[ "$WINDOWS" -eq 1 ]]; then
-        # Run by path: `cmd //c gradlew.bat` from Git Bash did not find it in the current folder.
-        (cd "$PROJECT" && ./gradlew.bat "$TASK")
-    else
-        (cd "$PROJECT" && sh ./gradlew "$TASK")
-    fi
+ICON_DIR="$CRATE_DIR/android/res"
+RES_DIR="$PROJECT/app/src/main/res"
+[[ -f "$ICON_DIR/mipmap-anydpi-v26/ic_launcher.xml" ]] || { echo "error: no launcher icon in $ICON_DIR (scripts/make_android_icons.py)" >&2; exit 1; }
+# dx's icons are .webp, ours .png under the same names; Gradle refuses two resources of one name.
+rm -f "$RES_DIR"/mipmap-*/ic_launcher.webp
+cp -Rf "$ICON_DIR/." "$RES_DIR/"
+echo "launcher icon from $ICON_DIR"
+
+TASK=assembleDebug
+[[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease
+if [[ "$WINDOWS" -eq 1 ]]; then
+    # Run by path: `cmd //c gradlew.bat` from Git Bash did not find it in the current folder.
+    (cd "$PROJECT" && ./gradlew.bat "$TASK")
+else
+    (cd "$PROJECT" && sh ./gradlew "$TASK")
 fi
 
 # --- signing --------------------------------------------------------------------------------------

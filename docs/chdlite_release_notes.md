@@ -23,6 +23,10 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
   RetroAchievements has achievements for it, with the game's name. The list it checks is
   bundled; its date is shown in Settings and by `--version`.
 
+## Bug fixes
+
+- The Android app had the standard Android icon instead of chdlite's.
+
 # chdlite 0.3.2
 
 Android only.

@@ -10,6 +10,10 @@ chdlite は romexplorer とは別にリリースされます。このノート�
 - **Mac アプリと Linux の AppImage。** macOS 用の `chdlite.app` と、Linux 用の 1 ファイルの AppImage を用意しました。開くとウィンドウが起動します。コンソール版も中に入っています（`chdlite.AppImage chdcomp ...`）。
 - **RetroAchievements。** Hash で RetroAchievements のハッシュも出します（初期設定でオン）。実績があるゲームなら、その名前も表示します。照合に使うリストは同梱で、日付は Settings と `--version` で確認できます。
 
+## バグ修正
+
+- Android アプリのアイコンが chdlite のものではなく、Android の標準アイコンになっていました。
+
 # chdlite 0.3.2
 
 Android 版のみのリリースです。
