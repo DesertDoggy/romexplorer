@@ -504,6 +504,7 @@ fn sdat_bytes(path: &Path, view: u32, inner: &str) -> Result<std::sync::Arc<Vec<
 pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
     match engine.split('@').next() {
         Some(NDS_SSEQ) => open_sseq(path, engine, song),
+        Some(super::disc_seq::ENGINE) => super::disc_seq::open(path, engine, song),
         Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
         Some(NES_MAP) => open_map(path, engine, song),
         Some(GB_MAP) => open_gb_map(path, engine, song),

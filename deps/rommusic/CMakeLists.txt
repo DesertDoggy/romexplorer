@@ -31,14 +31,19 @@
 #   rvgm_   VGM logs for the chips gme lacks (Neo Geo Pocket T6W28, Virtual Boy VSU)
 #           through libvgm (external/libvgm): its VGM player with only the SN76496 (MAME,
 #           BSD-3-Clause) and VSU (Mednafen, GPL-2.0+) cores, no zlib or audio output.
+#   rvt_*   sequenced music read from a disc's own files (Sony SEQ/VAB and HD/BD/SQ, Square's
+#           and Sega's Saturn formats, ...) through VGMTrans's core (external/vgmtrans, zlib
+#           licence), turned into MIDI + SoundFont and played with TinySoundFont
+#           (external/TinySoundFont, MIT). VGMTrans brings its own vendored fmt, spdlog, zlib,
+#           minizip, unarr and libchdr, linked in statically.
 #
 # Built by deps/rommusic/scripts/build.sh.
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT FMT_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT VGMTRANS_ROOT TSF_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT and VGM_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, FMT_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT, VGM_ROOT, VGMTRANS_ROOT and TSF_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -219,9 +224,26 @@ target_compile_definitions(rommusic_vgm PRIVATE HAVE_STDINT_H SNDDEV_SELECT SNDD
 set_target_properties(rommusic_vgm PROPERTIES C_STANDARD 99 CXX_STANDARD 11 C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
 target_compile_options(rommusic_vgm PRIVATE -w)
 
+# --- VGMTrans's core and TinySoundFont, for sequenced music on discs -------------------
+# Its own CMake, without the Qt UI or the shell. Its module path is relative to the top
+# source dir, which is this one here.
+set(ENABLE_UI_QT OFF CACHE BOOL "" FORCE)
+set(ENABLE_SHELL OFF CACHE BOOL "" FORCE)
+list(APPEND CMAKE_MODULE_PATH ${VGMTRANS_ROOT}/cmake)
+add_subdirectory(${VGMTRANS_ROOT} vgmtrans EXCLUDE_FROM_ALL)
+set_target_properties(vgmtranscore PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+# mGBA brings its own crc32 when built without zlib; VGMTrans's zlib (shared with its minizip,
+# unarr and libchdr) gets zlib's own z_ prefix so the two do not clash at link time.
+target_compile_definitions(zlibstatic PUBLIC Z_PREFIX)
+add_library(rommusic_vt OBJECT vgmtrans/rvt.cpp)
+target_link_libraries(rommusic_vt PRIVATE vgmtranscore)
+target_include_directories(rommusic_vt PRIVATE ${TSF_ROOT})
+set_target_properties(rommusic_vt PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_nes> $<TARGET_OBJECTS:rommusic_gb> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
-  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>)
+  $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>
+  $<TARGET_OBJECTS:rommusic_vt>)
 # llvm-mingw's lld (windows/arm64) takes --whole-archive but not the --push-state/--pop-state
 # that CMake wraps WHOLE_ARCHIVE in for MinGW, nor --exclude-libs (below).
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -230,6 +252,8 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 else()
   target_link_libraries(rommusic PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,gme_static>" mgba)
 endif()
+# Linking the object library brings in its objects and its static dependencies with them.
+target_link_libraries(rommusic PRIVATE vgmtranscore)
 if(APPLE)
   target_link_libraries(rommusic PRIVATE iconv)
 endif()
@@ -241,7 +265,7 @@ endif()
 if(NOT APPLE AND NOT ROMMUSIC_LLD_MINGW)
   # mGBA's functions are its own business: only the rgsf_ calls are exported. (On Windows the
   # __declspec(dllexport) API already keeps everything else out of the export table.)
-  target_link_options(rommusic PRIVATE -Wl,--exclude-libs,libmgba.a)
+  target_link_options(rommusic PRIVATE -Wl,--exclude-libs,libmgba.a:libspdlog.a:libfmt.a:libz.a:libzlibstatic.a:libminizip.a:libunarr.a:libchdr-static.a:libzstd.a:liblzma.a)
 endif()
 if(WIN32)
   # The MinGW runtime (libstdc++, libgcc, winpthread) linked in, so the DLL imports only

@@ -881,6 +881,7 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
                 continue;
             }
         };
+        super::disc_seq::index(view, &listing, n as u32, t, &mut progress, &mut out);
         let cache = Companions::default();
         for file in listing.iter() {
             if file.size < MIN_FILE_BYTES {

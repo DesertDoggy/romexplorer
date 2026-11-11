@@ -32,6 +32,10 @@ path = "tools/snes_capture.rs"
 name = "cart_music"
 path = "tools/cart_music.rs"
 
+[[bin]]
+name = "disc_music"
+path = "tools/disc_music.rs"
+
 [[test]]
 name = "test_archiver"
 path = "tests/src/test_archiver.rs"
