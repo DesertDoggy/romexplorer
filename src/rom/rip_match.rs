@@ -308,6 +308,26 @@ struct CachedSet {
     fingerprint: Option<Fingerprint>,
 }
 
+/// The fingerprint cache's format. Raise it whenever [`fingerprint`] or [`CachedSet`]
+/// changes, so caches written before are read again from the sets instead of matching nothing.
+const CACHE_FORMAT: u32 = 2;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheFile {
+    format: u32,
+    sets: Vec<CachedSet>,
+}
+
+/// Writes the cache beside itself and renames it into place, so a reader at the same moment
+/// (another job, another process) sees the old file or the new one, never half of one.
+fn write_cache(path: &Path, cache: &CacheFile) {
+    let Ok(json) = serde_json::to_vec(cache) else { return };
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
 fn stamp(path: &Path) -> (u64, u64) {
     let Ok(meta) = std::fs::metadata(path) else { return (0, 0) };
     let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
@@ -326,28 +346,33 @@ impl Library {
     /// Reads the sets under `folders`. Fingerprints are kept in `cache` (a JSON file) by path,
     /// size and time, so only new or changed sets are read again.
     pub fn build(folders: &[PathBuf], cache: Option<&Path>, mut progress: impl FnMut(usize, usize)) -> Self {
+        // A cache of another format, or one that doesn't read, is read again from the sets.
         let old: HashMap<PathBuf, CachedSet> = cache
             .and_then(|c| std::fs::read(c).ok())
-            .and_then(|b| serde_json::from_slice::<Vec<CachedSet>>(&b).ok())
+            .and_then(|b| serde_json::from_slice::<CacheFile>(&b).ok())
+            .filter(|f| f.format == CACHE_FORMAT)
+            .map(|f| f.sets)
             .unwrap_or_default()
             .into_iter()
             .map(|c| (c.path.clone(), c))
             .collect();
         let paths: Vec<PathBuf> = folders.iter().flat_map(|f| super::rip_sets::sets_in(f)).collect();
         let mut fresh = Vec::with_capacity(paths.len());
+        let mut changed = old.len() != paths.len();
         for (i, path) in paths.iter().enumerate() {
             progress(i, paths.len());
             let (size, modified) = stamp(path);
             let entry = match old.get(path) {
                 Some(c) if c.size == size && c.modified == modified => c.clone(),
-                _ => CachedSet { path: path.clone(), size, modified, fingerprint: super::rip_sets::set_fingerprint(path) },
+                _ => {
+                    changed = true;
+                    CachedSet { path: path.clone(), size, modified, fingerprint: super::rip_sets::set_fingerprint(path) }
+                }
             };
             fresh.push(entry);
         }
-        if let Some(c) = cache {
-            if let Ok(json) = serde_json::to_vec(&fresh) {
-                let _ = std::fs::write(c, json);
-            }
+        if let Some(c) = cache.filter(|_| changed) {
+            write_cache(c, &CacheFile { format: CACHE_FORMAT, sets: fresh.clone() });
         }
         let mut sets = Vec::new();
         let mut grouped: HashMap<RipSystem, (Vec<Fingerprint>, Vec<usize>)> = HashMap::new();
@@ -453,6 +478,23 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cache_of_another_format_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("rip_match_cache_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cache.json");
+        let set = CachedSet { path: dir.join("set"), size: 1, modified: 2, fingerprint: None };
+        // The old format: a bare list.
+        std::fs::write(&cache, serde_json::to_vec(&vec![set.clone()]).unwrap()).unwrap();
+        assert!(serde_json::from_slice::<CacheFile>(&std::fs::read(&cache).unwrap()).is_err());
+        write_cache(&cache, &CacheFile { format: CACHE_FORMAT, sets: vec![set] });
+        let back: CacheFile = serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        assert_eq!((back.format, back.sets.len()), (CACHE_FORMAT, 1));
+        // Nothing left beside it.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Bytes that look like code: many different values, never the same run twice.
     fn noise(seed: u32, len: usize) -> Vec<u8> {
