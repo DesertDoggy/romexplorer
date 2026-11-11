@@ -1,0 +1,29 @@
+diff --git a/src/main/formats/PS1/Vab.cpp b/src/main/formats/PS1/Vab.cpp
+index 1193e190..00ee116c 100755
+--- a/src/main/formats/PS1/Vab.cpp
++++ b/src/main/formats/PS1/Vab.cpp
+@@ -140,6 +140,24 @@ bool Vab::parseInstrPointers() {
+ 
+       vagOffset += vagSize;
+     }
++
++    // A whole VAB keeps its VB (the samples) right after the VH. When every sample there
++    // ends on an ADPCM end flag where the table says it does, the samples are these and
++    // not ones a heuristic search has to find (which misses short ones).
++    bool bodyFollows = vagOffset > 0 && vagStartOffset + vagOffset <= nEndOffset &&
++                       m_vagLocations.size() == numVAGs;
++    for (const auto &vag : m_vagLocations) {
++      if (!bodyFollows) break;
++      if (vag.size < 16 || vag.size % 16 != 0) {
++        bodyFollows = false;
++        break;
++      }
++      u8 lastFlags = readByte(vagStartOffset + vag.offset + vag.size - 16 + 1);
++      if ((lastFlags & 0x01) == 0 || (lastFlags & 0xF8) != 0) bodyFollows = false;
++    }
++    if (bodyFollows) {
++      addSampColl<PSXSampColl>(PS1Format::name, this, vagStartOffset, vagOffset, m_vagLocations);
++    }
+     setLength(vagStartOffset - offset());
+   }
+ 
