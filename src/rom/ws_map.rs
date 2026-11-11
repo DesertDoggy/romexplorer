@@ -484,7 +484,12 @@ pub const MAP_RIGHT: f64 = 0.9;
 /// The map, keeping only the songs it plays right from the ROM (gaps bridged), checked over
 /// the frames recorded. None when it plays none.
 pub fn build_map(wsr: &[u8], rom: &[u8], songs: impl Iterator<Item = u8>) -> Option<Map> {
-    let mut m = map(wsr, rom, songs)?;
+    keep_right(wsr, map(wsr, rom, songs)?, rom)
+}
+
+/// `m` with only the songs it plays right from the ROM (gaps bridged), and the scripts they
+/// use. None when it plays none.
+pub fn keep_right(wsr: &[u8], mut m: Map, rom: &[u8]) -> Option<Map> {
     let right: Vec<u8> = m
         .songs
         .iter()
