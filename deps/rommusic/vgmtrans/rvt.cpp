@@ -432,6 +432,18 @@ RVT_API void *rvt_play(void *s, int i, int rate, float gain_db) {
   for (int c = 0; c < 16; c++) tsf_channel_set_presetindex(p->font, c, 0);
   if (const char *r = getenv("RVT_FORCE_BEND_RANGE"))
     for (int c = 0; c < 16; c++) tsf_channel_set_pitchrange(p->font, c, (float)atof(r));
+  /* Temporary: the regions TinySoundFont plays, in samples from each region's start. */
+  if (getenv("RVT_DUMP_REGIONS")) {
+    for (int k = 0; k < p->font->presetNum; k++) {
+      const tsf_preset &pr = p->font->presets[k];
+      for (int r = 0; r < pr.regionNum; r++) {
+        const tsf_region &g = pr.regions[r];
+        fprintf(stderr, "region bank=%u prog=%u keys=%u-%u key=%d tune=%d transpose=%d rate=%u start=%u len=%u loop=%u-%u mode=%d\n", pr.bank, pr.preset,
+                g.lokey, g.hikey, g.pitch_keycenter, g.tune, g.transpose, g.sample_rate, g.offset, g.end - g.offset,
+                g.loop_start - g.offset, g.loop_end - g.offset, g.loop_mode);
+      }
+    }
+  }
   return p.release();
 }
 
@@ -448,7 +460,10 @@ RVT_API int rvt_render(void *player, int16_t *out, size_t frames) {
         case TML_PROGRAM_CHANGE: tsf_channel_set_presetnumber(p->font, m->channel, m->program, 0); break;
         case TML_NOTE_ON: tsf_channel_note_on(p->font, m->channel, m->key, m->velocity / 127.0f); break;
         case TML_NOTE_OFF: tsf_channel_note_off(p->font, m->channel, m->key); break;
-        case TML_PITCH_BEND: tsf_channel_set_pitchwheel(p->font, m->channel, m->pitch_bend); break;
+        case TML_PITCH_BEND:
+          tsf_channel_set_pitchwheel(p->font, m->channel, m->pitch_bend);
+          if (getenv("RVT_DEBUG_CC")) fprintf(stderr, "bend t=%u ch=%d v=%d\n", m->time, m->channel, m->pitch_bend - 8192);
+          break;
         case TML_CONTROL_CHANGE:
           tsf_channel_midi_control(p->font, m->channel, m->control, m->control_value);
           /* Temporary pitch-bend range check (tri-Ace): log CCs, or pin the range. */
