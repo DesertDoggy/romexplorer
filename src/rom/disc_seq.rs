@@ -39,12 +39,12 @@ const MAX_TRACK_BYTES: u64 = 800 << 20;
 /// Larger files are not looked into: a disc's large files are movies and streamed audio, and
 /// a sound archive of this size would be one of those as well.
 const MAX_FILE_BYTES: u64 = 64 << 20;
-const PLAY_RATE: u32 = 48_000;
+pub(super) const PLAY_RATE: u32 = 48_000;
 const FADE_MS: u64 = 8_000;
 /// After a song that does not loop: the release of its last notes.
 const RELEASE_MS: u64 = 2_000;
 /// Longer than this is data read as a sequence by mistake, not a song.
-const MAX_SONG_MS: u64 = 30 * 60 * 1000;
+pub(super) const MAX_SONG_MS: u64 = 30 * 60 * 1000;
 /// A loop shorter than this is a held note, not the song coming round again.
 const MIN_LOOP_MS: u64 = 1_000;
 /// Files scanned together start at sector boundaries, as they would on the disc.
@@ -151,9 +151,9 @@ fn is_ps1(view: &DiscView, listing: &[DiscFile]) -> bool {
 }
 
 /// The song timing of one group: (body, fade, looping, intro, loop), in ms.
-type Timing = (u64, u64, bool, u64, u64);
+pub(super) type Timing = (u64, u64, bool, u64, u64);
 
-fn timing(once: &vgmtrans::Song, twice: Option<&vgmtrans::Song>) -> Timing {
+pub(super) fn timing(once: &vgmtrans::Song, twice: Option<&vgmtrans::Song>) -> Timing {
     let len0 = u64::from(once.length_ms);
     if once.looping {
         if let Some(twice) = twice {
@@ -231,6 +231,7 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
             });
         }
     }
+    super::akao_image::index(view, listing, n, t, progress, out);
     let standard = out.len() - before;
     index_custom(view, listing, n, custom_files, standard == 0, t, progress, out);
 }
@@ -531,6 +532,13 @@ pub fn index_disc(path: &Path, t: &Thresholds, progress: &mut dyn FnMut(&str)) -
         index(view, &listing.files, n as u32, t, progress, &mut out);
     }
     Ok(out)
+}
+
+/// Song stream for a player: `body` ms, then a `fade` ms fade (0: it stops at its end).
+pub(super) fn seq_pcm(player: vgmtrans::Player, body: u64, fade: u64) -> Box<dyn PcmStream> {
+    let rate = u64::from(PLAY_RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Box::new(SeqPcm { player, left: (body + fade + tail) * rate / 1000, fade: fade * rate / 1000, tail: tail * rate / 1000, stop_at_end: fade == 0 })
 }
 
 /// A song, played for `left` more frames, the last `fade` of them fading out.
