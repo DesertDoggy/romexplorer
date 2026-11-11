@@ -1,0 +1,151 @@
+diff --git a/src/main/formats/KonamiPS1/KonamiPS1Seq.cpp b/src/main/formats/KonamiPS1/KonamiPS1Seq.cpp
+index eebfc4cb..d4965928 100644
+--- a/src/main/formats/KonamiPS1/KonamiPS1Seq.cpp
++++ b/src/main/formats/KonamiPS1/KonamiPS1Seq.cpp
+@@ -72,22 +72,22 @@ bool KonamiPS1Seq::isKDT1Seq(RawFile *file, u32 offset) {
+   }
+ 
+   u32 dataSize = file->readWord(offset + kOffsetToFileSize);
+-  u32 fileSize = kHeaderSize + dataSize;
+-  if (offset + fileSize >= file->size()) {
++  u64 fileSize = u64{kHeaderSize} + dataSize;
++  if (u64{offset} + fileSize >= file->size()) {
+     return false;
+   }
+ 
+   u32 numTracks = file->readWord(offset + kOffsetToTrackCount);
+-  if (numTracks == 0 || offset + kHeaderSize + (numTracks * 2) >= file->size()) {
++  if (numTracks == 0 || u64{offset} + kHeaderSize + (u64{numTracks} * 2) >= file->size()) {
+     return false;
+   }
+ 
+-  u32 trackSize = 0;
++  u64 trackSize = 0;
+   for (size_t trackIndex = 0; trackIndex < numTracks; trackIndex++) {
+     trackSize += file->readShort(offset + kHeaderSize + (trackIndex * 2));
+   }
+ 
+-  if (offset + trackSize >= file->size()) {
++  if (u64{offset} + trackSize >= file->size()) {
+     return false;
+   }
+   if (trackSize > fileSize) {
+diff --git a/src/main/formats/TriAcePS1/TriAcePS1Scanner.cpp b/src/main/formats/TriAcePS1/TriAcePS1Scanner.cpp
+index 95e1d844..16fc21b6 100644
+--- a/src/main/formats/TriAcePS1/TriAcePS1Scanner.cpp
++++ b/src/main/formats/TriAcePS1/TriAcePS1Scanner.cpp
+@@ -150,6 +150,10 @@ TriAcePS1Seq *TriAcePS1Scanner::decompressTriAceSLZFile(RawFile *file, u32 cfOff
+       for (int i = 0; (i < bits) && (ufOff < ufSize); i++, cFlags >>= 1) {
+         if (cFlags & 1)  //uncompressed byte, just copy it over
+         {
++          if (ufOff + (bits == 16 ? 2 : 1) > ufSize) {
++            bDone = true;
++            break;
++          }
+           uf[ufOff++] = file->readByte(cfOff++);
+           if (bits == 16)
+             uf[ufOff++] = file->readByte(cfOff++);
+@@ -172,11 +176,21 @@ TriAcePS1Seq *TriAcePS1Scanner::decompressTriAceSLZFile(RawFile *file, u32 cfOff
+             } else {
+               bytesToRead = (byte2 & 0x0F) + 3;
+             }
++            if (ufOff + bytesToRead > ufSize) {
++              bDone = true;
++              break;
++            }
+             for (; bytesToRead > 0; bytesToRead--)
+               uf[ufOff++] = byte1;
+           } else {
+-            u32 backPtr = ufOff - (((byte2 & 0x0F) << 8) + byte1);
++            u32 distance = ((byte2 & 0x0F) << 8) + byte1;
+             bytesToRead = (byte2 >> 4) + 3;
++            // Data that only looks like SLZ points before the start or runs past the end.
++            if (distance > ufOff || ufOff + bytesToRead > ufSize) {
++              bDone = true;
++              break;
++            }
++            u32 backPtr = ufOff - distance;
+ 
+             for (; bytesToRead > 0; bytesToRead--)
+               uf[ufOff++] = uf[backPtr++];
+diff --git a/src/main/io/RawFile.cpp b/src/main/io/RawFile.cpp
+index 219729a0..a66d2226 100644
+--- a/src/main/io/RawFile.cpp
++++ b/src/main/io/RawFile.cpp
+@@ -6,6 +6,8 @@
+ 
+ #include "RawFile.h"
+ 
++#include <stdexcept>
++
+ #include "base/Types.h"
+ #include "components/VGMFile.h"
+ #include "LogManager.h"
+@@ -27,15 +29,21 @@ void RawFile::removeContainedVGMFile(VGMFileVariant vgmfile) {
+ }
+ 
+ u32 RawFile::readBytes(size_t offset, u32 nCount, void *pBuffer) const {
++    if (offset > size() || nCount > size() - offset)
++      throw std::out_of_range("RawFile::readBytes past the end");
+     memcpy(pBuffer, data() + offset, nCount);
+     return nCount;
+ }
+ 
+ bool RawFile::matchBytes(const u8 *pattern, size_t offset, size_t nCount) const {
++    if (offset > size() || nCount > size() - offset)
++      return false;
+     return memcmp(data() + offset, pattern, nCount) == 0;
+ }
+ 
+ bool RawFile::matchBytePattern(const BytePattern &pattern, size_t offset) const {
++    if (offset > size() || pattern.length() > size() - offset)
++      return false;
+     return pattern.match(data() + offset, pattern.length());
+ }
+ 
+diff --git a/src/main/io/RawFile.h b/src/main/io/RawFile.h
+index 5663bdb8..782d5948 100644
+--- a/src/main/io/RawFile.h
++++ b/src/main/io/RawFile.h
+@@ -16,6 +16,7 @@
+ #include <cassert>
+ #include <climits>
+ #include <filesystem>
++#include <stdexcept>
+ #include <string>
+ #include <variant>
+ #include <vector>
+@@ -164,8 +165,14 @@ class DiskFile final : public RawFile {
+     }
+ 
+     const char *data() const override { return m_data.data(); }
+-    const char &operator[](size_t offset) const override { return m_data[offset]; }
+-    u8 readByte(size_t offset) const override { return m_data[offset]; }
++    const char &operator[](size_t offset) const override {
++    if (offset >= m_data.size()) throw std::out_of_range("RawFile read past the end");
++    return m_data[offset];
++  }
++    u8 readByte(size_t offset) const override {
++    if (offset >= m_data.size()) throw std::out_of_range("RawFile read past the end");
++    return static_cast<u8>(m_data[offset]);
++  }
+     u16 readShort(size_t offset) const override { return get<u16>(offset); }
+     u32 readWord(size_t offset) const override { return get<u32>(offset); }
+     u16 readShortBE(size_t offset) const override { return getBE<u16>(offset); }
+@@ -213,8 +220,14 @@ class VirtFile final : public RawFile {
+     }
+ 
+     const char *data() const override { return m_data.data(); }
+-    const char &operator[](size_t offset) const override { return m_data[offset]; }
+-    u8 readByte(size_t offset) const override { return m_data[offset]; }
++    const char &operator[](size_t offset) const override {
++    if (offset >= m_data.size()) throw std::out_of_range("RawFile read past the end");
++    return m_data[offset];
++  }
++    u8 readByte(size_t offset) const override {
++    if (offset >= m_data.size()) throw std::out_of_range("RawFile read past the end");
++    return static_cast<u8>(m_data[offset]);
++  }
+     u16 readShort(size_t offset) const override { return get<u16>(offset); }
+     u32 readWord(size_t offset) const override { return get<u32>(offset); }
+     u16 readShortBE(size_t offset) const override { return getBE<u16>(offset); }
