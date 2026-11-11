@@ -313,7 +313,7 @@ fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
     let ext = main.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     // A sheet names its own tracks; an archive's members are not files on disk.
     // A Wii U image counts its key file among its files, and is still one image.
-    if matches!(ext.as_str(), "cue" | "gdi" | "wua" | "wud" | "wux") || main.is_dir() {
+    if matches!(ext.as_str(), "cue" | "gdi" | "ccd" | "mds" | "mdf" | "wua" | "wud" | "wux") || main.is_dir() {
         return Some(main);
     }
     if matches!(ext.as_str(), "zip" | "7z" | "rar") {

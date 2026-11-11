@@ -245,7 +245,7 @@ fn extension(path: &Path) -> String {
 /// ROM files [`open_rom`] can find audio in: disc images and their sheets, and the DS / 3DS
 /// cartridges, which carry a filesystem. Other cartridges hold sequenced music only, and
 /// archives are not read yet.
-pub const DISC_EXTENSIONS: [&str; 21] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "wua", "wud", "wux", "cso", "zso", "nds", "dsi", "3ds", "cci"];
+pub const DISC_EXTENSIONS: [&str; 24] = ["chd", "cue", "gdi", "ccd", "mds", "mdf", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "wua", "wud", "wux", "cso", "zso", "nds", "dsi", "3ds", "cci"];
 
 /// Whether [`index_rom`] is worth running on `path`: a folder dump or a disc image.
 pub fn may_hold_audio(path: &Path) -> bool {
@@ -264,6 +264,7 @@ pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
     match extension(path).as_str() {
         "chd" => open_chd(path),
         "cue" | "gdi" => open_sheet(path),
+        "ccd" | "mds" | "mdf" => open_raw_image(path),
         "rvz" | "wia" | "gcz" | "wbfs" => {
             let mut reader = super::dolphin_wrapper::DiscReader::open(path, None).map_err(|e| e.to_string())?;
             let mut magic = [0u8; 4];
@@ -456,6 +457,44 @@ fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
         }
     }
     out.data.extend(gd_area(high_density));
+    Ok(out)
+}
+
+/// A CloneCD (`.ccd` + `.img`) or Alcohol (`.mds` + `.mdf`) image: the track list from
+/// its descriptor, the sectors from the image beside it (same name).
+fn open_raw_image(path: &Path) -> Result<OpenedRom, String> {
+    let (tracks, image) = match extension(path).as_str() {
+        "ccd" => {
+            let text = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            (super::cd_images::ccd(&String::from_utf8_lossy(&text)), path.with_extension("img"))
+        }
+        _ => {
+            let mds = path.with_extension("mds");
+            let bytes = std::fs::read(&mds).map_err(|e| format!("{}: {e}", mds.display()))?;
+            (super::cd_images::mds(&bytes)?, path.with_extension("mdf"))
+        }
+    };
+    if tracks.is_empty() {
+        return Err(format!("{}: no tracks", path.display()));
+    }
+    let file = whole_file(&image)?;
+    let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None, title: None };
+    for (i, track) in tracks.iter().enumerate() {
+        // Sectors with their subchannel stored after them (2448 bytes) are not read yet.
+        if track.sector != 2352 && track.sector != 2048 {
+            continue;
+        }
+        let end = tracks.get(i + 1).map(|t| t.start).unwrap_or(file.size()).min(file.size());
+        if end <= track.start {
+            continue;
+        }
+        let view = file.slice(track.start, end - track.start);
+        if track.audio {
+            out.cdda.push((track.number, view));
+        } else {
+            out.data.push(view);
+        }
+    }
     Ok(out)
 }
 
