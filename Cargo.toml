@@ -36,6 +36,10 @@ path = "tools/cart_music.rs"
 name = "disc_music"
 path = "tools/disc_music.rs"
 
+[[bin]]
+name = "psx_probe"
+path = "tools/psx_probe.rs"
+
 [[test]]
 name = "test_archiver"
 path = "tests/src/test_archiver.rs"
