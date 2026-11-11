@@ -119,6 +119,17 @@ fi
 PROJECT="$ROOT_DIR/target/dx/romcompanion/$PROFILE/android/app"
 [[ -d "$PROJECT" ]] || { echo "error: dx left no Gradle project at $PROJECT" >&2; exit 1; }
 
+# `dx bundle` leaves only an .aab; Gradle makes the APK (chdlite's script does the same after
+# copying its natives in).
+if [[ "$RELEASE" -eq 1 ]]; then
+    if [[ "$WINDOWS" -eq 1 ]]; then
+        # Run by path: `cmd //c gradlew.bat` from Git Bash did not find it in the current folder.
+        (cd "$PROJECT" && ./gradlew.bat assembleRelease)
+    else
+        (cd "$PROJECT" && sh ./gradlew assembleRelease)
+    fi
+fi
+
 # --- signing --------------------------------------------------------------------------------------
 # Gradle leaves the release APK unsigned (dx sets up no signing config). zipalign, then
 # apksigner with the keystore the environment names, into app-release.apk; then verified.
