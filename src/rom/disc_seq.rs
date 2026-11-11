@@ -326,12 +326,18 @@ fn read_runs(view: &DiscView, listing: &[DiscFile], layout: Option<(u64, u64)>, 
     Ok(out)
 }
 
+/// The songs a scan of runs finds, with their loop played once more and twice.
+type RunScan = (Vec<vgmtrans::Song>, Vec<vgmtrans::Song>);
+
+fn scan_runs(files: &[(String, Vec<u8>)], formats: &str) -> RunScan {
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    (vgmtrans::songs_in(&refs, formats, 0).unwrap_or_default(), vgmtrans::songs_in(&refs, formats, 1).unwrap_or_default())
+}
+
 /// The song a scan of its own runs finds as the one recorded: its sequence is in the first
 /// run, `at` bytes in.
-fn song_in_runs(files: &[(String, Vec<u8>)], formats: &str, loops: u32, at: u64) -> Option<(u32, vgmtrans::Song)> {
-    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
-    let songs = vgmtrans::songs_in(&refs, formats, loops).ok()?;
-    songs.into_iter().enumerate().find(|(_, s)| s.file == 0 && u64::from(s.offset) == at).map(|(i, s)| (i as u32, s))
+fn song_in(songs: &[vgmtrans::Song], at: u64) -> Option<(u32, &vgmtrans::Song)> {
+    songs.iter().enumerate().find(|(_, s)| s.file == 0 && u64::from(s.offset) == at).map(|(i, s)| (i as u32, s))
 }
 
 /// A run longer than this is not made by joining a song's pieces of one file.
@@ -401,6 +407,8 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
     };
     drop(datas);
     let mut seen = std::collections::HashSet::new();
+    // Songs of one bank share their runs (a file's pieces joined): scanned once for all.
+    let mut scanned: HashMap<Vec<Run>, Option<RunScan>> = HashMap::new();
     for song in songs {
         // Sony's own SEQ/VAB songs are the standard pass's, except over a whole track.
         if song.format == vgmtrans::PS1 && !raw {
@@ -423,10 +431,11 @@ fn index_custom_in(view: &DiscView, listing: &[DiscFile], n: u32, files: Vec<(St
         let (runs, at) = spans(&pieces);
         let place = runs[0].file.clone().unwrap_or_else(|| "track".into());
         progress(&place);
-        let Ok(read) = read_runs(view, listing, layout, &runs) else { continue };
-        let Some((index, once)) = song_in_runs(&read, formats, 0, at) else { continue };
-        let twice = song_in_runs(&read, formats, 1, at).map(|(_, s)| s);
-        let (body, fade, looping, intro, lp) = timing(&once, twice.as_ref());
+        let scan = scanned.entry(runs.clone()).or_insert_with(|| read_runs(view, listing, layout, &runs).ok().map(|read| scan_runs(&read, formats)));
+        let Some((once_list, twice_list)) = scan.as_ref() else { continue };
+        let Some((index, once)) = song_in(once_list, at) else { continue };
+        let twice = song_in(twice_list, at).map(|(_, s)| s);
+        let (body, fade, looping, intro, lp) = timing(once, twice);
         let duration_ms = if looping && lp > 0 { intro + lp } else { body };
         let name = if song.name.is_empty() { format!("{} {:x}", stem(&place), runs[0].offset) } else { song.name.clone() };
         let shape = Shape { looping, duration_ms, channels: 2, cd_track: 0, rip: true };
