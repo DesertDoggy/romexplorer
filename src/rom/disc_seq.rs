@@ -75,7 +75,10 @@ pub fn groups(found: &[(String, Holds)], all: &[String]) -> Vec<Vec<String>> {
             continue;
         }
         if h.vab {
-            out.push(vec![path.clone()]);
+            // A VAB header without its body in the file: the body is the VB of the same name.
+            let mut group = vec![path.clone()];
+            group.extend(body_of(path, all));
+            out.push(group);
             continue;
         }
         let banks: Vec<&String> = found.iter().filter(|(p, h)| h.vab && !h.seq && dir(p) == dir(path)).map(|(p, _)| p).collect();
@@ -87,22 +90,28 @@ pub fn groups(found: &[(String, Holds)], all: &[String]) -> Vec<Vec<String>> {
         let mut group = vec![path.clone()];
         if let Some(bank) = bank {
             group.push(bank.clone());
-            let body = all.iter().find(|p| dir(p) == dir(bank) && stem(p).eq_ignore_ascii_case(stem(bank)) && extension_is(p, "VB"));
-            if let Some(body) = body {
-                group.push(body.clone());
-            }
+            group.extend(body_of(bank, all));
         }
         out.push(group);
     }
     out
 }
 
-/// The files of a group laid end to end, each from a sector boundary.
-fn joined(parts: &[Vec<u8>]) -> Vec<u8> {
+/// The VB beside a file holding a VAB header: same folder, same name.
+fn body_of(path: &str, all: &[String]) -> Option<String> {
+    all.iter().find(|p| *p != path && dir(p) == dir(path) && stem(p).eq_ignore_ascii_case(stem(path)) && extension_is(p, "VB")).cloned()
+}
+
+/// The files of a group laid end to end, each from a sector boundary, except a VB, which
+/// goes straight after the file before it: that one ends with the VAB header the VB is the
+/// body of, and the two together are one whole VAB.
+fn joined(parts: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
-    for p in parts {
+    for (name, p) in parts {
+        if !extension_is(name, "VB") {
+            out.resize(out.len().div_ceil(ALIGN) * ALIGN, 0);
+        }
         out.extend_from_slice(p);
-        out.resize(out.len().div_ceil(ALIGN) * ALIGN, 0);
     }
     out
 }
@@ -162,9 +171,9 @@ pub fn index(view: &DiscView, listing: &[DiscFile], n: u32, t: &Thresholds, prog
     let all: Vec<String> = listing.iter().map(|f| f.path.clone()).collect();
     for group in groups(&found, &all) {
         progress(&group[0]);
-        let parts: Vec<Vec<u8>> = group
+        let parts: Vec<(&str, Vec<u8>)> = group
             .iter()
-            .filter_map(|p| bytes_of.get(p).cloned().or_else(|| listing.iter().find(|f| &f.path == p).and_then(|f| read_whole(view, f).ok())))
+            .filter_map(|p| bytes_of.get(p).cloned().or_else(|| listing.iter().find(|f| &f.path == p).and_then(|f| read_whole(view, f).ok())).map(|b| (p.as_str(), b)))
             .collect();
         if parts.len() != group.len() {
             continue;
@@ -268,7 +277,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     let mut read = Vec::with_capacity(files.len());
     for name in &files {
         let file = listing.iter().find(|f| f.path == *name).ok_or_else(|| format!("{name} is not on the disc"))?;
-        read.push(read_whole(disc, file)?);
+        read.push((*name, read_whole(disc, file)?));
     }
     let data = joined(&read);
     // Two more times through the loop than the body plays, so the fade has music under it.
@@ -294,13 +303,15 @@ mod tests {
             ("SOUND/BGM01.VH".to_string(), h(false, true)),
             ("SOUND/BGM02.VH".to_string(), h(false, true)),
             ("PACK.BIN".to_string(), h(true, true)),
+            ("D/AUTUMN.VA".to_string(), h(true, true)),
         ];
-        let all: Vec<String> = ["SOUND/BGM01.SEQ", "SOUND/BGM02.SEQ", "SOUND/BGM01.VH", "SOUND/BGM02.VH", "SOUND/BGM01.VB", "SOUND/BGM02.VB", "PACK.BIN"].map(String::from).to_vec();
+        let all: Vec<String> = ["SOUND/BGM01.SEQ", "SOUND/BGM02.SEQ", "SOUND/BGM01.VH", "SOUND/BGM02.VH", "SOUND/BGM01.VB", "SOUND/BGM02.VB", "PACK.BIN", "D/AUTUMN.VA", "D/AUTUMN.VB"].map(String::from).to_vec();
         let g = groups(&found, &all);
         assert_eq!(g, vec![
             vec!["SOUND/BGM01.SEQ".to_string(), "SOUND/BGM01.VH".into(), "SOUND/BGM01.VB".into()],
             vec!["SOUND/BGM02.SEQ".to_string(), "SOUND/BGM02.VH".into(), "SOUND/BGM02.VB".into()],
             vec!["PACK.BIN".to_string()],
+            vec!["D/AUTUMN.VA".to_string(), "D/AUTUMN.VB".into()],
         ]);
     }
 
@@ -313,9 +324,10 @@ mod tests {
 
     #[test]
     fn files_are_joined_on_sector_boundaries() {
-        let j = joined(&[vec![1; 3], vec![2; 2049]]);
-        assert_eq!(j.len(), 2048 * 3);
+        let j = joined(&[("A.SEQ", vec![1; 3]), ("A.VH", vec![2; 2049]), ("A.VB", vec![3; 5])]);
+        assert_eq!(j.len(), 2048 + 2049 + 5);
         assert_eq!(j[2048], 2);
+        assert_eq!(j[2048 + 2049], 3);
     }
 
     #[test]
