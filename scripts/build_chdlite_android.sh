@@ -173,9 +173,11 @@ if [[ "$RELEASE" -eq 1 ]]; then
 fi
 (cd "$CRATE_DIR" && dx "${DX_CMD[@]}" --android --target "$TARGET" --bin chdlite-gui --features gui)
 
-# --- the libraries into the APK -----------------------------------------------------------------
-# dx packages only the Rust library. The natives go beside it in the Gradle project's jniLibs,
-# and Gradle runs again (incrementally) to put them in the APK.
+# --- the libraries and the launcher icon into the APK -------------------------------------------
+# dx packages only the Rust library, and on Android it ignores Dioxus.toml's `icon`: it always
+# writes its own launcher icon (the Android robot). The natives go beside the Rust library in
+# the Gradle project's jniLibs, chdlite/android/res/ (scripts/make_android_icons.py) goes over
+# dx's icon, and Gradle runs again (incrementally) to put both in the APK.
 PROJECT="$ROOT_DIR/target/dx/chdlite-gui/$PROFILE/android/app"
 JNI_DIR="$PROJECT/app/src/main/jniLibs/$ABI"
 [[ -d "$PROJECT" ]] || { echo "error: dx left no Gradle project at $PROJECT" >&2; exit 1; }
@@ -190,15 +192,21 @@ for name in libchdman.so libdolphinrvz.so libcemuwua.so libexiso.so libpsxpbp.so
 done
 echo "copied $copied native librar$([[ $copied -eq 1 ]] && echo y || echo ies) into $JNI_DIR"
 
-if [[ "$copied" -gt 0 ]]; then
-    TASK=assembleDebug
-    [[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease
-    if [[ "$WINDOWS" -eq 1 ]]; then
-        # Run by path: `cmd //c gradlew.bat` from Git Bash did not find it in the current folder.
-        (cd "$PROJECT" && ./gradlew.bat "$TASK")
-    else
-        (cd "$PROJECT" && sh ./gradlew "$TASK")
-    fi
+ICON_DIR="$CRATE_DIR/android/res"
+RES_DIR="$PROJECT/app/src/main/res"
+[[ -f "$ICON_DIR/mipmap-anydpi-v26/ic_launcher.xml" ]] || { echo "error: no launcher icon in $ICON_DIR (scripts/make_android_icons.py)" >&2; exit 1; }
+# dx's icons are .webp, ours .png under the same names; Gradle refuses two resources of one name.
+rm -f "$RES_DIR"/mipmap-*/ic_launcher.webp
+cp -Rf "$ICON_DIR/." "$RES_DIR/"
+echo "launcher icon from $ICON_DIR"
+
+TASK=assembleDebug
+[[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease
+if [[ "$WINDOWS" -eq 1 ]]; then
+    # Run by path: `cmd //c gradlew.bat` from Git Bash did not find it in the current folder.
+    (cd "$PROJECT" && ./gradlew.bat "$TASK")
+else
+    (cd "$PROJECT" && sh ./gradlew "$TASK")
 fi
 
 # --- signing --------------------------------------------------------------------------------------
