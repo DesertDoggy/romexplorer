@@ -12,7 +12,8 @@
 //!
 //! `--with A,B` also takes files whose path contains one of these (instrument files with no
 //! magic), `--max-mb N` raises the 64 MB size limit, and `--raw` scans each whole data
-//! track as one file instead, for music outside the file tree or inside packed archives.
+//! track's user data (sector headers left out) as one file instead, for music outside the
+//! file tree or inside packed archives.
 //! `--split MAGIC[:BACK]` cuts what is scanned into one piece per hit of MAGIC, each starting
 //! BACK bytes before its hit: for an engine whose scanner expects one song (and its bank)
 //! per file, such as tri-Ace's (`--split SLZ:4`).
@@ -145,6 +146,35 @@ fn main() {
     println!("{total_discs} discs, {with_songs} with sequenced music, {total_songs} songs");
 }
 
+/// A data track's 2048-byte user data, sector after sector: a raw image keeps a sync and
+/// header before each sector's data and error codes after it, which would cut any
+/// structure longer than a sector apart. The layout is taken from where the file system
+/// says its files' sectors start.
+fn user_data(view: &disc_files::DiscView) -> Option<Vec<u8>> {
+    let layout = disc_files::list(view).ok().and_then(|l| {
+        l.files.iter().find_map(|f| match f.extent {
+            disc_files::Extent::Sectors { first, stride } => Some((first % stride, stride)),
+            _ => None,
+        })
+    });
+    let size = view.size();
+    match layout {
+        Some((head, stride)) => {
+            let sectors = size / stride;
+            let mut out = vec![0u8; (sectors * 2048) as usize];
+            for (i, chunk) in out.chunks_mut(2048).enumerate() {
+                view.read(i as u64 * stride + head, chunk).ok()?;
+            }
+            Some(out)
+        }
+        None => {
+            let mut out = vec![0u8; size as usize];
+            view.read(0, &mut out).ok()?;
+            Some(out)
+        }
+    }
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -177,11 +207,10 @@ fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], with: &[String], ma
     for (n, view) in rom.data.iter().enumerate() {
         let mut picked: Vec<(String, Vec<u8>)> = Vec::new();
         if raw {
-            let mut bytes = vec![0u8; view.size() as usize];
-            if view.read(0, &mut bytes).is_err() {
+            let Some(bytes) = user_data(view) else {
                 println!("  view {n}: unreadable");
                 continue;
-            }
+            };
             let hits: Vec<String> = magic.iter().filter_map(|m| find(&bytes, m).map(|at| format!("{}@{at:#x}", String::from_utf8_lossy(m)))).collect();
             println!("  view {n} whole track ({} bytes) {}", bytes.len(), hits.join(" "));
             picked.push((format!("track{n}.bin"), bytes));
