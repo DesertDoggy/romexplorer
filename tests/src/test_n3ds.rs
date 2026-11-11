@@ -174,3 +174,39 @@ fn key_files_are_found_beside_the_input_or_in_an_assets_folder() {
     assert_eq!(n3ds::check(&src, &keys).unwrap(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_scan_reads_the_product_code_and_title_id_of_every_3ds_file() {
+    use romexplorer::common::models::Platform;
+    use romexplorer::rom::serial;
+    let serials = |path: &Path| serial::read(path, Platform::Nintendo3ds).into_iter().map(|f| f.serial).collect::<Vec<_>>();
+    let dir = scratch("serials");
+    let f = fixture(GAME, false);
+    let src = dir.join("game.cia");
+    std::fs::write(&src, &f.cia).unwrap();
+    // Encrypted: the title id is in the clear, the product code is not.
+    assert_eq!(serials(&src), ["0004000000123400"]);
+    // With the keys beside it, the product code is read too.
+    std::fs::write(dir.join("aes_keys.txt"), &f.aes_keys).unwrap();
+    assert_eq!(serials(&src), ["CTR-P-TEST", "0004000000123400"]);
+
+    let keys = keys_for(&f);
+    let out = scratch("serials_out");
+    for target in Target::ALL {
+        let file = convert(&src, &out, target, &keys);
+        assert_eq!(serials(&file), ["CTR-P-TEST", "0004000000123400"], "{}", file.display());
+        assert_eq!(romexplorer::database::serial_match::format_of(&file, Platform::Nintendo3ds), Some("3ds"));
+    }
+    let u = fixture(UPDATE, false);
+    let update = dir.join("update.cia");
+    std::fs::write(&update, &u.cia).unwrap();
+    let zcia = convert(&update, &out, Target::Zcci, &keys_for(&u));
+    assert_eq!(serials(&zcia), ["CTR-P-TEST", "0004000E00123400"]);
+    assert_eq!(romexplorer::database::serial_match::format_of(&zcia, Platform::Nintendo3ds), Some("cia"));
+
+    for ext in ["cia", "3ds", "cci", "cxi", "zcci", "zcia", "zcxi"] {
+        assert!(romexplorer::rom::detect::extensions_for_platform(Platform::Nintendo3ds).contains(&ext), "a scan skips .{ext}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&out);
+}

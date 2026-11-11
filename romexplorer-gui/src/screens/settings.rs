@@ -112,7 +112,8 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
 const SCAN_HASHES: &[(&str, bool)] = &[("crc32", true), ("xxh3_128", true), ("md5", true), ("sha1", true), ("sha256", false), ("ra_hash", true)];
 /// `serial_match`: key, default, label -- the same list as the web console's.
 const SERIAL_MATCH: &[(&str, bool, &str)] = &[
-    ("cia", true, ".cia (3DS)"),
+    ("cia", true, ".cia / .zcia (3DS)"),
+    ("3ds", true, ".3ds / .cci / .cxi / .zcci / .zcxi (3DS)"),
     ("xiso", true, ".xiso (Xbox)"),
     ("wua", true, ".wua (Wii U)"),
     ("zar", true, ".zar (Xbox 360)"),
