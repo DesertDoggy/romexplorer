@@ -32,6 +32,14 @@ replacing a build.
 - In Japanese, Korean and Polish, a few sentences in Config › Settings and in the confirmation
   for removing a directory stayed in English.
 - ROM music could crash on a PSF2 set.
+- Fetching art for a client could reach addresses on the server's own network, and had no size
+  limit. Images are now limited to 64 MB, video and music to 512 MB.
+- Any signed-in account could download a "database" or "all" SQLite cache, which holds the
+  accounts and settings. These now need an admin; a "catalog" cache is still open to all.
+- A full sync cut short could leave a table half filled, and later syncs skipped it.
+- Cancelling a backup let the next one start while it was still writing. Two backups started
+  in the same second got the same name.
+- Fetching art from the main server could run during its catalogue sync.
 
 **Title merging**
 - A title you decoupled could be merged again later in the same pass, and undoing nested

@@ -400,13 +400,30 @@ pub async fn create(app: &App, kind: Kind, progress: &crate::database::jobs::Pro
     let dir = directory(app).await?;
     std::fs::create_dir_all(&dir).map_err(|e| Error::internal(format!("creating {}: {e}", dir.display())))?;
     let stamp = chrono::Local::now().naive_local();
-    let name = format!("{}{}.zip", kind.prefix(), stamp.format("%Y%m%d-%H%M%S"));
-    let path = dir.join(&name);
+    let stem = format!("{}{}", kind.prefix(), stamp.format("%Y%m%d-%H%M%S"));
     // Written under a hidden name and renamed when whole, so a backup that fails or is
     // cancelled part way never shows up in the list or counts towards the keep-count. The
     // guard removes it, and every table's part, however this ends (a cancelled job drops
     // this future).
-    let writing = dir.join(format!(".{name}.writing"));
+    //
+    // The name is stamped to the second, so two backups in one second would share it: the
+    // second gets `-2` (as an upload does), and creating its hidden file with `create_new`
+    // claims the name against one being started at the same moment.
+    let mut n = 1;
+    let (name, writing, file) = loop {
+        let name = if n == 1 { format!("{stem}.zip") } else { format!("{stem}-{n}.zip") };
+        let writing = dir.join(format!(".{name}.writing"));
+        n += 1;
+        if dir.join(&name).exists() {
+            continue;
+        }
+        match std::fs::File::create_new(&writing) {
+            Ok(file) => break (name, writing, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => continue,
+            Err(e) => return Err(Error::internal(format!("creating {}: {e}", writing.display()))),
+        }
+    };
+    let path = dir.join(&name);
     struct Leftovers(Vec<PathBuf>);
     impl Drop for Leftovers {
         fn drop(&mut self) {
@@ -417,7 +434,6 @@ pub async fn create(app: &App, kind: Kind, progress: &crate::database::jobs::Pro
     }
     let mut leftovers = Leftovers(vec![writing.clone()]);
 
-    let file = std::fs::File::create(&writing).map_err(|e| Error::internal(format!("creating {}: {e}", writing.display())))?;
     let mut zip = zip::ZipWriter::new(file);
     // zstd at level 3 rather than deflate: measured on this repo's 135 MB catalogue export it
     // is 4.8% smaller *and* 4.8x faster (362 MB/s against 75), and on a backup whose job is to

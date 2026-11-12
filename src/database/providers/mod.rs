@@ -276,6 +276,57 @@ pub fn build_http_client() -> Result<reqwest::Client, super::error::DatabaseErro
         .map_err(super::error::DatabaseError::from)
 }
 
+/// A `reqwest::Client` for URLs someone else chose -- a client's `POST /media/fetch`, and the
+/// re-fetch of a row such a request created. Unlike [`build_http_client`], every host name is
+/// resolved through [`PublicOnlyResolver`], so neither the first request, a redirect to a
+/// named host, nor a second lookup of the same name (DNS rebinding) can land on this machine
+/// or its network. Address literals never reach a resolver: the caller checks the first URL
+/// (`api::media::provider_url_allowed`) and the redirect policy checks the rest.
+///
+/// No proxy: a proxy resolves the name itself, out of reach of the check.
+pub fn build_public_http_client() -> Result<reqwest::Client, super::error::DatabaseError> {
+    let policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("too many redirects");
+        }
+        // Only a test starts inside (a loopback stand-in provider the caller allowed).
+        let started_inside = attempt.previous().first().is_some_and(names_internal_host);
+        if names_internal_host(attempt.url()) && !started_inside {
+            return attempt.error("a redirect into the local network was refused");
+        }
+        attempt.follow()
+    });
+    reqwest::Client::builder()
+        .user_agent("romexplorer/0.1 (+https://github.com/DesertDoggy/romexplorer)")
+        .redirect(policy)
+        .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(super::error::DatabaseError::from)
+}
+
+/// Resolves a host name and refuses it when any of its addresses is internal
+/// ([`is_internal_ip`]). Being the client's resolver, it sees every lookup the client makes,
+/// so the address checked is the address connected to.
+pub struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs.is_empty() {
+                return Err(format!("{host} did not resolve").into());
+            }
+            if addrs.iter().any(|a| is_internal_ip(a.ip())) {
+                return Err(format!("{host} resolves to an address on a local network").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 /// Whether `url` names `localhost` or an address that is not on the public internet.
 pub fn names_internal_host(url: &reqwest::Url) -> bool {
     let Some(host) = url.host_str() else { return true };
