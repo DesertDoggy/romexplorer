@@ -495,6 +495,10 @@ impl MariaDbServer {
         let mut conn = sqlx::mysql::MySqlConnection::connect_with(&admin.connect_options(false)).await?;
         let create = format!("CREATE USER IF NOT EXISTS '{}'@'127.0.0.1' IDENTIFIED BY '{}'", escape_literal(user), escape_literal(password));
         sqlx::query(sqlx::AssertSqlSafe(create)).execute(&mut conn).await?;
+        // `IF NOT EXISTS` leaves an existing account's password as it was: set it, or the
+        // account keeps one the config no longer has and every login fails.
+        let password_now = format!("ALTER USER '{}'@'127.0.0.1' IDENTIFIED BY '{}'", escape_literal(user), escape_literal(password));
+        sqlx::query(sqlx::AssertSqlSafe(password_now)).execute(&mut conn).await?;
         let grant = match privileges {
             UserPrivileges::Admin => format!("GRANT ALL PRIVILEGES ON *.* TO '{}'@'127.0.0.1' WITH GRANT OPTION", escape_literal(user)),
             UserPrivileges::App => format!("GRANT SELECT, INSERT, UPDATE, DELETE ON `{}`.* TO '{}'@'127.0.0.1'", escape_identifier(database), escape_literal(user)),

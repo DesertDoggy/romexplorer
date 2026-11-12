@@ -764,12 +764,18 @@ async fn local_file_is_live(pool: &MySqlPool, path: &str) -> Result<bool> {
     Ok(matches!(row, Some(r) if !r.try_get::<bool, _>("deleted").unwrap_or(true)))
 }
 
+/// `local_rom.main_path` equal to a path (bound twice): the case-insensitive comparison finds
+/// the row through the column's prefix index (`idx_lrom_main_path`), the byte comparison keeps
+/// `A.gb` and `a.gb` apart -- two files on Linux, and two `local_files` rows everywhere
+/// (`path_hash` is the sha1 of the exact path).
+pub(crate) const MAIN_PATH_EQ: &str = "main_path = ? AND CAST(main_path AS BINARY) = CAST(? AS BINARY)";
+
 /// One `local_rom` per input path; its file set is replaced with what was just hashed.
 ///
 /// Shared with `api::copy`, which registers what it wrote through these same three writers
 /// rather than a second implementation of them.
 pub(crate) async fn upsert_rom(pool: &MySqlPool, main_path: &str, platform: Platform, file_ids: &[u64]) -> Result<(u64, bool)> {
-    let existing = sqlx::query("SELECT id FROM local_rom WHERE main_path = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(main_path).fetch_optional(pool).await?;
+    let existing = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id FROM local_rom WHERE {MAIN_PATH_EQ} AND deleted = FALSE ORDER BY id LIMIT 1"))).bind(main_path).bind(main_path).fetch_optional(pool).await?;
     let (rom_id, is_new) = match existing {
         Some(row) => {
             let id: u64 = row.try_get("id")?;
@@ -1589,7 +1595,7 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
                     summary.contents_replaced += 1;
                     let roms: Vec<u64> = sqlx::query_scalar("SELECT rom_id FROM local_rom_files WHERE file_id = ?").bind(file_id).fetch_all(&app.pool).await?;
                     // The rom's platform follows its main file's bytes.
-                    sqlx::query("UPDATE local_rom SET app_platform_id = ? WHERE main_path = ? AND deleted = FALSE").bind(platform.igdb_id()).bind(&path).execute(&app.pool).await?;
+                    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_rom SET app_platform_id = ? WHERE {MAIN_PATH_EQ} AND deleted = FALSE"))).bind(platform.igdb_id()).bind(&path).bind(&path).execute(&app.pool).await?;
                     summary.replaced_roms.extend(roms);
                 }
             }
@@ -2048,7 +2054,8 @@ async fn apply_playlist(pool: &MySqlPool, dir: &Directory, playlist: &rom_scan::
     // Its discs, in playlist order.
     let mut roms: Vec<(u64, u16)> = Vec::new();
     for (i, member) in playlist.member_paths.iter().enumerate() {
-        let rom: Option<u64> = sqlx::query_scalar("SELECT id FROM local_rom WHERE main_path = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(member.display().to_string()).fetch_optional(pool).await?;
+        let member = member.display().to_string();
+        let rom: Option<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM local_rom WHERE {MAIN_PATH_EQ} AND deleted = FALSE ORDER BY id LIMIT 1"))).bind(&member).bind(&member).fetch_optional(pool).await?;
         if let Some(rom) = rom {
             roms.push((rom, i as u16 + 1));
         }

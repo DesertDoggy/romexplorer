@@ -63,7 +63,7 @@ fn archived_tables() -> Vec<(&'static str, Vec<&'static str>)> {
     JUNCTIONS
         .iter()
         .map(|(t, c)| (*t, c.split(", ").collect()))
-        .chain(std::iter::once(("title_provider_links", vec!["provider", "provider_id", "confidence", "linked_at", "deleted"])))
+        .chain(std::iter::once(("title_provider_links", vec!["provider", "provider_id", "confidence", "linked_at", "deleted", "rejected_id"])))
         .collect()
 }
 
@@ -77,6 +77,24 @@ fn archive_json_sql(id_expr: &str) -> String {
         })
         .collect();
     format!("JSON_OBJECT({})", parts.join(", "))
+}
+
+/// `title_merge_suggestions.title_ids` for `ids`: whole ids, comma-separated, cut at a comma
+/// before the column's size (TEXT, 65,535 bytes) -- never inside an id.
+pub fn id_list_text(ids: &[u64]) -> String {
+    const MAX: usize = 65_535;
+    let mut out = String::new();
+    for id in ids {
+        let item = id.to_string();
+        if out.len() + item.len() + 1 > MAX {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(&item);
+    }
+    out
 }
 
 fn in_list(ids: &[u64]) -> String {
@@ -726,6 +744,14 @@ pub struct DedupeSummary {
 /// "(Aftermarket)", TOSEC's "(PD)" and "[p]" (MariaDB's REGEXP, case-insensitive by collation).
 pub const UNLICENSED_SQL: &str = r"'\\((Unl|Pirate|Aftermarket|PD)\\)|\\[p[0-9]*\\]'";
 
+/// SQL: release `r` (its alias) is pirate, unlicensed, aftermarket or public domain, for
+/// merging -- by the flags an import set (`is_unlicensed`, `is_pirate`, `is_aftermarket`,
+/// which also come from DAT fields and other tags) or by its name ([`UNLICENSED_SQL`]). Either
+/// alone left a release the other knew as retail.
+pub fn unlicensed_sql(r: &str) -> String {
+    format!("({r}.is_unlicensed OR {r}.is_pirate OR {r}.is_aftermarket OR {r}.name REGEXP {UNLICENSED_SQL})")
+}
+
 /// Those of `titles` whose every game release is pirate, unlicensed or public domain. Such a
 /// title never merges with one holding a retail release, automatically or as a suggestion: no
 /// publisher sold it, so it is no retail game's other name -- a shared IGDB or
@@ -736,8 +762,9 @@ pub async fn unlicensed_only(pool: &MySqlPool, titles: &[u64]) -> Result<HashSet
     for chunk in titles.chunks(2000) {
         let sql = format!(
             "SELECT tr.title_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE AND r.material IS NULL \
-             WHERE tr.title_id IN ({}) GROUP BY tr.title_id HAVING MIN(r.name REGEXP {UNLICENSED_SQL}) = 1",
-            in_list(chunk)
+             WHERE tr.title_id IN ({}) GROUP BY tr.title_id HAVING MIN({}) = 1",
+            in_list(chunk),
+            unlicensed_sql("r")
         );
         out.extend(sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?);
     }
@@ -951,6 +978,13 @@ async fn recanonicalize_merged(pool: &MySqlPool, progress: &Progress, scope: &Pa
 async fn merge_blocks(pool: &MySqlPool) -> Result<HashSet<(u64, u64)>, DatabaseError> {
     let rows: Vec<(u64, u64)> = sqlx::query_as("SELECT title_a, title_b FROM title_merge_blocks").fetch_all(pool).await?;
     Ok(rows.into_iter().collect())
+}
+
+/// `blocks` as `merge_titles` leaves `title_merge_blocks` after merging `merged` into `keep`:
+/// a block of a merged title is the survivor's, one between two of them is gone.
+fn remap_blocks(blocks: &mut HashSet<(u64, u64)>, keep: u64, merged: &[u64]) {
+    let to = |x: u64| if merged.contains(&x) { keep } else { x };
+    *blocks = blocks.drain().map(|(a, b)| (to(a), to(b))).filter(|(a, b)| a != b).map(|(a, b)| (a.min(b), a.max(b))).collect();
 }
 
 /// `group` minus every title blocked against one kept before it (lowest ids first).
@@ -1169,13 +1203,39 @@ pub async fn decouple(pool: &MySqlPool, log_id: u64) -> Result<u64, DatabaseErro
     sqlx::query("DELETE FROM title_aliases WHERE norm_hash = ? AND title_id = ?").bind(&norm_hash).bind(current).execute(&mut *tx).await?;
     sqlx::query("INSERT IGNORE INTO title_merge_blocks (title_a, title_b) VALUES (?, ?)").bind(current.min(new_id)).bind(current.max(new_id)).execute(&mut *tx).await?;
     sqlx::query("UPDATE title_merge_log SET undone_at = NOW(), restored_title_id = ? WHERE id = ?").bind(new_id).bind(log_id).execute(&mut *tx).await?;
-    // Titles merged into the one being split out go with it.
-    sqlx::query("UPDATE title_merge_log SET survivor_id = ? WHERE survivor_id = ? AND undone_at IS NULL").bind(new_id).bind(merged_title_id).execute(&mut *tx).await?;
+    // Titles merged into the one being split out go with it. `merge_titles` moved their log
+    // rows onto the survivor when this merge was made, so they are found by their releases:
+    // an earlier merge (into the survivor's line) whose archived releases came back here.
+    let earlier = sqlx::query(
+        "SELECT l.id, a.rows_json FROM title_merge_log l JOIN title_merge_archive a ON a.log_id = l.id \
+         WHERE l.survivor_id IN (?, ?, ?) AND l.undone_at IS NULL AND l.reason <> ? AND l.id < ?",
+    )
+    .bind(survivor)
+    .bind(current)
+    .bind(merged_title_id)
+    .bind(SPLIT)
+    .bind(log_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let came_back: HashSet<u64> = take.iter().copied().collect();
+    for r in earlier {
+        let json: String = r.try_get("rows_json")?;
+        let theirs = archived_release_ids(&json);
+        if !theirs.is_empty() && theirs.iter().all(|id| came_back.contains(id) || !owned.iter().any(|(o, _)| o == id)) && theirs.iter().any(|id| came_back.contains(id)) {
+            sqlx::query("UPDATE title_merge_log SET survivor_id = ? WHERE id = ?").bind(new_id).bind(r.try_get::<u64, _>("id")?).execute(&mut *tx).await?;
+        }
+    }
     tx.commit().await?;
     rename_canonical(pool, current).await?;
     rename_canonical(pool, new_id).await?;
     log::info!("title merge {log_id} decoupled: {name:?} is title {new_id} again ({} release(s) from title {current}{})", take.len(), if archive.is_some() { ", metadata restored" } else { ", no archive" });
     Ok(new_id)
+}
+
+/// The release ids a merge archived for its merged title (`title_merge_archive.rows_json`).
+fn archived_release_ids(rows_json: &str) -> Vec<u64> {
+    let rows: serde_json::Value = serde_json::from_str(rows_json).unwrap_or_default();
+    rows.get("title_releases").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|r| r.get("release_id").and_then(|x| x.as_u64())).collect()
 }
 
 /// What [`decouple_grade`] did.
@@ -1248,7 +1308,7 @@ async fn shared_groups(pool: &MySqlPool, sql: &str, only: Option<&str>) -> Resul
 /// Merges each group's titles that share a platform (`merge_groups`); `reason` prefixes the
 /// log, `what` names the groups in the progress message.
 async fn merge_shared(pool: &MySqlPool, groups: BTreeMap<String, Vec<u64>>, reason: &str, what: &str, s: &mut DedupeSummary, progress: &Progress) -> Result<(), DatabaseError> {
-    let blocks = merge_blocks(pool).await?;
+    let mut blocks = merge_blocks(pool).await?;
     let versions = set_versions(pool).await?;
     let total = groups.len() as u64;
     for (i, (key, titles)) in groups.into_iter().enumerate() {
@@ -1264,12 +1324,16 @@ async fn merge_shared(pool: &MySqlPool, groups: BTreeMap<String, Vec<u64>>, reas
             platforms.entry(r.try_get("title_id")?).or_default().insert(merge_platform(r.try_get("app_platform_id")?));
         }
         let apart = Apart::load(pool, &live, &versions).await?;
-        for group in merge_groups(&live, &platforms).into_iter().flat_map(|g| by_licence(&without_blocked(&g, &blocks), &apart)) {
+        let groups: Vec<Vec<u64>> = merge_groups(&live, &platforms).into_iter().flat_map(|g| by_licence(&without_blocked(&g, &blocks), &apart)).collect();
+        for group in groups {
             if group.len() < 2 {
                 continue;
             }
             let grade = group_grade(pool, reason, &key, &group).await?;
-            merge_titles(pool, &group, &format!("{reason}:{key}"), grade).await?;
+            let kept = merge_titles(pool, &group, &format!("{reason}:{key}"), grade).await?;
+            // `merge_titles` moved the merged titles' blocks onto the survivor: the later
+            // groups of this pass must see them there.
+            remap_blocks(&mut blocks, kept, &group);
             s.merges += 1;
             s.titles_merged += group.len() as u64 - 1;
         }
@@ -1418,7 +1482,7 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
              status = IF(title_ids = VALUES(title_ids), status, 'pending'), updated_at = IF(title_ids = VALUES(title_ids), updated_at, NOW()), title_ids = VALUES(title_ids)",
         )
         .bind(format!("name:{target}"))
-        .bind(in_list(&ids))
+        .bind(id_list_text(&ids))
         .execute(pool)
         .await?;
     }
@@ -1479,8 +1543,9 @@ pub async fn merge_joined_unlicensed(pool: &MySqlPool, log_id: u64) -> Result<bo
     let Some(survivor) = survivor else { return Ok(false) };
     let Some(survivor) = live_title(pool, survivor).await? else { return Ok(false) };
     let merged: Vec<(u64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT r.id, CAST(r.name REGEXP {UNLICENSED_SQL} AS SIGNED) FROM title_merge_archive a, JSON_TABLE(a.rows_json, '$.title_releases[*]' COLUMNS (release_id BIGINT UNSIGNED PATH '$.release_id')) j \
-         JOIN `release` r ON r.id = j.release_id AND r.deleted = FALSE AND r.material IS NULL WHERE a.log_id = ?"
+        "SELECT r.id, CAST({} AS SIGNED) FROM title_merge_archive a, JSON_TABLE(a.rows_json, '$.title_releases[*]' COLUMNS (release_id BIGINT UNSIGNED PATH '$.release_id')) j \
+         JOIN `release` r ON r.id = j.release_id AND r.deleted = FALSE AND r.material IS NULL WHERE a.log_id = ?",
+        unlicensed_sql("r")
     )))
     .bind(log_id)
     .fetch_all(pool)
@@ -1491,8 +1556,9 @@ pub async fn merge_joined_unlicensed(pool: &MySqlPool, log_id: u64) -> Result<bo
     let theirs: Vec<u64> = merged.iter().map(|(id, _)| *id).collect();
     let retail: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT COUNT(*) FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE AND r.material IS NULL \
-         WHERE tr.title_id = ? AND r.id NOT IN ({}) AND NOT (r.name REGEXP {UNLICENSED_SQL})",
-        in_list(&theirs)
+         WHERE tr.title_id = ? AND r.id NOT IN ({}) AND NOT {}",
+        in_list(&theirs),
+        unlicensed_sql("r")
     )))
     .bind(survivor)
     .fetch_one(pool)
@@ -1524,25 +1590,26 @@ pub(crate) async fn game_platforms(pool: &MySqlPool, titles: &[u64]) -> Result<H
 /// game, or a platform, is dropped.
 async fn refresh_suggestions(pool: &MySqlPool, only: Option<&str>, progress: &Progress, scope: &PassScope) -> Result<u64, DatabaseError> {
     progress.force(0, None, "suggestions: titles still sharing an IGDB game").await;
+    // Pairs rather than GROUP_CONCAT, which MariaDB cuts at 1024 characters -- in the middle
+    // of an id.
     let mut sql = format!(
-        "SELECT tpl.provider_id, GROUP_CONCAT(DISTINCT tpl.title_id ORDER BY tpl.title_id) AS titles, \
-         CAST(MIN(tpl.confidence IN ({MERGE_CONFIDENCES})) AS SIGNED) AS all_strong \
+        "SELECT tpl.provider_id, tpl.title_id, CAST(tpl.confidence IN ({MERGE_CONFIDENCES}) AS SIGNED) AS strong \
          FROM title_provider_links tpl JOIN title t ON t.id = tpl.title_id AND t.deleted = FALSE WHERE tpl.provider = 'igdb' AND tpl.deleted = FALSE"
     );
     if only.is_some() {
         sql.push_str(" AND tpl.provider_id = ?");
     }
-    sql.push_str(" GROUP BY tpl.provider_id HAVING COUNT(DISTINCT tpl.title_id) > 1");
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     if let Some(id) = only {
         query = query.bind(id.to_string());
     }
-    let rows = query.fetch_all(pool).await?;
-    let mut shared: Vec<(String, Vec<u64>, bool)> = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let titles: Vec<u64> = row.try_get::<String, _>("titles")?.split(',').filter_map(|x| x.parse().ok()).collect();
-        shared.push((row.try_get("provider_id")?, titles, row.try_get::<i64, _>("all_strong")? != 0));
+    let mut by_game: BTreeMap<String, (BTreeSet<u64>, bool)> = BTreeMap::new();
+    for row in query.fetch_all(pool).await? {
+        let e = by_game.entry(row.try_get("provider_id")?).or_insert_with(|| (BTreeSet::new(), true));
+        e.0.insert(row.try_get("title_id")?);
+        e.1 &= row.try_get::<i64, _>("strong")? != 0;
     }
+    let shared: Vec<(String, Vec<u64>, bool)> = by_game.into_iter().filter(|(_, (t, _))| t.len() > 1).map(|(k, (t, strong))| (k, t.into_iter().collect(), strong)).collect();
     // A group nothing touched keeps whatever suggestion it has: it is not looked at again,
     // and not dropped as stale either.
     let mut live: Vec<String> = Vec::with_capacity(shared.len());
@@ -1564,7 +1631,6 @@ async fn refresh_suggestions(pool: &MySqlPool, only: Option<&str>, progress: &Pr
             continue;
         }
         mergeable.sort_unstable();
-        let titles = in_list(&mergeable);
         // name_link: some link is only a search's fuzzy guess; review: every link is one the
         // pass merges on, but the titles were decoupled.
         let reason = if all_strong { "review" } else { "name_link" };
@@ -1575,7 +1641,7 @@ async fn refresh_suggestions(pool: &MySqlPool, only: Option<&str>, progress: &Pr
              reason = VALUES(reason), title_ids = VALUES(title_ids)",
         )
         .bind(&igdb_id)
-        .bind(titles.chars().take(1024).collect::<String>())
+        .bind(id_list_text(&mergeable))
         .bind(reason)
         .execute(pool)
         .await?;
@@ -1642,8 +1708,15 @@ pub async fn suggestions(pool: &MySqlPool, status: &str, limit: u32, offset: u32
     Ok((out, total))
 }
 
-/// Accept (merge the suggestion's titles) or dismiss one backlog entry.
+/// Accept (merge the suggestion's titles) or dismiss one backlog entry. Accepting one on its
+/// own merges titles the user decoupled too: that is the user deciding again.
 pub async fn resolve_suggestion(pool: &MySqlPool, igdb_id: &str, accept: bool) -> Result<Option<u64>, DatabaseError> {
+    resolve_one(pool, igdb_id, accept, false).await
+}
+
+/// [`resolve_suggestion`]; `keep_blocks`: leave out titles the user decoupled from one
+/// another (`title_merge_blocks`), as a bulk accept does.
+async fn resolve_one(pool: &MySqlPool, igdb_id: &str, accept: bool, keep_blocks: bool) -> Result<Option<u64>, DatabaseError> {
     let row = sqlx::query("SELECT title_ids FROM title_merge_suggestions WHERE igdb_id = ?").bind(igdb_id).fetch_optional(pool).await?.ok_or_else(|| DatabaseError::Config(format!("no suggestion for IGDB game {igdb_id}")))?;
     let since = last_log_id(pool).await?;
     let survivor = if accept {
@@ -1651,13 +1724,22 @@ pub async fn resolve_suggestion(pool: &MySqlPool, igdb_id: &str, accept: bool) -
         let live: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM title WHERE id IN ({}) AND deleted = FALSE ORDER BY id", in_list(&ids)))).fetch_all(pool).await?;
         // Platform by platform, as the suggestion was made: one game's PS4 titles and its Xbox
         // One titles are two merges, not one. A name suggestion (`name:<title>`) is one group.
-        let groups = if igdb_id.starts_with("name:") { vec![live] } else { merge_groups(&live, &game_platforms(pool, &live).await?) };
+        // Then as `refresh_suggestions` cut them (`by_licence`): retail with retail, never with
+        // an unlicensed-only title, a subset with nothing, two versions of a set never together
+        // -- the titles may have changed since the suggestion was made.
+        let groups = if igdb_id.starts_with("name:") { vec![live.clone()] } else { merge_groups(&live, &game_platforms(pool, &live).await?) };
+        let apart = Apart::load(pool, &live, &set_versions(pool).await?).await?;
+        let blocks = if keep_blocks { merge_blocks(pool).await? } else { HashSet::new() };
+        let groups: Vec<Vec<u64>> = groups.into_iter().flat_map(|g| by_licence(&without_blocked(&g, &blocks), &apart)).filter(|g| g.len() > 1).collect();
+        // Retail groups when there are any, as the suggestion lists them.
+        let retail: Vec<Vec<u64>> = groups.iter().filter(|g| !apart.unlicensed.contains(&g[0])).cloned().collect();
+        let groups = if retail.is_empty() { groups } else { retail };
         let mut survivor = None;
         for group in groups {
             let kept = merge_titles(pool, &group, &format!("suggestion:igdb:{igdb_id}"), "manual").await?;
             survivor.get_or_insert(kept);
         }
-        Some(survivor.ok_or_else(|| DatabaseError::Config(format!("the titles of IGDB game {igdb_id} no longer share a platform: nothing to merge")))?)
+        Some(survivor.ok_or_else(|| DatabaseError::Config(format!("the titles of {igdb_id} no longer share a platform, or may not be merged (unlicensed with retail, two versions of a set, a subset, or decoupled by you): nothing to merge")))?)
     } else {
         None
     };
@@ -1790,8 +1872,10 @@ pub async fn resolve_suggestions(pool: &MySqlPool, ids: Option<&[String]>, statu
         }
         return Ok(out);
     }
+    // Many at once never undo the user's own decoupling: a pair they split stays split
+    // (accepting the one suggestion on its own still merges it).
     for id in &ids {
-        match resolve_suggestion(pool, id, true).await {
+        match resolve_one(pool, id, true, true).await {
             Ok(_) => out.resolved += 1,
             Err(e) => out.failed.push(format!("{id}: {e}")),
         }
@@ -1828,6 +1912,30 @@ mod tests {
         let mut aftermarket = vec![r("Game (USA) (Aftermarket) (Unl)", "US", "", false), r("Game (Japan)", "JP", "", false)];
         aftermarket[0].rank = 3;
         assert_eq!(pick_canonical(&aftermarket, &order), Some("Game (Japan)"), "retail anywhere before aftermarket");
+    }
+
+    #[test]
+    fn blocks_follow_a_merge_to_its_survivor() {
+        // 2 was decoupled from 5; 2 and 3 merge into 1, and 1 is blocked from 5 from then on.
+        let mut blocks: HashSet<(u64, u64)> = [(2, 5), (1, 3), (4, 6)].into_iter().collect();
+        remap_blocks(&mut blocks, 1, &[1, 2, 3]);
+        assert_eq!(blocks, [(1, 5), (4, 6)].into_iter().collect());
+        assert_eq!(without_blocked(&[1, 4, 5], &blocks), vec![1, 4]);
+    }
+
+    #[test]
+    fn suggestion_ids_are_never_cut_inside_a_number() {
+        assert_eq!(id_list_text(&[1, 22, 333]), "1,22,333");
+        let many: Vec<u64> = (1_000_000_000..1_000_010_000).collect();
+        let text = id_list_text(&many);
+        assert!(text.len() <= 65_535);
+        assert!(text.split(',').all(|id| id.len() == 10 && id.parse::<u64>().is_ok()));
+    }
+
+    #[test]
+    fn archived_releases_are_read_from_the_archive() {
+        assert_eq!(archived_release_ids(r#"{"title_releases":[{"release_id":4},{"release_id":9}],"title_locales":[]}"#), vec![4, 9]);
+        assert!(archived_release_ids("not json").is_empty());
     }
 
     #[test]
