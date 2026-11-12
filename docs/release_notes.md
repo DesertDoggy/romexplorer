@@ -31,6 +31,7 @@ replacing a build.
   loaded.
 - In Japanese, Korean and Polish, a few sentences in Config › Settings and in the confirmation
   for removing a directory stayed in English.
+- ROM music could crash on a PSF2 set.
 
 **Title merging**
 - A title you decoupled could be merged again later in the same pass, and undoing nested

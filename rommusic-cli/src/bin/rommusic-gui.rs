@@ -50,10 +50,18 @@ struct Settings {
     out_dir: String,
     /// Jingles, sound effects and movie sound too.
     all: bool,
-    /// "native", "cd", "dvd" or "hires".
+    /// At most this many tracks from each input; 0: all of them.
+    max: u32,
+    /// "native", "cd", "dvd", "hires" or "custom" ([`Settings::rate_hz`]).
     rate: String,
-    /// A folder of music in original audio formats, to match cartridges against.
-    originals: String,
+    /// The rate when `rate` is "custom", in Hz.
+    rate_hz: u32,
+    /// 16 or 24; 0: the rate's own (24 for DVD and Hi-res, else 16).
+    bits: u32,
+    /// Folders of music in original audio formats, to match cartridges against. (One string
+    /// in settings saved before there could be several.)
+    #[serde(deserialize_with = "one_or_many")]
+    originals: Vec<String>,
     /// A PS2 BIOS image of the user's own, for PS1 and PS2 music.
     ps2_bios: String,
     /// SNES: seconds the game runs before its music is taken.
@@ -64,11 +72,38 @@ struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { format: "flac".into(), out_dir: String::new(), all: false, rate: "native".into(), originals: String::new(), ps2_bios: String::new(), seconds: 20, press_start: false }
+        Self {
+            format: "flac".into(),
+            out_dir: String::new(),
+            all: false,
+            max: 0,
+            rate: "native".into(),
+            rate_hz: 44_100,
+            bits: 0,
+            originals: Vec::new(),
+            ps2_bios: String::new(),
+            seconds: 20,
+            press_start: false,
+        }
     }
 }
 
-const RATES: [(&str, &str); 4] = [("native", "As stored"), ("cd", "CD (44.1 kHz, 16-bit)"), ("dvd", "DVD (48 kHz, 24-bit)"), ("hires", "Hi-res (96 kHz, 24-bit)")];
+/// A list, or the one string (empty: none) an older settings file has.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(one) => (!one.trim().is_empty()).then_some(one).into_iter().collect(),
+        OneOrMany::Many(many) => many,
+    })
+}
+
+const RATES: [(&str, &str); 5] = [("native", "As stored"), ("cd", "CD (44.1 kHz, 16-bit)"), ("dvd", "DVD (48 kHz, 24-bit)"), ("hires", "Hi-res (96 kHz, 24-bit)"), ("custom", "Other (Hz)")];
+const BITS: [(u32, &str); 3] = [(0, "The rate's own"), (16, "16-bit"), (24, "24-bit")];
 const FORMATS: [(&str, &str); 3] = [("flac", "FLAC"), ("original", "Original audio"), ("both", "Both")];
 
 impl Settings {
@@ -99,21 +134,24 @@ impl Settings {
     }
 
     fn options(&self) -> Options {
+        // The same as the command line's --rate, --bits and --max.
         let (rate, bits) = match self.rate.as_str() {
             "cd" => (Some(44_100), 16),
             "dvd" => (Some(48_000), 24),
             "hires" => (Some(96_000), 24),
+            "custom" => (Some(self.rate_hz.clamp(8_000, 192_000)), 16),
             _ => (None, 16),
         };
+        let bits = if matches!(self.bits, 16 | 24) { self.bits } else { bits };
         let path = |text: &str| (!text.trim().is_empty()).then(|| PathBuf::from(text.trim()));
         Options {
             all: self.all,
-            max: None,
+            max: (self.max > 0).then_some(self.max as usize),
             out: path(&self.out_dir),
             rate,
             bits,
             format: self.format(),
-            originals: path(&self.originals).into_iter().collect(),
+            originals: self.originals.iter().filter_map(|folder| path(folder)).collect(),
             ps2_bios: path(&self.ps2_bios),
             seconds: self.seconds.clamp(1, 600) as f32,
             press_start: self.press_start,
@@ -191,12 +229,13 @@ fn work(inputs: Vec<PathBuf>, o: Options) {
     let library = rommusic::load_library(&o.originals, &mut |event| push(Ui::Event(event)));
     let mut failed = 0;
     let mut cancelled = false;
-    for (index, input) in inputs.iter().enumerate() {
+    let folders = rommusic::music_folders(&inputs, &o);
+    for (index, (input, folder)) in inputs.iter().zip(&folders).enumerate() {
         if CANCEL.load(Ordering::Relaxed) {
             cancelled = true;
             break;
         }
-        let result = rommusic::process(input, &o, library.as_ref(), &CANCEL, &mut |event| push(Ui::Event(event)));
+        let result = rommusic::process(input, folder, &o, library.as_ref(), &CANCEL, &mut |event| push(Ui::Event(event)));
         if result.as_ref().err().map(String::as_str) == Some(rommusic::CANCELLED) {
             cancelled = true;
             push(Ui::InputDone { index, result });
@@ -545,7 +584,7 @@ fn App() -> Element {
                 }
                 Choose::Originals => {
                     if let Some(folder) = dialog.set_title("Folder of original-format music").pick_folder().await {
-                        settings.write().originals = folder.path().to_string_lossy().into_owned();
+                        add_original(&mut settings.write().originals, folder.path().to_string_lossy().into_owned());
                     }
                 }
                 Choose::Bios => {
@@ -572,7 +611,7 @@ fn App() -> Element {
                         settings.write().out_dir = first;
                         let _ = settings.read().save();
                     }
-                    Purpose::Originals => settings.write().originals = first,
+                    Purpose::Originals => add_original(&mut settings.write().originals, first),
                     Purpose::Bios => settings.write().ps2_bios = first,
                 }
             },
@@ -736,6 +775,16 @@ fn App() -> Element {
     }
 }
 
+/// A chosen folder of original audio, last in the list: the options panel takes the last one
+/// as the one just chosen.
+fn add_original(list: &mut Vec<String>, folder: String) {
+    if folder.is_empty() {
+        return;
+    }
+    list.retain(|f| *f != folder);
+    list.push(folder);
+}
+
 /// Something a dialog or the Android browser chooses.
 #[derive(Clone, Copy, PartialEq)]
 enum Choose {
@@ -750,12 +799,16 @@ enum Choose {
 /// The two paths chosen with a dialog while it is open arrive as `chosen_*` and are taken
 /// into the draft.
 #[component]
-fn OptionsPanel(initial: Settings, chosen_originals: String, chosen_bios: String, on_choose: EventHandler<Choose>, on_close: EventHandler<Option<Settings>>) -> Element {
+fn OptionsPanel(initial: Settings, chosen_originals: Vec<String>, chosen_bios: String, on_choose: EventHandler<Choose>, on_close: EventHandler<Option<Settings>>) -> Element {
     let mut draft = use_signal(|| initial);
-    // A folder or file picked through on_choose lands in the window's settings; take it.
+    // A folder or file picked through on_choose lands in the window's settings; take it. A
+    // folder of original audio is added to the draft's list (the last one is the one just
+    // chosen), so folders removed here stay removed.
     use_effect(use_reactive!(|chosen_originals| {
-        if draft.peek().originals != chosen_originals {
-            draft.write().originals = chosen_originals;
+        if let Some(last) = chosen_originals.last() {
+            if !draft.peek().originals.contains(last) {
+                draft.write().originals.push(last.clone());
+            }
         }
     }));
     use_effect(use_reactive!(|chosen_bios| {
@@ -780,6 +833,11 @@ fn OptionsPanel(initial: Settings, chosen_originals: String, chosen_bios: String
                     }
                 }
                 div { class: "note", "Off: background music only." }
+                div { class: "row",
+                    label { "At most" }
+                    input { r#type: "number", min: "0", value: "{s.max}", oninput: move |event| draft.write().max = event.value().trim().parse().unwrap_or(0) }
+                    span { class: "note", "tracks from each input (0: all)" }
+                }
 
                 h3 { "FLAC" }
                 div { class: "row",
@@ -790,16 +848,54 @@ fn OptionsPanel(initial: Settings, chosen_originals: String, chosen_bios: String
                             option { key: "{value}", value: "{value}", selected: s.rate == value, "{label}" }
                         }
                     }
+                    if s.rate == "custom" {
+                        input { r#type: "number", min: "8000", max: "192000", value: "{s.rate_hz}", oninput: move |event| draft.write().rate_hz = event.value().trim().parse().unwrap_or(44_100) }
+                    }
                 }
-                div { class: "note", "As stored keeps each track's own rate, 16-bit." }
+                div { class: "row",
+                    label { "Bits" }
+                    select {
+                        onchange: move |event| draft.write().bits = event.value().parse().unwrap_or(0),
+                        for (value, label) in BITS {
+                            option { key: "{value}", value: "{value}", selected: s.bits == value, "{label}" }
+                        }
+                    }
+                }
+                div { class: "note", "As stored keeps each track's own rate. Other takes 8000 to 192000 Hz. The rate's own bits: 24 for DVD and Hi-res, 16 otherwise." }
 
                 h3 { "Cartridges" }
-                div { class: "row",
-                    label { title: "NSF, SPC, GBS, HES, KSS, SGC and the like, zipped or not", "Original audio" }
-                    input { r#type: "text", placeholder: "a folder of music in original audio formats", value: "{s.originals}", oninput: move |event| draft.write().originals = event.value() }
-                    button { onclick: move |_| on_choose.call(Choose::Originals), "Choose…" }
+                for (index, folder) in s.originals.iter().cloned().enumerate() {
+                    div { key: "{index}", class: "row",
+                        label { title: "NSF, SPC, GBS, HES, KSS, SGC and the like, zipped or not", if index == 0 { "Original audio" } }
+                        input {
+                            r#type: "text",
+                            placeholder: "a folder of music in original audio formats",
+                            value: "{folder}",
+                            oninput: move |event| {
+                                if let Some(folder) = draft.write().originals.get_mut(index) {
+                                    *folder = event.value();
+                                }
+                            },
+                        }
+                        button {
+                            class: "small",
+                            title: "Remove",
+                            onclick: move |_| {
+                                let mut draft = draft.write();
+                                if index < draft.originals.len() {
+                                    draft.originals.remove(index);
+                                }
+                            },
+                            "✕"
+                        }
+                    }
                 }
-                div { class: "note", "Cartridge music plays straight from the ROM; no other files are needed. This folder is optional: its sets are matched to each ROM by their content, and fill in songs the ROM alone misses." }
+                div { class: "row",
+                    label { title: "NSF, SPC, GBS, HES, KSS, SGC and the like, zipped or not", if s.originals.is_empty() { "Original audio" } }
+                    button { onclick: move |_| on_choose.call(Choose::Originals), "Add folder…" }
+                    button { onclick: move |_| draft.write().originals.push(String::new()), "Type a path" }
+                }
+                div { class: "note", "Cartridge music plays straight from the ROM; no other files are needed. These folders are optional: their sets are matched to each ROM by their content, and fill in songs the ROM alone misses." }
                 div { class: "row",
                     label { "SNES run" }
                     input { r#type: "number", min: "1", max: "600", value: "{s.seconds}", oninput: move |event| draft.write().seconds = event.value().trim().parse().unwrap_or(20) }

@@ -39,16 +39,18 @@ const ANDROID: bool = cfg!(target_os = "android");
 const APP_CSS: &str = include_str!("../../assets/app.css");
 #[cfg_attr(target_os = "android", allow(dead_code))]
 const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
-const ART: [(&str, &[u8]); 4] = [
+const ART: [(&str, &[u8]); 5] = [
     ("lite.png", include_bytes!("../../assets/lite.png")),
     ("comp.png", include_bytes!("../../assets/comp.png")),
+    ("extract.png", include_bytes!("../../assets/extract.png")),
     ("read.png", include_bytes!("../../assets/read.png")),
     ("hash.png", include_bytes!("../../assets/hash.png")),
 ];
 
-const MODES: [(Mode, &str, &str, &str); 4] = [
+const MODES: [(Mode, &str, &str, &str); 5] = [
     (Mode::Lite, "lite.png", "Lite", "Lite: fast. Disc image, .cso or .pbp → CHD / RVZ; Wii U / Xbox → WUA / ZAR / XISO. NES / N64 / SNES dumps → the layout set in Settings; 3DS titles decrypted into the format set there. A .chd or .rvz is extracted."),
     (Mode::Comp, "comp.png", "Comp", "Comp: smallest file, slow. A .chd or .rvz is extracted."),
+    (Mode::Extract, "extract.png", "Extract", "Extract: .chd → cue + bin / gdi + bin (GD-ROM) / iso, .rvz → iso, .cso → iso, .pbp → cue + bin; .zcci / .zcia / .zcxi / .z3dsx → .cci / .cia / .cxi / .3dsx."),
     (Mode::Read, "read.png", "Read", "Read: show what a file is."),
     (Mode::Hash, "hash.png", "Hash", "Hash: hash the disc inside a .chd / .rvz / .cso / .pbp, or the image itself."),
 ];
@@ -180,7 +182,7 @@ fn App() -> Element {
         run.set(Run { percents: vec![0.0; names.len()], names, done: 0 });
         running.set(true);
         CANCEL.store(false, Ordering::Relaxed);
-        let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true };
+        let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true, ctrl_c_cancels: false };
         #[cfg(target_os = "android")]
         chdlite::android::run_started(&format!("{} · {} file{}", with.label(), batch.inputs.len(), if batch.inputs.len() == 1 { "" } else { "s" }));
         std::thread::spawn(move || {
@@ -474,6 +476,7 @@ fn App() -> Element {
                 input {
                     r#type: "text",
                     placeholder: "next to each input",
+                    title: "A relative folder is taken from each input's own folder",
                     value: "{output_dir}",
                     oninput: move |event| settings.write().output.dir = event.value(),
                     onchange: move |_| { let _ = settings.read().save(); },
@@ -801,7 +804,7 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                             label { "Threads" }
                             select {
                                 onchange: move |event| draft.write().jobs.threads = if event.value() == "custom" { auto_threads as u32 } else { 0 },
-                                option { value: "auto", selected: !threads_custom, "Auto ({auto_threads}, every core)" }
+                                option { value: "auto", selected: !threads_custom, "Auto ({auto_threads}, the physical cores but 4)" }
                                 option { value: "custom", selected: threads_custom, "Custom" }
                             }
                             input { r#type: "number", min: "1", max: "256", disabled: !threads_custom, value: "{cores}", oninput: move |event| draft.write().jobs.threads = number(&event.value()).max(1) }

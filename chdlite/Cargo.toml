@@ -44,7 +44,6 @@ romexplorer = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-num_cpus = "1"
 zstd = { version = "0.13", optional = true }
 
 # "desktop" on Android too: dioxus' `mobile` feature is the same dioxus-desktop crate (tao +
@@ -53,8 +52,14 @@ dioxus = { version = "0.7", features = ["desktop"], optional = true }
 # Decodes the embedded PNG for the window icon; already in the lock file through romexplorer.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 # The batch runs on romexplorer's `Multiple`, which schedules on tokio.
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+# `signal`: Ctrl-C in the console tools cancels the batch instead of ending it mid-file.
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros", "signal"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# Whether the process that left a scratch folder is still running (job.rs). Already in the
+# lock file through romexplorer.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # rfd has no Android backend; the Android GUI has its own file browser instead.
 [target.'cfg(not(target_os = "android"))'.dependencies]

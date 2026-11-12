@@ -33,7 +33,7 @@ impl Drop for Dir {
 fn job(mode: Mode, input: &Path, out: &Path) -> Result<String, String> {
     let mut settings = Settings::default();
     settings.output.dir = out.to_string_lossy().into_owned();
-    let spec = JobSpec { mode, input: input.to_path_buf(), settings, threads: Some(2) };
+    let spec = JobSpec { mode, input: input.to_path_buf(), settings, threads: Some(2), output_stem: None };
     run_one(&spec, &mut |event| {
         if let Event::Message(m) = event {
             eprintln!("  {m}");
@@ -189,7 +189,7 @@ fn convert_cart(input: &Path, out: Option<&Path>, set: impl FnOnce(&mut Settings
         settings.output.dir = out.to_string_lossy().into_owned();
     }
     set(&mut settings);
-    run_one(&JobSpec { mode: Mode::Lite, input: input.to_path_buf(), settings, threads: Some(1) }, &mut |_| true)
+    run_one(&JobSpec { mode: Mode::Lite, input: input.to_path_buf(), settings, threads: Some(1), output_stem: None }, &mut |_| true)
 }
 
 #[test]
