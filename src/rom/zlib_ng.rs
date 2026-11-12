@@ -152,7 +152,7 @@ pub fn zlib_inflate(src: &[u8], max_len: usize) -> Option<Vec<u8>> {
         if inflate_init2(&mut stream, MAX_WBITS, ZLIB_VERSION.as_ptr() as *const c_char, std::mem::size_of::<ZStream>() as c_int) != Z_OK {
             return None;
         }
-        let mut dest = vec![0u8; (src.len() * 4).clamp(4096, max_len.max(1))];
+        let mut dest = vec![0u8; first_buffer_len(src.len(), max_len)];
         stream.next_in = src.as_ptr();
         stream.avail_in = src.len() as u32;
         let rc = loop {
@@ -177,9 +177,24 @@ pub fn zlib_inflate(src: &[u8], max_len: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// The first output buffer [`zlib_inflate`] tries: four times the input, at least 4 KB, never
+/// past `max_len` -- which can be under 4 KB (a PSF2 file's last block), so it is no `clamp`.
+fn first_buffer_len(src_len: usize, max_len: usize) -> usize {
+    src_len.saturating_mul(4).max(4096).min(max_len.max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_buffer_never_passes_a_small_limit() {
+        assert_eq!(first_buffer_len(100, 1 << 20), 4096);
+        assert_eq!(first_buffer_len(10_000, 1 << 20), 40_000);
+        assert_eq!(first_buffer_len(100, 1000), 1000);
+        assert_eq!(first_buffer_len(10_000, 1000), 1000);
+        assert_eq!(first_buffer_len(100, 0), 1);
+    }
 
     #[test]
     fn raw_inflate_round_trips_known_deflate_stream() {
@@ -201,6 +216,13 @@ mod tests {
         stream.extend_from_slice(&sum.to_be_bytes());
         assert_eq!(zlib_inflate(&stream, 1 << 20).unwrap(), b"hello world".repeat(1000));
         assert!(zlib_inflate(&stream, 100).is_none());
+
+        // A limit under the 4 KB first buffer, met exactly: a PSF2 file's last block.
+        let Some(packed) = raw_deflate(b"hello world", 6) else { return };
+        let mut small = vec![0x78, 0x9C];
+        small.extend_from_slice(&packed);
+        small.extend_from_slice(&adler32(b"hello world").to_be_bytes());
+        assert_eq!(zlib_inflate(&small, 11).unwrap(), b"hello world");
     }
 
     fn adler32(data: &[u8]) -> u32 {
