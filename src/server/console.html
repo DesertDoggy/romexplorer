@@ -5133,10 +5133,18 @@ function settingEditor(key, value) {
         ? [['crc32', 'crc32', true], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', true], ['sha1', 'sha1', true], ['sha256', 'sha256', false], ['ra_hash', 'ra_hash', true]]
         : [['ext', tr('by file extension'), true], ['path', tr('by the directory names above it'), true]];
       current = {}; for (const [k, , d] of items) current[k] = typeof (value || {})[k] === 'boolean' ? value[k] : d;
-      box.appendChild(el(`<div class="muted">${key === 'scan_hashes' ? tr('Which hashes a file scan computes. Content is identified by hash, so at least one of the first five must stay on; ra_hash is skipped where the platform has no RetroAchievements console id.') : tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
+      box.appendChild(el(`<div class="muted">${key === 'scan_hashes' ? tr('Which hashes a file scan computes. DATs are matched by crc32, md5 and sha1, so at least one of those three stays on; ra_hash is skipped where the platform has no RetroAchievements console id.') : tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
       const row = el('<div class="radios"></div>');
-      for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); l.firstElementChild.onchange = e => { current[k] = e.target.checked; }; row.appendChild(l); }
+      // scan_hashes: the last of crc32 / md5 / sha1 that is on can't be turned off -- DATs are
+      // matched by those three (the server refuses a list without one). The app's same rule.
+      const dat = ['crc32', 'md5', 'sha1'];
+      const boxes = {};
+      const lock = () => { if (key !== 'scan_hashes') return; const on = dat.filter(k => current[k]); for (const k of dat) boxes[k].disabled = on.length === 1 && on[0] === k; };
+      for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); boxes[k] = l.firstElementChild; l.firstElementChild.onchange = e => { current[k] = e.target.checked; lock(); }; row.appendChild(l); }
+      if (key === 'scan_hashes' && !dat.some(k => current[k])) current.crc32 = boxes.crc32.checked = true;
+      lock();
       box.appendChild(row);
+      if (key === 'scan_hashes') box.appendChild(el(`<div class="muted">${tr('At least one of crc32, md5 and sha1 stays on: DATs are matched by those.')}</div>`));
       return { el: box, get };
     }
     case 'serial_match': {

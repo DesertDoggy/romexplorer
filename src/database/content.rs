@@ -11,8 +11,8 @@ use crate::common::models::Platform;
 use crate::rom::hash::HashReport;
 
 /// The hash values of a report as (algorithm, lowercase hex) pairs.
-fn values(report: &HashReport) -> [(&'static str, &Option<String>); 4] {
-    [("crc32", &report.crc32), ("md5", &report.md5), ("sha1", &report.sha1), ("sha256", &report.sha256)]
+fn values(report: &HashReport) -> [(&'static str, &Option<String>); 5] {
+    [("crc32", &report.crc32), ("xxh3_128", &report.xxh3_128), ("md5", &report.md5), ("sha1", &report.sha1), ("sha256", &report.sha256)]
 }
 
 /// Records a report's hashes for `content_id` (existing ones are kept).
@@ -41,12 +41,16 @@ pub async fn upsert_content(pool: &MySqlPool, platform: Platform, file_name: &st
             return Ok((id, true));
         }
     }
-    // Hashes set to crc32 only (md5, sha1 and sha256 all turned off): the crc32 and the size
-    // together, or every rescan made every file new content and dropped its DAT links.
+    // No strong hash (md5, sha1 and sha256 all turned off): a weak hash and the size
+    // together -- crc32 first, else xxh3_128 (an install that saved xxh3_128 as its only
+    // hash before the setting refused that) -- or every rescan made every file new
+    // content and dropped its DAT links.
     if report.sha256.is_none() && report.sha1.is_none() && report.md5.is_none() {
-        if let Some(crc) = &report.crc32 {
-            let row = sqlx::query("SELECT h.content_id FROM hashes h JOIN content c ON c.id = h.content_id WHERE h.algorithm = 'crc32' AND h.value_hex = ? AND c.size = ? LIMIT 1")
-                .bind(crc.to_ascii_lowercase())
+        for (algorithm, value) in [("crc32", &report.crc32), ("xxh3_128", &report.xxh3_128)] {
+            let Some(v) = value else { continue };
+            let row = sqlx::query("SELECT h.content_id FROM hashes h JOIN content c ON c.id = h.content_id WHERE h.algorithm = ? AND h.value_hex = ? AND c.size = ? LIMIT 1")
+                .bind(algorithm)
+                .bind(v.to_ascii_lowercase())
                 .bind(size)
                 .fetch_optional(pool)
                 .await?;

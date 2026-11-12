@@ -110,6 +110,8 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
 
 /// Hashes a file scan can compute, in the order they are shown. Default: all but sha256.
 const SCAN_HASHES: &[(&str, bool)] = &[("crc32", true), ("xxh3_128", true), ("md5", true), ("sha1", true), ("sha256", false), ("ra_hash", true)];
+/// The `SCAN_HASHES` DATs are matched by; one of them always stays on.
+const SCAN_HASHES_DAT: [&str; 3] = ["crc32", "md5", "sha1"];
 /// `serial_match`: key, default, label -- the same list as the web console's.
 const SERIAL_MATCH: &[(&str, bool, &str)] = &[
     ("cia", true, ".cia / .zcia (3DS)"),
@@ -269,6 +271,11 @@ fn initial(key: &str, value: &Value) -> Value {
             let mut m = Map::new();
             for (name, def) in SCAN_HASHES {
                 m.insert(name.to_string(), json!(value.get(name).and_then(Value::as_bool).unwrap_or(*def)));
+            }
+            // DATs are matched by crc32, md5 or sha1: a stored list without one (saved before
+            // the server refused that) opens with crc32 back on, as in the console.
+            if !SCAN_HASHES_DAT.iter().any(|k| m.get(*k).and_then(Value::as_bool) == Some(true)) {
+                m.insert("crc32".to_string(), json!(true));
             }
             Value::Object(m)
         }
@@ -1017,13 +1024,19 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
                 input { r#type: "text", style: "min-width:420px", placeholder: "data/backups", value: "{current}", oninput: move |e| set(json!(e.value())) }
             }
         }
-        "scan_hashes" => rsx! {
-            div { class: "radios",
-                for (name, _) in SCAN_HASHES {
-                    label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {name}" }
+        "scan_hashes" => {
+            // The last of crc32 / md5 / sha1 that is on can't be turned off: DATs are matched by
+            // those three (the server refuses a list without one). The console's same rule.
+            let dat_on: Vec<&str> = SCAN_HASHES_DAT.iter().copied().filter(|k| v.get(*k).and_then(Value::as_bool) == Some(true)).collect();
+            rsx! {
+                div { class: "radios",
+                    for (name, _) in SCAN_HASHES {
+                        label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), disabled: dat_on.len() == 1 && dat_on[0] == *name, onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {name}" }
+                    }
                 }
+                {muted("At least one of crc32, md5 and sha1 stays on: DATs are matched by those.")}
             }
-        },
+        }
         "serial_match" => rsx! {
             {muted("Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.")}
             div { class: "radios",
