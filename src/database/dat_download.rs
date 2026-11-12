@@ -353,9 +353,17 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Filesystem-safe version of a server-provided filename (no path separators).
+/// Filesystem-safe version of a server-provided filename: no path separators, none of the
+/// characters Windows refuses in a name (`<>:"|?*`, control characters), no trailing dots or
+/// spaces (Windows drops them), and never `.` / `..` or empty -- a name that would point
+/// anywhere but a file in the download folder.
 fn safe_file_name(name: &str) -> String {
-    name.replace(['/', '\\', '\0'], "_").trim().to_string()
+    let cleaned: String = name.chars().map(|c| if matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control() { '_' } else { c }).collect();
+    let cleaned = cleaned.trim().trim_end_matches(['.', ' ']).to_string();
+    if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
+        return "_".repeat(name.len().clamp(1, 2));
+    }
+    cleaned
 }
 
 fn html_unescape(s: &str) -> String {
@@ -773,6 +781,17 @@ async fn fetch_tosec(client: &Client, out_dir: &Path, options: &DownloadOptions)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_file_name_stays_one_file_in_the_folder() {
+        assert_eq!(safe_file_name("Sega - Mega Drive (20240101).zip"), "Sega - Mega Drive (20240101).zip");
+        assert_eq!(safe_file_name("a/b\\c"), "a_b_c");
+        assert_eq!(safe_file_name("Name: Sub <x>|\"y\"?*.dat"), "Name_ Sub _x___y___.dat");
+        assert_eq!(safe_file_name(".."), "__");
+        assert_eq!(safe_file_name("."), "_");
+        assert_eq!(safe_file_name(""), "_");
+        assert_eq!(safe_file_name("pack.zip. "), "pack.zip");
+    }
 
     #[test]
     fn latest_versions_keeps_the_newest_of_each_dat() {
