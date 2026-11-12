@@ -412,10 +412,21 @@ impl Sheet {
         self.files.clone()
     }
 
-    /// [`Self::payload_names`] resolved against the directory the sheet lives in. No
-    /// existence check.
+    /// [`Self::payload_names`] resolved against the directory the sheet lives in, as
+    /// [`resolve_listed`] spells them: `\` read as a separator and each name matched to the
+    /// directory's own entry case-insensitively, so a sheet written on Windows finds its
+    /// tracks on Linux and names them as the walk lists them. No existence check.
     pub fn payload_paths(&self, sheet_dir: &Path) -> Vec<PathBuf> {
-        self.payload_names().into_iter().map(|name| sheet_dir.join(name)).collect()
+        let mut listings = Listings::default();
+        let mut out: Vec<PathBuf> = Vec::new();
+        for name in self.payload_names() {
+            let path = resolve_listed(sheet_dir, &name, &mut listings);
+            // Two spellings of one file in the sheet are one track file.
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+        out
     }
 
     /// The sheet text: cue or gdi (per `kind`) in chdman's exact line format, or chdman's
@@ -563,12 +574,102 @@ impl Sheet {
     }
 }
 
+
+/// Directory listings [`resolve_listed`] has read, so a sheet or playlist naming many files
+/// in one folder reads that folder once.
+#[derive(Default)]
+pub struct Listings(std::collections::HashMap<PathBuf, Vec<std::ffi::OsString>>);
+
+impl Listings {
+    fn entries(&mut self, dir: &Path) -> &[std::ffi::OsString] {
+        self.0.entry(dir.to_path_buf()).or_insert_with(|| std::fs::read_dir(dir).map(|r| r.flatten().map(|e| e.file_name()).collect()).unwrap_or_default())
+    }
+}
+
+/// A file a sheet (`FILE`) or playlist line names, relative to `base` (the directory it sits
+/// in; an absolute name stays absolute), as it is on the disk:
+///
+/// - `\` is a separator everywhere: sheets and playlists written on Windows use it, and on
+///   Linux it would otherwise be part of one file name;
+/// - `.` and `..` are folded away without touching the disk, so `../x.bin` is the same path
+///   as the `x.bin` the walk lists in the parent;
+/// - each component below `base` is matched against its directory's entries: the exact name
+///   first, else the one entry equal ignoring case (Unicode-aware). Linux finds a `GAME.BIN`
+///   written for `Game.bin`, and Windows / macOS get the on-disk spelling rather than the
+///   sheet's, so one file is never recorded under two spellings. A component nothing
+///   matches is kept as written (the caller reports a missing file).
+pub fn resolve_listed(base: &Path, name: &str, listings: &mut Listings) -> PathBuf {
+    use std::path::Component;
+    let written = PathBuf::from(name.replace('\\', "/"));
+    let (mut out, rest): (PathBuf, PathBuf) = if written.is_absolute() { (PathBuf::new(), written) } else { (base.to_path_buf(), written) };
+    // Matching stops at the first component the disk does not have; the rest is as written.
+    let mut matching = !out.as_os_str().is_empty();
+    for part in rest.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            Component::Normal(want) if matching => {
+                let entries = listings.entries(&out);
+                let found = entries.iter().find(|e| e.as_os_str() == want).or_else(|| {
+                    let lower = want.to_string_lossy().to_lowercase();
+                    let mut same = entries.iter().filter(|e| e.to_string_lossy().to_lowercase() == lower);
+                    // Two entries differing only in case (a case-sensitive disk): neither is
+                    // the one meant more than the other, so the name stays as written.
+                    match (same.next(), same.next()) {
+                        (Some(one), None) => Some(one),
+                        _ => None,
+                    }
+                });
+                match found {
+                    Some(entry) => out.push(entry),
+                    None => {
+                        matching = false;
+                        out.push(want);
+                    }
+                }
+            }
+            other => {
+                // A root or prefix (absolute names): matched from there on.
+                out.push(other.as_os_str());
+                matching = true;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn lf(style: CueSheetStyle) -> CueSheetOptions {
         CueSheetOptions { line_ending: LineEnding::Lf, ..CueSheetOptions::for_style(style) }
+    }
+
+    /// A sheet written on Windows: `\\` separators, another case than the disk, and a track
+    /// one directory up. Each resolves to the entry as the directory lists it.
+    #[test]
+    fn track_names_resolve_to_the_listed_spelling() {
+        let root = std::env::temp_dir().join(format!("romexplorer_test_sheet_resolve_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Game/Tracks")).unwrap();
+        std::fs::write(root.join("Game/Tracks/Track 01.bin"), b"x").unwrap();
+        std::fs::write(root.join("Shared.bin"), b"x").unwrap();
+        let base = root.join("Game");
+        let mut l = Listings::default();
+        assert_eq!(resolve_listed(&base, "TRACKS\\track 01.BIN", &mut l), root.join("Game/Tracks/Track 01.bin"));
+        assert_eq!(resolve_listed(&base, "..\\shared.bin", &mut l), root.join("Shared.bin"));
+        assert_eq!(resolve_listed(&base, "./Tracks/Track 01.bin", &mut l), root.join("Game/Tracks/Track 01.bin"));
+        assert_eq!(resolve_listed(&base, "missing\\a.bin", &mut l), root.join("Game/missing/a.bin"), "kept as written");
+        let sheet = Sheet::parse_text(SheetKind::Cue, "FILE \"tracks\\TRACK 01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n").unwrap();
+        assert_eq!(sheet.payload_paths(&base), vec![root.join("Game/Tracks/Track 01.bin")]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

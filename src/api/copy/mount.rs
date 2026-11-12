@@ -78,18 +78,32 @@ fn prefix_key(prefix: &str, sep: char) -> String {
 /// The boundary check is the point: `D:\Roms` must not swallow `D:\RomsOld\x.zip`.
 fn strip_prefix<'a>(remote_path: &'a str, prefix: &str, sep: char) -> Option<&'a str> {
     let key = prefix_key(prefix, sep);
-    let path_key = {
-        let p = remote_path.replace('\\', "/");
-        if sep == '\\' {
-            p.to_lowercase()
-        } else {
-            p
-        }
-    };
-    if !path_key.starts_with(&key) {
-        return None;
+    // Folded a char at a time, so the split lands on a char boundary of `remote_path` itself:
+    // a lowercased char can have another UTF-8 length than the original, and slicing by the
+    // folded key's length could cut through one.
+    let mut folded = String::with_capacity(key.len());
+    let mut split = None;
+    if key.is_empty() {
+        split = Some(0);
     }
-    let rest = &remote_path[key.len()..];
+    for (i, c) in remote_path.char_indices() {
+        if split.is_some() {
+            break;
+        }
+        let c = if c == '\\' { '/' } else { c };
+        if sep == '\\' {
+            folded.extend(c.to_lowercase());
+        } else {
+            folded.push(c);
+        }
+        if !key.starts_with(folded.as_str()) {
+            return None;
+        }
+        if folded.len() == key.len() {
+            split = Some(i + c.len_utf8());
+        }
+    }
+    let rest = &remote_path[split?..];
     // The prefix itself, or a real child. `key` ends in a separator only for a root
     // (`/`, `C:/`), where the remainder starts immediately.
     if key.ends_with('/') || rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
@@ -383,6 +397,16 @@ mod tests {
     fn windows_prefixes_fold_case_and_posix_ones_do_not() {
         assert!(rw(&[m("D:\\Roms", "/mnt/roms")], "d:\\roms\\a.zip").is_some());
         assert!(rw(&[m("/srv/Roms", "/mnt/roms")], "/srv/roms/a.zip").is_none());
+    }
+
+    /// A char whose lowercase has another UTF-8 length ("İ" is 2 bytes, "i̇" 3) must not
+    /// shift where the remainder starts, nor panic on a split inside a char.
+    #[test]
+    fn folding_a_char_of_another_length_does_not_cut_the_path() {
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(rw(&[m("D:\\İso", "/mnt/iso")], "D:\\İSO\\Game.chd"), Some(format!("/mnt/iso{sep}Game.chd")));
+        assert_eq!(rw(&[m("D:\\Roms", "/mnt/roms")], "D:\\İİİ\\x.zip"), None);
+        assert_eq!(rw(&[m("D:\\Ro", "/mnt/roms")], "D:\\Rİ"), None);
     }
 
     /// The remainder is a real lookup on this machine, so folding its case would break an

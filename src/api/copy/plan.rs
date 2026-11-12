@@ -138,6 +138,13 @@ struct Holder {
     folder: Option<String>,
 }
 
+/// A destination as the plan's collision map keys it: case-folded (Unicode-aware), because
+/// the destination may be FAT, exFAT, NTFS or SMB, where two names differing only in case
+/// are one file and the second copy would silently replace the first.
+fn taken_key(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
+}
+
 /// The folder a path sits in, on either kind of separator.
 fn parent_folder(path: &str) -> Option<String> {
     path.rfind(['/', '\\']).map(|i| path[..i].to_string())
@@ -173,9 +180,11 @@ fn pick_holders_with(holders: Vec<Holder>, preference: SourcePreference, prefer_
     }
     let lead = rest.remove(0);
     let mut covered = lead.covers.clone();
-    let wants_more = !covered.is_empty() && (covered.len() as i64) < lead.required;
+    let required = lead.required;
+    let wanted = !covered.is_empty();
     let mut out = vec![lead];
-    while wants_more {
+    // Re-checked each round: once the copies taken hold every disc, no more are added.
+    while wanted && (covered.len() as i64) < required {
         let lead = &out[0];
         let next = rest
             .iter()
@@ -909,7 +918,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
                 already_held += 1;
                 skip = Some(if req.mode.skips_source_holdings() { "already on the server".to_string() } else { "already held on this machine".to_string() });
             }
-            let key = destination.to_string_lossy().to_string();
+            let key = taken_key(&destination);
             if skip.is_none() {
                 match taken.get(&key) {
                     // The same bytes to the same place: copy once. This is the case a
@@ -938,7 +947,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
                             let mut n = 2;
                             let chosen = loop {
                                 let candidate = dir.join(with_dedup_suffix(&name, n));
-                                if !taken.contains_key(&candidate.to_string_lossy().to_string()) {
+                                if !taken.contains_key(&taken_key(&candidate)) {
                                     break candidate;
                                 }
                                 n += 1;
@@ -975,7 +984,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
                         let mut n = 2;
                         let chosen = loop {
                             let candidate = dir.join(with_dedup_suffix(&name, n));
-                            if !taken.contains_key(&candidate.to_string_lossy().to_string()) && std::fs::symlink_metadata(&candidate).is_err() {
+                            if !taken.contains_key(&taken_key(&candidate)) && std::fs::symlink_metadata(&candidate).is_err() {
                                 break candidate;
                             }
                             n += 1;
@@ -990,8 +999,8 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
             }
             let key = destination.to_string_lossy().to_string();
             if skip.is_none() {
-                taken.insert(key.clone(), file.content_id);
-                taken_by.insert(key.clone(), item.release_id);
+                taken.insert(taken_key(&destination), file.content_id);
+                taken_by.insert(taken_key(&destination), item.release_id);
                 by_content.entry(file.content_id).or_default().push(key.clone());
                 if format != OutputFormat::Same && format != source_format {
                     conversions += 1;
@@ -1202,6 +1211,22 @@ mod tests {
     fn every_disc_of_a_release_is_taken_once() {
         let picked = pick_holders_with(vec![disc(1, 10, &[101, 102], 4), disc(2, 20, &[101, 102], 4), disc(3, 20, &[103, 104], 4), disc(4, 10, &[103, 104], 4)], SourcePreference::LocalFirst, true);
         assert_eq!(picked.iter().map(|h| h.game_id).collect::<Vec<_>>(), vec![1, 4]);
+    }
+
+    /// Two destinations differing only in case are one file on FAT, NTFS or SMB.
+    #[test]
+    fn collision_keys_ignore_case() {
+        assert_eq!(taken_key(Path::new("/dst/gb/Game.gb")), taken_key(Path::new("/dst/GB/GAME.GB")));
+        assert_eq!(taken_key(Path::new("/dst/Ärger.gb")), taken_key(Path::new("/dst/ärger.gb")));
+        assert_ne!(taken_key(Path::new("/dst/a.gb")), taken_key(Path::new("/dst/b.gb")));
+    }
+
+    /// Taking stops as soon as the copies taken hold as many discs as the release needs,
+    /// even when another copy repeats none of them.
+    #[test]
+    fn taking_stops_once_every_disc_is_held() {
+        let picked = pick_holders_with(vec![disc(1, 10, &[101, 102], 4), disc(2, 10, &[103, 104], 4), disc(3, 10, &[105], 4)], SourcePreference::LocalFirst, true);
+        assert_eq!(picked.iter().map(|h| h.game_id).collect::<Vec<_>>(), vec![1, 2]);
     }
 
     /// A copy holding every disc is taken alone, and so is one that knows nothing of its
