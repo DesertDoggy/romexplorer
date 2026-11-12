@@ -2623,7 +2623,7 @@ async function showRa(list) {
     selection: { key: r => r.game_id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ ra_game_ids: ids }, done); } }] },
     context: (r, sel) => [{ label: r.title || trf('RA game {id}', { id: r.game_id }), head: true }, { label: sel ? trf('add {n} games to a set…', { n: sel.length }) : tr('add to set…'), action: () => pickSet({ ra_game_ids: sel || [r.game_id] }) }],
     fetch: s => api('/api/v1/ra/games' + qs({ list, source: s.filters.source, console_id: s.filters.console_id, genre: s.filters.genre, set: s.filters.set, include_beaten: s.filters.include_beaten, q: s.search, sort: s.sort, desc: s.desc ? 'true' : 'false', limit: s.limit, offset: s.offset })),
-    loaded: page => { for (const b of document.querySelectorAll('#subnav button')) { const k = b.dataset.sub, label = (SUBS.ra.find(x => x[0] === k) || [])[1]; if (label && page.tab_counts && k in page.tab_counts) b.textContent = `${label} (${page.tab_counts[k]})`; } },
+    loaded: page => { for (const b of document.querySelectorAll('#subnav button')) { const k = b.dataset.sub, en = (SUBS.ra.find(x => x[0] === k) || [])[1], label = en && t('sub.ra.' + k, en); if (label && page.tab_counts && k in page.tab_counts) b.textContent = `${label} (${page.tab_counts[k]})`; } },
   });
 }
 // One RA game: images, the whole badge mosaic, local releases, and every achievement with a
