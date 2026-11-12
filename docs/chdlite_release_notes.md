@@ -22,7 +22,6 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 - **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
   RetroAchievements has achievements for it, with the game's name. The list it checks is
   bundled; its date is shown in Settings and by `--version`.
-- **Extract in the window.** The window has an Extract mode, as the console tools have.
 - **Threads.** Auto now leaves 4 physical cores free, also for a single file. Files at once
   never use more threads than the total set.
 
