@@ -143,6 +143,7 @@ const READ: &[Rule] = &[
     ("GET", "/api/v1/sync/export/{table}"),
     ("GET", "/api/v1/sync/deleted/{table}"),
     ("GET", "/api/v1/cache"),
+    // a `database` or `all` cache further needs an admin (`cache_download`)
     ("GET", "/api/v1/cache/{name}"),
 ];
 

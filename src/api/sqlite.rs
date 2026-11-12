@@ -369,6 +369,19 @@ pub async fn list(app: &App) -> Result<Vec<CacheFile>> {
     Ok(out)
 }
 
+/// The tables only an admin may read: accounts, settings, peers and their mounts, where this
+/// machine's folders and programs are, schedules, and the paid-for AI answers. Every other table
+/// a cache holds is the catalogue or what is held, which any signed-in account already reads
+/// through the API.
+pub const ADMIN_ONLY_TABLES: [&str; 12] = ["users", "settings", "remote_sources", "remote_mounts", "local_directories", "media_dirs", "temp_dirs", "emulators", "emulator_platforms", "platform_output", "schedules", "ai_answers"];
+
+/// Whether downloading cache `name` needs an admin: its kind holds an [`ADMIN_ONLY_TABLES`]
+/// table (`database` and `all` do; `catalog` does not). An unknown name says no, and is then a
+/// 404 from [`file`].
+pub fn download_needs_admin(name: &str) -> bool {
+    cache_kind_of(Path::new(name)).and_then(|kind| tables_for(&kind).ok()).is_some_and(|tables| tables.iter().any(|t| ADMIN_ONLY_TABLES.contains(t)))
+}
+
 /// The path of one cache, checked to be a cache in the backup directory -- `name` comes from
 /// a request, so it must not be able to name a file elsewhere.
 pub async fn file(app: &App, name: &str) -> Result<std::path::PathBuf> {
@@ -431,6 +444,17 @@ mod tests {
         assert_eq!(cache_kind_of(Path::new("romexplorer-cache-banana-20260928-162136.sqlite")), None, "unknown kind");
         assert_eq!(cache_kind_of(Path::new("romexplorer-cache-all.sqlite")), None, "no timestamp");
         assert_eq!(cache_kind_of(Path::new("notes.sqlite")), None);
+    }
+
+    #[test]
+    fn only_a_catalogue_cache_is_for_every_account() {
+        use super::{download_needs_admin, ADMIN_ONLY_TABLES};
+        assert!(download_needs_admin("romexplorer-cache-all-20260928-162136.sqlite"));
+        assert!(download_needs_admin("romexplorer-cache-database-20260928-162136.sqlite"));
+        assert!(!download_needs_admin("romexplorer-cache-catalog-20260928-162136.sqlite"));
+        for t in ADMIN_ONLY_TABLES {
+            assert!(crate::api::backup::DATABASE_TABLES.contains(&t) && !crate::api::backup::CATALOG_TABLES.contains(&t), "{t}");
+        }
     }
 
     #[test]
