@@ -68,6 +68,11 @@ pub fn SyncLine() -> Element {
                 }
             };
         }
+        // Signed out, or the server stopped knowing this phone: it keeps working from its copy,
+        // and says so here rather than stopping at a sign-in screen.
+        if crate::api::NEEDS_SIGN_IN().is_some() && crate::api::companion::has_server() {
+            return rsx! { div { class: "bp-syncline bad", onclick: move |_| crate::ui::open_modal(|| rsx! { ServerSheet {} }), {state::tr("Not signed in to the server. Tap to sign in.")} } };
+        }
         if let Some(e) = LAST_ERROR() {
             return rsx! { div { class: "bp-syncline bad", onclick: move |_| *LAST_ERROR.write() = None, {state::trf("Sync failed: {error}", &[("error", &e)])} } };
         }
@@ -100,7 +105,14 @@ pub fn SyncSheet() -> Element {
         rsx! {
             h3 { {state::tr("Sync")} }
             div { class: "bp-sheet",
-                p { class: "muted", {state::trf("Synced from {server}", &[("server", &server)])} }
+                if server.is_empty() {
+                    div { class: "card",
+                        p { {state::tr("No server set up yet. The app works on its own until then; add the server or client to sync from when you want to.")} }
+                        button { class: "bp-choice primary", onclick: move |_| { crate::ui::close_modal(); crate::ui::open_modal(|| rsx! { ServerSheet {} }); }, {state::tr("Set up the server")} }
+                    }
+                } else {
+                    p { class: "muted", {state::trf("Synced from {server}", &[("server", &server)])} }
+                }
                 div { class: "kv",
                     div { class: "muted", {state::tr("last sync")} } div { {ago(s.last_sync.as_deref())} }
                     div { class: "muted", {state::tr("RA progress")} } div { {ago(s.last_ra_sync.as_deref())} }
@@ -190,7 +202,23 @@ pub fn PhoneSettings() -> Element {
             })
             .filter(|(id, _)| *id > 0)
             .collect();
+        let server = crate::api::endpoint().base;
+        let signed_in = crate::api::ME().and_then(|m| m.user).map(|u| u.username);
         rsx! {
+            h4 { {state::tr("Server")} }
+            if server.is_empty() {
+                p { class: "muted", {state::tr("None yet. Everything below works without one; add the server or client to sync from when you want to.")} }
+                button { class: "bp-choice primary", onclick: move |_| crate::ui::open_modal(|| rsx! { ServerSheet {} }), {state::tr("Set up the server")} }
+            } else {
+                p { class: "muted",
+                    "{server}"
+                    if let Some(user) = signed_in { " · " {state::trf("signed in as {user}", &[("user", &user)])} }
+                }
+                div { class: "bp-actions",
+                    button { class: "bp-choice", onclick: move |_| crate::ui::open_modal(|| rsx! { ServerSheet {} }), {state::tr("Sign in / change server")} }
+                    button { class: "bp-choice", onclick: move |_| { spawn(async move { crate::api::sign_out().await; }); }, {state::tr("Sign out")} }
+                }
+            }
             h4 { {state::tr("Machines")} }
             p { class: "muted", {state::tr("Whose games count as held. Only their titles and releases are synced, unless the catalogue is added below.")} }
             match &*machines.read() {
@@ -306,8 +334,35 @@ pub fn PhoneSettings() -> Element {
                 }
             }
             p { class: "muted", {state::tr("Metadata and art downloads run on the server or client. Start one from a title's or release's menu (long press or Y); the phone never starts one by itself.")} }
-            h4 { {state::tr("Server")} }
-            button { class: "bp-choice", onclick: move |_| { crate::ui::close_modal(); spawn(async move { crate::api::sign_out().await; }); }, {state::tr("Sign out / change server")} }
+        }
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        rsx! {}
+    }
+}
+
+/// The server (or client) to sync from, and signing in to it: the app's own sign-in form,
+/// opened from the phone's Settings when the user wants one, never at start.
+#[component]
+pub fn ServerSheet() -> Element {
+    #[cfg(feature = "mobile")]
+    {
+        let error = crate::api::NEEDS_SIGN_IN().unwrap_or_default();
+        rsx! {
+            div { class: "bp-sheet",
+                crate::screens::SignIn {
+                    error,
+                    embedded: true,
+                    on_done: move |_| {
+                        *crate::api::NEEDS_SIGN_IN.write() = None;
+                        crate::ui::close_modal();
+                        // The machines, tabs and settings the server knows, now that it answers.
+                        spawn(async move { let _ = state::load().await; });
+                    },
+                }
+                div { class: "bp-sheet-actions", button { class: "bp-choice", onclick: move |_| crate::ui::close_modal(), {state::tr("close")} } }
+            }
         }
     }
     #[cfg(not(feature = "mobile"))]
