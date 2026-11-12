@@ -1088,7 +1088,18 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     };
     let (ext_heuristics, path_heuristics) = settings::scan_heuristics(&app.pool).await?;
     let files_seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let ctx = ScanContext { dir_type, platform: PlatformContext::None, heuristics: HeuristicFlags::new(ext_heuristics, path_heuristics), shapes: Vec::new(), files_seen: Some(std::sync::Arc::clone(&files_seen)) };
+    // Directories configured below this one keep their own settings in a scan from here:
+    // their type, platform and whether their files are roms, and their rows stay theirs.
+    let children = configured_below(&app.pool, &dir).await?;
+    let configured: Vec<rom_scan::ConfiguredDir> = children.iter().map(|c| rom_scan::ConfiguredDir { path: PathBuf::from(&c.dir.path), dir_type: c.dir_type, platform: c.platform }).collect();
+    let ctx = ScanContext {
+        dir_type,
+        platform: PlatformContext::None,
+        heuristics: HeuristicFlags::new(ext_heuristics, path_heuristics),
+        shapes: Vec::new(),
+        files_seen: Some(std::sync::Arc::clone(&files_seen)),
+        configured: std::sync::Arc::new(configured),
+    };
     progress.force(0, None, &format!("walking {}", dir.path)).await;
     // The walk runs to completion on a blocking thread and only then says anything, so the
     // count of files it has listed is reported from here while it runs: before this, a scan
@@ -1127,7 +1138,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     let mut skip = vec![false; n];
     if req.mode == FileScanMode::NewOnly {
         for (i, candidate) in walk.rom_candidates.iter().enumerate() {
-            skip[i] = local_file_is_live(&app.pool, &candidate.path.display().to_string()).await?;
+            skip[i] = if candidate.kind == rom_scan::CandidateKind::DirectoryBundle { bundle_is_recorded(&app.pool, &candidate.path).await? } else { local_file_is_live(&app.pool, &candidate.path.display().to_string()).await? };
         }
     }
     // A full scan started again goes on from where it was (`run_file_scan_since`).
@@ -1154,7 +1165,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
         if skip[i] {
             continue;
         }
-        let detect = detect_for(candidate, hint_for(candidate, forced));
+        let detect = detect_for(candidate, hint_for(candidate, owner_of(&children, &candidate.path).and_then(|c| c.platform).or(forced)));
         let name = candidate.path.display().to_string();
         jobs.push((first_folder(Path::new(&dir.path), &candidate.path), sizes[i], name, (candidate.path.clone(), scan_args(detect, flags, style, false), sizes[i], (i, detect))));
     }
@@ -1215,7 +1226,8 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
                 if platform == Platform::Unknown {
                     summary.platform_unconfirmed += 1;
                 }
-                match record_candidate(app, &dir, candidate, platform, as_roms, &outcome, &mut summary).await {
+                let (owner, as_roms) = owner_of(&children, &candidate.path).map_or((&dir, as_roms), |c| (&c.dir, c.as_roms));
+                match record_candidate(app, owner, candidate, platform, as_roms, &outcome, &mut summary).await {
                     Ok(Some(rom_id)) if ra_wanted && platform != Platform::Unknown => record_ra_hash(&app.pool, rom_id, &candidate.path, platform, ra_ready, &mut summary).await,
                     Ok(_) => Ok(()),
                     Err(e) => Err(e),
@@ -1232,7 +1244,9 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     report.finish().await;
     for playlist in &walk.playlists {
         let step = Step { progress, done_bytes: total_bytes, total_bytes, file_bytes: 0, label: "playlists".to_string() };
-        if let Err(e) = apply_playlist(&app.pool, &dir, playlist, forced.unwrap_or(Platform::Unknown), flags, &mut summary, &step).await {
+        let owner = owner_of(&children, &playlist.m3u_path);
+        let platform = owner.and_then(|c| c.platform).or(forced).unwrap_or(Platform::Unknown);
+        if let Err(e) = apply_playlist(&app.pool, owner.map_or(&dir, |c| &c.dir), playlist, platform, flags, &mut summary, &step).await {
             summary.errors.push(format!("{}: playlist: {e}", playlist.m3u_path.display()));
         }
     }
@@ -1241,6 +1255,10 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     }
     if let Some(started) = full_scan_started {
         summary.marked_missing = mark_unseen_missing(&app.pool, dir.id, started).await?;
+        // The directories below were walked too, so what they did not see is gone as well.
+        for child in &children {
+            summary.marked_missing += mark_unseen_missing(&app.pool, child.dir.id, started).await?;
+        }
     }
     summary.release_links_dropped = drop_unbacked_release_links(&app.pool, &std::mem::take(&mut summary.replaced_roms)).await?;
     (summary.chd_compared, summary.chd_not_compared, summary.chd_reader_differences) = crate::rom::chd_info::take_check_report();
@@ -1498,6 +1516,58 @@ async fn mark_unseen_missing(pool: &MySqlPool, directory_id: u64, started: chron
         sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_files SET deleted = TRUE WHERE id IN ({list})"))).execute(pool).await?;
     }
     Ok(gone.len() as u64)
+}
+
+/// A directory configured below the one being scanned, with its effective settings.
+struct ConfiguredChild {
+    dir: Directory,
+    dir_type: DirType,
+    platform: Option<Platform>,
+    as_roms: bool,
+}
+
+/// The live directories configured strictly below `dir`, deepest first, each with its
+/// effective type and platform (inherited where it sets none) -- what a scan of that
+/// directory itself would use.
+async fn configured_below(pool: &MySqlPool, dir: &Directory) -> Result<Vec<ConfiguredChild>> {
+    let all = db_dirs::list(pool, false).await?;
+    let mut out = Vec::new();
+    for d in all.into_iter().filter(|d| d.id != dir.id && !db_dirs::same_path(&d.path, &dir.path) && db_dirs::path_contains(&dir.path, &d.path)) {
+        let effective = db_dirs::resolve(pool, &d.path).await?;
+        let dir_type = match effective.dir_type.as_deref() {
+            Some("bios") => DirType::Bios,
+            Some("rom") => DirType::Rom,
+            _ => DirType::Mixed,
+        };
+        let as_roms = effective.dir_type.as_deref() != Some("patch");
+        out.push(ConfiguredChild { platform: effective.app_platform_id.and_then(Platform::from_igdb_id), dir: d, dir_type, as_roms });
+    }
+    out.sort_by_key(|c| std::cmp::Reverse(c.dir.path.len()));
+    Ok(out)
+}
+
+/// The deepest configured directory below the scanned one that holds `path`.
+fn owner_of<'a>(children: &'a [ConfiguredChild], path: &Path) -> Option<&'a ConfiguredChild> {
+    let path = path.display().to_string();
+    children.iter().find(|c| db_dirs::path_contains(&c.dir.path, &path))
+}
+
+/// Whether a folder game is already recorded as it is: every file in it has a live row of
+/// the same size. A folder has no row of its own, so asking for its path found nothing and
+/// a new-files-only scan read every folder game again.
+async fn bundle_is_recorded(pool: &MySqlPool, dir: &Path) -> Result<bool> {
+    let files = crate::rom::platforms::directory_payload_paths(dir);
+    if files.is_empty() {
+        return Ok(false);
+    }
+    for file in files {
+        let Ok(meta) = std::fs::metadata(&file) else { return Ok(false) };
+        let size: Option<u64> = sqlx::query_scalar("SELECT size FROM local_files WHERE path_hash = ? AND deleted = FALSE").bind(sha1_hex(&file.display().to_string())).fetch_optional(pool).await?;
+        if size != Some(meta.len()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The platforms configured on `dir`'s immediate subfolders, by folder name: the hint each

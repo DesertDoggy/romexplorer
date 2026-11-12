@@ -155,6 +155,32 @@ pub struct ScanContext {
     /// collection (or a network share) that is long enough to look stuck. `None`: nobody
     /// is watching.
     pub files_seen: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Directories below the scan root configured with settings of their own (a type, a
+    /// platform): their subtree is walked with those, as a scan of that directory would, and
+    /// each is a boundary no bundle reaches above. Empty: nothing configured below.
+    pub configured: std::sync::Arc<Vec<ConfiguredDir>>,
+}
+
+/// A configured directory below a scan root, with its effective settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredDir {
+    pub path: PathBuf,
+    pub dir_type: DirType,
+    pub platform: Option<Platform>,
+}
+
+impl ScanContext {
+    /// The context and bundle boundary for `subdir`: its own configured settings when it has
+    /// any, else this context and `boundary` unchanged.
+    fn entering(&self, subdir: &Path, boundary: &Path) -> (ScanContext, PathBuf) {
+        match self.configured.iter().find(|c| c.path == subdir) {
+            Some(c) => {
+                let platform = c.platform.map(PlatformContext::Forced).unwrap_or(self.platform);
+                (ScanContext { dir_type: c.dir_type, platform, ..self.clone() }, subdir.to_path_buf())
+            }
+            None => (self.clone(), boundary.to_path_buf()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +552,8 @@ pub fn scan(root: &Path, layout: &PlatformLayout, base_ctx: &ScanContext, skip_u
                     base_ctx.heuristics.path.then(|| super::detect::infer_platform_from_parent_path_heuristics(&subdir.join("_"))).flatten()
                 });
                 let ctx = ScanContext { platform: platform.map(PlatformContext::Hint).unwrap_or(PlatformContext::None), ..base_ctx.clone() };
+                let (ctx, _) = ctx.entering(&subdir, &subdir);
+                let platform = platform.or(ctx.platform.platform());
                 // A folder no platform is known for may be a game itself (a PS3, PSP or Vita
                 // game folder, a declared shape) sitting straight in the root: tried as one
                 // before it is walked as a platform folder, or its files became games each.
@@ -582,6 +610,8 @@ fn walk_listed(listing: Vec<(PathBuf, bool)>, at: &Path, boundary: &Path, ctx: &
         if !out.walked.insert(sub_at.clone()) {
             continue;
         }
+        let (ctx, boundary) = ctx.entering(&subdir, boundary);
+        let (ctx, boundary) = (&ctx, boundary.as_path());
         // A game's own tree (a Vita app folder, a PS3 or PSP game folder) is one game however
         // deep it goes: its root says so, and nothing below it is a game of its own.
         if let Some(bundle) = game_root_bundle(&subdir, boundary, ctx) {
@@ -780,7 +810,7 @@ mod tests {
 
     fn ctx(dir_type: DirType, platform: PlatformContext, shapes: &str) -> ScanContext {
         let shapes = if shapes.is_empty() { Vec::new() } else { RomShape::parse_list(shapes).expect("valid shapes") };
-        ScanContext { dir_type, platform, heuristics: HeuristicFlags::ALL, shapes, files_seen: None }
+        ScanContext { dir_type, platform, heuristics: HeuristicFlags::ALL, shapes, files_seen: None, configured: Default::default() }
     }
 
     fn candidate_paths_walk(out: &WalkResult) -> Vec<PathBuf> {
@@ -1147,6 +1177,22 @@ mod tests {
         assert_eq!(candidate_paths_walk(&out), vec![scratch.path().join("Some Game")]);
         assert_eq!(out.rom_candidates[0].kind, CandidateKind::DirectoryBundle);
         assert_eq!(out.rom_candidates[0].platform_hint, Some(Platform::PlayStation3));
+    }
+
+    /// A directory configured below the root is walked with its own settings: here its
+    /// forced platform narrows what it takes, as a scan of it alone would.
+    #[test]
+    fn a_configured_subfolder_keeps_its_own_settings() {
+        let scratch = ScratchDir::new("walk_configured_child");
+        let loose = scratch.file("b.md", b"x");
+        let inside = scratch.file("gba/b.md", b"x");
+        let gba = scratch.file("gba/a.gba", b"x");
+        let mut base = ctx(DirType::Mixed, PlatformContext::None, "");
+        base.configured = std::sync::Arc::new(vec![ConfiguredDir { path: scratch.path().join("gba"), dir_type: DirType::Mixed, platform: Some(Platform::GameBoyAdvance) }]);
+        let mut out = WalkResult::default();
+        walk(scratch.path(), scratch.path(), &base, true, &mut out);
+        assert_eq!(candidate_paths_walk(&out), vec![loose, gba]);
+        assert_eq!(out.unknown, vec![inside]);
     }
 
     /// A sheet naming tracks in another folder (one up, one down): the tracks are the
