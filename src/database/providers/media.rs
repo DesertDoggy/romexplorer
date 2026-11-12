@@ -441,7 +441,7 @@ async fn store_url_placed(
                 None => {
                     let fetched = match prefetched {
                         Some((bytes, _)) => bytes,
-                        None => http.get(url).send().await?.error_for_status()?.bytes().await?.to_vec(),
+                        None => media_store::read_capped(http.get(url).send().await?.error_for_status()?, media_store::RootRole::for_media_type(media_type).max_bytes()).await?,
                     };
                     sqlx::query("UPDATE media SET content_sha1 = ?, bytes = ? WHERE id = ?").bind(media_store::sha1_bytes(&fetched)).bind(fetched.len() as u64).bind(media_id).execute(pool).await?;
                     fetched
@@ -471,7 +471,7 @@ async fn store_url_placed(
         None => {
             let response = http.get(url).send().await?.error_for_status()?;
             let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
-            (response.bytes().await?.to_vec(), content_type)
+            (media_store::read_capped(response, media_store::RootRole::for_media_type(media_type).max_bytes()).await?, content_type)
         }
     };
     let ext = media_store::extension_for(url, content_type.as_deref());

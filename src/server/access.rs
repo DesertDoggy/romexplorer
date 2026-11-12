@@ -305,6 +305,7 @@ const ADMIN: &[Rule] = &[
     ("POST", "/api/v1/catalog/titles/merges/decouple"),
     ("POST", "/api/v1/catalog/titles/merges/{id}/decouple"),
     ("DELETE", "/api/v1/catalog/titles/{id}/keywords/{name}"),
+    ("DELETE", "/api/v1/catalog/titles/{id}/alt-names/{name}"),
     ("POST", "/api/v1/catalog/titles/merge-suggestions/bulk"),
     ("POST", "/api/v1/catalog/titles/merge-suggestions/{igdb_id}/{action}"),
     // Merge review: a choice taken or turned down, and the web asked (a provider call).
@@ -323,6 +324,9 @@ const ADMIN: &[Rule] = &[
     ("DELETE", "/api/v1/catalog/releases/{id}/title"),
     ("POST", "/api/v1/catalog/releases/{id}/base"),
     ("POST", "/api/v1/catalog/releases/{id}/language"),
+    ("POST", "/api/v1/catalog/releases/combine"),
+    ("POST", "/api/v1/catalog/releases/{id}/uncombine"),
+    ("POST", "/api/v1/catalog/files/{id}/rescan"),
     ("POST", "/api/v1/catalog/base-links/bulk"),
 ];
 
@@ -391,8 +395,13 @@ pub fn allows(principal: &Principal, access: Access) -> bool {
 /// cannot carry a header. Everywhere else a token in the URL is ignored, so it doesn't end up in
 /// history, logs and caches for no reason.
 pub fn query_token_allowed(method: &Method, path: &str) -> bool {
-    *method == Method::GET
-        && ["/api/v1/media/", "/api/v1/audio/", "/api/v1/ra/avatar", "/api/v1/ra/badges/", "/api/v1/ra/games/", "/api/v1/backup/", "/api/v1/cache/", "/api/v1/dats/files/", "/api/v1/dats/bundle"].iter().any(|p| path.starts_with(p))
+    *method == Method::GET && serves_files(path)
+}
+
+/// The API routes that hand out files: media, audio, RetroAchievements images, backups, the
+/// SQLite caches and DATs.
+pub fn serves_files(path: &str) -> bool {
+    ["/api/v1/media/", "/api/v1/audio/", "/api/v1/ra/avatar", "/api/v1/ra/badges/", "/api/v1/ra/games/", "/api/v1/backup/", "/api/v1/cache/", "/api/v1/dats/files/", "/api/v1/dats/bundle"].iter().any(|p| path.starts_with(p))
 }
 
 #[cfg(test)]
