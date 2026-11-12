@@ -894,8 +894,8 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
     };
     data.resize(m.data_len, 0);
     for r in &m.runs {
-        if let Some(src) = prg.get(r.rom..r.rom + r.len) {
-            data[r.data..r.data + r.len].copy_from_slice(src);
+        if let (Some(src), Some(dst)) = (prg.get(r.rom..r.rom.saturating_add(r.len)), data.get_mut(r.data..r.data.saturating_add(r.len))) {
+            dst.copy_from_slice(src);
         }
     }
     // A Disk System game's files each load at their own address: a gap is filled from the
@@ -906,7 +906,7 @@ fn rebuilt(m: &Map, prg: &[u8], fill: Fill) -> Vec<u8> {
                 disk.sides.iter().flat_map(|s| &s.files).filter(|f| f.kind == 0).map(|f| (f.addr, f.at, f.data.len())).collect();
             let file_of = |rom: usize| files.iter().find(|f| (f.1..f.1 + f.2).contains(&rom)).copied();
             let mut placed = vec![false; m.data_len];
-            m.runs.iter().for_each(|r| placed[r.data..r.data + r.len].iter_mut().for_each(|b| *b = true));
+            m.runs.iter().for_each(|r| placed.get_mut(r.data..r.data.saturating_add(r.len)).into_iter().for_each(|p| p.fill(true)));
             for d in 0..m.data_len {
                 if placed[d] {
                     continue;
@@ -1596,7 +1596,7 @@ impl Map {
                     m.tracks = vec![None; m.header.songs as usize];
                     m.plays = vec![None; m.header.songs as usize];
                 }
-                Some("d") => m.data_len = num(f.get(1)?)? as usize,
+                Some("d") => m.data_len = Some(num(f.get(1)?)? as usize).filter(|&n| n as u64 <= super::rom_songs::MAX_ROM_BYTES)?,
                 Some("r") => {
                     for t in &f[1..] {
                         let v: Vec<u32> = t.split(':').map(num).collect::<Option<_>>()?;

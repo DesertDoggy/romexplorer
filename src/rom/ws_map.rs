@@ -139,8 +139,8 @@ fn rebuilt(data_len: usize, runs: &[Run], patches: &[(u32, u8)], rom: &[u8], fil
     };
     data.resize(data_len, 0);
     for r in runs {
-        if let Some(src) = rom.get(r.rom..r.rom + r.len) {
-            data[r.data..r.data + r.len].copy_from_slice(src);
+        if let (Some(src), Some(dst)) = (rom.get(r.rom..r.rom.saturating_add(r.len)), data.get_mut(r.data..r.data.saturating_add(r.len))) {
+            dst.copy_from_slice(src);
         }
     }
     if fill == Fill::Bridged {
@@ -429,7 +429,10 @@ impl LayoutSong {
                 }
             };
             *n += 1;
-            let s = &self.m.scripts[i as usize];
+            let Some(s) = self.m.scripts.get(i as usize) else {
+                self.stopped = true;
+                return None;
+            };
             for op in &s.ops {
                 match *op {
                     Op::Poke(a, v) => ws.ram_write(a, v),
@@ -559,7 +562,7 @@ impl Map {
         for line in lines {
             let (tag, rest) = line.split_once(' ').unwrap_or((line, ""));
             match tag {
-                "d" => m.data_len = num(rest)? as usize,
+                "d" => m.data_len = Some(num(rest)? as usize).filter(|&n| n as u64 <= super::rom_songs::MAX_ROM_BYTES)?,
                 "r" => {
                     for r in rest.split_whitespace() {
                         let f: Vec<u32> = r.split(':').map(num).collect::<Option<_>>()?;

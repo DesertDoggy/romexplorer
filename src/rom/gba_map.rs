@@ -39,7 +39,7 @@ impl Run {
     fn end(&self) -> usize {
         match self {
             Run::Bytes(a, b) => *a as usize + b.len(),
-            Run::Fill(a, n, _) | Run::Copy(a, n, _) | Run::Reloc(a, n, _, _) => (*a + *n) as usize,
+            Run::Fill(a, n, _) | Run::Copy(a, n, _) | Run::Reloc(a, n, _, _) => *a as usize + *n as usize,
         }
     }
 
@@ -524,34 +524,51 @@ pub(crate) fn encode_runs(out: &mut String, runs: &[Run]) {
 }
 
 /// Runs read back from the words [`encode_runs`] writes.
+/// Where a run may end at most: past every image a map lays (a GBA program, an SNES sound
+/// memory, an N64 save state with its ROM parts). A damaged map file reaching further is
+/// refused rather than growing an image without bound.
+const RUN_END_MAX: u64 = 0x0800_0000;
+
 pub(crate) fn decode_runs<'a>(words: impl Iterator<Item = &'a str>) -> Option<Vec<Run>> {
     words
         .map(|w| {
-            let (a, v) = w.split_once(':')?;
-            let a = u32::from_str_radix(a, 16).ok()?;
-            if let Some(n) = v.strip_prefix('z') {
-                return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, 0));
-            }
-            if let Some(c) = v.strip_prefix('p') {
-                let mut f = c.split('.');
-                let (from, n, k) = (f.next()?, f.next()?, f.next()?);
-                return Some(Run::Reloc(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?, u32::from_str_radix(k, 16).ok()?));
-            }
-            if let Some(c) = v.strip_prefix('m') {
-                let (from, n) = c.split_once('.')?;
-                return Some(Run::Copy(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?));
-            }
-            if let Some(f) = v.strip_prefix('r') {
-                let (b, n) = f.split_once('.')?;
-                return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, u8::from_str_radix(b, 16).ok()?));
-            }
-            if v.len() % 2 != 0 {
-                return None;
-            }
-            let bytes = (0..v.len()).step_by(2).map(|i| u8::from_str_radix(&v[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>()?;
-            Some(Run::Bytes(a, bytes))
+            let run = decode_run(w)?;
+            let (a, n) = match &run {
+                Run::Bytes(a, b) => (*a as u64, b.len() as u64),
+                Run::Fill(a, n, _) | Run::Copy(a, n, _) | Run::Reloc(a, n, _, _) => (*a as u64, *n as u64),
+            };
+            (a + n <= RUN_END_MAX).then_some(run)
         })
         .collect()
+}
+
+fn decode_run(w: &str) -> Option<Run> {
+    if !w.is_ascii() {
+        return None;
+    }
+    let (a, v) = w.split_once(':')?;
+    let a = u32::from_str_radix(a, 16).ok()?;
+    if let Some(n) = v.strip_prefix('z') {
+        return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, 0));
+    }
+    if let Some(c) = v.strip_prefix('p') {
+        let mut f = c.split('.');
+        let (from, n, k) = (f.next()?, f.next()?, f.next()?);
+        return Some(Run::Reloc(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?, u32::from_str_radix(k, 16).ok()?));
+    }
+    if let Some(c) = v.strip_prefix('m') {
+        let (from, n) = c.split_once('.')?;
+        return Some(Run::Copy(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?));
+    }
+    if let Some(f) = v.strip_prefix('r') {
+        let (b, n) = f.split_once('.')?;
+        return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, u8::from_str_radix(b, 16).ok()?));
+    }
+    if v.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..v.len()).step_by(2).map(|i| u8::from_str_radix(&v[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>()?;
+    Some(Run::Bytes(a, bytes))
 }
 
 /// How long each track is played while [`slim`] tries leaving runs out.
@@ -699,6 +716,15 @@ pub fn available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_damaged_run_is_refused_not_laid() {
+        assert!(decode_runs(["10:z20", "40:abcd"].into_iter()).is_some());
+        // Past every image a map lays, an overflowing end, half a byte, a non-ASCII word.
+        for bad in ["7fffff0:z20", "ffffffff:zffffffff", "40:abc", "40:aé"] {
+            assert!(decode_runs([bad].into_iter()).is_none(), "{bad}");
+        }
+    }
 
     #[test]
     fn diff_keeps_patches_as_bytes_and_cut_areas_as_zeros() {

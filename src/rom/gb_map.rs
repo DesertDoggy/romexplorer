@@ -461,8 +461,8 @@ fn rebuilt(m: &Map, rom: &[u8], fill: Fill) -> Vec<u8> {
     };
     data.resize(m.data_len, 0);
     for r in &m.runs {
-        if let Some(src) = rom.get(r.rom..r.rom + r.len) {
-            data[r.data..r.data + r.len].copy_from_slice(src);
+        if let (Some(src), Some(dst)) = (rom.get(r.rom..r.rom.saturating_add(r.len)), data.get_mut(r.data..r.data.saturating_add(r.len))) {
+            dst.copy_from_slice(src);
         }
     }
     if fill == Fill::Bridged {
@@ -801,7 +801,7 @@ impl Map {
                     m.tracks = vec![None; m.header.songs as usize];
                     m.plays = vec![None; m.header.songs as usize];
                 }
-                Some("d") => m.data_len = num(f.get(1)?)? as usize,
+                Some("d") => m.data_len = Some(num(f.get(1)?)? as usize).filter(|&n| n as u64 <= super::rom_songs::MAX_ROM_BYTES)?,
                 Some("r") => {
                     for t in &f[1..] {
                         let v: Vec<u32> = t.split(':').map(num).collect::<Option<_>>()?;
