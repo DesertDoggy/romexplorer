@@ -44,7 +44,7 @@ impl Run {
     }
 
     /// Lays the run over `image`; a copy takes its bytes from `rom` as it is.
-    fn apply(&self, image: &mut Vec<u8>, rom: &[u8]) {
+    pub(crate) fn apply(&self, image: &mut Vec<u8>, rom: &[u8]) {
         if image.len() < self.end() {
             image.resize(self.end(), 0);
         }
@@ -69,7 +69,7 @@ impl Run {
     }
 
     /// When the run is laid: plain copies, then relocated copies, then the rest.
-    fn phase(&self) -> u8 {
+    pub(crate) fn phase(&self) -> u8 {
         match self {
             Run::Copy(..) => 0,
             Run::Reloc(..) => 1,
@@ -463,63 +463,18 @@ impl Map {
     /// (a byte repeated) or `<offset>:m<from>.<n>` (the ROM's bytes from another offset), all
     /// numbers in hex.
     pub fn encode(&self) -> String {
-        fn runs(out: &mut String, runs: &[Run]) {
-            for r in runs {
-                match r {
-                    Run::Bytes(a, b) => {
-                        out.push_str(&format!(" {a:x}:"));
-                        for x in b {
-                            out.push_str(&format!("{x:02x}"));
-                        }
-                    }
-                    Run::Fill(a, n, 0) => out.push_str(&format!(" {a:x}:z{n:x}")),
-                    Run::Fill(a, n, b) => out.push_str(&format!(" {a:x}:r{b:02x}.{n:x}")),
-                    Run::Copy(a, n, from) => out.push_str(&format!(" {a:x}:m{from:x}.{n:x}")),
-                    Run::Reloc(a, n, from, k) => out.push_str(&format!(" {a:x}:p{from:x}.{n:x}.{k:x}")),
-                }
-            }
-        }
         let mut out = format!("gbamap 1\nl {}\nc", self.rom_len);
-        runs(&mut out, &self.common);
+        encode_runs(&mut out, &self.common);
         out.push('\n');
         for t in &self.tracks {
             out.push_str(&format!("t {} {}", t.length_ms, t.fade_ms));
-            runs(&mut out, &t.runs);
+            encode_runs(&mut out, &t.runs);
             out.push('\n');
         }
         out
     }
 
     pub fn decode(text: &str) -> Option<Map> {
-        fn runs<'a>(words: impl Iterator<Item = &'a str>) -> Option<Vec<Run>> {
-            words
-                .map(|w| {
-                    let (a, v) = w.split_once(':')?;
-                    let a = u32::from_str_radix(a, 16).ok()?;
-                    if let Some(n) = v.strip_prefix('z') {
-                        return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, 0));
-                    }
-                    if let Some(c) = v.strip_prefix('p') {
-                        let mut f = c.split('.');
-                        let (from, n, k) = (f.next()?, f.next()?, f.next()?);
-                        return Some(Run::Reloc(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?, u32::from_str_radix(k, 16).ok()?));
-                    }
-                    if let Some(c) = v.strip_prefix('m') {
-                        let (from, n) = c.split_once('.')?;
-                        return Some(Run::Copy(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?));
-                    }
-                    if let Some(f) = v.strip_prefix('r') {
-                        let (b, n) = f.split_once('.')?;
-                        return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, u8::from_str_radix(b, 16).ok()?));
-                    }
-                    if v.len() % 2 != 0 {
-                        return None;
-                    }
-                    let bytes = (0..v.len()).step_by(2).map(|i| u8::from_str_radix(&v[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>()?;
-                    Some(Run::Bytes(a, bytes))
-                })
-                .collect()
-        }
         let mut lines = text.lines();
         if lines.next()? != "gbamap 1" {
             return None;
@@ -529,7 +484,7 @@ impl Map {
         if common_words.next()? != "c" {
             return None;
         }
-        let common = runs(common_words)?;
+        let common = decode_runs(common_words)?;
         let mut tracks = Vec::new();
         for line in lines.filter(|l| !l.is_empty()) {
             let mut w = line.split_whitespace();
@@ -538,7 +493,7 @@ impl Map {
             }
             let length_ms = w.next()?.parse().ok()?;
             let fade_ms = w.next()?.parse().ok()?;
-            tracks.push(Track { runs: runs(w)?, length_ms, fade_ms });
+            tracks.push(Track { runs: decode_runs(w)?, length_ms, fade_ms });
         }
         Some(Map { rom_len, common, tracks })
     }
@@ -548,6 +503,55 @@ impl Map {
         let n = |runs: &[Run]| runs.iter().map(|r| if let Run::Bytes(_, b) = r { b.len() } else { 0 }).sum::<usize>();
         n(&self.common) + self.tracks.iter().map(|t| n(&t.runs)).sum::<usize>()
     }
+}
+
+/// Runs as map text: each ` <offset>:...` (see [`Map::encode`]).
+pub(crate) fn encode_runs(out: &mut String, runs: &[Run]) {
+    for r in runs {
+        match r {
+            Run::Bytes(a, b) => {
+                out.push_str(&format!(" {a:x}:"));
+                for x in b {
+                    out.push_str(&format!("{x:02x}"));
+                }
+            }
+            Run::Fill(a, n, 0) => out.push_str(&format!(" {a:x}:z{n:x}")),
+            Run::Fill(a, n, b) => out.push_str(&format!(" {a:x}:r{b:02x}.{n:x}")),
+            Run::Copy(a, n, from) => out.push_str(&format!(" {a:x}:m{from:x}.{n:x}")),
+            Run::Reloc(a, n, from, k) => out.push_str(&format!(" {a:x}:p{from:x}.{n:x}.{k:x}")),
+        }
+    }
+}
+
+/// Runs read back from the words [`encode_runs`] writes.
+pub(crate) fn decode_runs<'a>(words: impl Iterator<Item = &'a str>) -> Option<Vec<Run>> {
+    words
+        .map(|w| {
+            let (a, v) = w.split_once(':')?;
+            let a = u32::from_str_radix(a, 16).ok()?;
+            if let Some(n) = v.strip_prefix('z') {
+                return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, 0));
+            }
+            if let Some(c) = v.strip_prefix('p') {
+                let mut f = c.split('.');
+                let (from, n, k) = (f.next()?, f.next()?, f.next()?);
+                return Some(Run::Reloc(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?, u32::from_str_radix(k, 16).ok()?));
+            }
+            if let Some(c) = v.strip_prefix('m') {
+                let (from, n) = c.split_once('.')?;
+                return Some(Run::Copy(a, u32::from_str_radix(n, 16).ok()?, u32::from_str_radix(from, 16).ok()?));
+            }
+            if let Some(f) = v.strip_prefix('r') {
+                let (b, n) = f.split_once('.')?;
+                return Some(Run::Fill(a, u32::from_str_radix(n, 16).ok()?, u8::from_str_radix(b, 16).ok()?));
+            }
+            if v.len() % 2 != 0 {
+                return None;
+            }
+            let bytes = (0..v.len()).step_by(2).map(|i| u8::from_str_radix(&v[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>()?;
+            Some(Run::Bytes(a, bytes))
+        })
+        .collect()
 }
 
 /// How long each track is played while [`slim`] tries leaving runs out.
@@ -568,65 +572,75 @@ const SLIM_FINEST: usize = 128;
 /// what they need goes back in. Copy runs always stay. Returns how many of the file's bytes
 /// it left out.
 pub fn slim(map: &mut Map, rom: &[u8]) -> Result<usize, String> {
-    use std::collections::HashSet;
-    let render_all = |seconds| -> Result<Vec<Option<Vec<i16>>>, String> {
-        (0..map.tracks.len()).map(|t| Ok(render(&map.image(rom, t)?, seconds).ok())).collect()
-    };
-    let candidates: Vec<usize> = map.common.iter().enumerate().filter(|(_, r)| matches!(r, Run::Bytes(..) | Run::Fill(..))).map(|(i, _)| i).collect();
-    if candidates.is_empty() {
-        return Ok(0);
+    if map.rom_len as usize != rom.len() {
+        return Err("this ROM is not the one the music map was made for".into());
     }
-    let wanted = render_all(SLIM_SECONDS)?;
-    let tracks: Vec<usize> = (0..map.tracks.len()).filter(|&t| wanted[t].is_some()).collect();
-    let mut dropped = leave_out(map, rom, &candidates, &HashSet::new(), tracks, &wanted, SLIM_SECONDS);
+    let play = |common: &[Run], t: usize, seconds: u32| -> Option<Vec<i16>> {
+        let mut m = Map { rom_len: map.rom_len, common: common.to_vec(), tracks: Vec::new() };
+        m.tracks.push(map.tracks[t].clone());
+        render(&m.image(rom, 0).ok()?, seconds).ok()
+    };
+    let dropped = slim_common(&map.common, map.tracks.len(), &play);
+    let before = map.file_bytes();
+    map.common = map.common.iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, r)| r.clone()).collect();
+    Ok(before - map.file_bytes())
+}
+
+/// Which of the shared byte and fill runs `common` the music does not need, `play(runs, track,
+/// seconds)` rendering a track with only `runs` shared (None for a track without sound): see
+/// [`slim`]. Any music map built of [`Run`]s slims this way.
+pub(crate) fn slim_common(common: &[Run], tracks: usize, play: &dyn Fn(&[Run], usize, u32) -> Option<Vec<i16>>) -> std::collections::HashSet<usize> {
+    use std::collections::HashSet;
+    let candidates: Vec<usize> = common.iter().enumerate().filter(|(_, r)| matches!(r, Run::Bytes(..) | Run::Fill(..))).map(|(i, _)| i).collect();
+    if candidates.is_empty() {
+        return HashSet::new();
+    }
+    let render_all = |seconds| -> Vec<Option<Vec<i16>>> { (0..tracks).map(|t| play(common, t, seconds)).collect() };
+    let wanted = render_all(SLIM_SECONDS);
+    let order: Vec<usize> = (0..tracks).filter(|&t| wanted[t].is_some()).collect();
+    let mut dropped = leave_out(common, &candidates, order, &wanted, SLIM_SECONDS, play);
     if !dropped.is_empty() {
-        let longer = render_all(SLIM_CHECK_SECONDS)?;
-        let trial = without(map, &dropped);
-        let changed: Vec<usize> = (0..map.tracks.len())
-            .filter(|&t| longer[t].as_ref().is_some_and(|want| !trial.image(rom, t).and_then(|img| render(&img, SLIM_CHECK_SECONDS)).is_ok_and(|got| alike(want, &got) >= 0.999)))
+        let longer = render_all(SLIM_CHECK_SECONDS);
+        let trial = without(common, &dropped);
+        let changed: Vec<usize> = (0..tracks)
+            .filter(|&t| longer[t].as_ref().is_some_and(|want| !play(&trial, t, SLIM_CHECK_SECONDS).is_some_and(|got| alike(want, &got) >= 0.999)))
             .collect();
         if !changed.is_empty() {
             // Only what these tracks can do without stays out; the rest goes back in.
             let mut again: Vec<usize> = dropped.iter().copied().collect();
             again.sort_unstable();
-            dropped = leave_out(map, rom, &again, &HashSet::new(), changed, &longer, SLIM_CHECK_SECONDS);
+            dropped = leave_out(common, &again, changed, &longer, SLIM_CHECK_SECONDS, play);
         }
     }
-    let before = map.file_bytes();
-    *map = without(map, &dropped);
-    Ok(before - map.file_bytes())
+    dropped
 }
 
-/// The map with the common runs `dropped` left out.
-fn without(map: &Map, dropped: &std::collections::HashSet<usize>) -> Map {
-    let mut m = map.clone();
-    m.common = map.common.iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, r)| r.clone()).collect();
-    m
+/// `common` with the runs `dropped` left out.
+fn without(common: &[Run], dropped: &std::collections::HashSet<usize>) -> Vec<Run> {
+    common.iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, r)| r.clone()).collect()
 }
 
-/// Which of the common runs `candidates` can be left out (besides `dropped`) with `tracks`
-/// played as `wanted` over `seconds`: all at once, else in halving groups.
+/// Which of the common runs `candidates` can be left out with `order`'s tracks played as
+/// `wanted` over `seconds`: all at once, else in halving groups.
 fn leave_out(
-    map: &Map,
-    rom: &[u8],
+    common: &[Run],
     candidates: &[usize],
-    dropped: &std::collections::HashSet<usize>,
     mut order: Vec<usize>,
     wanted: &[Option<Vec<i16>>],
     seconds: u32,
+    play: &dyn Fn(&[Run], usize, u32) -> Option<Vec<i16>>,
 ) -> std::collections::HashSet<usize> {
-    let mut dropped = dropped.clone();
+    let mut dropped = std::collections::HashSet::new();
     let finest = (candidates.len() / SLIM_FINEST).max(1);
     // The track that last told a trial apart is played first: a failing trial ends sooner.
     let same_without = |dropped: &std::collections::HashSet<usize>, more: &[usize], order: &mut Vec<usize>| -> bool {
         let mut out = dropped.clone();
         out.extend(more.iter().copied());
-        let trial = without(map, &out);
+        let trial = without(common, &out);
         for k in 0..order.len() {
             let t = order[k];
             let want = wanted[t].as_ref().expect("only tracks with sound are played");
-            let same = trial.image(rom, t).and_then(|img| render(&img, seconds)).is_ok_and(|got| alike(want, &got) >= 0.999);
-            if !same {
+            if !play(&trial, t, seconds).is_some_and(|got| alike(want, &got) >= 0.999) {
                 order.remove(k);
                 order.insert(0, t);
                 return false;

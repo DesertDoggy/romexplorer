@@ -880,12 +880,49 @@ fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         }
     }
     let share = got as f64 * 100.0 / total.max(1) as f64;
-    t.saved += best;
+    // The map as the app keeps it: the bytes the ROM lacks kept, slimmed, written down and
+    // read back, each track played by it against its own .spc.
+    let built = std::time::Instant::now();
+    let (saved, kept, saved_off, size) = match romexplorer::rom::snes_map::Map::build(&refs, rom) {
+        None => (0, 0, Vec::new(), String::from("no map")),
+        Some(mut m) => {
+            let full = m.file_bytes();
+            let _ = romexplorer::rom::snes_map::slim(&mut m, rom);
+            let text = m.encode();
+            let back = romexplorer::rom::snes_map::Map::decode(&text).expect("the map reads back");
+            // Tracks are kept in the set's order, the ones too little in the ROM left out.
+            let mut saved = 0;
+            let mut saved_off = Vec::new();
+            let mut k = 0;
+            for (i, (spc, placed)) in spcs.iter().zip(&maps).enumerate() {
+                let Some(placed) = placed else { continue };
+                let (g, n) = spc_map::coverage(spc, &placed.runs);
+                if (g as f64) < n as f64 * 0.5 {
+                    continue;
+                }
+                let real = spc_map::melody(&spc_map::frames(spc, CHECK_FRAMES).unwrap_or_default());
+                let mine = back.spc(rom, k).ok().and_then(|s| spc_map::frames(&s, CHECK_FRAMES)).map(|f| spc_map::melody(&f)).unwrap_or_default();
+                k += 1;
+                if real.len() < music_search::MIN_MELODY {
+                    continue;
+                }
+                let a = music_search::alike(&real, &mine);
+                if a >= MAP_RIGHT {
+                    saved += 1;
+                } else if saved_off.len() < 12 {
+                    saved_off.push(format!("{i}:{a:.2}"));
+                }
+            }
+            (saved, back.tracks.len(), saved_off, format!("{:.1} KB, {} bytes from the file of {full} before slimming, {:.1} s", text.len() as f64 / 1024.0, back.file_bytes(), built.elapsed().as_secs_f32()))
+        }
+    };
+    t.saved += saved;
     println!(
-        "{name}: map, {:.1} s: {best} of {with_melody} tracks played right from the ROM (as-is: {zeros}; gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} .spc; {share:.1}% of sound memory in the ROM){}",
+        "{name}: map, {:.1} s: {best} of {with_melody} tracks played right from the ROM (as-is: {zeros}; gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved} of {kept} kept, {size}) ({} .spc; {share:.1}% of sound memory in the ROM){}{}",
         started.elapsed().as_secs_f32(),
         spcs.len(),
-        if off.is_empty() { String::new() } else { format!("; off: {}", off.join(" ")) }
+        if off.is_empty() { String::new() } else { format!("; off: {}", off.join(" ")) },
+        if saved_off.is_empty() { String::new() } else { format!("; saved map off: {}", saved_off.join(" ")) }
     );
     t.checked[0] += 1;
     t.checked[1] += bridged;
@@ -1458,6 +1495,7 @@ fn write_map(
         Some("WS") => (Platform::WonderSwan, "WonderSwan"),
         Some("WSC") => (Platform::WonderSwanColor, "WonderSwan Color"),
         Some("GBA") => (Platform::GameBoyAdvance, "Game Boy Advance"),
+        Some("SNES") => (Platform::Snes, "SNES"),
         _ => return,
     };
     let t = tally.entry(what).or_default();
@@ -1485,7 +1523,7 @@ fn write_map(
 }
 
 fn count_maps(dir: &Path) -> usize {
-    ["nes", "gb", "hes", "sgc", "ws", "gba"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+    ["nes", "gb", "hes", "sgc", "ws", "gba", "snes"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
 }
 
 fn main() {
