@@ -27,6 +27,10 @@ replacing a build.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway. It is now reported instead. A NES dump missing from the
   header database is reported with its hash.
+- The web console's RetroAchievements sub-tabs switched back to English once their counts
+  loaded.
+- In Japanese, Korean and Polish, a few sentences in Config › Settings and in the confirmation
+  for removing a directory stayed in English.
 
 # romexplorer 0.2.0 (alpha)
 
