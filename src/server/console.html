@@ -6682,6 +6682,7 @@ async function showUsers() {
     list = await api('/api/v1/users');
     const yn = v => v ? badge(tr('yes'), 'ok') : badge(tr('no'), 'dim');
     html += `<div class="card"><h2>${tr('Accounts')}</h2>
+    <p class="muted">${esc(tr('Who may use this machine over the network. An '))}<b>${esc(tr('admin'))}</b>${esc(tr(' can do everything. A '))}<b>${esc(tr('user'))}</b>${esc(tr(' can browse, sync, and fetch the media this server already has; with '))}<b>${esc(tr('upload'))}</b>${esc(tr(" they can also register new files they copied onto the server's share — never change what is already there. Passwords are stored only as hashes, and backups never carry them."))}</p>
     <div class="toolbar"><button class="btn primary" id="user-add">${setup && !list.length ? tr('create the admin account') : tr('add account')}</button></div>
     <table class="grid"><thead><tr><th>${tr('username')}</th><th>${tr('role')}</th><th>${tr('upload')}</th><th>${tr('enabled')}</th><th>${tr('password')}</th><th>${tr('devices')}</th><th>${tr('last sign-in')}</th><th></th></tr></thead>
     <tbody>${list.length ? list.map(u => `<tr><td>${esc(u.username)}</td><td>${badge(u.role, u.role === 'admin' ? 'ok' : 'dim')}</td><td>${yn(u.can_upload || u.role === 'admin')}</td><td>${yn(u.enabled)}</td>
@@ -6731,15 +6732,19 @@ async function deviceList(host, path) {
 function userDialog(existing, setup) {
   const MIN = 8; // romexplorer_types::auth::MIN_PASSWORD_LEN
   const role = existing ? existing.role : (setup ? 'admin' : 'user');
-  const box = openModal(`<h3>${existing ? esc(existing.username) : tr('add account')}</h3>
-    <form id="user-form" class="kv" style="grid-template-columns:120px 1fr">
-      <div>${tr('username')}</div><div><input name="username" autocomplete="off" value="${esc(existing ? existing.username : '')}" style="width:100%"></div>
-      <div>${tr('password')}</div><div><input name="password" type="password" autocomplete="new-password" style="width:100%"></div>
-      <div>${tr('role')}</div><div><select name="role"><option value="admin" ${role === 'admin' ? 'selected' : ''}>${tr('admin')}</option><option value="user" ${role === 'user' ? 'selected' : ''}>${tr('user')}</option></select></div>
-      <div>${tr('upload')}</div><div><input name="can_upload" type="checkbox" ${existing && existing.can_upload ? 'checked' : ''}></div>
-      <div>${tr('enabled')}</div><div><input name="enabled" type="checkbox" ${!existing || existing.enabled ? 'checked' : ''}></div>
+  const box = openModal(`<h3>${existing ? tr('Edit account') : tr('Add account')}</h3>
+    <form id="user-form" class="kv" style="grid-template-columns:110px 1fr">
+      <div>${tr('username')}</div><div><input name="username" required autocomplete="off" value="${esc(existing ? existing.username : '')}" style="width:100%"></div>
+      <div>${tr('password')}</div><div><input name="password" type="password" autocomplete="new-password" style="width:100%" placeholder="${existing ? esc(tr('leave blank to keep it')) : ''}">
+        <div class="muted">${esc(trf("At least {n} characters. Setting a new one signs the account's devices out.", { n: MIN }))}</div></div>
+      <div>${tr('role')}</div><div><label><input type="radio" name="role" value="user" ${role === 'user' ? 'checked' : ''}>${esc(tr(' user — browse, sync, fetch cached media'))}</label><br><label><input type="radio" name="role" value="admin" ${role === 'admin' ? 'checked' : ''}>${esc(tr(' admin — everything'))}</label></div>
+      <div>${tr('upload')}</div><div><label><input name="can_upload" type="checkbox" ${existing && existing.can_upload ? 'checked' : ''}>${esc(tr(" may register new files it copies onto the server's share"))}</label></div>
+      <div>${tr('enabled')}</div><div><label><input name="enabled" type="checkbox" ${!existing || existing.enabled ? 'checked' : ''}>${esc(tr(' enabled'))}</label></div>
       <div></div><div><button class="btn primary">${tr('save')}</button> <button type="button" class="btn" id="user-cancel">${tr('cancel')}</button></div>
     </form><div id="user-error" class="bad"></div>`);
+  // An admin may do everything, uploads included: the box means nothing for one.
+  const form = box.querySelector('#user-form'), syncUpload = () => { form.can_upload.disabled = form.role.value === 'admin'; };
+  form.querySelectorAll('input[name=role]').forEach(r => r.onchange = syncUpload); syncUpload();
   box.querySelector('#user-cancel').onclick = closeModal;
   box.querySelector('#user-form').onsubmit = async ev => {
     ev.preventDefault();
