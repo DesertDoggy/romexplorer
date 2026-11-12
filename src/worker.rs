@@ -224,10 +224,13 @@ static COOPERATIVE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashS
 /// Those cancelled and not yet ended, with when the cancel was seen.
 static WINDING_DOWN: std::sync::LazyLock<std::sync::Mutex<HashMap<u64, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
 
-/// Job types whose run watches for its own cancel and returns: a copy (`copy::run::Cancel`)
-/// and a scan (`rom::multiple::Multiple::cancel`).
+/// Job types whose run watches for its own cancel and returns: a copy (`copy::run::Cancel`),
+/// a scan (`rom::multiple::Multiple::cancel`) and a backup (its table threads ask
+/// `Progress::cancelled` after every page). A backup's threads run outside the job's task, so
+/// aborting the task would free the lane while they still write -- and a second backup could
+/// start beside them.
 fn stops_itself(job_type: JobType) -> bool {
-    matches!(job_type, JobType::CopyFiles | JobType::FileScan)
+    matches!(job_type, JobType::CopyFiles | JobType::FileScan | JobType::BackupDatabase | JobType::BackupCatalog | JobType::BackupDatSeed)
 }
 
 async fn tick(worker: &Arc<Worker>, running: &mut HashMap<String, (u64, tokio::task::JoinHandle<()>)>, ticks: u64) -> Result<usize, DatabaseError> {

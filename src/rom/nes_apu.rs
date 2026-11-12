@@ -116,7 +116,14 @@ impl Apu {
 
     /// Where the DMC channel reads its samples: `reader(data, addr)`, valid until the next
     /// call that replaces it. Only consulted during [`Apu::write`] and [`Apu::end_frame`].
-    pub fn set_reader(&mut self, reader: Option<ReaderFn>, data: *mut c_void) {
+    ///
+    /// # Safety
+    ///
+    /// `data` is handed to `reader` as it is. Until the next `set_reader` call replaces it,
+    /// every [`Apu::write`] and [`Apu::end_frame`] may call `reader` with it, so it must stay
+    /// valid for whatever `reader` does with it for that long (or be null when `reader` is
+    /// `None`).
+    pub unsafe fn set_reader(&mut self, reader: Option<ReaderFn>, data: *mut c_void) {
         unsafe { (self.api.set_reader)(self.handle, reader, data) }
     }
 
