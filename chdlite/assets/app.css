@@ -21,9 +21,9 @@ button:disabled { opacity: .45; cursor: default; }
 button.primary { background: #2f6fed; border-color: #2f6fed; }
 button.danger { background: #8d2b2b; border-color: #a33; }
 
-/* The five modes. The selected one is ringed with a thick rainbow: the ring is the padding
+/* The four modes. The selected one is ringed with a thick rainbow: the ring is the padding
    of the button showing its own conic gradient behind the image. */
-.modes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .mode { padding: 6px; border: 0; border-radius: 16px; background: transparent; display: flex; flex-direction: column; align-items: center; gap: 2px; transition: transform .15s ease-out; }
 .mode:hover { background: #20242c; }
 .mode img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 11px; background: #1b1e25; pointer-events: none; }
@@ -63,13 +63,13 @@ input[type=text], input[type=number], select { flex: 1; min-width: 0; background
 .note { color: #8a90a0; font-size: 12px; }
 
 /* ---- Android (class "android" on .app, set only there). Desktop never matches these. ----
-   Portrait: top bar, the modes in rows of three across the width, output, progress + Cancel,
-   the log in the rest. Landscape: the modes two by three on the left sized to the height,
-   everything else in the right column. While a run goes, the grid shrinks to one dimmed row so the log gets
+   Portrait: top bar, the modes 2x2 across the width, output, progress + Cancel, the log in
+   the rest. Landscape: the 2x2 grid on the left sized to the height, everything else in the
+   right column. While a run goes, the grid shrinks to one dimmed row of four so the log gets
    the room. Overlays here (.sheet, .browser, .confirm) exist only on Android. */
 .app.android { padding: 8px 10px 10px; gap: 8px; }
-.app.android .modes { grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.app.android .mode img { width: min(100%, 26vh); margin: 0 auto; }
+.app.android .modes { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.app.android .mode img { width: min(100%, 34vh); margin: 0 auto; }
 .app.android .access { flex-wrap: wrap; background: #2a1d12; border: 1px solid #6b4a1f; border-radius: 8px; padding: 8px 10px; }
 .app.android .access span { flex: 1; min-width: 200px; color: #f0d9b5; font-size: 13px; }
 .app.android button, .app.android input, .app.android select { min-height: 40px; }
@@ -79,12 +79,12 @@ input[type=text], input[type=number], select { flex: 1; min-width: 0; background
 @media (orientation: landscape) {
     .app.android:not(.running) { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto auto auto auto minmax(0, 1fr); column-gap: 12px; row-gap: 8px; }
     .app.android:not(.running) > * { grid-column: 2; }
-    .app.android:not(.running) > .modes { grid-column: 1; grid-row: 1 / -1; align-self: center; grid-template-columns: repeat(2, 1fr); }
+    .app.android:not(.running) > .modes { grid-column: 1; grid-row: 1 / -1; align-self: center; }
     .app.android:not(.running) > .log { grid-row: -2; }
-    .app.android:not(.running) .mode img { width: calc((100vh - 110px) / 3); }
+    .app.android:not(.running) .mode img { width: calc((100vh - 90px) / 2); }
 }
 
-.app.android.running .modes { grid-template-columns: repeat(5, 52px); justify-content: center; opacity: .5; }
+.app.android.running .modes { grid-template-columns: repeat(4, 52px); justify-content: center; opacity: .5; }
 .app.android.running .mode { padding: 3px; border-radius: 10px; }
 .app.android.running .mode img { width: 100%; border-radius: 7px; }
 .app.android.running .mode span { display: none; }
