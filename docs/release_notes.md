@@ -27,6 +27,7 @@ replacing a build.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway. It is now reported instead. A NES dump missing from the
   header database is reported with its hash.
+- ROM music could crash on a PSF2 set.
 
 # romexplorer 0.2.0 (alpha)
 
