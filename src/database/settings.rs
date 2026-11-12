@@ -776,7 +776,7 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
     ]),
     (KEY_SCAN_HASHES, &[
         "Which hashes a file scan computes. Default: everything except sha256.",
-        "Content is identified by hash, so at least one of crc32, xxh3_128, md5, sha1 and sha256 must stay on. ra_hash (RetroAchievements) is skipped where the platform has no RetroAchievements console id.",
+        "Files are matched to DATs by crc32, md5 or sha1, so at least one of those three must stay on; xxh3_128, sha256 and ra_hash are extras. ra_hash (RetroAchievements) is skipped where the platform has no RetroAchievements console id.",
     ]),
     (KEY_COPY_RECENT_DESTINATIONS, &[
         "The destination folders the copy dialog offers again, most recent first. Written by the app as you copy; remove the ones you no longer want, or reset to forget them all.",

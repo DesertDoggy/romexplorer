@@ -172,7 +172,8 @@ impl Pbp {
         if n <= 0 {
             return Err(format!("{}: disc {}'s table of contents is not readable", self.path.display(), disc + 1));
         }
-        let tracks = out[..n as usize].iter().map(|t| Track { number: t.number as u32, audio: t.audio != 0, lba: t.lba as i64 }).collect();
+        // The library's count is trusted no further than the table it was given to fill.
+        let tracks = out[..(n as usize).min(out.len())].iter().map(|t| Track { number: t.number as u32, audio: t.audio != 0, lba: t.lba as i64 }).collect();
         Ok((tracks, leadout as i64))
     }
 

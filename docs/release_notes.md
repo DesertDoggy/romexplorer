@@ -40,6 +40,24 @@ replacing a build.
 - Cancelling a backup let the next one start while it was still writing. Two backups started
   in the same second got the same name.
 - Fetching art from the main server could run during its catalogue sync.
+- With only xxh3_128 left on in the scan hashes, every rescan recorded every file as new and
+  lost its DAT links. One of crc32, md5 and sha1 now always stays on, and installs already set
+  that way keep their links.
+- Scans on Linux missed cue, gdi and m3u entries written in another case or with backslashes,
+  and split those games. Tracks kept in another folder, and a linked folder pointing at a
+  sibling, were counted twice.
+- Scanning a folder ignored the type and platform set on folders inside it, and took their
+  files over. PS3, PSP and Vita game folders directly under a folder with no platform became a
+  game per file.
+- A new-files-only scan read every folder game again. A full rescan split tracks already joined
+  into their disc, a changed file lost its serial match, and grouping discs into games was slow
+  on large folders.
+- Files that are not ROMs (text, images) became games. They are still hashed, but become games
+  only once identified.
+- Overwriting in a copy deleted the old file before the new one was written. A copy also
+  rewrote playlists it was told to keep or after it was cancelled, could write two files whose
+  names differ only in case to one file on Windows and SD cards, and linked incomplete copies
+  to their release.
 
 **Title merging**
 - A title you decoupled could be merged again later in the same pass, and undoing nested
