@@ -1736,20 +1736,25 @@ impl PcmStream for MapPcm {
     }
 }
 
+/// A booted engine's song record: the engine's name, the recipe's four fields (five when the
+/// sound routine is called more than once a frame), then body and fade.
+fn machine_record(engine: &str) -> Option<(music_search::Recipe, u64, u64)> {
+    let parts: Vec<&str> = engine.split('@').collect();
+    let n = parts.len();
+    if !(7..=8).contains(&n) {
+        return None;
+    }
+    let recipe = music_search::Recipe::decode(&parts[1..n - 2].join("@"))?;
+    Some((recipe, parts[n - 2].parse().ok()?, parts[n - 1].parse().ok()?))
+}
+
 fn open_machine<M: Machine + Send + 'static>(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String>
 where
     M::Entry: Send,
     M::Chip: Send,
 {
     let bad = || format!("a damaged ROM song record: {engine}");
-    // The engine's name, the recipe's four fields, then body and fade.
-    let parts: Vec<&str> = engine.split('@').collect();
-    if parts.len() != 7 {
-        return Err(bad());
-    }
-    let recipe = music_search::Recipe::decode(&parts[1..5].join("@")).ok_or_else(bad)?;
-    let body: u64 = parts[5].parse().map_err(|_| bad())?;
-    let fade: u64 = parts[6].parse().map_err(|_| bad())?;
+    let (recipe, body, fade) = machine_record(engine).ok_or_else(bad)?;
     let rom = read_rom(path)?;
     let v = u8::try_from(song).map_err(|_| bad())?;
     let player = music_search::Song::<M>::open(&rom, &recipe, v, PLAY_RATE)?;
@@ -1761,6 +1766,15 @@ where
 #[cfg(test)]
 mod bundle_tests {
     use super::*;
+
+    #[test]
+    fn a_song_record_reads_with_and_without_a_call_count() {
+        let (r, body, fade) = machine_record("md@120@1@1a2b@m0040@90000@8000").unwrap();
+        assert_eq!((r.calls, body, fade), (1, 90000, 8000));
+        let (r, body, fade) = machine_record("md@120@1@1a2b@m0040@2@90000@8000").unwrap();
+        assert_eq!((r.calls, body, fade), (2, 90000, 8000));
+        assert!(machine_record("md@120@1@1a2b@m0040@90000").is_none());
+    }
 
     #[test]
     fn a_bundle_gives_back_every_map_packed_into_it() {
