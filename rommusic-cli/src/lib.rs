@@ -174,17 +174,51 @@ pub fn prepare(input: &Path, o: &Options, library: Option<&rip_match::Library>) 
     if jobs.is_empty() {
         return Err(why_none.unwrap_or_else(|| if o.all { "no music found".into() } else { "no background music found (jingles and sound effects are left out unless asked for)".into() }));
     }
-    let stem = input.file_stem().or_else(|| input.file_name()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "rom".into());
-    let stem = if input.is_dir() { input.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or(stem) } else { stem };
-    let folder = o.out.clone().unwrap_or_else(|| input.parent().map(Path::to_path_buf).unwrap_or_default()).join(format!("{} (music)", clean(&stem)));
-    Ok(Plan { jobs, originals, folder, album: stem })
+    Ok(Plan { jobs, originals, folder: music_folder(input, o), album: album(input) })
 }
 
-/// Finds and writes one input. `cancel` stops it between chunks of a track; the track being
-/// written is then removed and the error is [`CANCELLED`].
-pub fn process(input: &Path, o: &Options, library: Option<&rip_match::Library>, cancel: &AtomicBool, on: &mut dyn FnMut(Event)) -> Result<(), String> {
+/// The input's name: the album the FLAC files carry, and their folder's name.
+fn album(input: &Path) -> String {
+    let stem = input.file_stem().or_else(|| input.file_name()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "rom".into());
+    if input.is_dir() { input.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or(stem) } else { stem }
+}
+
+/// The "<name> (music)" folder `input`'s music goes into, on its own.
+pub fn music_folder(input: &Path, o: &Options) -> PathBuf {
+    music_folder_named(input, o, &album(input))
+}
+
+fn music_folder_named(input: &Path, o: &Options, name: &str) -> PathBuf {
+    o.out.clone().unwrap_or_else(|| input.parent().map(Path::to_path_buf).unwrap_or_default()).join(format!("{} (music)", clean(name)))
+}
+
+/// [`music_folder`] for each input of one run, kept apart: two that would share a folder
+/// (`A/Game.sfc` and `B/Game.sfc` with one `--out`, or `Game.sfc` and `Game.nes` side by side)
+/// would mix their tracks, so a later one gets "<name> (2) (music)". Compared ignoring case,
+/// as the file systems that ignore it would.
+pub fn music_folders(inputs: &[PathBuf], o: &Options) -> Vec<PathBuf> {
+    let mut taken = std::collections::HashSet::new();
+    inputs
+        .iter()
+        .map(|input| {
+            let name = album(input);
+            let folder = std::iter::once(music_folder_named(input, o, &name))
+                .chain((2..).map(|n| music_folder_named(input, o, &format!("{name} ({n})"))))
+                .find(|folder| !taken.contains(&folder.to_string_lossy().to_lowercase()))
+                .expect("an unbounded list of names");
+            taken.insert(folder.to_string_lossy().to_lowercase());
+            folder
+        })
+        .collect()
+}
+
+/// Finds and writes one input into `folder` (its [`music_folders`] entry). `cancel` stops it
+/// between chunks of a track; the track being written is then removed and the error is
+/// [`CANCELLED`].
+pub fn process(input: &Path, folder: &Path, o: &Options, library: Option<&rip_match::Library>, cancel: &AtomicBool, on: &mut dyn FnMut(Event)) -> Result<(), String> {
     on(Event::Reading { input: input.to_path_buf() });
-    let plan = prepare(input, o, library)?;
+    let mut plan = prepare(input, o, library)?;
+    plan.folder = folder.to_path_buf();
     if cancel.load(Ordering::Relaxed) {
         return Err(CANCELLED.into());
     }
@@ -529,6 +563,18 @@ mod tests {
         assert_eq!(clean("Boss: Final / Last?"), "Boss_ Final _ Last_");
         assert_eq!(clean("..."), "track");
         assert_eq!(clean_path("../BGM/../a.adx"), PathBuf::from("BGM").join("a.adx"));
+    }
+
+    #[test]
+    fn inputs_of_one_name_get_folders_of_their_own() {
+        let o = Options { out: Some(PathBuf::from("out")), ..Options::default() };
+        let inputs = [PathBuf::from("a/Game.sfc"), PathBuf::from("b/game.sfc"), PathBuf::from("b/Other.nes"), PathBuf::from("c/Game.nes")];
+        let names: Vec<PathBuf> = music_folders(&inputs, &o);
+        let out = Path::new("out");
+        assert_eq!(names, [out.join("Game (music)"), out.join("game (2) (music)"), out.join("Other (music)"), out.join("Game (3) (music)")]);
+        // Each beside its own input: nothing shared.
+        let names = music_folders(&inputs[..2], &Options::default());
+        assert_eq!(names, [Path::new("a").join("Game (music)"), Path::new("b").join("game (music)")]);
     }
 
     #[test]

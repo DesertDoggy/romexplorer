@@ -10,9 +10,19 @@
 
 use romexplorer::rom::native_lib::{arch_dir_name, os_dir_name, EXE_ROOT_OVERRIDE_ENV};
 
-/// The libraries romexplorer looks for, under the names it looks for them: the two players
-/// first (required), then the disc readers (each only needed for some inputs).
-const APK_LIBRARIES: [&str; 6] = ["librommusic.so", "librvgmstream.so", "libchdman.so", "libdolphinrvz.so", "libcemuwua.so", "libz.so"];
+/// The libraries the APK carries, as (name in the APK, name romexplorer loads it by): the two
+/// players first (required), then the disc readers and 7-Zip (each only needed for some
+/// inputs). Android extracts only `lib*.so` from an APK, so 7-Zip's `7z.so` is packed as
+/// `lib7z.so` (scripts/build_rommusic_android.sh) and linked back under its own name.
+const APK_LIBRARIES: [(&str, &str); 7] = [
+    ("librommusic.so", "librommusic.so"),
+    ("librvgmstream.so", "librvgmstream.so"),
+    ("libchdman.so", "libchdman.so"),
+    ("libdolphinrvz.so", "libdolphinrvz.so"),
+    ("libcemuwua.so", "libcemuwua.so"),
+    ("libz.so", "libz.so"),
+    ("lib7z.so", "7z.so"),
+];
 const REQUIRED: usize = 2;
 
 /// Call once, first thing in the app's `main`, before any thread exists (it sets environment
@@ -34,9 +44,9 @@ pub fn ensure() -> Result<(), String> {
     let dir = root.join("lib").join(os_dir_name()).join(arch_dir_name());
     std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
     let mut missing = Vec::new();
-    for (i, name) in APK_LIBRARIES.iter().enumerate() {
+    for (i, (name, loaded_as)) in APK_LIBRARIES.iter().enumerate() {
         let target = source.join(name);
-        let link = dir.join(name);
+        let link = dir.join(loaded_as);
         // Relinked every start: an update installs the APK under a new path.
         let _ = std::fs::remove_file(&link);
         if !target.is_file() {
