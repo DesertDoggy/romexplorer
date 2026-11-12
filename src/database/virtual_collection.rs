@@ -469,19 +469,49 @@ pub async fn generate(pool: &MySqlPool, options: &VirtualCollectionOptions, repl
     Ok(writer.summary)
 }
 
-/// Deletes every ownership-side row (files/rom/game and their junctions, plus the stub
+/// Deletes every ownership-side row (files/rom/game and their junctions, the tables hung off
+/// them since -- sheet checks, the user's copy order, the ROM audio index -- plus the stub
 /// content rows the generator created for archives/playlists). Catalog tables untouched.
+///
+/// In chunks of [`CLEAR_CHUNK`] rows a statement rather than one transaction: a real library's
+/// file table is millions of rows, and one transaction over it ran the undo log up for
+/// minutes. A wipe that stops half way is finished by running it again.
 pub async fn clear_ownership(pool: &MySqlPool) -> Result<(), DatabaseError> {
+    // Children before parents (foreign keys).
+    const TABLES: [&str; 11] = [
+        "local_release_games",
+        "local_game_order",
+        "local_game_roms",
+        "local_game",
+        "local_rom_rahash",
+        "rom_audio_tracks",
+        "rom_audio_index",
+        "local_rom_files",
+        "local_rom",
+        "local_sheet_check",
+        "local_files",
+    ];
+    log::info!("clearing the ownership tables: unlinking covers and playlists");
+    loop {
+        let n = sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_game SET cover_media_id = NULL, playlist_file_id = NULL WHERE cover_media_id IS NOT NULL OR playlist_file_id IS NOT NULL LIMIT {CLEAR_CHUNK}"))).execute(pool).await?.rows_affected();
+        if n == 0 {
+            break;
+        }
+    }
+    for (i, table) in TABLES.iter().enumerate() {
+        let mut removed = 0u64;
+        loop {
+            let n = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table} LIMIT {CLEAR_CHUNK}"))).execute(pool).await?.rows_affected();
+            removed += n;
+            if n == 0 {
+                break;
+            }
+            log::info!("clearing the ownership tables: {table} ({} of {}), {removed} row(s) so far", i + 1, TABLES.len());
+        }
+    }
+    log::info!("clearing the ownership tables: stub content rows");
     let mut tx = pool.begin().await?;
     for sql in [
-        "UPDATE local_game SET cover_media_id = NULL, playlist_file_id = NULL",
-        "DELETE FROM local_release_games",
-        "DELETE FROM local_game_roms",
-        "DELETE FROM local_game",
-        "DELETE FROM local_rom_rahash",
-        "DELETE FROM local_rom_files",
-        "DELETE FROM local_rom",
-        "DELETE FROM local_files",
         // Stub content rows (archive containers / m3u) are the ones with no hashes and no
         // catalog membership.
         "DELETE cc FROM content_contents cc JOIN content c ON c.id = cc.parent_content_id WHERE NOT EXISTS (SELECT 1 FROM hashes h WHERE h.content_id = c.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = c.id)",
@@ -492,6 +522,9 @@ pub async fn clear_ownership(pool: &MySqlPool) -> Result<(), DatabaseError> {
     tx.commit().await?;
     Ok(())
 }
+
+/// Rows a [`clear_ownership`] statement deletes at a time.
+const CLEAR_CHUNK: u64 = 50_000;
 
 #[cfg(test)]
 mod tests {
