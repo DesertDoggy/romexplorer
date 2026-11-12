@@ -27,62 +27,43 @@ replacing a build.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway. It is now reported instead. A NES dump missing from the
   header database is reported with its hash.
-- The web console's RetroAchievements sub-tabs switched back to English once their counts
-  loaded.
-- In Japanese, Korean and Polish, a few sentences in Config › Settings and in the confirmation
-  for removing a directory stayed in English.
-- ROM music could crash on a PSF2 set.
-- Fetching art for a client could reach addresses on the server's own network, and had no size
-  limit. Images are now limited to 64 MB, video and music to 512 MB.
-- Any signed-in account could download a "database" or "all" SQLite cache, which holds the
-  accounts and settings. These now need an admin; a "catalog" cache is still open to all.
-- A full sync cut short could leave a table half filled, and later syncs skipped it.
-- Cancelling a backup let the next one start while it was still writing. Two backups started
-  in the same second got the same name.
-- Fetching art from the main server could run during its catalogue sync.
-- With only xxh3_128 left on in the scan hashes, every rescan recorded every file as new and
-  lost its DAT links. One of crc32, md5 and sha1 now always stays on, and installs already set
-  that way keep their links.
-- Scans on Linux missed cue, gdi and m3u entries written in another case or with backslashes,
-  and split those games. Tracks kept in another folder, and a linked folder pointing at a
-  sibling, were counted twice.
-- Scanning a folder ignored the type and platform set on folders inside it, and took their
-  files over. PS3, PSP and Vita game folders directly under a folder with no platform became a
-  game per file.
-- A new-files-only scan read every folder game again. A full rescan split tracks already joined
-  into their disc, a changed file lost its serial match, and grouping discs into games was slow
-  on large folders.
-- Files that are not ROMs (text, images) became games. They are still hashed, but become games
-  only once identified.
-- Overwriting in a copy deleted the old file before the new one was written. A copy also
-  rewrote playlists it was told to keep or after it was cancelled, could write two files whose
-  names differ only in case to one file on Windows and SD cards, and linked incomplete copies
-  to their release.
+
+**Scan**
+- On Linux, a scan missed cue, gdi and m3u entries written in another case or with
+  backslashes, and took two files whose names differ only in case for one ROM.
+- Scanning a folder ignored the type and platform set on folders inside it. Game folders
+  directly under a folder with no platform became one game per file.
+- Rescans read folder games again, split tracks already joined into their disc and lost serial
+  matches. Grouping discs into games was slow on large folders.
+- Files that are not ROMs, such as text and images, became games. They now become games only
+  once identified.
+- With only xxh3_128 on in the scan hashes, rescans lost their DAT matches. One of crc32, md5
+  and sha1 now always stays on.
+
+**Copy**
+- Overwriting deleted the old file before the new one was written. A copy could also rewrite
+  playlists it was told to keep, and write two files whose names differ only in case to one.
 
 **Title merging**
-- A title you decoupled could be merged again later in the same pass, and undoing nested
-  merges in order lost the titles merged into the one split out.
-- Accepting a merge suggestion could merge two versions of a version set, or a retail title
-  with an unlicensed one. "Accept all" no longer merges titles you decoupled; accepting one
-  suggestion on its own still does.
-- A suggestion with many titles could name the wrong title.
-- Releases flagged unlicensed, pirate or aftermarket without saying so in their name were
-  merged with retail titles.
-- A wrong IGDB link the merge audit removed came back with the next hash match, and the audit
-  could merge back titles the merge pass keeps apart.
-- A Hasheous match for a merged game's other name made a duplicate title.
+- Merging could join two versions of a version set, or a retail title with an unlicensed one.
+  Decoupled titles came back with "Accept all", and IGDB links the merge audit removed came
+  back with the next hash match.
+- A Hasheous match on a merged game's other name made a duplicate title.
 
-**Scan, jobs and downloads**
-- On Linux, two files whose names differ only in case were one ROM. Scans of large libraries
-  are faster.
-- A copy to another drive, or a sync from another server, waited for unrelated jobs. After the
-  database restarted, a job running on another worker could start a second time.
-- Two downloads of the same image at once could store it twice or share one file name.
-- An IGDB platform sync showed nothing for minutes before its first page.
-- A DAT whose file name had a character Windows does not allow could not be saved.
-- Creating a database account that already existed kept its old password.
-- An unsupported database server (MariaDB before 10.6, or MySQL) now gets a clear error at
-  connect.
+**Server and jobs**
+- Fetching art for a client could reach addresses on the server's own network, with no size
+  limit.
+- Any account could download the "database" and "all" SQLite caches, which hold the accounts
+  and settings. They now need an admin.
+- A full sync cut short left a table half filled, and cancelling a backup let the next one
+  start while it was still writing.
+- Copies to another drive and syncs from another server waited for unrelated jobs. After a
+  database restart, a job could start twice.
+
+**Other**
+- ROM music could crash on a PSF2 set.
+- A few labels in the web console and sentences in Config › Settings stayed in English.
+- MariaDB older than 10.6 failed with unclear errors. It is now refused at connect.
 
 # romexplorer 0.2.0 (alpha)
 

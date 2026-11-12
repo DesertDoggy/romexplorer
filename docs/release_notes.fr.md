@@ -32,6 +32,47 @@ Faites une sauvegarde avant de remplacer une version.
   et son en-tête interne n'étaient pas d'accord sur l'en-tête de copieur. Il est maintenant
   signalé comme erreur. Un dump NES absent de la base d'en-têtes est signalé avec son hash.
 
+**Analyse**
+- Sous Linux, une analyse ne trouvait pas les entrées cue, gdi et m3u écrites avec une autre
+  casse ou des barres obliques inverses, et prenait deux fichiers ne différant que par la
+  casse pour une seule ROM.
+- L'analyse d'un dossier ignorait le type et la plateforme des dossiers qu'il contient. Les
+  dossiers de jeu sous un dossier sans plateforme devenaient un jeu par fichier.
+- Les nouvelles analyses relisaient les jeux en dossier, séparaient les pistes déjà réunies
+  et perdaient les correspondances par numéro de série. Le regroupement des disques était lent
+  sur les grands dossiers.
+- Les fichiers qui ne sont pas des ROM, comme les textes et les images, devenaient des jeux.
+  Ils ne le deviennent plus qu'une fois identifiés.
+- Avec seulement xxh3_128 parmi les hachages d'analyse, les correspondances DAT se perdaient.
+  L'un de crc32, md5 et sha1 reste désormais toujours activé.
+
+**Copie**
+- L'écrasement supprimait l'ancien fichier avant d'écrire le nouveau. Une copie pouvait aussi
+  réécrire des playlists à conserver, et écrire en un seul deux fichiers ne différant que par
+  la casse.
+
+**Fusion des titres**
+- La fusion pouvait réunir deux versions d'un ensemble de versions, ou un titre commercial avec
+  un titre sans licence. Les titres séparés revenaient avec « Tout accepter », et les liens
+  IGDB retirés par l'audit revenaient au rapprochement suivant.
+- Une correspondance Hasheous sur l'autre nom d'un jeu fusionné créait un titre en double.
+
+**Serveur et tâches**
+- La récupération d'images pour un client pouvait atteindre le réseau du serveur, sans limite
+  de taille.
+- Tout compte pouvait télécharger les caches SQLite « database » et « all », qui contiennent
+  les comptes et les réglages. Ils demandent désormais un administrateur.
+- Une synchronisation complète interrompue laissait une table à moitié remplie, et annuler une
+  sauvegarde laissait la suivante démarrer pendant l'écriture.
+- Les copies vers un autre disque et les synchronisations depuis un autre serveur attendaient
+  des tâches sans rapport. Après un redémarrage de la base, une tâche pouvait démarrer deux fois.
+
+**Divers**
+- La musique des ROM pouvait planter sur un ensemble PSF2.
+- Quelques libellés de la console web et phrases de Config › Réglages restaient en anglais.
+- MariaDB avant 10.6 échouait avec des erreurs peu claires. Elle est désormais refusée à la
+  connexion.
+
 # romexplorer 0.2.0 (alpha)
 
 Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.

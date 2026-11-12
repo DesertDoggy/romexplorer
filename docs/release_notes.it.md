@@ -31,6 +31,46 @@ aggiornamento. Fai un backup prima di sostituire una build.
   interno non concordavano sull'header del copier. Ora viene segnalato come errore. Un dump NES
   assente dal database degli header viene segnalato con il suo hash.
 
+**Scansione**
+- Su Linux una scansione non trovava le voci cue, gdi e m3u scritte con maiuscole diverse o
+  con barre rovesciate, e considerava una sola ROM due file che differiscono solo per le
+  maiuscole.
+- La scansione di una cartella ignorava tipo e piattaforma delle cartelle al suo interno. Le
+  cartelle di gioco sotto una cartella senza piattaforma diventavano un gioco per file.
+- Le nuove scansioni rileggevano i giochi in cartella, separavano tracce già unite e perdevano
+  le corrispondenze per seriale. Raggruppare i dischi era lento nelle cartelle grandi.
+- I file che non sono ROM, come testi e immagini, diventavano giochi. Ora solo quando sono
+  identificati.
+- Con solo xxh3_128 tra gli hash di scansione si perdevano le corrispondenze DAT. Ora uno tra
+  crc32, md5 e sha1 resta sempre attivo.
+
+**Copia**
+- La sovrascrittura cancellava il vecchio file prima di scrivere il nuovo. Una copia poteva
+  anche riscrivere playlist da conservare e scrivere in uno solo due file che differiscono solo
+  per le maiuscole.
+
+**Unione dei titoli**
+- L'unione poteva unire due versioni di un set di versioni, o un titolo commerciale con uno
+  senza licenza. I titoli separati tornavano con «Accetta tutto», e i link IGDB rimossi
+  dall'audit tornavano al successivo confronto degli hash.
+- Una corrispondenza Hasheous sull'altro nome di un gioco unito creava un titolo doppio.
+
+**Server e processi**
+- Il recupero di immagini per un client poteva raggiungere la rete del server, senza limite di
+  dimensione.
+- Qualsiasi account poteva scaricare le cache SQLite «database» e «all», con account e
+  impostazioni. Ora serve un amministratore.
+- Una sincronizzazione completa interrotta lasciava una tabella a metà, e annullare un backup
+  lasciava partire il successivo mentre ancora scriveva.
+- Le copie su un'altra unità e le sincronizzazioni da un altro server aspettavano processi
+  estranei. Dopo il riavvio del database un processo poteva partire due volte.
+
+**Altro**
+- La musica delle ROM poteva bloccarsi su un set PSF2.
+- Alcune etichette della console web e frasi in Config › Impostazioni restavano in inglese.
+- MariaDB prima della 10.6 falliva con errori poco chiari. Ora viene rifiutata alla
+  connessione.
+
 # romexplorer 0.2.0 (alpha)
 
 Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
