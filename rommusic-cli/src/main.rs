@@ -157,8 +157,9 @@ fn run() -> i32 {
     let library = rommusic::load_library(&a.o.originals, &mut |_| {});
     let cancel = AtomicBool::new(false);
     let mut failed = 0;
-    for input in &a.inputs {
-        let result = if a.list { list(input, &a.o, library.as_ref()) } else { rommusic::process(input, &a.o, library.as_ref(), &cancel, &mut print_event) };
+    let folders = rommusic::music_folders(&a.inputs, &a.o);
+    for (input, folder) in a.inputs.iter().zip(&folders) {
+        let result = if a.list { list(input, folder, &a.o, library.as_ref()) } else { rommusic::process(input, folder, &a.o, library.as_ref(), &cancel, &mut print_event) };
         if let Err(e) = result {
             eprintln!("{}: {e}", input.display());
             failed += 1;
@@ -167,9 +168,9 @@ fn run() -> i32 {
     finish(i32::from(failed > 0))
 }
 
-fn list(input: &std::path::Path, o: &Options, library: Option<&romexplorer::rom::rip_match::Library>) -> Result<(), String> {
+fn list(input: &std::path::Path, folder: &std::path::Path, o: &Options, library: Option<&romexplorer::rom::rip_match::Library>) -> Result<(), String> {
     let plan = rommusic::prepare(input, o, library)?;
-    println!("{} -> {}", input.display(), plan.folder.display());
+    println!("{} -> {}", input.display(), folder.display());
     for (n, job) in plan.jobs.iter().enumerate() {
         println!("  {:02}  {}", n + 1, job.describe());
     }
