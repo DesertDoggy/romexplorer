@@ -358,6 +358,21 @@ pub fn for_each_gsf(set: &Path, mut f: impl FnMut(&psf::Loaded)) {
     }
 }
 
+/// Each N64 track file of the set, loaded with the libraries it names, in the set's order.
+pub fn for_each_usf(set: &Path, mut f: impl FnMut(&psf::Loaded)) {
+    for file in collect_set(set) {
+        if !psf::is_track_file(&file.rel) || !file.data.starts_with(b"PSF\x21") {
+            continue;
+        }
+        let libs = file.libs.clone();
+        let mut read_lib = |name: &str| libs.iter().find(|(k, _)| *k == lib_key(name)).map(|(_, d)| d.clone());
+        match psf::load(&file.data, &mut read_lib) {
+            Ok(loaded) => f(&loaded),
+            Err(e) => log::debug!("{}: {e}", file.rel),
+        }
+    }
+}
+
 /// Every file of the set `keep` accepts (a WonderSwan set's `.wsr`, known by the `WSRF` 32
 /// bytes from its end), in the set's order.
 pub fn all_where(set: &Path, keep: impl Fn(&[u8]) -> bool) -> Vec<Vec<u8>> {

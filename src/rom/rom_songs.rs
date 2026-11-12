@@ -18,8 +18,8 @@ use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresh
 /// below the rip-set view.
 pub const ROM_SONG_VIEW: u32 = u16::MAX as u32 - 1;
 
-/// The largest ROM read whole: GBA cartridges are 32 MB at most.
-const MAX_ROM_BYTES: u64 = 32 << 20;
+/// The largest ROM read whole: N64 cartridges are 64 MB at most.
+const MAX_ROM_BYTES: u64 = 64 << 20;
 /// Songs are measured at this rate: the length doesn't depend on it, and it is far cheaper.
 const MEASURE_RATE: u32 = 8000;
 /// A song still playing after this long is music that runs on; it is measured no further.
@@ -51,6 +51,8 @@ const WS_MAP: &str = "wsmap";
 const GBA_MAP: &str = "gbamap";
 /// A SNES song played from the ROM by its music map ([`super::snes_map`]).
 const SNES_MAP: &str = "snesmap";
+/// An N64 song played from the ROM by its music map ([`super::n64_map`]).
+const N64_MAP: &str = "n64map";
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -96,6 +98,7 @@ pub fn covers(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     (platform == P::GameBoyAdvance as u16 && (agbplay::available() || super::gb_apu::available())) || (is_nes(platform) && super::nes_apu::available())
         || (is_snes(platform) && super::snes_apu::available())
+        || (platform == P::Nintendo64 as u16 && super::psf::usf_available())
         || (is_gb(platform) && super::gb_apu::available())
         || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::SegaGenesis as u16
             || platform == P::TurboGrafx16 as u16
@@ -230,6 +233,16 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
     }
     if is_nes(platform) {
         return index_nes(path, t);
+    }
+    // An N64 game plays only by a map, like a SNES game.
+    if platform == crate::common::models::Platform::Nintendo64 as u16 {
+        let rom = read_rom(path)?;
+        let Some(native) = super::n64_map::native(&rom) else { return Ok((Vec::new(), None)) };
+        let key = gb_key(&native);
+        return Ok(match load_n64_map(&key) {
+            Some(m) => (index_n64_map(&key, &m, t), None),
+            None => (Vec::new(), Some("no music map for this N64 game: its music is found from a matched set in original audio formats".into())),
+        });
     }
     // A SNES game plays only by a map: its sound driver runs on a chip the game feeds.
     if is_snes(platform) {
@@ -534,6 +547,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(WS_MAP) => open_ws_map(path, engine, song),
         Some(GBA_MAP) => open_gba_map(path, engine, song),
         Some(SNES_MAP) => open_snes_map(path, engine, song),
+        Some(N64_MAP) => open_n64_map(path, engine, song),
         Some(GB) => open_machine::<super::gb_music::GameBoy>(path, engine, song),
         Some(SMS) => open_machine::<super::sms_music::MasterSystem>(path, engine, song),
         Some(GG) => open_machine::<super::sms_music::GameGear>(path, engine, song),
@@ -672,7 +686,7 @@ pub fn pack_bundle(dir: &Path, kinds: &[&str]) -> Result<(Vec<u8>, Vec<(String, 
 }
 
 /// Each kind of map: its folder under the maps dir and its file extension.
-const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap"), ("gba", "gbamap"), ("snes", "snesmap")];
+const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap"), ("gba", "gbamap"), ("snes", "snesmap"), ("n64", "n64map")];
 
 /// A kept map's text: one built here first, then the bundled one.
 fn kept_map(kind: &str, key: &str) -> Option<String> {
@@ -736,6 +750,7 @@ pub fn builds_maps(platform: u16) -> bool {
             && super::vgm_chips::available())
         || (platform == P::GameBoyAdvance as u16 && super::gba_map::available())
         || (is_snes(platform) && super::snes_apu::available())
+        || (platform == P::Nintendo64 as u16 && super::psf::usf_available())
 }
 
 fn sgc_map_path(key: &str) -> Option<PathBuf> {
@@ -1016,6 +1031,127 @@ struct SnesMapPcm {
 impl PcmStream for SnesMapPcm {
     fn sample_rate(&self) -> u32 {
         super::snes_apu::SAMPLE_RATE
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+    fn total_samples(&self) -> Option<u64> {
+        Some(self.left)
+    }
+    fn next_chunk(&mut self) -> Result<Option<Vec<i16>>, String> {
+        if self.left == 0 {
+            return Ok(None);
+        }
+        let n = self.left.min(4096) as usize;
+        let mut buf = vec![0i16; n * 2];
+        self.song.render(&mut buf)?;
+        if self.fade > 0 {
+            for (i, frame) in buf.chunks_exact_mut(2).enumerate() {
+                let g = super::track_timing::fade_gain(self.left - i as u64, self.fade, self.tail);
+                if g < 1.0 {
+                    for s in frame {
+                        *s = (f32::from(*s) * g) as i16;
+                    }
+                }
+            }
+        }
+        self.left -= n as u64;
+        Ok(Some(buf))
+    }
+}
+
+fn load_n64_map(key: &str) -> Option<super::n64_map::Map> {
+    super::n64_map::Map::decode(&kept_map("n64", key)?)
+}
+
+/// The map of the N64 ROM `rom` from the first of `sets` whose USF tracks are this ROM's,
+/// unless one is kept already. False when no set holds a USF or the ROM is not an N64 dump.
+fn n64_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
+    let Some(native) = super::n64_map::native(rom) else { return Ok(false) };
+    let key = gb_key(&native);
+    let mut any = false;
+    for set in sets {
+        let mut builder = super::n64_map::Builder::new(&native);
+        let mut tracks = 0;
+        super::rip_sets::for_each_usf(set, |loaded| {
+            tracks += 1;
+            builder.add(loaded);
+        });
+        if tracks == 0 {
+            continue;
+        }
+        any = true;
+        if kept_map("n64", &key).is_some() {
+            return Ok(true);
+        }
+        let Some(mut m) = builder.finish() else { continue };
+        super::n64_map::slim(&mut m, &native)?;
+        let file = MAPS_DIR.get().ok_or("no folder for music maps")?.join("n64").join(format!("{key}.n64map"));
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&file, m.encode()).map_err(|e| format!("{}: {e}", file.display()))?;
+        return Ok(true);
+    }
+    Ok(any)
+}
+
+/// An N64 map's songs, timed by the set's own tags.
+fn index_n64_map(key: &str, m: &super::n64_map::Map, t: &Thresholds) -> Vec<FoundTrack> {
+    m.tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, tr)| tr.length_ms > 0)
+        .map(|(i, tr)| {
+            let (body, fade) = (u64::from(tr.length_ms), u64::from(tr.fade_ms));
+            let name = format!("Track {}", i + 1);
+            let shape = Shape { looping: fade > 0, duration_ms: body, channels: 2, cd_track: 0, rip: true };
+            let kind = classify(&shape, &name, t);
+            FoundTrack {
+                location: TrackLocation::RomSong { engine: format!("{N64_MAP}@{key}@{body}@{fade}"), song: i as u32 },
+                name,
+                kind,
+                sample_rate: super::n64_map::RATE,
+                channels: 2,
+                duration_ms: body + fade,
+                looping: false,
+                loop_start: 0,
+                loop_end: 0,
+                codec: "Nintendo 64".into(),
+                format: format!("song {}", i + 1),
+                bytes: 0,
+                video: false,
+            }
+        })
+        .collect()
+}
+
+/// An N64 song played from the ROM by its map ([`N64_MAP`]).
+fn open_n64_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, String> {
+    let bad = || format!("a damaged ROM song record: {engine}");
+    let parts: Vec<&str> = engine.split('@').collect();
+    let [_, key, body, fade] = parts[..] else { return Err(bad()) };
+    let body: u64 = body.parse().map_err(|_| bad())?;
+    let fade: u64 = fade.parse().map_err(|_| bad())?;
+    let m = load_n64_map(key).ok_or("this game's music map is no longer kept; scan its music again")?;
+    let rom = read_rom(path)?;
+    let native = super::n64_map::native(&rom).ok_or("not an N64 ROM")?;
+    let song = super::n64_map::MapSong::open(&m, &native, song as usize)?;
+    let r = u64::from(super::n64_map::RATE);
+    let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
+    Ok(Box::new(N64MapPcm { song, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000 }))
+}
+
+struct N64MapPcm {
+    song: super::n64_map::MapSong,
+    left: u64,
+    fade: u64,
+    tail: u64,
+}
+
+impl PcmStream for N64MapPcm {
+    fn sample_rate(&self) -> u32 {
+        super::n64_map::RATE
     }
     fn channels(&self) -> u16 {
         2
@@ -1360,6 +1496,9 @@ pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
         return Ok(());
     }
     if snes_map_from_sets(&rom, sets)? {
+        return Ok(());
+    }
+    if n64_map_from_sets(&rom, sets)? {
         return Ok(());
     }
     sgc_map_from_sets(&rom, sets)
