@@ -107,6 +107,9 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     if lower.ends_with(".gba") || lower.contains("game boy advance") {
         return Some("GBA");
     }
+    if lower.ends_with(".z64") || lower.ends_with(".n64") || lower.ends_with(".v64") || romexplorer::rom::n64_map::native(rom).is_some() {
+        return Some("N64");
+    }
     if nes_cart::parse(rom).is_ok() {
         return Some("NES");
     }
@@ -843,6 +846,93 @@ fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
     *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
+/// `--mapcheck` for an N64 ROM and its matched USF set: each track played from the set and
+/// from the ROM by the saved map; right when the sound is the same.
+fn print_n64_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    use romexplorer::rom::{n64_map, psf};
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let Some(native) = n64_map::native(rom) else {
+        println!("{name}: not an N64 ROM dump");
+        return;
+    };
+    let mut builder = n64_map::Builder::new(&native);
+    let mut real = Vec::new();
+    let mut theirs = true;
+    rip_sets::for_each_usf(set, |loaded| {
+        if !theirs {
+            return;
+        }
+        theirs = builder.add(loaded);
+        if theirs {
+            let mut out = vec![0i16; n64_map::RATE as usize * 2 * GBA_CHECK_SECONDS as usize];
+            real.push(psf::Player::open(loaded.clone(), n64_map::RATE).and_then(|mut p| p.play(&mut out)).ok().map(|_| out).filter(|o| o.iter().any(|&x| x != 0)));
+        }
+    });
+    let built = started.elapsed().as_secs_f32();
+    let Some(mut m) = builder.finish() else {
+        let why = if real.is_empty() && theirs { "the set holds no USF track" } else { "the set's ROM parts are not this ROM's" };
+        println!("{name}: {why}");
+        *t.reasons.entry(why.into()).or_default() += 1;
+        return;
+    };
+    let full = m.file_bytes();
+    let unslimmed = m.clone();
+    let slim_started = std::time::Instant::now();
+    if let Err(e) = n64_map::slim(&mut m, &native) {
+        println!("{name}: slimming failed: {e}");
+    }
+    let slim_s = slim_started.elapsed().as_secs_f32();
+    let text = m.encode();
+    let back = n64_map::Map::decode(&text).expect("the map reads back");
+    let play = |m: &n64_map::Map, i: usize| m.section(&native, i).and_then(|s| n64_map::render(&s, m.compare, m.fifo_full, GBA_CHECK_SECONDS));
+    let (mut right, mut silent, mut wrong, mut lost) = (0usize, 0usize, Vec::new(), Vec::new());
+    for (i, want) in real.iter().enumerate() {
+        let Some(want) = want else {
+            silent += 1;
+            continue;
+        };
+        match play(&back, i) {
+            Ok(got) if gba_map::alike(want, &got) >= 0.99 => right += 1,
+            got => {
+                wrong.push(match got {
+                    Ok(g) => format!("{i}:{:.2}", gba_map::alike(want, &g)),
+                    Err(e) => format!("{i}:{e}"),
+                });
+                if play(&unslimmed, i).is_ok_and(|g| gba_map::alike(want, &g) >= 0.99) {
+                    lost.push(i.to_string());
+                }
+            }
+        }
+    }
+    let n = real.len() - silent;
+    println!(
+        "{name}: map, {:.1} s ({built:.1} s to build, {slim_s:.1} s to slim): {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file of {full} before slimming; map {:.1} KB){}{}",
+        started.elapsed().as_secs_f32(),
+        back.file_bytes(),
+        text.len() as f64 / 1024.0,
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) },
+        if wrong.is_empty() { String::new() } else { format!("; right before slimming: {}", if lost.is_empty() { "none".into() } else { lost.join(" ") }) }
+    );
+    t.checked[0] += 1;
+    t.checked[3] += n;
+    t.checked[4] += right;
+    t.saved += right;
+    if n > 0 && right == n {
+        t.with_music += 1;
+    }
+    let bucket = match right as f64 / n.max(1) as f64 {
+        _ if n == 0 => "no track with sound",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
 /// `--mapcheck` for a SNES ROM and its matched set's `.spc` files: how much of each track's
 /// sound memory is in the ROM as is, and how many tracks play right rebuilt from it.
 fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
@@ -1496,6 +1586,7 @@ fn write_map(
         Some("WSC") => (Platform::WonderSwanColor, "WonderSwan Color"),
         Some("GBA") => (Platform::GameBoyAdvance, "Game Boy Advance"),
         Some("SNES") => (Platform::Snes, "SNES"),
+        Some("N64") => (Platform::Nintendo64, "Nintendo 64"),
         _ => return,
     };
     let t = tally.entry(what).or_default();
@@ -1523,7 +1614,7 @@ fn write_map(
 }
 
 fn count_maps(dir: &Path) -> usize {
-    ["nes", "gb", "hes", "sgc", "ws", "gba", "snes"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+    ["nes", "gb", "hes", "sgc", "ws", "gba", "snes", "n64"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
 }
 
 fn main() {
@@ -1775,6 +1866,12 @@ fn main() {
                     }
                 }
             }
+            Some("N64") if o.mapcheck => {
+                if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Nintendo64, o.verbose) {
+                    print_n64_mapcheck(&path, &rom, &set, tally.entry("Nintendo 64").or_default());
+                }
+            }
+            Some("N64") => println!("{}: N64: only --mapcheck and --write-maps", path.display()),
             Some("GBA") if o.mapcheck => {
                 if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::GameBoyAdvance, o.verbose) {
                     print_gba_mapcheck(&path, &rom, &set, tally.entry("Game Boy Advance").or_default());

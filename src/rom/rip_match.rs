@@ -38,6 +38,7 @@ pub enum RipSystem {
     ColecoVision,
     WonderSwan,
     Gba,
+    N64,
 }
 
 impl RipSystem {
@@ -56,6 +57,7 @@ impl RipSystem {
             Self::ColecoVision => &[P::ColecoVision as u16],
             Self::WonderSwan => &[P::WonderSwan as u16, P::WonderSwanColor as u16],
             Self::Gba => &[P::GameBoyAdvance as u16],
+            Self::N64 => &[P::Nintendo64 as u16],
         }
     }
 }
@@ -130,9 +132,11 @@ pub fn fingerprint<'a>(files: impl IntoIterator<Item = &'a [u8]>) -> Option<Fing
     let mut seen = std::collections::HashSet::new();
     for data in files {
         // A GSF's cartridge bytes are packed; they are unpacked to be matched.
-        let gsf = super::psf::gsf_cart_bytes(data);
+        // A USF's ROM parts are in its reserved area, as little-endian words; ROMs are
+        // turned to that order to be matched.
+        let gsf = super::psf::gsf_cart_bytes(data).map(|b| (RipSystem::Gba, b)).or_else(|| super::psf::usf_rom_bytes(data).map(|b| (RipSystem::N64, b)));
         let found = match &gsf {
-            Some(bytes) => Some((RipSystem::Gba, bytes.as_slice())),
+            Some((sys, bytes)) => Some((*sys, bytes.as_slice())),
             None => rom_image(data),
         };
         let Some((sys, image)) = found else { continue };
@@ -299,6 +303,43 @@ pub fn choose(matches: &[(PathBuf, f32)], claimed: impl Fn(&Path) -> bool, sibli
 /// The largest ROM file scanned whole; bigger is not a cartridge these sets are from.
 const MAX_ROM_BYTES: u64 = 64 << 20;
 
+/// Turns an N64 ROM read in pieces to little-endian words, from whichever of the three usual
+/// byte orders its first word shows.
+#[derive(Default)]
+struct N64Order {
+    /// 0 big-endian (.z64), 1 byte pairs swapped (.v64), 2 little-endian (.n64); None until
+    /// the first word.
+    kind: Option<u8>,
+    carry: Vec<u8>,
+}
+
+impl N64Order {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.carry.extend_from_slice(bytes);
+        let whole = self.carry.len() / 4 * 4;
+        if whole == 0 {
+            return Vec::new();
+        }
+        let kind = *self.kind.get_or_insert(match self.carry[..4] {
+            [0x37, 0x80, 0x40, 0x12] => 1,
+            [0x40, 0x12, 0x37, 0x80] => 2,
+            _ => 0,
+        });
+        let mut out: Vec<u8> = self.carry.drain(..whole).collect();
+        for w in out.chunks_exact_mut(4) {
+            match kind {
+                0 => w.reverse(),
+                1 => {
+                    let [a, b, c, d] = [w[0], w[1], w[2], w[3]];
+                    w.copy_from_slice(&[c, d, a, b]);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
 /// One set of a rip library.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CachedSet {
@@ -310,7 +351,7 @@ struct CachedSet {
 
 /// The fingerprint cache's format. Raise it whenever [`fingerprint`] or [`CachedSet`]
 /// changes, so caches written before are read again from the sets instead of matching nothing.
-const CACHE_FORMAT: u32 = 2;
+const CACHE_FORMAT: u32 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheFile {
@@ -424,7 +465,17 @@ impl Library {
         if scanners.is_empty() {
             return Ok(Vec::new());
         }
-        let mut feed = |bytes: &[u8]| scanners.iter_mut().for_each(|(_, s)| s.feed(bytes));
+        // N64 sets are matched in lazyusf2's byte order: the ROM is turned to it as it is read.
+        let n64 = systems.contains(&RipSystem::N64);
+        let order = std::cell::RefCell::new(N64Order::default());
+        let mut feed = |bytes: &[u8]| {
+            if n64 {
+                let words = order.borrow_mut().feed(bytes);
+                scanners.iter_mut().for_each(|(_, s)| s.feed(&words));
+            } else {
+                scanners.iter_mut().for_each(|(_, s)| s.feed(bytes));
+            }
+        };
         let name = rom.to_string_lossy().to_ascii_lowercase();
         let format = if name.ends_with(".zip") {
             Some(super::sevenzip_wrapper::ArchiveFormat::Zip)
@@ -441,6 +492,7 @@ impl Library {
                     if entry.is_dir || entry.size > MAX_ROM_BYTES {
                         continue;
                     }
+                    *order.borrow_mut() = N64Order::default();
                     archive.extract_stream(i, None, |_, _, chunk| {
                         feed(chunk);
                         true
