@@ -208,16 +208,17 @@ impl Default for N3ds {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Jobs {
-    /// Compression threads in total; 0 = every core.
+    /// Compression threads in total; 0 = automatic ([`Jobs::auto_threads`]).
     pub threads: u32,
     /// Files converted at once; 0 = automatic (a quarter of the cores, at most 4).
     pub concurrent_files: u32,
 }
 
 impl Jobs {
-    /// Threads in total when `threads` is automatic: every core.
+    /// Threads in total when `threads` is automatic: the physical cores but 4, left for the
+    /// rest of the machine, and at least 1.
     pub fn auto_threads() -> usize {
-        num_cpus::get().max(1)
+        romexplorer::rom::native_lib::physical_core_count().saturating_sub(4).max(1)
     }
 
     /// Files at once when `concurrent_files` is automatic, given `cores` threads in total: a
@@ -229,13 +230,13 @@ impl Jobs {
         (cores / 4).clamp(1, 4)
     }
 
-    /// (files at once, threads for each), for `inputs` files.
+    /// (files at once, threads for each), for `inputs` files. The files together never use
+    /// more threads than the total: no more files at once than threads.
     pub fn plan(&self, inputs: usize) -> (usize, u32) {
         let cores = if self.threads > 0 { self.threads as usize } else { Self::auto_threads() };
         let concurrent = if self.concurrent_files > 0 { self.concurrent_files as usize } else { Self::auto_files(cores) };
-        let concurrent = concurrent.min(inputs.max(1));
-        let per_file = if concurrent > 1 { (cores / concurrent).max(2) } else { cores };
-        (concurrent, per_file as u32)
+        let concurrent = concurrent.min(inputs.max(1)).min(cores).max(1);
+        (concurrent, (cores / concurrent) as u32)
     }
 }
 
@@ -243,6 +244,19 @@ impl Settings {
     pub fn output_dir(&self) -> Option<PathBuf> {
         let dir = self.output.dir.trim();
         (!dir.is_empty()).then(|| PathBuf::from(dir))
+    }
+
+    /// Where `input`'s outputs go: the output folder, a relative one taken from the input's
+    /// own folder (the window's field has no working folder of its own to mean), or the
+    /// input's own folder when none is set. Always absolute.
+    pub fn output_dir_for(&self, input: &Path) -> PathBuf {
+        let beside = input.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        let dir = match self.output_dir() {
+            Some(dir) if dir.is_absolute() => dir,
+            Some(dir) => beside.join(dir),
+            None => beside.to_path_buf(),
+        };
+        std::path::absolute(&dir).unwrap_or(dir)
     }
 
     /// Where the settings file is (or would be written): beside the executable, unless that
@@ -367,5 +381,23 @@ pub fn user_dir(kind: DirKind) -> PathBuf {
             DirKind::Config => env("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")),
             DirKind::Cache => env("XDG_CACHE_HOME").unwrap_or_else(|| home().join(".cache")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_at_once_never_take_more_threads_than_the_total() {
+        let jobs = |threads, concurrent_files| Jobs { threads, concurrent_files };
+        assert_eq!(jobs(2, 4).plan(10), (2, 1));
+        assert_eq!(jobs(8, 4).plan(10), (4, 2));
+        assert_eq!(jobs(8, 4).plan(1), (1, 8));
+        assert_eq!(jobs(3, 2).plan(10), (2, 1));
+        let auto = Jobs::auto_threads();
+        assert_eq!(auto, romexplorer::rom::native_lib::physical_core_count().saturating_sub(4).max(1));
+        let (concurrent, each) = jobs(0, 0).plan(10);
+        assert!(concurrent as u32 * each <= auto as u32 && each >= 1);
     }
 }
