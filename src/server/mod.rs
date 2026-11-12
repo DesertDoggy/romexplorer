@@ -1498,7 +1498,12 @@ async fn cache_create(State(s): State<Shared>, Query(q): Query<BackupQuery>) -> 
 }
 
 /// Streamed like a backup: a cache of the whole catalogue is tens of MB.
-async fn cache_download(State(s): State<Shared>, Path(name): Path<String>) -> std::result::Result<Response, ApiError> {
+/// A cache holding accounts, settings or peers (`api::sqlite::ADMIN_ONLY_TABLES`) is an
+/// admin's; a catalogue cache is any account's.
+async fn cache_download(State(s): State<Shared>, principal: Principal, Path(name): Path<String>) -> std::result::Result<Response, ApiError> {
+    if !principal.is_admin() && api::sqlite::download_needs_admin(&name) {
+        return Err(Error::forbidden("this cache holds accounts and settings, so it needs an admin account; a catalog cache can be downloaded by any account").into());
+    }
     let path = api::sqlite::file(&s.app, &name).await?;
     let file = tokio::fs::File::open(&path).await.map_err(|e| Error::internal(format!("open {}: {e}", path.display())))?;
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
