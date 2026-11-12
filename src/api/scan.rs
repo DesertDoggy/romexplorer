@@ -88,6 +88,9 @@ pub struct ScanSummary {
     /// DAT hash match identifies them (the hint -- a folder's platform, an extension -- is
     /// never recorded on its own).
     pub platform_unconfirmed: u64,
+    /// Files the walk took for no ROM (a `.txt`, a `.jpg`) that nothing identified: recorded
+    /// and hashed, for a DAT to identify later, but not made roms or games.
+    pub strays_unidentified: u64,
     /// Files recorded before whose bytes have changed since (same path, another hash): the
     /// file now points at the new content, its integrity stamp is cleared, its rom takes the
     /// new platform, and its game's release links are checked again.
@@ -700,7 +703,9 @@ async fn content_replaced(pool: &MySqlPool, path: &str, content_id: u64) -> Resu
 /// For roms whose bytes changed: drops their games' release links that no live file of the
 /// game backs any more -- neither the file's content nor one of its members is a content of
 /// that release. Run once a scan has recorded every file, so a disc not re-read yet does not
-/// count as gone. Returns the links dropped.
+/// count as gone. A link a serial made (`serial_match`) is kept: no release content backs it
+/// by definition -- it says which game the file is, not that its bytes are a listed dump --
+/// so new bytes with the same header serial are still that game. Returns the links dropped.
 async fn drop_unbacked_release_links(pool: &MySqlPool, roms: &[u64]) -> Result<u64> {
     if roms.is_empty() {
         return Ok(0);
@@ -708,7 +713,7 @@ async fn drop_unbacked_release_links(pool: &MySqlPool, roms: &[u64]) -> Result<u
     let list = roms.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     let done = sqlx::query(sqlx::AssertSqlSafe(format!(
         "DELETE lrg FROM local_release_games lrg WHERE lrg.game_id IN (SELECT game_id FROM local_game_roms WHERE rom_id IN ({list})) \
-         AND NOT EXISTS (SELECT 1 FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE \
+         AND lrg.serial_match IS NULL AND NOT EXISTS (SELECT 1 FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE \
              JOIN release_contents rc ON rc.release_id = lrg.release_id AND (rc.content_id = f.content_id OR rc.content_id IN (SELECT cc.child_content_id FROM content_contents cc WHERE cc.parent_content_id = f.content_id)) \
              WHERE lgr.game_id = lrg.game_id)"
     )))
@@ -789,6 +794,21 @@ pub(crate) async fn upsert_rom(pool: &MySqlPool, main_path: &str, platform: Plat
     }
     supersede_covered_roms(pool, rom_id, file_ids).await?;
     Ok((rom_id, is_new))
+}
+
+/// Whether any of `contents` -- or a member of one -- is a line of an imported DAT.
+async fn listed_in_a_dat(pool: &MySqlPool, contents: &[u64]) -> Result<bool> {
+    if contents.is_empty() {
+        return Ok(false);
+    }
+    let list = contents.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let hit: Option<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT rc.release_id FROM release_contents rc WHERE rc.content_id IN ({list}) \
+            OR rc.content_id IN (SELECT cc.child_content_id FROM content_contents cc WHERE cc.parent_content_id IN ({list})) LIMIT 1"
+    )))
+    .fetch_optional(pool)
+    .await?;
+    Ok(hit.is_some())
 }
 
 /// Whether `main_path` is a rom the DAT resolve joined into another (a loose track folded
@@ -888,7 +908,12 @@ async fn directory_scope(pool: &MySqlPool, dir: &Directory) -> Result<String> {
 /// it), a `local_files` row per file, a sheet's tracks linked under the sheet, then the rom
 /// and its game.
 /// Records one candidate; the rom's id when it was recorded as a rom.
-async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, platform: Platform, as_roms: bool, outcome: &SingleOutcome, summary: &mut ScanSummary) -> Result<Option<u64>> {
+///
+/// `stray`: a file the walk took for no ROM (`CandidateKind::Unknown`: a `.txt`, a `.jpg`)
+/// and no system file. It is hashed and recorded like any file, for a DAT to identify, but
+/// made a rom and a game only when it is identified: a platform detected, or its bytes (or a
+/// member's) a line of a DAT already imported.
+async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, platform: Platform, as_roms: bool, stray: bool, outcome: &SingleOutcome, summary: &mut ScanSummary) -> Result<Option<u64>> {
     let set = &outcome.input;
     let archive_tag = match set.kind {
         InputKind::Archive(format) => Some(format.to_string()),
@@ -897,6 +922,7 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
     };
     let files = scanned_files(outcome).map_err(Error::internal)?;
     let mut file_ids = Vec::new();
+    let mut content_ids = Vec::new();
     // A cue / gdi sheet's contents are its tracks: recorded like an archive's members.
     let is_sheet = matches!(set.kind, InputKind::Sheet(_));
     let mut sheet_content: Option<u64> = None;
@@ -905,6 +931,7 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
         summary.files_hashed += 1;
         let file_name = file.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let content_id = upsert_content(&app.pool, platform, &file_name, file.hashed.size, &file.hashed.report, summary).await?;
+        content_ids.push(content_id);
         if let Err(e) = record_members(&app.pool, platform, content_id, &file.members, summary).await {
             summary.errors.push(format!("{}: members: {e}", file.path.display()));
         }
@@ -935,6 +962,10 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
         file_ids.push(id);
     }
     if file_ids.is_empty() || !as_roms {
+        return Ok(None);
+    }
+    if stray && platform == Platform::Unknown && !listed_in_a_dat(&app.pool, &content_ids).await? {
+        summary.strays_unidentified += 1;
         return Ok(None);
     }
     if merged_into_another(&app.pool, &candidate.path.display().to_string(), &file_ids).await? {
@@ -1148,6 +1179,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     // after it is written. They used to be set aside and never recorded at all.
     let mut walk = walk;
     let mut system_files: Vec<(String, &'static str, Option<u16>)> = Vec::with_capacity(walk.system_files.len());
+    let system_paths: std::collections::HashSet<PathBuf> = walk.system_files.iter().map(|(p, _)| p.clone()).collect();
     for (path, found) in std::mem::take(&mut walk.system_files) {
         let platform = found.platform.filter(|p| *p != Platform::Unknown);
         system_files.push((path.display().to_string(), system_type_name(found.file_type), platform.map(|p| p.igdb_id())));
@@ -1255,7 +1287,8 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
                     summary.platform_unconfirmed += 1;
                 }
                 let (owner, as_roms) = owner_of(&children, &candidate.path).map_or((&dir, as_roms), |c| (&c.dir, c.as_roms));
-                match record_candidate(app, owner, candidate, platform, as_roms, &outcome, &mut summary).await {
+                let stray = candidate.kind == rom_scan::CandidateKind::Unknown && !system_paths.contains(&candidate.path);
+                match record_candidate(app, owner, candidate, platform, as_roms, stray, &outcome, &mut summary).await {
                     Ok(Some(rom_id)) if ra_wanted && platform != Platform::Unknown => record_ra_hash(&app.pool, rom_id, &candidate.path, platform, ra_ready, &mut summary).await,
                     Ok(_) => Ok(()),
                     Err(e) => Err(e),
@@ -1398,7 +1431,7 @@ async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: Hash
                         summary.ra_hash_skipped_unknown_platform += 1;
                     }
                 }
-                match record_candidate(app, &dir, candidate, platform, as_roms, &outcome, &mut summary).await {
+                match record_candidate(app, &dir, candidate, platform, as_roms, false, &outcome, &mut summary).await {
                     Ok(Some(rom_id)) => {
                         roms.push(rom_id);
                         if ra_wanted && platform != Platform::Unknown {
