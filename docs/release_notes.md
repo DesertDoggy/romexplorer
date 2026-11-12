@@ -27,6 +27,14 @@ replacing a build.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway. It is now reported instead. A NES dump missing from the
   header database is reported with its hash.
+- Fetching art for a client could reach addresses on the server's own network, and had no size
+  limit. Images are now limited to 64 MB, video and music to 512 MB.
+- Any signed-in account could download a "database" or "all" SQLite cache, which holds the
+  accounts and settings. These now need an admin; a "catalog" cache is still open to all.
+- A full sync cut short could leave a table half filled, and later syncs skipped it.
+- Cancelling a backup let the next one start while it was still writing. Two backups started
+  in the same second got the same name.
+- Fetching art from the main server could run during its catalogue sync.
 
 # romexplorer 0.2.0 (alpha)
 
