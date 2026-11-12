@@ -204,6 +204,24 @@ rm -f "$RES_DIR"/mipmap-*/ic_launcher.webp
 cp -Rf "$ICON_DIR/." "$RES_DIR/"
 echo "launcher icon from $ICON_DIR"
 
+# The music maps (app_root_ex/assets/music_maps*.zst, numbers only): where each matched game's
+# music is in its ROM, so a cartridge plays from its map rather than a search from boot. Into
+# the APK's assets; at each start src/natives.rs copies them to where rom_songs reads them.
+ASSETS_DIR="$PROJECT/app/src/main/assets"
+mkdir -p "$ASSETS_DIR"
+rm -f "$ASSETS_DIR"/music_maps*.zst
+maps=0
+for map in "$ROOT_DIR"/app_root_ex/assets/music_maps*.zst; do
+    [[ -f "$map" ]] || continue
+    cp -f "$map" "$ASSETS_DIR/"
+    maps=$((maps + 1))
+done
+if [[ "$maps" -gt 0 ]]; then
+    echo "copied $maps music map bundle(s) into $ASSETS_DIR"
+else
+    echo "warning: no app_root_ex/assets/music_maps*.zst: cartridges fall back to the search from boot" >&2
+fi
+
 TASK=assembleDebug
 [[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease
 if [[ "$WINDOWS" -eq 1 ]]; then

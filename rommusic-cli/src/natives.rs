@@ -48,6 +48,14 @@ pub fn ensure() -> Result<(), String> {
         std::os::unix::fs::symlink(&target, &link).map_err(|err| format!("{}: {err}", link.display()))?;
     }
     std::env::set_var(EXE_ROOT_OVERRIDE_ENV, &root);
+    // The music maps (`music_maps*.zst`) are in the APK's assets, which are not files on disk:
+    // copied to `<root>/assets/`, where rom_songs looks for them. Every start, as the libraries'
+    // links are, so an update's newer maps replace the old ones. Without them a cartridge still
+    // plays, found by the slower search from boot.
+    let maps = |name: &str| name.starts_with("music_maps") && name.ends_with(".zst");
+    if let Err(err) = crate::android::copy_assets(maps, &root.join("assets")) {
+        log::warn!("music maps: {err}");
+    }
     if missing.is_empty() {
         Ok(())
     } else {
