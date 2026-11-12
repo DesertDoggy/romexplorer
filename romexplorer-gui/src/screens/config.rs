@@ -1245,7 +1245,7 @@ fn DatabaseCacheForm(c: Value, on_saved: EventHandler<()>) -> Element {
     };
     let (_, next) = chosen();
     let calc = state::trf("next start: {size} of {ram}", &[("size", &html::fmt_size(Some(next.min(ram * 0.9) as u64))), ("ram", &html::fmt_size(Some(ram as u64)))])
-        + if next > ram * 0.9 { " (capped at 90% of memory)" } else { "" };
+        + &if next > ram * 0.9 { format!(" {}", state::tr("(capped at 90% of memory)")) } else { String::new() };
     let w = &c["warm"];
     let warm_text = match s(w, "state").as_str() {
         "idle" => state::tr("not run in this process"),
@@ -1348,6 +1348,7 @@ fn DatabaseCacheForm(c: Value, on_saved: EventHandler<()>) -> Element {
                 }
                 div { {state::tr("reload at start")} } div { {c["load_status"].as_str().unwrap_or("—").to_string()} }
                 div { {state::tr("warm-up")} } div { "{warm_text}" }
+                div { {state::tr("writing now")} } div { "{writing_now}" }
             }
         }
     }
