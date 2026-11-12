@@ -1382,11 +1382,18 @@ async fn write_tables(
             .await?;
         out.push((table.to_string(), rows));
     }
-    // A peer's token never leaves the machine that holds it.
+    // A peer's token and address never leave the machine that holds them: the phone needs
+    // only each machine's id and name (the Held filter), which `/mobile/machines` already
+    // shows any account. So a Read account's copy holds nothing of `remote_sources` that the
+    // admin-only cache kinds guard (`api::sqlite`).
     if out.iter().any(|(t, _)| t == "remote_sources") {
-        sqlx::query("UPDATE remote_sources SET token = NULL")
+        sqlx::query("UPDATE remote_sources SET token = NULL, base_url = ''")
             .execute(db)
             .await?;
+        // Added later (0028); an older server's table has no such column.
+        let _ = sqlx::query("UPDATE remote_sources SET tls_fingerprint = NULL")
+            .execute(db)
+            .await;
     }
     if !skipped.is_empty() {
         log::warn!(
