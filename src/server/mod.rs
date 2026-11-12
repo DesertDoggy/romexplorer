@@ -1434,7 +1434,7 @@ async fn sources_sync(State(s): State<Shared>, Path(id): Path<u16>, Query(q): Qu
 /// Makes sure the file behind a media row is on disk again (`api::media::refetch`): a
 /// client's way of turning a 404 into a re-fetch rather than a provider call of its own.
 async fn media_refetch(State(s): State<Shared>, Path(id): Path<u64>) -> ApiResult<api::media::RefetchResult> {
-    Ok(Json(api::media::refetch(&s.app, id).await?))
+    Ok(Json(api::media::refetch_for_client(&s.app, id, s.fetch_loopback).await?))
 }
 
 /// Fetches a provider's art into this server for a client (`api::media::fetch_for`). Only
@@ -2644,6 +2644,29 @@ fn is_already_compressed(content_type: &str) -> bool {
         )
 }
 
+/// Headers every response carries. `nosniff` everywhere, so a browser takes each body as the
+/// type the server named and never guesses its way to HTML or script. On the routes that serve
+/// stored files (art, audio, icons, backups, DATs) also `Content-Security-Policy: sandbox`: a
+/// file opened on its own -- an SVG someone fetched into the media store -- runs as an opaque
+/// origin with scripts off, so it cannot act as the signed-in user on this origin. An `<img>`,
+/// `<video>` or `<audio>` ignores the policy of what it loads, so the app and the console show
+/// the same files as before.
+async fn security_headers(req: Request, next: Next) -> Response {
+    let sandbox = serves_stored_files(req.uri().path());
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    if sandbox {
+        headers.insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static("sandbox"));
+    }
+    response
+}
+
+/// The routes whose bodies are files from disk rather than this server's own pages and JSON.
+fn serves_stored_files(path: &str) -> bool {
+    path.starts_with("/icons/") || access::serves_files(path)
+}
+
 pub fn share_router(state: Shared) -> Router {
     Router::new()
         // Token-exempt in `guard`, which is what lets a client tell "wrong token" from
@@ -2658,6 +2681,7 @@ pub fn share_router(state: Shared) -> Router {
         .route("/api/v1/sync/deleted/{table}", get(share_deleted))
         .layer(compression())
         .layer(middleware::from_fn_with_state(state.clone(), guard))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
 
@@ -2901,6 +2925,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/dats/upload", post(dats_upload).layer(DefaultBodyLimit::disable()))
         .layer(compression())
         .layer(middleware::from_fn_with_state(state.clone(), guard))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
 
@@ -3017,7 +3042,13 @@ mod tests {
         });
         let base = format!("http://{}", addr_rx.await.unwrap());
         let http = reqwest::Client::new();
-        assert_eq!(http.get(format!("{base}/api/v1/ping")).send().await.unwrap().status(), 200);
+        let ping = http.get(format!("{base}/api/v1/ping")).send().await.unwrap();
+        assert_eq!(ping.status(), 200);
+        // Every response says "take my type as given"; only the file routes are sandboxed.
+        assert_eq!(ping.headers().get("x-content-type-options").unwrap(), "nosniff");
+        assert!(ping.headers().get("content-security-policy").is_none());
+        let media = http.get(format!("{base}/api/v1/media/1")).send().await.unwrap();
+        assert_eq!(media.headers().get("content-security-policy").unwrap(), "sandbox");
         assert_eq!(http.get(format!("{base}/api/v1/auth/check")).send().await.unwrap().status(), 401);
         assert_eq!(http.post(format!("{base}/api/v1/server/restart")).send().await.unwrap().status(), 401);
         // An empty bearer is no token at all, not a way around the check.

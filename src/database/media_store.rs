@@ -44,6 +44,35 @@ pub const TITLE_LEVEL_TYPES: [&str; 3] = ["screenshot", "video", "fanart"];
 /// `media.sub_category`'s ENUM values (migrations/0001_schema.sql).
 pub const SUB_CATEGORIES: [&str; 7] = ["front", "back", "top", "bottom", "left", "right", "spine"];
 
+/// Largest media file this server takes in: a video or a music track.
+pub const MAX_MEDIA_BYTES: usize = 512 * 1024 * 1024;
+/// Largest image: far above any cover, screenshot or fan art a provider serves.
+pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Reads `response`'s body, giving up as soon as it passes `limit` bytes: a declared
+/// `Content-Length` over it is refused before any of the body is read, and a body that never
+/// declared one is cut off at the limit rather than held whole.
+pub async fn read_capped(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, DatabaseError> {
+    let what = response_url_text(&response);
+    let too_big = || DatabaseError::Fetch(format!("{what} is larger than {} MiB", limit >> 20));
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        return Err(too_big());
+    }
+    let mut body = Vec::with_capacity(response.content_length().map_or(0, |n| n as usize));
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > limit {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn response_url_text(response: &reqwest::Response) -> String {
+    let url = response.url();
+    format!("{}{}", url.host_str().unwrap_or_default(), url.path())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootRole {
     App,
@@ -73,6 +102,14 @@ impl RootRole {
     }
 
     /// The configured-dir role a media type is written under.
+    /// The most bytes one file of this role may hold ([`MAX_MEDIA_BYTES`], [`MAX_IMAGE_BYTES`]).
+    pub fn max_bytes(self) -> usize {
+        match self {
+            Self::Image => MAX_IMAGE_BYTES,
+            Self::App | Self::Video | Self::Audio => MAX_MEDIA_BYTES,
+        }
+    }
+
     pub fn for_media_type(media_type: &str) -> Self {
         match media_type {
             "video" => Self::Video,
