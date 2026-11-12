@@ -237,12 +237,13 @@ native_platform() { [[ "$1" == "macos" ]] && echo mac || echo "$1"; }
 native_flags=()
 [[ "$CLEAN" -eq 0 ]] && native_flags+=(--no-clean)
 [[ "$CORE" -eq 1 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,mariadb-connector-c,mariadb-server)
-# chdlite and rommusic need only what they load (rommusic: the players, the stream decoder
-# and the disc and archive readers); openssl is still needed to build the romexplorer crate
-# they depend on.
+# chdlite and rommusic need only what they load (chdlite: beetle-psx-libretro's libpsxpbp for
+# a .pbp, as build_chdlite_android.sh builds it; rommusic: the players, the stream decoder and
+# the disc and archive readers); openssl is still needed to build the romexplorer crate they
+# depend on.
 only_tools=1
 for m in "${M_LIST[@]}"; do [[ "$m" == chdlite || "$m" == rommusic ]] || only_tools=0; done
-[[ "$only_tools" -eq 1 && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,RALibretro,ffmpeg,vgmstream,rommusic,cemu,extract-xiso)
+[[ "$only_tools" -eq 1 && "$CORE" -eq 0 ]] && native_flags+=(--only openssl,zlib-ng,7-Zip-zstd,chdman-simd,dolphin,RALibretro,ffmpeg,vgmstream,rommusic,cemu,extract-xiso,beetle-psx-libretro)
 [[ -n "$JOBS" ]] && native_flags+=(--jobs "$JOBS")
 [[ "$UNVERIFIED" -eq 1 ]] && native_flags+=(--unverified-arm64)
 
