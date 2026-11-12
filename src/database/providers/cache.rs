@@ -223,6 +223,33 @@ const LINK_UPSERT_KEEP_STRONGER: &str = " ON DUPLICATE KEY UPDATE \
      confidence = IF((deleted AND confidence <> 'manual') OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual'), VALUES(confidence), confidence), \
      deleted = (deleted AND confidence = 'manual' AND VALUES(confidence) <> 'manual')";
 
+/// [`LINK_UPSERT_KEEP_STRONGER`] for `title_provider_links`, which also remembers a game a
+/// merge audit took off the title as wrong (`rejected_id`, `merge_audit::drop_igdb_link`):
+/// only a manual link makes that one again, so the next hash match does not bring back the
+/// link (and the merges it made) the audit removed. Another game links as before; a manual
+/// link clears the mark.
+fn title_link_upsert() -> String {
+    let rejected = "(VALUES(confidence) <> 'manual' AND COALESCE(rejected_id = VALUES(provider_id), FALSE))";
+    let replace = format!("(NOT {rejected} AND ((deleted AND confidence <> 'manual') OR FIELD(VALUES(confidence),'fuzzy','name','hash','exact','manual') >= FIELD(confidence,'fuzzy','name','hash','exact','manual')))");
+    format!(
+        " ON DUPLICATE KEY UPDATE provider_id = IF({replace}, VALUES(provider_id), provider_id), linked_at = IF({replace}, NOW(), linked_at), \
+         confidence = IF({replace}, VALUES(confidence), confidence), \
+         deleted = (deleted AND ((confidence = 'manual' AND VALUES(confidence) <> 'manual') OR {rejected})), \
+         rejected_id = IF(VALUES(confidence) = 'manual', NULL, rejected_id)"
+    )
+}
+
+/// Whether a merge audit found `provider_id` wrong for this title ([`title_link_upsert`]).
+pub async fn rejected_for_title(pool: &MySqlPool, title_id: u64, provider: Provider, provider_id: &str) -> Result<bool, DatabaseError> {
+    Ok(sqlx::query("SELECT 1 FROM title_provider_links WHERE title_id = ? AND provider = ? AND rejected_id = ?")
+        .bind(title_id)
+        .bind(provider.name())
+        .bind(provider_id)
+        .fetch_optional(pool)
+        .await?
+        .is_some())
+}
+
 /// Whether the user removed `provider`'s link from this title (`api::links::unlink_title`):
 /// nothing but a manual link may make it again, so a by-name lookup is not even tried.
 pub async fn unlinked_by_user(pool: &MySqlPool, title_id: u64, provider: Provider) -> Result<bool, DatabaseError> {
@@ -235,10 +262,11 @@ pub async fn unlinked_by_user(pool: &MySqlPool, title_id: u64, provider: Provide
 }
 
 /// Links a provider entry to a title. Returns false when the link was refused: the user
-/// removed this provider's link from the title and `confidence` is not manual. A caller
-/// that goes on to write the entry's metadata onto the title stops there.
+/// removed this provider's link from the title, or a merge audit found this entry wrong for
+/// it, and `confidence` is not manual. A caller that goes on to write the entry's metadata
+/// onto the title stops there.
 pub async fn link_title(pool: &MySqlPool, title_id: u64, provider: Provider, provider_id: &str, confidence: Confidence) -> Result<bool, DatabaseError> {
-    let sql = format!("INSERT INTO title_provider_links (title_id, provider, provider_id, confidence, linked_at, deleted) VALUES (?, ?, ?, ?, NOW(), FALSE){LINK_UPSERT_KEEP_STRONGER}");
+    let sql = format!("INSERT INTO title_provider_links (title_id, provider, provider_id, confidence, linked_at, deleted) VALUES (?, ?, ?, ?, NOW(), FALSE){}", title_link_upsert());
     sqlx::query(sqlx::AssertSqlSafe(sql))
     .bind(title_id)
     .bind(provider.name())
@@ -249,7 +277,7 @@ pub async fn link_title(pool: &MySqlPool, title_id: u64, provider: Provider, pro
     if confidence == Confidence::Manual {
         return Ok(true);
     }
-    Ok(!unlinked_by_user(pool, title_id, provider).await?)
+    Ok(!unlinked_by_user(pool, title_id, provider).await? && !rejected_for_title(pool, title_id, provider, provider_id).await?)
 }
 
 pub async fn link_release(pool: &MySqlPool, release_id: u64, provider: Provider, provider_id: &str, confidence: Confidence) -> Result<(), DatabaseError> {
@@ -420,10 +448,8 @@ pub async fn link_contents_bulk(pool: &MySqlPool, items: &[(u64, Provider, Strin
     for (table, key, links) in [("release_provider_links", "release_id", &release_links), ("title_provider_links", "title_id", &title_links)] {
         let rows: Vec<&(u64, Provider, &str)> = links.iter().collect();
         for chunk in rows.chunks(1000) {
-            let sql = format!(
-                "INSERT INTO {table} ({key}, provider, provider_id, confidence, linked_at, deleted) VALUES {}{LINK_UPSERT_KEEP_STRONGER}",
-                vec!["(?, ?, ?, ?, NOW(), FALSE)"; chunk.len()].join(", ")
-            );
+            let upsert = if table == "title_provider_links" { title_link_upsert() } else { LINK_UPSERT_KEEP_STRONGER.to_string() };
+            let sql = format!("INSERT INTO {table} ({key}, provider, provider_id, confidence, linked_at, deleted) VALUES {}{upsert}", vec!["(?, ?, ?, ?, NOW(), FALSE)"; chunk.len()].join(", "));
             let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
             for (id, provider, provider_id) in chunk {
                 query = query.bind(*id).bind(provider.name()).bind(*provider_id).bind(confidence.as_str());
@@ -550,37 +576,73 @@ pub async fn ensure_hasheous_release(pool: &MySqlPool, content_id: u64, record: 
     let norm_hash = super::super::import::sha1_hex(&norm_name);
     let year: Option<u16> = game.and_then(|g| g.year.as_deref()).and_then(|y| y.trim().get(..4)).and_then(|y| y.parse().ok());
 
-    let mut tx = pool.begin().await?;
+    // One of these per name and platform at a time: two hits for the same game (two dumps of
+    // it) each found no title and made one. The lock is a session's, so it is taken and
+    // released on the connection the transaction runs on.
+    let lock = format!("romexplorer_title:{platform_id}:{norm_hash}");
+    let mut conn = pool.acquire().await?;
+    let got: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, 60)").bind(&lock).fetch_one(&mut *conn).await?;
+    if got != Some(1) {
+        return Err(DatabaseError::Config(format!("{name}: another hash match is adding the same game")));
+    }
+    let made = hasheous_release_locked(&mut conn, content_id, name, platform_id, source_id, &name_hash, &norm_name, &norm_hash, year).await;
+    let _ = sqlx::query("SELECT RELEASE_LOCK(?)").bind(&lock).execute(&mut *conn).await;
+    let (release_id, title_id) = made?;
+
+    if let Some(publisher) = game.and_then(|g| g.publisher.as_deref()).or(record.publisher.as_deref()) {
+        super::metadata::apply_hasheous_publisher(pool, title_id, publisher).await?;
+    }
+    Ok(Some((release_id, title_id)))
+}
+
+/// [`ensure_hasheous_release`]'s writes, under its lock: the release, and its title.
+#[allow(clippy::too_many_arguments)]
+async fn hasheous_release_locked(conn: &mut sqlx::pool::PoolConnection<sqlx::MySql>, content_id: u64, name: &str, platform_id: u16, source_id: u8, name_hash: &str, norm_name: &str, norm_hash: &str, year: Option<u16>) -> Result<(u64, u64), DatabaseError> {
+    use sqlx::Connection;
+    let mut tx = conn.begin().await?;
     sqlx::query(
         "INSERT INTO `release` (app_platform_id, name, name_hash, norm_name, norm_hash, year, source_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE) \
          ON DUPLICATE KEY UPDATE year = COALESCE(VALUES(year), year), deleted = FALSE",
     )
     .bind(platform_id)
     .bind(name)
-    .bind(&name_hash)
-    .bind(&norm_name)
-    .bind(&norm_hash)
+    .bind(name_hash)
+    .bind(norm_name)
+    .bind(norm_hash)
     .bind(year)
     .bind(source_id)
     .execute(&mut *tx)
     .await?;
-    let release_id: u64 = sqlx::query("SELECT id FROM `release` WHERE app_platform_id = ? AND name_hash = ?").bind(platform_id).bind(&name_hash).fetch_one(&mut *tx).await?.try_get("id")?;
+    let release_id: u64 = sqlx::query("SELECT id FROM `release` WHERE app_platform_id = ? AND name_hash = ?").bind(platform_id).bind(name_hash).fetch_one(&mut *tx).await?.try_get("id")?;
     sqlx::query("INSERT IGNORE INTO release_sources (release_id, source_id) VALUES (?, ?)").bind(release_id).bind(source_id).execute(&mut *tx).await?;
     let file_name: String = sqlx::query("SELECT file_name FROM content WHERE id = ?").bind(content_id).fetch_optional(&mut *tx).await?.and_then(|r| r.try_get("file_name").ok()).unwrap_or_default();
     sqlx::query("INSERT IGNORE INTO release_contents (release_id, content_id, file_name, source_id) VALUES (?, ?, ?, ?)").bind(release_id).bind(content_id).bind(&file_name).bind(source_id).execute(&mut *tx).await?;
-    // Same title rule as the DAT import: one title per normalized name within a platform.
-    let existing = sqlx::query("SELECT t.id FROM title t JOIN title_releases tr ON tr.title_id = t.id JOIN `release` r ON r.id = tr.release_id WHERE r.app_platform_id = ? AND t.norm_hash = ? AND t.deleted = FALSE ORDER BY t.id LIMIT 1").bind(platform_id).bind(&norm_hash).fetch_optional(&mut *tx).await?;
+    // A release that has a title already (the same name, from a DAT or an earlier hit) keeps it.
+    let titled: Option<u64> = sqlx::query_scalar("SELECT tr.title_id FROM title_releases tr JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE WHERE tr.release_id = ? ORDER BY tr.title_id LIMIT 1").bind(release_id).fetch_optional(&mut *tx).await?;
+    // Same title rule as the DAT import: one title per normalized name within a platform --
+    // its own, or one a merged title had (`title_aliases`), so a hit for a merged game's other
+    // name joins the merged title instead of bringing the old one back.
+    let existing: Option<u64> = match titled {
+        Some(t) => Some(t),
+        None => sqlx::query_scalar(
+            "SELECT id FROM (SELECT t.id FROM title t JOIN title_releases tr ON tr.title_id = t.id JOIN `release` r ON r.id = tr.release_id WHERE r.app_platform_id = ? AND t.norm_hash = ? AND t.deleted = FALSE \
+             UNION SELECT a.title_id AS id FROM title_aliases a JOIN title t ON t.id = a.title_id AND t.deleted = FALSE JOIN title_releases tr ON tr.title_id = a.title_id JOIN `release` r ON r.id = tr.release_id \
+             WHERE r.app_platform_id = ? AND a.norm_hash = ?) x ORDER BY id LIMIT 1",
+        )
+        .bind(platform_id)
+        .bind(norm_hash)
+        .bind(platform_id)
+        .bind(norm_hash)
+        .fetch_optional(&mut *tx)
+        .await?,
+    };
     let title_id: u64 = match existing {
-        Some(row) => row.try_get("id")?,
-        None => sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, ?)").bind(name).bind(&norm_name).bind(&norm_hash).execute(&mut *tx).await?.last_insert_id(),
+        Some(id) => id,
+        None => sqlx::query("INSERT INTO title (name, norm_name, norm_hash) VALUES (?, ?, ?)").bind(name).bind(norm_name).bind(norm_hash).execute(&mut *tx).await?.last_insert_id(),
     };
     sqlx::query("INSERT IGNORE INTO title_releases (title_id, release_id) VALUES (?, ?)").bind(title_id).bind(release_id).execute(&mut *tx).await?;
     tx.commit().await?;
-
-    if let Some(publisher) = game.and_then(|g| g.publisher.as_deref()).or(record.publisher.as_deref()) {
-        super::metadata::apply_hasheous_publisher(pool, title_id, publisher).await?;
-    }
-    Ok(Some((release_id, title_id)))
+    Ok((release_id, title_id))
 }
 
 pub async fn hasheous_lookup(clients: &ProviderClients, pool: &MySqlPool, store: &RawStore, content_id: u64, request: &HashLookupRequest) -> Result<HasheousRecord, DatabaseError> {

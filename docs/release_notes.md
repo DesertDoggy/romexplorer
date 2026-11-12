@@ -32,6 +32,31 @@ replacing a build.
 - In Japanese, Korean and Polish, a few sentences in Config › Settings and in the confirmation
   for removing a directory stayed in English.
 
+**Title merging**
+- A title you decoupled could be merged again later in the same pass, and undoing nested
+  merges in order lost the titles merged into the one split out.
+- Accepting a merge suggestion could merge two versions of a version set, or a retail title
+  with an unlicensed one. "Accept all" no longer merges titles you decoupled; accepting one
+  suggestion on its own still does.
+- A suggestion with many titles could name the wrong title.
+- Releases flagged unlicensed, pirate or aftermarket without saying so in their name were
+  merged with retail titles.
+- A wrong IGDB link the merge audit removed came back with the next hash match, and the audit
+  could merge back titles the merge pass keeps apart.
+- A Hasheous match for a merged game's other name made a duplicate title.
+
+**Scan, jobs and downloads**
+- On Linux, two files whose names differ only in case were one ROM. Scans of large libraries
+  are faster.
+- A copy to another drive, or a sync from another server, waited for unrelated jobs. After the
+  database restarted, a job running on another worker could start a second time.
+- Two downloads of the same image at once could store it twice or share one file name.
+- An IGDB platform sync showed nothing for minutes before its first page.
+- A DAT whose file name had a character Windows does not allow could not be saved.
+- Creating a database account that already existed kept its old password.
+- An unsupported database server (MariaDB before 10.6, or MySQL) now gets a clear error at
+  connect.
+
 # romexplorer 0.2.0 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
