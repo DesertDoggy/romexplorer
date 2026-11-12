@@ -269,6 +269,7 @@ pub async fn enqueue(app: &App, request: &JobRequest) -> Result<u64> {
 /// Queues `request` to wait its turn rather than start alongside the other lanes
 /// (`db_jobs::enqueue_in_turn`): the "add to queue" beside a job's own button.
 pub async fn enqueue_in_turn(app: &App, request: &JobRequest) -> Result<u64> {
+    let request = &resolved(app, request).await?;
     validate(app, request).await?;
     Ok(db_jobs::enqueue_in_turn(&app.pool, request.job_type(), request.payload()).await?)
 }
@@ -332,14 +333,32 @@ pub async fn clear(app: &App, request: &ClearRequest) -> Result<ClearResult> {
 pub const PRIORITY_INTERACTIVE: u16 = 10;
 
 pub async fn enqueue_with_priority(app: &App, request: &JobRequest, priority: u16) -> Result<u64> {
+    let request = &resolved(app, request).await?;
     validate(app, request).await?;
     Ok(db_jobs::enqueue_with_priority(&app.pool, request.job_type(), request.payload(), priority).await?)
+}
+
+/// `request` with what its lane is decided by filled in. A media sync that names no source
+/// means the main server's, and is recorded as that source's: its lane is the source's
+/// `sync:<id>`, the one that source's catalogue pull runs in, so the two never overlap. Left
+/// unnamed it ran in a `sync:main` lane of its own, beside the pull. With no main server it
+/// stays unnamed, and the run says there is none.
+async fn resolved(app: &App, request: &JobRequest) -> Result<JobRequest> {
+    if let JobRequest::MediaSync(r) = request {
+        if r.source_id.is_none() {
+            if let Some(main) = crate::api::media_sync::main_source(app).await? {
+                return Ok(JobRequest::MediaSync(MediaSyncRequest { source_id: Some(main) }));
+            }
+        }
+    }
+    Ok(request.clone())
 }
 
 /// Enqueues `request` unless an identical job (same type and payload) is already pending or
 /// running -- a schedule firing while its previous run is still going adds nothing.
 /// `Ok(None)` when one was already queued.
 pub async fn enqueue_unless_queued(app: &App, request: &JobRequest) -> Result<Option<u64>> {
+    let request = &resolved(app, request).await?;
     let payload = request.payload();
     let rows = sqlx::query("SELECT payload FROM jobs WHERE job_type = ? AND status IN ('pending', 'in_progress')").bind(request.job_type().name()).fetch_all(&app.pool).await?;
     for row in rows {
