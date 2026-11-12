@@ -479,6 +479,13 @@ pub struct WalkResult {
     /// of everything found so far (quadratic over a large collection).
     seen_candidates: HashSet<PathBuf>,
     seen_unknown: HashSet<PathBuf>,
+    /// Every sheet track found so far, from any directory: a track a sheet names in another
+    /// folder (`../x.bin`, `Tracks/x.bin`) is the sheet's, not a candidate of its own,
+    /// whichever of the two folders the walk reaches first.
+    consumed: HashSet<PathBuf>,
+    /// The directories walked, by their resolved path: a linked folder pointing at a sibling
+    /// (or anywhere else already walked) lists the same files again under another path.
+    walked: HashSet<PathBuf>,
 }
 
 /// Runs a whole scan from `root`, resolving `layout` into a per-subtree
@@ -502,11 +509,15 @@ pub fn scan(root: &Path, layout: &PlatformLayout, base_ctx: &ScanContext, skip_u
             // platform-separated layout, but not an error; classified, never bundled (the
             // root is always the boundary for every subtree below it).
             let root_ctx = ScanContext { platform: PlatformContext::None, ..base_ctx.clone() };
+            out.walked.insert(resolved(root));
             let root_classified = classify_directory(root, &root_ctx);
             let root_subdirs = root_classified.unresolved_subdirs.clone();
             merge_classification(&mut out, root_classified, skip_unknown);
 
             for subdir in root_subdirs {
+                if links_back(&subdir) {
+                    continue;
+                }
                 let name = subdir.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // infer_platform_from_parent_path_heuristics reads its argument's *parent*
                 // directory name (it's meant for a file path) -- `.join("_")` makes that
@@ -515,6 +526,21 @@ pub fn scan(root: &Path, layout: &PlatformLayout, base_ctx: &ScanContext, skip_u
                     base_ctx.heuristics.path.then(|| super::detect::infer_platform_from_parent_path_heuristics(&subdir.join("_"))).flatten()
                 });
                 let ctx = ScanContext { platform: platform.map(PlatformContext::Hint).unwrap_or(PlatformContext::None), ..base_ctx.clone() };
+                // A folder no platform is known for may be a game itself (a PS3, PSP or Vita
+                // game folder, a declared shape) sitting straight in the root: tried as one
+                // before it is walked as a platform folder, or its files became games each.
+                if platform.is_none() {
+                    let bundle = game_root_bundle(&subdir, root, &ctx).or_else(|| {
+                        let leaf = visible_entries(&subdir).iter().all(|(_, is_dir)| !is_dir);
+                        leaf.then(|| bundle_at(&subdir, root, &ctx)).flatten()
+                    });
+                    if let Some(bundle) = bundle {
+                        if out.walked.insert(resolved(&subdir)) {
+                            push_candidate(&mut out, RomCandidate { path: bundle.path, kind: CandidateKind::DirectoryBundle, platform_hint: bundle.platform_hint });
+                        }
+                        continue;
+                    }
+                }
                 walk(&subdir, &subdir, &ctx, skip_unknown, &mut out);
             }
         }
@@ -526,18 +552,34 @@ pub fn scan(root: &Path, layout: &PlatformLayout, base_ctx: &ScanContext, skip_u
 /// as one bundle (a leaf that passes [`bundle_at`]) or recurses into it. Paths already seen
 /// anywhere in this walk (an `.m3u`/symlink reaching the same file twice) are skipped.
 pub fn walk(dir: &Path, boundary: &Path, ctx: &ScanContext, skip_unknown: bool, out: &mut WalkResult) {
-    walk_listed(visible_entries(dir), boundary, ctx, skip_unknown, out);
+    let at = resolved(dir);
+    if !out.walked.insert(at.clone()) {
+        return;
+    }
+    walk_listed(visible_entries(dir), &at, boundary, ctx, skip_unknown, out);
+}
+
+/// `dir` with its links resolved, or as given when that fails.
+fn resolved(dir: &Path) -> PathBuf {
+    fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 /// [`walk`] on a directory whose listing is already read: each directory is listed once --
-/// over a network share every listing is a round trip.
-fn walk_listed(listing: Vec<(PathBuf, bool)>, boundary: &Path, ctx: &ScanContext, skip_unknown: bool, out: &mut WalkResult) {
+/// over a network share every listing is a round trip. `at` is the directory's resolved
+/// path: a plain subfolder's is `at` plus its name, so only a link costs a lookup.
+fn walk_listed(listing: Vec<(PathBuf, bool)>, at: &Path, boundary: &Path, ctx: &ScanContext, skip_unknown: bool, out: &mut WalkResult) {
     let classified = classify_listing(listing, ctx);
-    let subdirs = classified.unresolved_subdirs.clone();
+    // Real folders before links, so a link to a sibling is the copy that is skipped.
+    let mut subdirs: Vec<(PathBuf, bool)> = classified.unresolved_subdirs.iter().map(|d| (d.clone(), fs::symlink_metadata(d).is_ok_and(|m| m.file_type().is_symlink()))).collect();
+    subdirs.sort_by_key(|(_, link)| *link);
     merge_classification(out, classified, skip_unknown);
 
-    for subdir in subdirs {
-        if links_back(&subdir) {
+    for (subdir, link) in subdirs {
+        if link && links_back(&subdir) {
+            continue;
+        }
+        let sub_at = if link { resolved(&subdir) } else { subdir.file_name().map(|n| at.join(n)).unwrap_or_else(|| resolved(&subdir)) };
+        if !out.walked.insert(sub_at.clone()) {
             continue;
         }
         // A game's own tree (a Vita app folder, a PS3 or PSP game folder) is one game however
@@ -555,7 +597,7 @@ fn walk_listed(listing: Vec<(PathBuf, bool)>, boundary: &Path, ctx: &ScanContext
                 continue;
             }
         }
-        walk_listed(listing, boundary, ctx, skip_unknown, out);
+        walk_listed(listing, &sub_at, boundary, ctx, skip_unknown, out);
     }
 }
 
@@ -573,6 +615,14 @@ fn links_back(dir: &Path) -> bool {
 }
 
 fn merge_classification(out: &mut WalkResult, classified: DirectoryClassification, skip_unknown: bool) {
+    // A track named from another folder that the walk already took as a file of its own.
+    let late: Vec<&PathBuf> = classified.consumed.iter().filter(|t| out.seen_candidates.contains(*t) || out.seen_unknown.contains(*t)).collect();
+    if !late.is_empty() {
+        let late: HashSet<&PathBuf> = late.into_iter().collect();
+        out.rom_candidates.retain(|c| !late.contains(&c.path));
+        out.unknown.retain(|p| !late.contains(p));
+    }
+    out.consumed.extend(classified.consumed);
     out.playlists.extend(classified.playlists);
     out.system_files.extend(classified.system_files);
     for candidate in classified.rom_candidates {
@@ -580,7 +630,7 @@ fn merge_classification(out: &mut WalkResult, classified: DirectoryClassificatio
     }
     if skip_unknown {
         for path in classified.unknown {
-            if out.seen_unknown.insert(path.clone()) {
+            if !out.consumed.contains(&path) && out.seen_unknown.insert(path.clone()) {
                 out.unknown.push(path);
             }
         }
@@ -594,6 +644,9 @@ fn merge_classification(out: &mut WalkResult, classified: DirectoryClassificatio
 /// Adds `candidate` unless its path is already present anywhere in this walk's results, in
 /// the order found.
 fn push_candidate(out: &mut WalkResult, candidate: RomCandidate) {
+    if out.consumed.contains(&candidate.path) {
+        return;
+    }
     if out.seen_candidates.insert(candidate.path.clone()) {
         out.rom_candidates.push(candidate);
     }
@@ -615,21 +668,20 @@ pub fn unknown_archive_args(base: &super::models::ArchiveArgs) -> super::models:
 /// The entries of an `.m3u` playlist, resolved against its own directory: one path per
 /// line; blank lines, `#` comment/directive lines (`#EXTM3U`, `#EXTINF`) and URLs skipped;
 /// a UTF-8 BOM tolerated; `\` separators (playlists written on Windows) read as `/`
-/// elsewhere. Entries that don't exist are still returned -- the caller decides what a
-/// missing disc means.
+/// elsewhere, and each name matched to the disk's own spelling ignoring case
+/// ([`resolve_listed`](super::detect::sheet::resolve_listed)). Entries that don't exist are
+/// still returned -- the caller decides what a missing disc means.
 pub fn parse_m3u(path: &Path) -> Result<Vec<PathBuf>, String> {
     let bytes = fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
     let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut listings = super::detect::sheet::Listings::default();
     Ok(text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.contains("://"))
-        .map(|line| {
-            let entry = if cfg!(windows) { PathBuf::from(line) } else { PathBuf::from(line.replace('\\', "/")) };
-            normalized(&if entry.is_absolute() { entry } else { base.join(entry) })
-        })
+        .map(|line| normalized(&super::detect::sheet::resolve_listed(base, line, &mut listings)))
         .collect())
 }
 
@@ -689,6 +741,7 @@ fn visible_entries(dir: &Path) -> Vec<(PathBuf, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rom::platforms::sony::Sfo;
 
     struct ScratchDir(PathBuf);
 
@@ -728,6 +781,12 @@ mod tests {
     fn ctx(dir_type: DirType, platform: PlatformContext, shapes: &str) -> ScanContext {
         let shapes = if shapes.is_empty() { Vec::new() } else { RomShape::parse_list(shapes).expect("valid shapes") };
         ScanContext { dir_type, platform, heuristics: HeuristicFlags::ALL, shapes, files_seen: None }
+    }
+
+    fn candidate_paths_walk(out: &WalkResult) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = out.rom_candidates.iter().map(|c| c.path.clone()).collect();
+        paths.sort();
+        paths
     }
 
     fn candidate_paths(out: &DirectoryClassification) -> Vec<PathBuf> {
@@ -836,6 +895,19 @@ mod tests {
         let entries = parse_m3u(&m3u).unwrap();
         let expected = if cfg!(windows) { scratch.path().join("discs\\a.chd") } else { scratch.path().join("discs/a.chd") };
         assert_eq!(entries, vec![expected], "URLs skipped, CRLF handled");
+    }
+
+    /// A playlist naming its discs in another case than the disk finds them on Linux too, and
+    /// names them as the walk lists them, so a disc is not a member and a candidate apart.
+    #[test]
+    fn m3u_entries_match_the_disk_ignoring_case() {
+        let scratch = ScratchDir::new("m3u_case");
+        let disc = scratch.file("Game (Disc 1).chd", b"x");
+        scratch.file("game.m3u", b"GAME (DISC 1).CHD\n");
+        let out = classify_directory(scratch.path(), &ctx(DirType::Mixed, PlatformContext::None, ""));
+        assert_eq!(out.playlists[0].member_paths, vec![disc.clone()]);
+        assert!(out.playlists[0].missing_members.is_empty());
+        assert_eq!(candidate_paths(&out), vec![disc]);
     }
 
     #[test]
@@ -1048,6 +1120,59 @@ mod tests {
             expected
         });
         assert!(out.rom_candidates.iter().all(|c| c.platform_hint == Some(Platform::Msx)), "{:?}", out.rom_candidates);
+    }
+
+    /// A game folder straight in a root of platform folders, with no platform of its own
+    /// known: one game, not a platform folder of loose files.
+    #[test]
+    fn a_game_folder_in_a_root_without_a_platform_is_one_bundle() {
+        let scratch = ScratchDir::new("walk_root_game_folder");
+        let mut sfo = Vec::new();
+        sfo.extend_from_slice(&Sfo::MAGIC);
+        sfo.extend_from_slice(&0x0101u32.to_le_bytes());
+        sfo.extend_from_slice(&0x24u32.to_le_bytes()); // key table
+        sfo.extend_from_slice(&0x30u32.to_le_bytes()); // data table
+        sfo.extend_from_slice(&1u32.to_le_bytes());
+        sfo.extend_from_slice(&0u16.to_le_bytes());
+        sfo.extend_from_slice(&0x0204u16.to_le_bytes());
+        sfo.extend_from_slice(&10u32.to_le_bytes());
+        sfo.extend_from_slice(&16u32.to_le_bytes());
+        sfo.extend_from_slice(&0u32.to_le_bytes());
+        sfo.extend_from_slice(b"TITLE_ID\0");
+        sfo.resize(0x30, 0);
+        sfo.extend_from_slice(b"BLUS00001\0");
+        scratch.file("Some Game/PS3_GAME/PARAM.SFO", &sfo);
+        scratch.file("Some Game/PS3_GAME/USRDIR/EBOOT.BIN", b"x");
+        let out = scan(scratch.path(), &PlatformLayout::SeparatedBySubdir(Default::default()), &ctx(DirType::Mixed, PlatformContext::None, ""), true);
+        assert_eq!(candidate_paths_walk(&out), vec![scratch.path().join("Some Game")]);
+        assert_eq!(out.rom_candidates[0].kind, CandidateKind::DirectoryBundle);
+        assert_eq!(out.rom_candidates[0].platform_hint, Some(Platform::PlayStation3));
+    }
+
+    /// A sheet naming tracks in another folder (one up, one down): the tracks are the
+    /// sheet's, whichever folder the walk reaches first.
+    #[test]
+    fn tracks_in_other_folders_are_the_sheets() {
+        let scratch = ScratchDir::new("walk_cross_dir_tracks");
+        scratch.file("shared.bin", b"x");
+        scratch.file("game/Tracks/track 02.bin", b"x");
+        let cue = scratch.file("game/game.cue", b"FILE \"..\\shared.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"Tracks\\track 02.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n");
+        let mut out = WalkResult::default();
+        walk(scratch.path(), scratch.path(), &ctx(DirType::Mixed, PlatformContext::None, ""), false, &mut out);
+        assert_eq!(candidate_paths_walk(&out), vec![cue]);
+    }
+
+    /// A link to a sibling folder lists the same files again: walked once, under the real
+    /// folder's path.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_sibling_is_walked_once() {
+        let scratch = ScratchDir::new("walk_sibling_link");
+        let real = scratch.file("b/game.gba", b"x");
+        std::os::unix::fs::symlink(scratch.path().join("b"), scratch.path().join("a")).unwrap();
+        let mut out = WalkResult::default();
+        walk(scratch.path(), scratch.path(), &ctx(DirType::Mixed, PlatformContext::None, ""), false, &mut out);
+        assert_eq!(candidate_paths_walk(&out), vec![real]);
     }
 
     #[test]
