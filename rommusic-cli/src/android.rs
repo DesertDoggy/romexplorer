@@ -218,3 +218,59 @@ pub fn leave() {
         Ok(())
     });
 }
+
+/// Copies the files of the APK's `assets/` whose names `wanted` picks into `dir`, each written
+/// beside its place and renamed, so a copy cut short is never read as whole. Returns how many
+/// were copied. (APK assets are not files on disk: they are read through the AssetManager.)
+pub fn copy_assets(wanted: impl Fn(&str) -> bool, dir: &Path) -> Result<usize, String> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    with_env(|env, activity| {
+        let assets = env.call_method(activity, "getAssets", "()Landroid/content/res/AssetManager;", &[])?.l()?;
+        let root = env.new_string("")?;
+        let names = env.call_method(&assets, "list", "(Ljava/lang/String;)[Ljava/lang/String;", &[JValue::from(&root)])?.l()?;
+        let names = jni::objects::JObjectArray::from(names);
+        let count = env.get_array_length(&names)?;
+        let buffer = env.new_byte_array(1 << 16)?;
+        let mut chunk = vec![0i8; 1 << 16];
+        let mut copied = 0;
+        for i in 0..count {
+            let name = env.get_object_array_element(&names, i)?;
+            let name = string(env, name)?;
+            if !wanted(&name) {
+                continue;
+            }
+            let jname = env.new_string(&name)?;
+            let stream = env.call_method(&assets, "open", "(Ljava/lang/String;)Ljava/io/InputStream;", &[JValue::from(&jname)])?.l()?;
+            let target = dir.join(&name);
+            let part = dir.join(format!("{name}.part"));
+            let written = (|| -> Result<(), String> {
+                let mut out = std::fs::File::create(&part).map_err(|err| format!("{}: {err}", part.display()))?;
+                loop {
+                    let read = env.call_method(&stream, "read", "([B)I", &[JValue::from(&buffer)]).and_then(|r| r.i()).map_err(|err| format!("{name}: {err}"))?;
+                    if read < 0 {
+                        break;
+                    }
+                    let read = read as usize;
+                    env.get_byte_array_region(&buffer, 0, &mut chunk[..read]).map_err(|err| format!("{name}: {err}"))?;
+                    // SAFETY: i8 and u8 have the same size and alignment.
+                    let bytes = unsafe { std::slice::from_raw_parts(chunk.as_ptr().cast::<u8>(), read) };
+                    out.write_all(bytes).map_err(|err| format!("{}: {err}", part.display()))?;
+                }
+                drop(out);
+                std::fs::rename(&part, &target).map_err(|err| format!("{}: {err}", target.display()))
+            })();
+            let _ = env.call_method(&stream, "close", "()V", &[]);
+            env.delete_local_ref(stream)?;
+            env.delete_local_ref(jname)?;
+            match written {
+                Ok(()) => copied += 1,
+                Err(err) => {
+                    let _ = std::fs::remove_file(&part);
+                    log::warn!("APK asset {err}");
+                }
+            }
+        }
+        Ok(copied)
+    })
+}

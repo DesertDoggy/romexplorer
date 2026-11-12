@@ -354,7 +354,7 @@ fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thr
         }
         other => {
             why_none = Some(if o.originals.is_empty() {
-                format!("{} music needs its original-format music files: give a folder of them", other.display_name())
+                format!("{} music does not play straight from the ROM yet; a folder of its music in original audio formats can stand in", other.display_name())
             } else {
                 "no original-format music set in the folders given matches this ROM".to_string()
             });

@@ -799,7 +799,7 @@ fn OptionsPanel(initial: Settings, chosen_originals: String, chosen_bios: String
                     input { r#type: "text", placeholder: "a folder of music in original audio formats", value: "{s.originals}", oninput: move |event| draft.write().originals = event.value() }
                     button { onclick: move |_| on_choose.call(Choose::Originals), "Choose…" }
                 }
-                div { class: "note", "Most cartridges need their music in an original audio format to play it; the files are matched to each ROM by their content. Game Boy Advance and SNES music plays straight from the ROM." }
+                div { class: "note", "Cartridge music plays straight from the ROM; no other files are needed. This folder is optional: its sets are matched to each ROM by their content, and fill in songs the ROM alone misses." }
                 div { class: "row",
                     label { "SNES run" }
                     input { r#type: "number", min: "1", max: "600", value: "{s.seconds}", oninput: move |event| draft.write().seconds = event.value().trim().parse().unwrap_or(20) }
