@@ -517,7 +517,8 @@ struct Reading(u64);
 impl Reading {
     /// The claim, or `None` when another run holds it.
     fn start(rom_id: u64) -> Option<Self> {
-        READING.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id).then_some(Self(rom_id))
+        let fresh = READING.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id);
+        fresh.then(|| Self(rom_id))
     }
 }
 
@@ -739,6 +740,11 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         if error.is_none() {
             read_this_run.insert(rom_id);
         }
+    }
+    // A run stopped before its end did not look at all of its ROMs: a title page asks for
+    // them again.
+    if progress.cancelled().await {
+        summary.rom_ids.clear();
     }
     progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
     Ok(summary)
