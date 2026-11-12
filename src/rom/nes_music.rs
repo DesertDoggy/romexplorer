@@ -779,16 +779,21 @@ impl Machine for Nes {
 
     fn feed(&self, chip: &mut Chip, writes: &[Write], out: &mut Vec<i16>) {
         let apu = &mut chip.0;
-        apu.set_reader(
-            Some(read_dmc),
-            &self.board.cart as *const Cart as *mut std::ffi::c_void,
-        );
+        // SAFETY: the cart is borrowed from `self` for this whole call, and the reader is
+        // cleared again before it returns.
+        unsafe {
+            apu.set_reader(
+                Some(read_dmc),
+                &self.board.cart as *const Cart as *mut std::ffi::c_void,
+            )
+        };
         for w in writes {
             let (t, addr) = target(w.port);
             apu.write(w.at, t, addr, w.value as u8);
         }
         apu.end_frame(self.board.frame_cycles(), out);
-        apu.set_reader(None, std::ptr::null_mut());
+        // SAFETY: no reader, so the null data is never read.
+        unsafe { apu.set_reader(None, std::ptr::null_mut()) };
     }
 
     fn frame_length(&self) -> u32 {
