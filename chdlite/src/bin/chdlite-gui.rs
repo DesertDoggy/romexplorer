@@ -39,16 +39,18 @@ const ANDROID: bool = cfg!(target_os = "android");
 const APP_CSS: &str = include_str!("../../assets/app.css");
 #[cfg_attr(target_os = "android", allow(dead_code))]
 const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
-const ART: [(&str, &[u8]); 4] = [
+const ART: [(&str, &[u8]); 5] = [
     ("lite.png", include_bytes!("../../assets/lite.png")),
     ("comp.png", include_bytes!("../../assets/comp.png")),
+    ("extract.png", include_bytes!("../../assets/extract.png")),
     ("read.png", include_bytes!("../../assets/read.png")),
     ("hash.png", include_bytes!("../../assets/hash.png")),
 ];
 
-const MODES: [(Mode, &str, &str, &str); 4] = [
+const MODES: [(Mode, &str, &str, &str); 5] = [
     (Mode::Lite, "lite.png", "Lite", "Lite: fast. Disc image, .cso or .pbp → CHD / RVZ; Wii U / Xbox → WUA / ZAR / XISO. NES / N64 / SNES dumps → the layout set in Settings; 3DS titles decrypted into the format set there. A .chd or .rvz is extracted."),
     (Mode::Comp, "comp.png", "Comp", "Comp: smallest file, slow. A .chd or .rvz is extracted."),
+    (Mode::Extract, "extract.png", "Extract", "Extract: .chd → cue + bin / gdi + bin (GD-ROM) / iso, .rvz → iso, .cso → iso, .pbp → cue + bin; .zcci / .zcia / .zcxi / .z3dsx → .cci / .cia / .cxi / .3dsx."),
     (Mode::Read, "read.png", "Read", "Read: show what a file is."),
     (Mode::Hash, "hash.png", "Hash", "Hash: hash the disc inside a .chd / .rvz / .cso / .pbp, or the image itself."),
 ];
