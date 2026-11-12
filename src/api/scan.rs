@@ -791,6 +791,31 @@ pub(crate) async fn upsert_rom(pool: &MySqlPool, main_path: &str, platform: Plat
     Ok((rom_id, is_new))
 }
 
+/// Whether `main_path` is a rom the DAT resolve joined into another (a loose track folded
+/// into its disc): its own rom is retired and every one of `file_ids` belongs to one live
+/// rom with another main file. A scan then records the files and leaves the rom joined,
+/// instead of making the track a rom of its own again until the next hash match.
+async fn merged_into_another(pool: &MySqlPool, main_path: &str, file_ids: &[u64]) -> Result<bool> {
+    let live: Option<u64> = sqlx::query_scalar("SELECT id FROM local_rom WHERE main_path = ? AND deleted = FALSE LIMIT 1").bind(main_path).fetch_optional(pool).await?;
+    if live.is_some() {
+        return Ok(false);
+    }
+    let retired: Option<u64> = sqlx::query_scalar("SELECT id FROM local_rom WHERE main_path = ? AND deleted = TRUE LIMIT 1").bind(main_path).fetch_optional(pool).await?;
+    if retired.is_none() {
+        return Ok(false);
+    }
+    let files = file_ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let holder: Option<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT lrf.rom_id FROM local_rom_files lrf JOIN local_rom lr ON lr.id = lrf.rom_id AND lr.deleted = FALSE AND lr.main_path <> ? \
+         WHERE lrf.file_id IN ({files}) GROUP BY lrf.rom_id HAVING COUNT(DISTINCT lrf.file_id) = ? LIMIT 1"
+    )))
+    .bind(main_path)
+    .bind(file_ids.len() as u64)
+    .fetch_optional(pool)
+    .await?;
+    Ok(holder.is_some())
+}
+
 /// Retires the other roms whose every file is one of `rom_id`'s: what an earlier scan made of
 /// pieces this rom now holds whole -- a DSi CDN folder's `00000001`, `tmd.1` and `titleKey.bin`,
 /// each once a game of its own, now one folder game; a disc's tracks seen without their sheet.
@@ -910,6 +935,9 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
         file_ids.push(id);
     }
     if file_ids.is_empty() || !as_roms {
+        return Ok(None);
+    }
+    if merged_into_another(&app.pool, &candidate.path.display().to_string(), &file_ids).await? {
         return Ok(None);
     }
     let (rom_id, rom_new) = upsert_rom(&app.pool, &candidate.path.display().to_string(), platform, &file_ids).await?;
@@ -1821,13 +1849,28 @@ pub fn game_groups(roms: &[(u64, Option<u8>, Option<String>, Option<String>)]) -
         p[x] = r;
         r
     }
+    // Linear: each rom is joined to the first rom seen with its release and, when it has a
+    // disc number, to the first with its set key -- the same components as joining every
+    // matching pair, which was quadratic over a directory's roms.
+    let mut by_release: HashMap<u64, usize> = HashMap::new();
+    let mut by_set: HashMap<&str, usize> = HashMap::new();
     for i in 0..n {
-        for j in (i + 1)..n {
-            let same_release = roms[i].0 == roms[j].0;
-            let same_set = roms[i].1.is_some() && roms[j].1.is_some() && roms[i].2.is_some() && roms[i].2 == roms[j].2;
-            if same_release || same_set {
-                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
-                parent[a] = b;
+        let mut join = |j: usize, p: &mut Vec<usize>| {
+            let (a, b) = (find(p, i), find(p, j));
+            p[a] = b;
+        };
+        match by_release.get(&roms[i].0) {
+            Some(&j) => join(j, &mut parent),
+            None => {
+                by_release.insert(roms[i].0, i);
+            }
+        }
+        if let (Some(_), Some(key)) = (roms[i].1, roms[i].2.as_deref()) {
+            match by_set.get(key) {
+                Some(&j) => join(j, &mut parent),
+                None => {
+                    by_set.insert(key, i);
+                }
             }
         }
     }
@@ -2078,7 +2121,8 @@ async fn resolve_by_dat(pool: &MySqlPool, scope: &str, progress: &crate::databas
     roms.sort_by_key(|r| r.0);
     let keyed: Vec<(u64, Option<u8>, Option<String>, Option<String>)> = roms.iter().map(|r| (r.1, r.2, r.3.clone(), Some(r.4.clone()).filter(|p| !p.is_empty()))).collect();
     let mut games_merged = 0u64;
-    let groups = game_groups(&keyed);
+    progress.force(0, None, &format!("DAT resolve: grouping {} rom(s) into games", keyed.len())).await;
+    let groups = tokio::task::spawn_blocking(move || game_groups(&keyed)).await.map_err(|e| Error::internal(format!("grouping: {e}")))?;
     let n_groups = groups.len() as u64;
     for (i, group) in groups.into_iter().enumerate() {
         progress.report(i as u64, Some(n_groups.max(1)), &format!("DAT resolve: grouping discs into games, {} of {n_groups}, {games_merged} merged", i + 1)).await;
@@ -2268,6 +2312,19 @@ mod dat_resolve_tests {
 
     /// The same two-disc release in two folders of one scanned directory: one game per
     /// folder, not four games of one disc.
+    /// Grouping is linear: a directory of many roms groups at once, with the same result as
+    /// joining every matching pair (two-disc sets by set key, one release twice).
+    #[test]
+    fn grouping_many_roms_is_linear() {
+        let n = 200_000u64;
+        let roms: Vec<(u64, Option<u8>, Option<String>, Option<String>)> = (0..n).map(|i| (i, Some((i % 2) as u8 + 1), Some(format!("p|Set {}", i / 2)), None)).collect();
+        let started = std::time::Instant::now();
+        let groups = game_groups(&roms);
+        assert_eq!(groups.len(), (n / 2) as usize);
+        assert!(groups.iter().all(|g| g.len() == 2 && g[1] == g[0] + 1));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
     #[test]
     fn copies_of_a_disc_set_in_two_folders_are_a_game_each() {
         let at = |p: &str| Some(p.to_string());
