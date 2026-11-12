@@ -4738,12 +4738,18 @@ const COLOR_VALUES = () => ({
   archive_format: Object.keys(DEFAULT_COLORS.archive_format),
 });
 
-// Keys whose editor is Config › Copy: the settings form only points there, as the app's does.
+// Keys whose editor is another screen (Config › Copy, Config › AI): the settings form only
+// points there, as the app's does. gemini_model is the Gemini row of Config › AI.
 const COPY_SCREEN_KEYS = ['copy_folder_scheme', 'copy_platform_combine', 'copy_output_defaults', 'copy_decide_on_copy', 'copy_header_preference', 'copy_wiiu_preference', 'copy_format_order', 'copy_prefer_decrypted'];
+function screenOfKey(key) {
+  if (COPY_SCREEN_KEYS.includes(key)) return ['config/copy', 'Config › Copy'];
+  if (key === 'gemini_model' || (key.startsWith('ai_') && key !== 'ai_cost_warning_seen')) return ['config/ai', 'Config › AI'];
+  return null;
+}
 
-function copyScreenEditor(value) {
+function screenEditor(value, [route, label]) {
   const shown = value === null || value === undefined ? tr('(unset)') : JSON.stringify(value);
-  const box = el(`<div><span class="mono">${esc(shown)}</span> <span class="muted">${tr('set under ')}<a class="link" onclick="go('config/copy')">${tr('Config › Copy')}</a></span></div>`);
+  const box = el(`<div><span class="mono">${esc(shown)}</span> <span class="muted">${tr('set under ')}<a class="link" onclick="go('${route}')">${tr(label)}</a></span></div>`);
   return { el: box, get: () => value, readonly: true };
 }
 
@@ -4924,7 +4930,6 @@ function settingEditor(key, value) {
       return { el: box, get };
     }
     case 'merge_review_order': current = value || 'regional'; box.appendChild(radios(key, [['regional', tr('regional cases first (default)')], ['english', tr('titles sharing an IGDB game first')]], current, v => { current = v; })); return { el: box, get };
-    case 'gemini_model': { const inp = el(`<input type="text" placeholder="${tr('newest Flash model (default)')}">`); inp.value = value || ''; current = inp.value; inp.oninput = () => { current = inp.value.trim(); }; box.appendChild(inp); return { el: box, get }; }
     case 'raw_response_retention': current = value || 'keep_latest'; box.appendChild(radios(key, [['keep_all', tr('keep all')], ['keep_latest', tr('keep latest')], ['discard', tr('discard')]], current, v => { current = v; })); return { el: box, get };
     case 'cache_ttl_days': { current = value ?? 90; const i = el(`<input type="number" min="1" value="${Number(current)}"> <span class="muted">${tr('days')}</span>`); const inp = el(`<label>`); inp.appendChild(i); box.appendChild(inp); i.oninput = () => { current = Number(i.value) || 1; }; return { el: box, get }; }
     case 'language_display': current = value || 'code'; box.appendChild(radios(key, [['code', tr('code (en, ja)')], ['english', tr('English name (English, Japanese)')], ['native', tr('native name (English, 日本語)')]], current, v => { current = v; })); return { el: box, get };
@@ -5064,7 +5069,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': case 'audio_rom_limiter': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': case 'audio_rom_limiter': case 'ai_cost_warning_seen': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -5080,6 +5085,7 @@ function settingEditor(key, value) {
         audio_keep_playing: [true, tr("keep a title's music playing on other screens until another title page opens (default)"), tr('stop the music when the page is left')],
         audio_rom_videos: [false, tr('play the sound of video files in ROMs, such as title movies'), tr('leave video sound out (default)')],
         audio_rom_limiter: [true, tr('soften sudden loud bursts in music played from ROMs (default)'), tr('play it as the sound chip makes it')],
+        ai_cost_warning_seen: [false, tr("the AI cost warning was accepted: don't show it again"), tr('show the AI cost warning before the next paid question (default)')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));
@@ -5570,8 +5576,7 @@ function showSection(host, active, query) {
 async function settingsPage(json, group) {
   const list = await api('/api/v1/settings');
   if (!json) return settingsForm(list, group);
-  const other = json ? tr(`the <span class="link" onclick="go('config/settings')">form</span> covers the same keys.`) : tr(`the <span class="link" onclick="go('config/settings_json')">JSON view</span> shows the stored values as they are.`);
-  view.innerHTML = `<div class="card"><h2>${json ? tr('Settings (JSON)') : tr('Settings')}</h2><p class="muted">${tr('Changes apply after saving and reloading a screen. "reset to default" removes the stored value;')} ${other}</p><div id="rows"></div>
+  view.innerHTML = `<div class="card"><h2>${tr('Settings (JSON)')}</h2><p class="muted">${trf('Changes apply after saving. "reset to default" removes the stored value. Every value as the server stores it; the {link} covers the same keys.', { link: `<span class="link" onclick="go('config/settings')">${tr('form')}</span>` })}</p><div id="rows"></div>
     ${json ? `<form class="inline" id="newkey"><label>${tr('new key')}<input type="text" name="key" placeholder="${tr('key')}"></label><label>${tr('JSON value')}<input type="text" name="value" placeholder='"value" or {"a":1}' style="min-width:300px"></label><button class="btn">${tr('add')}</button></form>` : ''}</div>`;
   const rows = document.getElementById('rows');
   const groups = settingGroups(list);
@@ -5617,7 +5622,7 @@ async function settingsPage(json, group) {
 function settingsForm(list, group) {
   const sections = settingGroups(list);
   const active = sections.some(g => g.id === group) ? group : (sections[0] || {}).id;
-  view.innerHTML = `${sectionTabs(sections, active, 'config/settings')}<div class="card"><h2>${tr('Settings')} ${info(`<p>${tr('Changes apply after saving and reloading a screen. "reset to default" removes the stored value;')} ${tr(`the <span class="link" onclick="go('config/settings_json')">JSON view</span> shows the stored values as they are.`)}</p>`)}</h2>
+  view.innerHTML = `${sectionTabs(sections, active, 'config/settings')}<div class="card"><h2>${tr('Settings')} ${info(`<p>${trf('Changes apply after saving. "reset to default" removes the stored value. The {link} shows the stored values as they are.', { link: `<span class="link" onclick="go('config/settings_json')">${tr('JSON view')}</span>` })}</p>`)}</h2>
     <div class="toolbar"><input type="text" id="setfilter" placeholder="${tr('filter settings…')}" style="min-width:240px"><span class="grow"></span><span class="muted">${trf('{n} settings', { n: list.length })}</span></div></div><div id="setgroups"></div>`;
   const host = document.getElementById('setgroups');
   const groups = new Map();
@@ -5644,7 +5649,8 @@ function settingRow(s, section) {
     <div class="setact"><button class="btn small primary">${tr('save')}</button><button class="btn small danger" title="${tr('reset to default')}">${tr('reset')}</button></div></div>`);
   const holder = row.querySelector('.editor'), name = row.querySelector('.setname'), act = row.querySelector('.setact');
   // An unset key whose default depends on the server's build starts on that default.
-  const editor = COPY_SCREEN_KEYS.includes(s.key) ? copyScreenEditor(s.value) : settingEditor(s.key, s.value ?? s.default ?? null);
+  const elsewhere = screenOfKey(s.key);
+  const editor = elsewhere ? screenEditor(s.value, elsewhere) : settingEditor(s.key, s.value ?? s.default ?? null);
   if (editor) holder.appendChild(editor.el);
   else holder.innerHTML = `<span class="muted">${tr(`no form for this one yet: edit it under <span class="link" onclick="go('config/settings_json')">Settings (JSON)</span>`)}</span>`;
   if (!editor || editor.readonly) act.style.display = 'none';
@@ -6184,6 +6190,9 @@ async function showAiPage() {
     try {
       await setKey('ai_provider', f.get('provider'));
       for (const p of o.providers) await setKey('ai_model_' + p.id, String(f.get('model_' + p.id) || '').trim());
+      // The Gemini row shows gemini_model (the older name) while ai_model_gemini is unset, and
+      // now saves it as ai_model_gemini: drop the old one, or clearing the row would bring it back.
+      await setKey('gemini_model', null);
       await setKey('ai_ask_first', f.get('ask_first'));
       await setKey('ai_cache_days', f.get('cache_days') ? Number(f.get('cache_days')) : null);
       toast(tr('saved')); showAiPage();
