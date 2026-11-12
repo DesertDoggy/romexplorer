@@ -140,8 +140,8 @@ pub fn rebuilt(t: &Track, rom: &[u8], fill: Fill) -> Vec<u8> {
         _ => vec![0u8; 0x10000],
     };
     for r in &t.runs {
-        if let Some(src) = rom.get(r.rom..r.rom + r.len) {
-            aram[r.data..r.data + r.len].copy_from_slice(src);
+        if let (Some(src), Some(dst)) = (rom.get(r.rom..r.rom.saturating_add(r.len)), aram.get_mut(r.data..r.data.saturating_add(r.len))) {
+            dst.copy_from_slice(src);
         }
     }
     if fill == Fill::Bridged {

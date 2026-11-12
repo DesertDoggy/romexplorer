@@ -19,7 +19,7 @@ use super::rom_audio::{classify, FoundTrack, PcmStream, Shape, SoundKind, Thresh
 pub const ROM_SONG_VIEW: u32 = u16::MAX as u32 - 1;
 
 /// The largest ROM read whole: N64 cartridges are 64 MB at most.
-const MAX_ROM_BYTES: u64 = 64 << 20;
+pub(crate) const MAX_ROM_BYTES: u64 = 64 << 20;
 /// Songs are measured at this rate: the length doesn't depend on it, and it is far cheaper.
 const MEASURE_RATE: u32 = 8000;
 /// A song still playing after this long is music that runs on; it is measured no further.

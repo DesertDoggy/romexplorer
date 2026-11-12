@@ -273,13 +273,13 @@ pub struct IndexSummary {
 pub fn one_liner(s: &IndexSummary) -> String {
     let mut parts = vec![format!("{} ROM(s) read, {} track(s) found", s.roms_read, s.tracks)];
     if s.rip_tracks > 0 {
-        parts.push(format!("{} from rip sets", s.rip_tracks));
+        parts.push(format!("{} from original audio format sets", s.rip_tracks));
     }
     if s.rom_songs > 0 {
         parts.push(format!("{} song(s) read from cartridge sound engines", s.rom_songs));
     }
     if s.library_sets > 0 {
-        parts.push(format!("{} ROM(s) matched to the rip library's {} set(s)", s.library_matches, s.library_sets));
+        parts.push(format!("{} ROM(s) matched to {} original audio format set(s)", s.library_matches, s.library_sets));
     }
     if s.same_content > 0 {
         parts.push(format!("{} copied from an indexed ROM with the same content", s.same_content));
@@ -424,7 +424,7 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
 /// The rip library from `audio_rip_folders`, fingerprinted; empty when there is none or the
 /// player is not built. Fingerprints are cached beside the media.
 async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
-    progress.report(0, None, "reading the rip library").await;
+    progress.report(0, None, "reading the original audio format sets").await;
     library_quiet(app).await
 }
 
@@ -665,7 +665,20 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
         let found = loop {
             tokio::select! {
-                done = &mut task => break Some(done.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?),
+                done = &mut task => match done {
+                    Ok(found) => break Some(found),
+                    // A reader that panics on one ROM (a bad map, a broken file) costs that ROM
+                    // only: it is noted as an error and the run goes on with the next.
+                    Err(e) if e.is_panic() => {
+                        let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        let error = format!("reader failed while reading {what}: {}", panic_text(e.into_panic()));
+                        log::warn!("rom audio index: {main_path}: {error}");
+                        summary.errors.push(format!("{main_path}: {error}"));
+                        record_error(app, rom_id, &error).await?;
+                        break None;
+                    }
+                    Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
+                },
                 _ = tick.tick() => {
                     let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
                     let secs = started.elapsed().as_secs();
@@ -708,13 +721,21 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                 for set in sets {
                     if !set_tracks.contains_key(&set) {
                         let (path, t) = (set.clone(), thresholds);
-                        let tracks = tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+                        let tracks = match tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await {
+                            Ok(tracks) => tracks,
+                            // A set that panics its reader is left out; the rest still count.
+                            Err(e) if e.is_panic() => {
+                                summary.errors.push(format!("{}: reader failed: {}", set.display(), panic_text(e.into_panic())));
+                                Vec::new()
+                            }
+                            Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
+                        };
                         set_tracks.insert(set.clone(), tracks);
                     }
                     rips.extend(set_tracks[&set].iter().cloned());
                 }
             }
-            Err(e) => summary.errors.push(format!("{main_path}: rip library: {e}")),
+            Err(e) => summary.errors.push(format!("{main_path}: original audio format sets: {e}")),
         }
         let (disc_tracks, error) = match disc_found {
             Some(Ok(tracks)) => (tracks, None),
@@ -770,11 +791,14 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
             break;
         }
         let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        progress.report(i as u64, Some(total), &format!("matching ROM {} of {total} to the rip library: {label}", i + 1)).await;
+        progress.report(i as u64, Some(total), &format!("matching ROM {} of {total} to the original audio format sets: {label}", i + 1)).await;
         let lib = library.clone();
-        let matched = tokio::task::spawn_blocking(move || if path.is_file() { lib.match_rom(&path, platform) } else { Ok(Vec::new()) })
-            .await
-            .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+        let matched = match tokio::task::spawn_blocking(move || if path.is_file() { lib.match_rom(&path, platform) } else { Ok(Vec::new()) }).await {
+            Ok(m) => m,
+            // A ROM whose matching panics is that ROM's error, not the run's.
+            Err(e) if e.is_panic() => Err(format!("matching failed: {}", panic_text(e.into_panic()))),
+            Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
+        };
         found.push((rom_id, matched));
     }
     // Who holds each set strongly: the same game in another region, revision or beta is not
@@ -1821,5 +1845,13 @@ mod tests {
         assert_eq!(rom_path("/x/game.chd", &[]), Some(PathBuf::from("/x/game.chd")));
         assert_eq!(rom_path("/x/game.sfc", &["/x/game.sfc".to_string()]), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The message a panic carried, for the job's error list.
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_else(|| "unknown panic".into()),
     }
 }
