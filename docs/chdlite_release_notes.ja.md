@@ -9,7 +9,6 @@ chdlite は romexplorer とは別にリリースされます。このノート�
 - NES のヘッダーの有無は NES ヘッダーデータベースで判定します。データベースにないダンプは、ハッシュを表示してエラーにします。
 - **Mac アプリと Linux の AppImage。** macOS 用の `chdlite.app` と、Linux 用の 1 ファイルの AppImage を用意しました。開くとウィンドウが起動します。コンソール版も中に入っています（`chdlite.AppImage chdcomp ...`）。
 - **RetroAchievements。** Hash で RetroAchievements のハッシュも出します（初期設定でオン）。実績があるゲームなら、その名前も表示します。照合に使うリストは同梱で、日付は Settings と `--version` で確認できます。
-- **Extract。** ウィンドウでも Extract が可能。
 - **スレッド数。** 自動設定で物理コアを 4 つ残すよう変更（1 ファイルのときも）。同時変換は設定したスレッド数以内に変更。
 
 ## バグ修正
