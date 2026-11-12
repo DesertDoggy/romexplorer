@@ -251,6 +251,9 @@ pub struct IndexSummary {
     /// cartridge with no sound player and no music files beside it). Not marked as indexed,
     /// so a later run takes them once something does.
     pub skipped_unsupported: u64,
+    /// Cartridges whose sound engine, music map or matched sets gave no music: recorded as
+    /// looked at, with no tracks.
+    pub no_music: u64,
     pub tracks: u64,
     /// Of `tracks`, those from rip sets (in game folders or the rip library).
     pub rip_tracks: u64,
@@ -289,6 +292,9 @@ pub fn one_liner(s: &IndexSummary) -> String {
     }
     if s.skipped_not_disc > 0 {
         parts.push(format!("{} not a disc", s.skipped_not_disc));
+    }
+    if s.no_music > 0 {
+        parts.push(format!("{} with no music found", s.no_music));
     }
     if s.skipped_unsupported > 0 {
         parts.push(format!("{} on a platform or media not supported yet", s.skipped_unsupported));
@@ -594,7 +600,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let main_path: String = row.try_get("main_path")?;
         // A ROM another run is reading right now (a title page's, beside this one) is that
         // run's: the same disc is not read twice at once.
-        let Some(_reading) = Reading::start(rom_id) else {
+        let Some(reading) = Reading::start(rom_id) else {
             summary.skipped_existing += 1;
             continue;
         };
@@ -639,6 +645,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label}", i + 1)).await;
         let open = disc.clone();
         let matched = chosen.remove(&rom_id).unwrap_or(Ok(Vec::new()));
+        let had_sets = matches!(&matched, Ok(sets) if !sets.is_empty());
         let rom_file = PathBuf::from(&main_path);
         // A NES ROM matched to a set with an NSF: its music map, built once, so the songs play
         // straight from the ROM with no boot.
@@ -650,6 +657,9 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let step = Arc::new(std::sync::Mutex::new(String::new()));
         let at = step.clone();
         let mut task = tokio::task::spawn_blocking(move || {
+            // The claim lives as long as the reader: a ROM given up on after the time limit
+            // goes on reading in the background, and no other run starts it meanwhile.
+            let _reading = reading;
             let note = |what: &str| *at.lock().unwrap_or_else(|p| p.into_inner()) = what.to_string();
             note("music map");
             let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets(&rom_file, &map_sets)).and_then(|r| r.err());
@@ -705,13 +715,17 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             summary.errors.push(format!("{main_path}: music map: {e}"));
         }
         let mut song_count = 0;
+        let mut song_error = None;
         match songs_found {
             Ok(songs) => {
                 song_count = songs.len();
                 summary.rom_songs += song_count as u64;
                 rips.extend(songs);
             }
-            Err(e) => summary.errors.push(format!("{main_path}: ROM music: {e}")),
+            Err(e) => {
+                summary.errors.push(format!("{main_path}: ROM music: {e}"));
+                song_error = Some(format!("ROM music: {e}"));
+            }
         }
         match matched {
             Ok(sets) => {
@@ -750,7 +764,14 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             continue;
         }
         if disc.is_none() && rips.is_empty() {
-            summary.skipped_not_disc += 1;
+            // A cartridge whose sound engine or map was searched and gave nothing is recorded
+            // as looked at, so a "new only" run does not search it again.
+            if songs || had_sets {
+                summary.no_music += 1;
+                store(app, rom_id, &[], song_error.as_deref()).await?;
+            } else {
+                summary.skipped_not_disc += 1;
+            }
             continue;
         }
         summary.rip_tracks += (rips.len() - song_count) as u64;
