@@ -31,6 +31,44 @@ zapasową przed podmianą wersji.
   wewnętrzny nagłówek nie zgadzały się co do nagłówka kopiarki. Teraz jest zgłaszany jako błąd.
   Zrzut NES, którego nie ma w bazie nagłówków, jest zgłaszany z jego hashem.
 
+**Skanowanie**
+- W Linuksie skanowanie nie znajdowało wpisów cue, gdi i m3u zapisanych inną wielkością liter
+  lub z ukośnikami wstecznymi, a dwa pliki różniące się tylko wielkością liter brało za jeden
+  ROM.
+- Skanowanie folderu pomijało typ i platformę ustawione dla folderów w środku. Foldery gier
+  pod folderem bez platformy stawały się osobną grą dla każdego pliku.
+- Ponowne skanowanie czytało od nowa gry w folderach, rozdzielało połączone ścieżki i gubiło
+  dopasowania po numerze seryjnym. Grupowanie płyt było wolne w dużych folderach.
+- Pliki, które nie są ROM-ami, np. teksty i obrazy, stawały się grami. Teraz dopiero po
+  rozpoznaniu.
+- Przy samym xxh3_128 w hashach skanowania ginęły dopasowania DAT. Jeden z crc32, md5 i sha1
+  jest teraz zawsze włączony.
+
+**Kopiowanie**
+- Nadpisywanie usuwało stary plik przed zapisaniem nowego. Kopia mogła też zmienić playlisty,
+  które miały zostać, i zapisać w jeden dwa pliki różniące się tylko wielkością liter.
+
+**Łączenie tytułów**
+- Łączenie mogło złączyć dwie wersje z zestawu wersji albo tytuł detaliczny z nielicencjonowanym.
+  Rozdzielone tytuły wracały po „Akceptuj wszystkie”, a linki IGDB usunięte przez audyt
+  wracały przy następnym dopasowaniu hashy.
+- Dopasowanie Hasheous po innej nazwie połączonej gry tworzyło zdublowany tytuł.
+
+**Serwer i zadania**
+- Pobieranie grafik dla klienta mogło sięgać do sieci serwera, bez limitu rozmiaru.
+- Każde konto mogło pobrać pamięci podręczne SQLite „database” i „all” z kontami i
+  ustawieniami. Teraz wymagają administratora.
+- Przerwana pełna synchronizacja zostawiała tabelę w połowie, a anulowanie kopii zapasowej
+  pozwalało ruszyć następnej, gdy poprzednia jeszcze zapisywała.
+- Kopie na inny dysk i synchronizacje z innego serwera czekały na niezwiązane zadania. Po
+  restarcie bazy danych zadanie mogło ruszyć dwa razy.
+
+**Inne**
+- Muzyka z ROM mogła się wysypać na zestawie PSF2.
+- Kilka etykiet konsoli WWW i zdań w Konfiguracja › Ustawienia zostawało po angielsku.
+- MariaDB starsza niż 10.6 kończyła się niejasnymi błędami. Teraz jest odrzucana przy
+  połączeniu.
+
 # romexplorer 0.2.0 (alpha)
 
 Alfa: schemat bazy danych może się zmienić między wydaniami bez możliwości aktualizacji. Zrób kopię
