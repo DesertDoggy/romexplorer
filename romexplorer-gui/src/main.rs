@@ -259,7 +259,7 @@ fn main() {
         {
             api::set_endpoint(api::saved_endpoint().unwrap_or_default());
         }
-        // Mobile: the server the user connected to last (the connect screen asks otherwise).
+        // Mobile: the server the user connected to last, if any (set up under Settings).
         #[cfg(not(target_arch = "wasm32"))]
         api::set_endpoint(api::saved_endpoint().unwrap_or_default());
         // The phone (romcompanion) reads its synced copy first and the server for the rest.
@@ -295,11 +295,13 @@ fn App() -> Element {
         document::Title { "romexplorer" }
         document::Style { {APP_CSS} }
         document::Style { {MOBILE_CSS} }
-        match (api::NEEDS_SIGN_IN.read().clone(), &*loaded.read()) {
+        // The phone starts as a client of its own, signed in or not: sign-in waits under its
+        // Settings, so it never stops the app here.
+        match (if cfg!(feature = "mobile") { None } else { api::NEEDS_SIGN_IN.read().clone() }, &*loaded.read()) {
             // A 401 anywhere (signed out, or the device was revoked) and a failed first load
             // both land here.
             (Some(message), _) => rsx! { SignIn { error: message, on_done: move |_| { *api::NEEDS_SIGN_IN.write() = None; let mut l = loaded; l.restart(); } } },
-            (None, Some(Err(e))) if e.status == 401 || e.status == 0 => rsx! { SignIn { error: e.message.clone(), on_done: move |_| { *api::NEEDS_SIGN_IN.write() = None; let mut l = loaded; l.restart(); } } },
+            (None, Some(Err(e))) if !cfg!(feature = "mobile") && (e.status == 401 || e.status == 0) => rsx! { SignIn { error: e.message.clone(), on_done: move |_| { *api::NEEDS_SIGN_IN.write() = None; let mut l = loaded; l.restart(); } } },
             // Pages read the vocabulary / settings while they build (filters, editors): only
             // once they're in.
             (None, None) => rsx! { header { h1 { "romexplorer" } } main { id: "view", div { class: "muted", {state::tr("loading…")} } } },

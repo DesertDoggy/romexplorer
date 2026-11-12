@@ -79,6 +79,10 @@ downloads of its own or ROM music; Start is hidden until launching is done.
   tables holding the answers to the routes the phone asks (lists, pages, RA, covers as
   server-made AVIF or JPEG thumbnails). `api::offline` answers the same route strings from
   it; `CompanionBackend` asks the server first and falls back to the copy when it is away.
+- **Start**: no server, no sign-in. The phone is a client of its own: it opens into Big
+  Picture, keeps its own settings (language and the like; `PUT /api/v1/settings/*` never
+  reaches the server) and ships every UI language. The server or client to sync from is
+  added later under ⚙ Settings › Server, with the app's own sign-in form.
 - **Defaults**: Cross-platform, Definitive, Titles, Releases and RA tabs on; Games, Files
   and Contents off. Covers on, audio off (not synced yet). Auto sync daily when the server
   answers.

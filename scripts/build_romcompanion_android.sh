@@ -22,7 +22,7 @@
 # must be signed with the same key.
 #
 # The APK ends up under target/dx/romcompanion/<debug|release>/android/app/app/build/outputs/.
-# Sideload it (`adb install -r <apk>`). On first start it asks for a server to connect to.
+# Sideload it (`adb install -r <apk>`). It starts without a server; one is added under Settings.
 #
 # iOS: the same crate builds with `dx bundle --ios` on a Mac; not shipped yet.
 #

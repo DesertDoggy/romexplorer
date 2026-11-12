@@ -94,6 +94,10 @@ pub struct Settings {
     pub last_sync: Option<String>,
     pub last_ra_sync: Option<String>,
     pub last_summary: Option<SyncSummary>,
+    /// The phone's own app settings (`PUT /api/v1/settings/{key}`: its language and the
+    /// like). The phone is a client of its own, so they never change the server's; the
+    /// synced copy's settings are only their defaults.
+    pub app_settings: serde_json::Map<String, Value>,
 }
 
 impl Default for Settings {
@@ -106,6 +110,7 @@ impl Default for Settings {
             last_sync: None,
             last_ra_sync: None,
             last_summary: None,
+            app_settings: Default::default(),
         }
     }
 }
@@ -188,6 +193,112 @@ pub fn image_key(path: &str) -> Option<String> {
     Some(format!("ra/{gid}/{kind}"))
 }
 
+/// Whether a server has been set up. The phone starts without one, as a client of its
+/// own: browsing the copy and its own settings need none, and the server is added later
+/// under Settings.
+pub fn has_server() -> bool {
+    !super::endpoint().base.is_empty()
+}
+
+fn no_server() -> ApiError {
+    ApiError {
+        status: 0,
+        message: crate::state::tr("No server set up yet (⚙ Settings › Server)."),
+    }
+}
+
+/// The languages the app ships, built in, so the phone speaks the user's language before it
+/// has ever reached a server. The same files the server builds in (`api::i18n`).
+const BUILT_IN_I18N: [(&str, &str); 9] = [
+    ("en", include_str!("../../../app_root_ex/assets/i18n/en.json")),
+    ("ja", include_str!("../../../app_root_ex/assets/i18n/ja.json")),
+    ("de", include_str!("../../../app_root_ex/assets/i18n/de.json")),
+    ("es", include_str!("../../../app_root_ex/assets/i18n/es.json")),
+    ("fr", include_str!("../../../app_root_ex/assets/i18n/fr.json")),
+    ("it", include_str!("../../../app_root_ex/assets/i18n/it.json")),
+    ("ko", include_str!("../../../app_root_ex/assets/i18n/ko.json")),
+    ("pl", include_str!("../../../app_root_ex/assets/i18n/pl.json")),
+    ("pt", include_str!("../../../app_root_ex/assets/i18n/pt.json")),
+];
+
+const SETTINGS_PATH: &str = "/api/v1/settings";
+
+/// The settings list with the phone's own values laid over the copy's (or none, before the
+/// first sync).
+fn settings_list(base: Option<&str>, own: &serde_json::Map<String, Value>) -> Value {
+    let base: Value = base
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let mut items = super::items(&base);
+    for (key, value) in own {
+        match items
+            .iter_mut()
+            .find(|i| i.get("key").and_then(Value::as_str) == Some(key.as_str()))
+        {
+            Some(Value::Object(item)) => {
+                item.insert("value".into(), value.clone());
+            }
+            _ => items.push(serde_json::json!({ "key": key, "value": value })),
+        }
+    }
+    match base {
+        Value::Object(mut o) if o.contains_key("items") => {
+            o.insert("items".into(), Value::Array(items));
+            Value::Object(o)
+        }
+        _ => Value::Array(items),
+    }
+}
+
+/// What the phone answers itself, server or not: its own settings, and the built-in
+/// languages when the copy has none.
+fn answer_locally(method: Method, path: &str, body: Option<&Value>) -> Option<ApiResult<String>> {
+    let bare = path.split('?').next().unwrap_or(path);
+    let key = bare
+        .strip_prefix("/api/v1/settings/")
+        .filter(|k| !k.is_empty() && !k.contains('/'));
+    match (method, bare, key) {
+        (Method::Put, _, Some(key)) => {
+            let value = body.cloned().unwrap_or(Value::Null);
+            let mut s = settings();
+            s.app_settings.insert(key.to_string(), value.clone());
+            save_settings(&s);
+            Some(Ok(serde_json::json!({ "key": key, "value": value }).to_string()))
+        }
+        (Method::Get, SETTINGS_PATH, _) => {
+            let base = with_db(|c| offline::answer(c, SETTINGS_PATH, false))
+                .flatten()
+                .and_then(Result::ok);
+            Some(Ok(settings_list(base.as_deref(), &settings().app_settings).to_string()))
+        }
+        (Method::Get, _, Some(key)) => {
+            let own = settings().app_settings.get(key).cloned()?;
+            Some(Ok(serde_json::json!({ "key": key, "value": own }).to_string()))
+        }
+        (Method::Get, _, None) => {
+            let lang = bare.strip_prefix("/api/v1/i18n/")?;
+            let copy = with_db(|c| offline::answer(c, bare, false))
+                .flatten()
+                .and_then(Result::ok);
+            let text = copy.or_else(|| {
+                BUILT_IN_I18N
+                    .iter()
+                    .find(|(l, _)| *l == lang)
+                    .map(|(_, t)| t.to_string())
+            })?;
+            Some(Ok(text))
+        }
+        _ => None,
+    }
+}
+
+/// The vocabulary before the first sync with no server: just the languages, so the language
+/// picker and the settings work.
+fn empty_vocabulary() -> String {
+    let langs: Vec<&str> = BUILT_IN_I18N.iter().map(|(l, _)| *l).collect();
+    serde_json::json!({ "ui_languages": langs }).to_string()
+}
+
 pub struct CompanionBackend;
 
 impl Backend for CompanionBackend {
@@ -198,7 +309,13 @@ impl Backend for CompanionBackend {
         body: Option<&'a Value>,
     ) -> BoxFut<'a, ApiResult<String>> {
         Box::pin(async move {
+            if let Some(answer) = answer_locally(method, path, body) {
+                return answer;
+            }
             if method != Method::Get {
+                if !has_server() {
+                    return Err(no_server());
+                }
                 return RestBackend.call(method, path, body).await;
             }
             match with_db(|c| offline::answer(c, path, true)).flatten() {
@@ -206,12 +323,18 @@ impl Backend for CompanionBackend {
                 Some(Err(e)) => eprintln!("romcompanion: synced copy could not answer {path}: {e}"),
                 None => {}
             }
-            match RestBackend.call(method, path, body).await {
+            let reply = if has_server() {
+                RestBackend.call(method, path, body).await
+            } else {
+                Err(no_server())
+            };
+            match reply {
                 // The server can't be reached: the copy's best answer, filters it can't apply
                 // left out, rather than nothing.
                 Err(e) if e.status == 0 => {
                     match with_db(|c| offline::answer(c, path, false)).flatten() {
                         Some(Ok(text)) => Ok(text),
+                        _ if path == "/api/v1/vocabulary" => Ok(empty_vocabulary()),
                         _ => Err(ApiError {
                             status: 0,
                             message: format!(
@@ -290,6 +413,9 @@ pub async fn estimate(o: &SyncOptions) -> ApiResult<SyncEstimate> {
 
 /// Builds, downloads and swaps in a fresh copy. `report` is called as it goes.
 pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummary> {
+    if !has_server() {
+        return Err(no_server());
+    }
     let mut s = settings();
     report(Progress {
         message: crate::state::tr("asking the server for a copy"),
@@ -404,6 +530,9 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
 /// RetroAchievements progress alone: asks the server to refresh the account first, then
 /// takes its rows into the copy (`GET /api/v1/mobile/ra`).
 pub async fn ra_sync(refresh_account: bool) -> ApiResult<usize> {
+    if !has_server() {
+        return Err(no_server());
+    }
     if !has_copy() {
         return Err(err(crate::state::tr("sync once first")));
     }
@@ -455,6 +584,7 @@ pub async fn background() {
     let _ = open_saved();
     let s = settings();
     if s.auto_sync
+        && has_server()
         && age(s.last_sync.as_deref()).is_none_or(|a| a > 24 * 3600)
         && super::get("/api/v1/ping").await.is_ok()
     {
@@ -466,6 +596,7 @@ pub async fn background() {
     loop {
         let s = settings();
         if s.ra_auto
+            && has_server()
             && has_copy()
             && age(s.last_ra_sync.as_deref())
                 .is_none_or(|a| a >= u64::from(s.ra_every_min.max(5)) * 60)
@@ -486,6 +617,33 @@ pub static LAST_ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phones_own_settings_lie_over_the_copys() {
+        let mut own = serde_json::Map::new();
+        own.insert("ui_language".into(), Value::from("ja"));
+        own.insert("phone_only".into(), Value::from(true));
+        let copy = r#"{"items":[{"key":"ui_language","value":"en","help":"x"},{"key":"other","value":1}]}"#;
+        let v = settings_list(Some(copy), &own);
+        let items = super::super::items(&v);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["value"], "ja", "overridden in place, other fields kept");
+        assert_eq!(items[0]["help"], "x");
+        assert_eq!(items[1]["value"], 1);
+        assert_eq!(items[2]["key"], "phone_only");
+        // Before the first sync: the phone's own alone.
+        let v = settings_list(None, &own);
+        assert_eq!(super::super::items(&v).len(), 2);
+    }
+
+    #[test]
+    fn every_language_is_built_in() {
+        for (lang, text) in BUILT_IN_I18N {
+            assert!(LANGUAGES.contains(&lang));
+            assert!(serde_json::from_str::<Value>(text).is_ok_and(|v| v.is_object()), "{lang}");
+        }
+        assert_eq!(BUILT_IN_I18N.len(), LANGUAGES.len());
+    }
 
     #[test]
     fn images_are_found_by_their_server_paths() {
