@@ -199,6 +199,17 @@ fn mime_for(path: &std::path::Path) -> &'static str {
     }
 }
 
+/// One file name and nothing else: no separator, no drive (`C:secret.txt` is relative to
+/// drive C's current directory on Windows, not to the folder it is joined to), no hidden or
+/// `..` name, no control characters, and exactly one path component on this platform.
+fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', ':'])
+        && !name.chars().any(char::is_control)
+        && matches!(std::path::Path::new(name).components().collect::<Vec<_>>().as_slice(), [std::path::Component::Normal(_)])
+}
+
 /// Files in `AppPaths::icons_dir`, by plain file name (no subdirectories).
 fn icon_files(paths: &crate::database::AppPaths) -> Vec<String> {
     let mut out: Vec<String> = std::fs::read_dir(paths.icons_dir()).map(|rd| rd.flatten().filter(|e| e.path().is_file()).filter_map(|e| e.file_name().to_str().map(str::to_string)).collect()).unwrap_or_default();
@@ -209,7 +220,7 @@ fn icon_files(paths: &crate::database::AppPaths) -> Vec<String> {
 /// `/icons/<file>`: decorative, user-provided system icons -- token-exempt (the private-IP
 /// guard still applies), served only by plain file name from the icons dir.
 async fn icon_file(State(s): State<Shared>, Path(file): Path<String>) -> Response {
-    if file.is_empty() || file.contains(['/', '\\']) || file.starts_with('.') {
+    if !is_plain_file_name(&file) {
         return plain_error(StatusCode::NOT_FOUND, "not_found", "no such icon");
     }
     let path = s.app.paths.icons_dir().join(&file);
@@ -328,8 +339,18 @@ async fn identify(state: &ServerState, token: Option<String>) -> api::Result<Opt
 
 /// A RetroAchievements read with `refresh` makes the server call RA; a regular account reads
 /// what is cached.
+///
+/// The query is decoded the way the handlers' `Query` extractor decodes it, so `%74rue` or
+/// `refresh=true&refresh=false` is read here as it is read there. Anything but an explicit
+/// false counts as asking.
 fn asks_for_refresh(req: &Request) -> bool {
-    req.uri().path().starts_with("/api/v1/ra/") && req.uri().query().is_some_and(|q| q.split('&').any(|p| matches!(p, "refresh=true" | "refresh=1")))
+    req.uri().path().starts_with("/api/v1/ra/") && req.uri().query().is_some_and(query_asks_for_refresh)
+}
+
+fn query_asks_for_refresh(query: &str) -> bool {
+    // `Url::query_pairs` is the `application/x-www-form-urlencoded` parser serde's uses.
+    let Ok(url) = reqwest::Url::parse(&format!("http://h/?{query}")) else { return true };
+    url.query_pairs().any(|(k, v)| k == "refresh" && !matches!(v.trim(), "false" | "0" | ""))
 }
 
 async fn guard(State(state): State<Shared>, ConnectInfo(addr): ConnectInfo<SocketAddr>, mut req: Request, next: Next) -> Response {
@@ -1794,15 +1815,15 @@ async fn ra_game(State(s): State<Shared>, Path(id): Path<u32>, Query(q): Query<R
     Ok(Json(api::ra::game(&s.app, id, q.refresh).await?))
 }
 
-async fn ra_game_image(State(s): State<Shared>, Path((id, kind)): Path<(u32, String)>) -> std::result::Result<Response, ApiError> {
-    image_file(api::ra::image(&s.app, id, &kind).await?).await
+async fn ra_game_image(State(s): State<Shared>, principal: Principal, Path((id, kind)): Path<(u32, String)>) -> std::result::Result<Response, ApiError> {
+    image_file(api::ra::image_with(&s.app, id, &kind, principal.is_admin()).await?).await
 }
 
 /// The badge mosaic; a game without achievements falls back to its icon.
-async fn ra_game_badges(State(s): State<Shared>, Path(id): Path<u32>) -> std::result::Result<Response, ApiError> {
+async fn ra_game_badges(State(s): State<Shared>, principal: Principal, Path(id): Path<u32>) -> std::result::Result<Response, ApiError> {
     match api::ra::badge_mosaic(&s.app, id).await? {
         Some(path) => image_file(path).await,
-        None => image_file(api::ra::image(&s.app, id, "icon").await?).await,
+        None => image_file(api::ra::image_with(&s.app, id, "icon", principal.is_admin()).await?).await,
     }
 }
 
@@ -2075,7 +2096,13 @@ struct EnqueueQuery {
 }
 
 async fn jobs_enqueue(State(s): State<Shared>, principal: Principal, Query(q): Query<EnqueueQuery>, Json(req): Json<api::jobs::JobRequest>) -> std::result::Result<(StatusCode, Json<Value>), ApiError> {
-    let upload_scan = matches!(&req, api::jobs::JobRequest::FileScan(f) if f.mode == romexplorer_types::jobs::FileScanMode::NewOnly);
+    // Exactly what `api::copy::upload` queues: the whole directory, platforms detected, at most
+    // the DAT match -- no single file, no forced platform, no provider queries.
+    let upload_scan = matches!(&req, api::jobs::JobRequest::FileScan(f)
+        if f.mode == romexplorer_types::jobs::FileScanMode::NewOnly
+            && f.file_id.is_none()
+            && f.platform == api::jobs::PlatformSelect::All
+            && f.hash_match.is_none_or(|h| !h.to_hasheous && !h.to_playmatch));
     if !principal.is_admin() && !(upload_scan && principal.can_upload()) {
         return Err(Error::forbidden("this account may only queue a new-files scan, to register what it uploaded").into());
     }
@@ -3017,6 +3044,24 @@ mod tests {
     }
 
     /// The desktop app's state grants admin to every request; it must never reach a socket.
+    #[test]
+    fn icons_are_served_by_plain_file_name_only() {
+        assert!(is_plain_file_name("nes.svg"));
+        for bad in ["", ".hidden", "..", "a/b.svg", "a\\b.svg", "C:secret.txt", "c:", "x\0.svg"] {
+            assert!(!is_plain_file_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_refresh_is_seen_however_it_is_spelled() {
+        for q in ["refresh=true", "refresh=1", "refresh=%74rue", "a=b&refresh=TRUE", "refresh=true&refresh=false", "re%66resh=true"] {
+            assert!(query_asks_for_refresh(q), "{q}");
+        }
+        for q in ["", "refresh=false", "refresh=0", "refresh=", "refreshed=true", "x=refresh%3Dtrue"] {
+            assert!(!query_asks_for_refresh(q), "{q}");
+        }
+    }
+
     #[tokio::test]
     async fn the_in_process_state_is_never_served_on_a_network_listener() {
         let (app, root) = lazy_app("refuse");

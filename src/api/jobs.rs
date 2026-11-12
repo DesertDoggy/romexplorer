@@ -107,7 +107,21 @@ pub async fn validate(app: &App, request: &JobRequest) -> Result<()> {
             if let PlatformSelect::Id(id) = r.platform {
                 require_platform(id)?;
             }
-            require_directory(app, r.directory_id).await
+            require_directory(app, r.directory_id).await?;
+            if let Some(file_id) = r.file_id {
+                // The file has to be one of that directory's: the scan reads it under the
+                // directory's settings and records it there.
+                let (path, recorded): (String, Option<u64>) = sqlx::query_as("SELECT path, directory_id FROM local_files WHERE id = ?")
+                    .bind(file_id)
+                    .fetch_optional(&app.pool)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no file {file_id}")))?;
+                let nearest = crate::database::directories::resolve(&app.pool, &path).await?.directory.map(|d| d.id);
+                if nearest != Some(r.directory_id) && recorded != Some(r.directory_id) {
+                    return Err(Error::invalid(format!("file {file_id} is not in directory {}", r.directory_id)));
+                }
+            }
+            Ok(())
         }
         JobRequest::HashMatch(r) => {
             require_directory(app, r.directory_id).await?;
