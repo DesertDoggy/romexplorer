@@ -453,7 +453,7 @@ async fn upsert(pool: &MySqlPool, key: &str, kind: &str, titles: &[u64], detail:
          kind = VALUES(kind), priority = VALUES(priority), reason = VALUES(reason)",
     )
     .bind(key)
-    .bind(list(&titles).chars().take(1024).collect::<String>())
+    .bind(super::title_merge::id_list_text(&titles))
     .bind(kind)
     .bind(kind)
     .bind(priority(kind))
