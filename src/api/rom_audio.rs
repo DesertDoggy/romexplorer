@@ -430,8 +430,38 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
 /// The rip library from `audio_rip_folders`, fingerprinted; empty when there is none or the
 /// player is not built. Fingerprints are cached beside the media.
 async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     progress.report(0, None, "reading the original audio format sets").await;
-    library_quiet(app).await
+    let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
+    if folders.is_empty() || !rip_sets::available() {
+        return Ok(rip_match::Library::build(&[], None, |_, _| {}));
+    }
+    let cache = app.paths.media_dir().join("_rip_library.json");
+    // Sets new since the last run are read whole: the job shows how far it is, and a cancel
+    // ends the run here (the reading finishes on its own and is cached for next time).
+    let counts = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+    let seen = counts.clone();
+    let mut task = tokio::task::spawn_blocking(move || {
+        rip_match::Library::build(&folders, Some(&cache), |done, total| {
+            seen.0.store(done, Relaxed);
+            seen.1.store(total, Relaxed);
+        })
+    });
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            built = &mut task => return built.map_err(|e| Error::internal(format!("ROM audio task: {e}"))),
+            _ = tick.tick() => {
+                if progress.cancelled().await {
+                    return Ok(rip_match::Library::build(&[], None, |_, _| {}));
+                }
+                let (done, total) = (counts.0.load(Relaxed) as u64, counts.1.load(Relaxed) as u64);
+                if total > 0 {
+                    progress.report(done, Some(total), &format!("reading the original audio format sets: {done} of {total}")).await;
+                }
+            }
+        }
+    }
 }
 
 async fn library_quiet(app: &App) -> Result<rip_match::Library> {
