@@ -1129,7 +1129,7 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
                 .push_bind(location)
                 .push_bind(cd_track)
                 .push_bind(data_track)
-                .push_bind(inner.map(|p| p.chars().take(1024).collect::<String>()))
+                .push_bind(inner)
                 .push_bind(subsong)
                 .push_bind(t.name.chars().take(512).collect::<String>())
                 .push_bind(manual.get(&key).cloned())
@@ -1325,7 +1325,17 @@ const RANDOM_TRACKS: usize = 50;
 
 async fn tracks_where(app: &App, condition: &str, order: &str, s: &Settings, take: usize) -> Result<Vec<AudioRow>> {
     let filter = length_filter(s);
-    let sql = format!("SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY {order} LIMIT 20000");
+    let sql = if order == "RAND()" {
+        // A random pick shuffles ids only, a few times what is wanted (some rows are left out
+        // below), not every whole row of every track.
+        format!(
+            "SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE \
+             JOIN (SELECT t.id FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY RAND() LIMIT {}) pick ON pick.id = t.id ORDER BY RAND()",
+            take.saturating_mul(20).max(200)
+        )
+    } else {
+        format!("SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY {order} LIMIT 20000")
+    };
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&app.pool).await?;
     let mut out = Vec::new();
     // A rip library set matched to several ROMs of a title (its regions) is listed once.
@@ -1438,14 +1448,18 @@ pub async fn stand_in(app: &App, titles: &[u64], s: &Settings) -> Result<(Vec<Au
 
 /// Where a cached decode of track `id` goes: `rom<id>-<what>-<index time>.<ext>`. A ROM
 /// indexed again gets new names; the old ones are left for the size cap.
-fn cache_name(id: u64, target: Target, stamp: i64, level: bool, limit: bool) -> String {
+fn cache_name(id: u64, target: Target, stamp: i64, level: bool, limit: bool, looped: bool) -> String {
     // `-ts`: the silent end is trimmed ([`TailTrim`]); earlier cache files without it are
-    // left for the size cap. `-lm`: through the peak limiter ([`Limiter`]).
+    // left for the size cap. `-lm`: through the peak limiter ([`Limiter`]). `-lp`: its loop
+    // played twice and faded. `-v…`: the version that decoded it, so an upgrade's players
+    // and fixes are heard instead of the old decode.
     format!(
-        "rom{id}-{}-{stamp}{}{}-ts.{}",
+        "rom{id}-{}-{stamp}{}{}{}-v{}-ts.{}",
         target.tag(),
         if level { "-lv" } else { "" },
         if limit { "-lm" } else { "" },
+        if looped { "-lp" } else { "" },
+        env!("CARGO_PKG_VERSION").replace('.', "_"),
         target.ext()
     )
 }
@@ -1509,7 +1523,7 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     // loud where code is read wrong; the limiter holds such bursts down.
     let chip = matches!(location, TrackLocation::RomSong { .. } | TrackLocation::Rip { .. });
     let limit = chip && db_settings::get::<bool>(&app.pool, db_settings::KEY_AUDIO_ROM_LIMITER).await?.unwrap_or(true);
-    let name = cache_name(id, target, stamp, level, limit);
+    let name = cache_name(id, target, stamp, level, limit, !config.ignore_loop);
     let cached = dir.join(&name);
     let served = |body: Option<super::audio_ram::Bytes>| Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached.clone(), converted: true, note: None, body };
     if let Some(bytes) = super::audio_ram::get(&name) {
