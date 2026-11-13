@@ -947,10 +947,23 @@ async fn copy_index(app: &App, source: u64, rom_id: u64, keep_own: bool) -> Resu
         }
     }
     sqlx::query("DELETE FROM rom_audio_tracks WHERE rom_id = ?").bind(rom_id).execute(&mut *tx).await?;
-    let copied = sqlx::query(
+    // Music files from the other ROM's own folder are stored relative to that folder: they
+    // are its, not this one's, and would point into the wrong folder here.
+    let folder_rows: Vec<(u64, Option<String>)> = sqlx::query_as("SELECT id, inner_path FROM rom_audio_tracks WHERE rom_id = ? AND data_track = ?")
+        .bind(source)
+        .bind(rip_sets::RIP_VIEW)
+        .fetch_all(&mut *tx)
+        .await?;
+    let left_out: Vec<String> = folder_rows
+        .into_iter()
+        .filter(|(_, p)| p.as_deref().is_none_or(|p| !Path::new(p.split('|').next().unwrap_or(p)).is_absolute()))
+        .map(|(id, _)| id.to_string())
+        .collect();
+    let not_these = if left_out.is_empty() { String::new() } else { format!(" AND id NOT IN ({})", left_out.join(",")) };
+    let copied = sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO rom_audio_tracks (rom_id, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video) \
-         SELECT ?, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video FROM rom_audio_tracks WHERE rom_id = ? ORDER BY id",
-    )
+         SELECT ?, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video FROM rom_audio_tracks WHERE rom_id = ?{not_these} ORDER BY id",
+    )))
     .bind(rom_id)
     .bind(source)
     .execute(&mut *tx)
