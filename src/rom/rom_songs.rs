@@ -99,6 +99,7 @@ pub fn covers(platform: u16) -> bool {
     (platform == P::GameBoyAdvance as u16 && (agbplay::available() || super::gb_apu::available())) || (is_nes(platform) && super::nes_apu::available())
         || (is_snes(platform) && super::snes_apu::available())
         || (platform == P::Nintendo64 as u16 && super::psf::usf_available())
+        || (platform == P::Pc98 as u16 && super::pc98_music::available())
         || (is_gb(platform) && super::gb_apu::available())
         || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::SegaGenesis as u16
             || platform == P::TurboGrafx16 as u16
@@ -250,6 +251,13 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
     }
     if is_nes(platform) {
         return index_nes(path, t);
+    }
+    // PC-98 music is read from the files on its floppies.
+    if platform == crate::common::models::Platform::Pc98 as u16 {
+        if !super::pc98_music::is_disk_path(path) {
+            return Ok((Vec::new(), None));
+        }
+        return super::pc98_music::index(path, t);
     }
     // An N64 game plays only by a map, like a SNES game.
     if platform == crate::common::models::Platform::Nintendo64 as u16 {
@@ -561,6 +569,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
         Some(super::disc_seq::PARTS_ENGINE) => super::disc_seq::open_parts(path, engine, song),
         Some(super::akao_image::ENGINE) => super::akao_image::open(path, engine, song),
         Some(super::triace::ENGINE) => super::triace::open(path, engine, song),
+        Some(super::pc98_music::ENGINE) => super::pc98_music::open(path, engine, song),
         Some(NES) => open_machine::<super::nes_music::Nes>(path, engine, song),
         Some(NES_MAP) => open_map(path, engine, song),
         Some(GB_MAP) => open_gb_map(path, engine, song),

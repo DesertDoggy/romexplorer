@@ -37,14 +37,17 @@
 #           licence), turned into MIDI + SoundFont and played with TinySoundFont
 #           (external/TinySoundFont, MIT). VGMTrans brings its own vendored fmt, spdlog, zlib,
 #           minizip, unarr and libchdr, linked in statically.
+#   rpc98_* PC-98 music (PMD and FMP songs on the game's disks) through 98fmplayer
+#           (external/98fmplayer, BSD-2-Clause): its C ports of the two drivers on its own
+#           OPNA emulation (the portable C resampler; no SIMD variants).
 #
 # Built by deps/rommusic/scripts/build.sh.
 cmake_minimum_required(VERSION 3.25)
 project(rommusic C CXX)
 
-foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT VGMTRANS_ROOT TSF_ROOT)
+foreach(root GME_ROOT GME_FORK_ROOT AGBPLAY_ROOT SSEQ_ROOT USF_ROOT HE_ROOT HT_ROOT MGBA_ROOT WSWAN_ROOT VGM_ROOT VGMTRANS_ROOT TSF_ROOT FMP_ROOT)
   if(NOT ${root})
-    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT, VGM_ROOT, VGMTRANS_ROOT and TSF_ROOT (see scripts/build.sh)")
+    message(FATAL_ERROR "set GME_ROOT, GME_FORK_ROOT, AGBPLAY_ROOT, SSEQ_ROOT, USF_ROOT, HE_ROOT, HT_ROOT, MGBA_ROOT, WSWAN_ROOT, VGM_ROOT, VGMTRANS_ROOT, TSF_ROOT and FMP_ROOT (see scripts/build.sh)")
   endif()
 endforeach()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -242,10 +245,18 @@ target_link_libraries(rommusic_vt PRIVATE vgmtranscore)
 target_include_directories(rommusic_vt PRIVATE ${TSF_ROOT})
 set_target_properties(rommusic_vt PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# --- PC-98 PMD/FMP -------------------------------------------------------------------------
+add_library(rommusic_pc98 OBJECT pc98/rpc98.c
+  ${FMP_ROOT}/fmdriver/fmdriver_common.c ${FMP_ROOT}/fmdriver/fmdriver_fmp.c ${FMP_ROOT}/fmdriver/fmdriver_pmd.c ${FMP_ROOT}/fmdriver/ppz8.c
+  ${FMP_ROOT}/libopna/opna.c ${FMP_ROOT}/libopna/opnaadpcm.c ${FMP_ROOT}/libopna/opnadrum.c ${FMP_ROOT}/libopna/opnafm.c
+  ${FMP_ROOT}/libopna/opnassg.c ${FMP_ROOT}/libopna/opnassg-sinc-c.c ${FMP_ROOT}/libopna/opnatimer.c)
+target_include_directories(rommusic_pc98 PRIVATE ${FMP_ROOT})
+set_target_properties(rommusic_pc98 PROPERTIES C_STANDARD 99 C_VISIBILITY_PRESET hidden)
+
 # --- the library ----------------------------------------------------------------------
 add_library(rommusic SHARED $<TARGET_OBJECTS:rommusic_sgc> $<TARGET_OBJECTS:rommusic_spc> $<TARGET_OBJECTS:rommusic_nes> $<TARGET_OBJECTS:rommusic_gb> $<TARGET_OBJECTS:rommusic_agb> $<TARGET_OBJECTS:rommusic_sseq>
   $<TARGET_OBJECTS:rommusic_usf> $<TARGET_OBJECTS:rommusic_psx> $<TARGET_OBJECTS:rommusic_sega> $<TARGET_OBJECTS:rommusic_gsf> $<TARGET_OBJECTS:rommusic_wsr> $<TARGET_OBJECTS:rommusic_vgm>
-  $<TARGET_OBJECTS:rommusic_vt>)
+  $<TARGET_OBJECTS:rommusic_vt> $<TARGET_OBJECTS:rommusic_pc98>)
 # llvm-mingw's lld (windows/arm64) takes --whole-archive but not the --push-state/--pop-state
 # that CMake wraps WHOLE_ARCHIVE in for MinGW, nor --exclude-libs (below).
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
