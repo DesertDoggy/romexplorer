@@ -58,6 +58,7 @@ RGSF_API void *rgsf_new(const uint8_t *rom, size_t size) {
         if (vf) {
             vf->close(vf);
         }
+        mCoreConfigDeinit(&g->core->config);
         g->core->deinit(g->core);
         free(g);
         return NULL;
@@ -99,6 +100,7 @@ RGSF_API void rgsf_free(void *handle) {
     }
     mAudioResamplerDeinit(&g->resampler);
     mAudioBufferDeinit(&g->out);
+    mCoreConfigDeinit(&g->core->config);
     g->core->deinit(g->core);
     free(g);
 }
