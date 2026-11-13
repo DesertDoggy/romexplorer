@@ -1494,11 +1494,21 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     }
     let ram_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_RAM_CACHE_MB).await?.unwrap_or(super::audio_ram::DEFAULT_MB).saturating_mul(1 << 20);
     let (out, keep_dir) = (cached.clone(), dir.clone());
+    // A request the browser drops (a skipped track) stops its decode: the guard is dropped
+    // with the request and raises the flag the decode checks between chunks.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    struct StopOnDrop(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _stop_on_drop = StopOnDrop(stop.clone());
     let made = tokio::task::spawn_blocking(move || -> std::result::Result<Option<super::audio_ram::Bytes>, String> {
-        // The turn is held until the decode ends, not until the request does: a request the
-        // browser drops (a skipped track) must not let the next decode start beside it.
+        // The turn is held until the decode ends, not until the request does, so the next
+        // decode never starts beside one still winding down.
         let _turn = _turn;
-        decode_to(&path, &location, &out, target, config, level, limit)?;
+        decode_to(&path, &location, &out, target, config, level, limit, &stop)?;
         if ram_cap == 0 {
             super::audio_convert::evict(&keep_dir, disk_cap, &out);
             return Ok(None);
@@ -1543,7 +1553,8 @@ fn near_aac_rate(rate: u32) -> Option<u32> {
     xaac::SAMPLE_RATES.iter().copied().find(|&r| (i64::from(rate) - i64::from(r)).unsigned_abs() * 200 <= u64::from(r))
 }
 
-pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool, limit: bool) -> std::result::Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool, limit: bool, stop: &std::sync::atomic::AtomicBool) -> std::result::Result<(), String> {
     let dir = out.parent().ok_or("no cache directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let partial = out.with_extension(format!("{}.part", target.ext()));
@@ -1551,9 +1562,14 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
     let made = super::audio_convert::encode_with(&partial, target, |write| {
         let mut trim = TailTrim::default();
         let mut limiter = limit.then(Limiter::default);
-        let mut sink = |pcm: &[i16], rate: u32, channels: u16| match limiter.as_mut() {
-            Some(l) => trim.push(&l.apply(pcm, rate, channels), rate, channels, &mut *write),
-            None => trim.push(pcm, rate, channels, &mut *write),
+        let mut sink = |pcm: &[i16], rate: u32, channels: u16| {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("stopped: nobody is waiting for this track any more".to_string());
+            }
+            match limiter.as_mut() {
+                Some(l) => trim.push(&l.apply(pcm, rate, channels), rate, channels, &mut *write),
+                None => trim.push(pcm, rate, channels, &mut *write),
+            }
         };
         let made = (|| {
         let mut stream = rom_audio::open_track(rom, location, config)?;
