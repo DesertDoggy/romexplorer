@@ -1495,6 +1495,9 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     let ram_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_RAM_CACHE_MB).await?.unwrap_or(super::audio_ram::DEFAULT_MB).saturating_mul(1 << 20);
     let (out, keep_dir) = (cached.clone(), dir.clone());
     let made = tokio::task::spawn_blocking(move || -> std::result::Result<Option<super::audio_ram::Bytes>, String> {
+        // The turn is held until the decode ends, not until the request does: a request the
+        // browser drops (a skipped track) must not let the next decode start beside it.
+        let _turn = _turn;
         decode_to(&path, &location, &out, target, config, level, limit)?;
         if ram_cap == 0 {
             super::audio_convert::evict(&keep_dir, disk_cap, &out);

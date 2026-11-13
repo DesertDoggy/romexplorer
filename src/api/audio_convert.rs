@@ -249,7 +249,13 @@ pub async fn serve(app: &App, id: u64, query: &FileQuery) -> Result<Served> {
     let _turn = CONVERTING.lock().await;
     if !cached.is_file() {
         let (source, out, is_dsd) = (path.clone(), cached.clone(), DSD.contains(&format.as_str()));
-        let made = tokio::task::spawn_blocking(move || convert(&source, &out, target, is_dsd)).await.map_err(|e| Error::internal(format!("audio conversion task: {e}")))?;
+        // The turn goes with the conversion, so a dropped request does not free it early.
+        let turn = _turn;
+        let made = tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            convert(&source, &out, target, is_dsd)
+        })
+        .await.map_err(|e| Error::internal(format!("audio conversion task: {e}")))?;
         if let Err(reason) = made {
             log::warn!("audio {id}: {} could not be converted: {reason}", path.display());
             // A client's copy can still be the original; a track the browser cannot play
