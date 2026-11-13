@@ -47,6 +47,7 @@ pub mod nes_apu;
 pub mod nes_cart;
 pub mod music_search;
 pub mod n64_map;
+pub mod pc98_disk;
 pub mod nes_music;
 pub mod nes_nsf;
 pub mod gb_gbs;
