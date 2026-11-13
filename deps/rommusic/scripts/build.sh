@@ -21,6 +21,7 @@ set -euo pipefail
 #     write at a time (rchip_).
 #   - VGMTrans's core (external/vgmtrans, zlib licence) and TinySoundFont (external/TinySoundFont,
 #     MIT) for sequenced music read from a disc's own files (rvt_).
+#   - 98fmplayer (external/98fmplayer, BSD-2-Clause) for PC-98 PMD and FMP songs (rpc98_).
 #
 # Usage:
 #   deps/rommusic/scripts/build.sh                    # auto-detect platform/arch
@@ -61,6 +62,7 @@ wswan_root="$(cd "${WSWAN_SOURCE_DIR:-$main_root/external/beetle-wswan-libretro}
 vgm_root="$(cd "${VGM_SOURCE_DIR:-$main_root/external/libvgm}" && pwd)"
 vgmtrans_root="$(cd "${VGMTRANS_SOURCE_DIR:-$main_root/external/vgmtrans}" && pwd)"
 tsf_root="$(cd "${TSF_SOURCE_DIR:-$main_root/external/TinySoundFont}" && pwd)"
+fmp_root="$(cd "${FMP_SOURCE_DIR:-$main_root/external/98fmplayer}" && pwd)"
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-rommusic-$(date +%Y%m%d-%H%M%S).log"
@@ -159,7 +161,7 @@ apply_patches "$user_dir/patches/ht" "$ht_root"
 apply_patches "$user_dir/patches/vgmtrans" "$vgmtrans_root"
 
 cmake_args=(-S "$user_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_SYSTEM_PROCESSOR=$processor"
-  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root" "-DVGMTRANS_ROOT=$vgmtrans_root" "-DTSF_ROOT=$tsf_root")
+  "-DGME_ROOT=$repo_root" "-DGME_FORK_ROOT=$fork_root" "-DAGBPLAY_ROOT=$agb_root" "-DSSEQ_ROOT=$sseq_root" "-DUSF_ROOT=$usf_root" "-DHE_ROOT=$he_root" "-DHT_ROOT=$ht_root" "-DMGBA_ROOT=$mgba_root" "-DWSWAN_ROOT=$wswan_root" "-DVGM_ROOT=$vgm_root" "-DVGMTRANS_ROOT=$vgmtrans_root" "-DTSF_ROOT=$tsf_root" "-DFMP_ROOT=$fmp_root")
 [[ -n "${CC:-}" ]] && cmake_args+=("-DCMAKE_C_COMPILER=$CC")
 [[ -n "${CXX:-}" ]] && cmake_args+=("-DCMAKE_CXX_COMPILER=$CXX")
 # Android: the NDK's own CMake toolchain file, which picks its compilers and sysroot. API level
