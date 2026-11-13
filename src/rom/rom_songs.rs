@@ -1749,6 +1749,21 @@ impl PcmStream for MapPcm {
     }
 }
 
+/// A song record with its measured timing (body and fade) taken out: what stays the same
+/// when a re-index measures a song a little differently, so a kind the user set on it is
+/// found again. A booted engine's record ends in its timing; every other record has it
+/// right after its first field.
+pub fn without_timing(engine: &str) -> String {
+    let mut parts: Vec<&str> = engine.split('@').collect();
+    let n = parts.len();
+    if machine_record(engine).is_some() {
+        parts.truncate(n - 2);
+    } else if n >= 4 && [parts[2], parts[3]].iter().all(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit())) {
+        parts.drain(2..4);
+    }
+    parts.join("@")
+}
+
 /// A booted engine's song record: the engine's name, the recipe's four fields (five when the
 /// sound routine is called more than once a frame), then body and fade.
 fn machine_record(engine: &str) -> Option<(music_search::Recipe, u64, u64)> {
@@ -1779,6 +1794,14 @@ where
 #[cfg(test)]
 mod bundle_tests {
     use super::*;
+
+    #[test]
+    fn a_song_record_without_its_timing_stays_the_same_when_remeasured() {
+        assert_eq!(without_timing("md@120@1@1a2b@m0040@2@90000@8000"), without_timing("md@120@1@1a2b@m0040@2@91000@0"));
+        assert_eq!(without_timing("gbamap@ab12@90000@8000"), "gbamap@ab12");
+        assert_eq!(without_timing("triace@3@90000@8000@1f00@200@BGM/A.SEQ"), "triace@3@1f00@200@BGM/A.SEQ");
+        assert_ne!(without_timing("gbamap@ab12@90000@8000"), without_timing("gbamap@ab13@90000@8000"));
+    }
 
     #[test]
     fn a_song_record_reads_with_and_without_a_call_count() {
