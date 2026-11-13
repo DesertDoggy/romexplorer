@@ -672,7 +672,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             let _reading = reading;
             let note = |what: &str| *at.lock().unwrap_or_else(|p| p.into_inner()) = what.to_string();
             note("music map");
-            let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets(&rom_file, &map_sets)).and_then(|r| r.err());
+            let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets_for(&rom_file, &map_sets, Some(platform))).and_then(|r| r.err());
             note("music files in the game's folder");
             let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |p| note(p))).unwrap_or_default();
             note("disc");

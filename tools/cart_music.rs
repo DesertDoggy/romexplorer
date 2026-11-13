@@ -1597,7 +1597,7 @@ fn write_map(
     };
     rom_songs::set_maps_dir(dir.to_path_buf());
     let before = count_maps(dir);
-    match rom_songs::map_from_sets(path, &[set]) {
+    match rom_songs::map_from_sets_for(path, &[set], Some(platform as u16)) {
         Ok(()) if count_maps(dir) > before => {
             t.with_music += 1;
             println!("{}: map kept", path.display());

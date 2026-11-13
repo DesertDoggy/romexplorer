@@ -710,7 +710,13 @@ fn kept_map(kind: &str, key: &str) -> Option<String> {
         }
     }
     let name = format!("{kind}/{key}");
-    bundled(&bundle_file(kind)).get(&name).or_else(|| bundled(BUNDLE_FILE).get(&name)).cloned()
+    let own = bundle_file(kind);
+    // The old all-kinds bundle (105 MB as text, held for the run) only stands in for a kind
+    // with no bundle of its own: a miss in a kind's own bundle is a miss.
+    if super::native_lib::exe_root().is_some_and(|root| root.join("assets").join(&own).is_file()) {
+        return bundled(&own).get(&name).cloned();
+    }
+    bundled(BUNDLE_FILE).get(&name).cloned()
 }
 
 /// What a NES ROM's map is kept under: the SHA-1 of its program data (a Disk System image's
@@ -1474,6 +1480,39 @@ fn open_gb_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
 /// Builds the map of the ROM at `path` from the first of `sets` that holds an NSF (a GBS for
 /// a Game Boy ROM), unless one is kept already.
 pub fn map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
+    map_from_sets_for(path, sets, None)
+}
+
+/// [`map_from_sets`] for a ROM of a known platform: only that platform's kind of map is
+/// tried, so its sets are read once, not once by every kind in turn.
+pub fn map_from_sets_for(path: &Path, sets: &[PathBuf], platform: Option<u16>) -> Result<(), String> {
+    use crate::common::models::Platform as P;
+    if let Some(p) = platform {
+        let is = |q: P| p == q as u16;
+        let done = |r: Result<bool, String>| r.map(|_| ());
+        if is_nes(p) || is_gb(p) {
+            return map_from_sets_for(path, sets, None);
+        }
+        let rom = read_rom(path)?;
+        if is(P::TurboGrafx16) {
+            return done(hes_map_from_sets(&rom, sets));
+        }
+        if is(P::WonderSwan) || is(P::WonderSwanColor) {
+            return done(ws_map_from_sets(&rom, sets));
+        }
+        if is(P::GameBoyAdvance) {
+            return done(gba_map_from_sets(&rom, sets));
+        }
+        if is_snes(p) {
+            return done(snes_map_from_sets(&rom, sets));
+        }
+        if is(P::Nintendo64) {
+            return done(n64_map_from_sets(&rom, sets));
+        }
+        if is(P::SegaMasterSystem) || is(P::SegaGameGear) {
+            return sgc_map_from_sets(&rom, sets);
+        }
+    }
     let rom = read_rom(path)?;
     // A Game Boy ROM carries the Nintendo logo at $104.
     if rom.get(0x104..0x108) == Some(&[0xCE, 0xED, 0x66, 0x66]) {
