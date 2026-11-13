@@ -265,6 +265,8 @@ pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
         "chd" => open_chd(path),
         "cue" | "gdi" => open_sheet(path),
         "ccd" | "mds" | "mdf" => open_raw_image(path),
+        // A CloneCD image reached by its .img (the scan lists the image, not the .ccd).
+        "img" if beside(path, "ccd").is_file() => open_raw_image(&beside(path, "ccd")),
         "rvz" | "wia" | "gcz" | "wbfs" => {
             let mut reader = super::dolphin_wrapper::DiscReader::open(path, None).map_err(|e| e.to_string())?;
             let mut magic = [0u8; 4];
@@ -460,18 +462,60 @@ fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
     Ok(out)
 }
 
+/// A raw sector with its 96 bytes of subchannel stored after it.
+const RAW_WITH_SUB: u32 = 2448;
+
+/// The file beside `path` with its name and extension `ext`, matched without regard to case
+/// (`GAME.IMG` beside `Game.ccd` on a case-sensitive disk); the plain name when none is.
+fn beside(path: &Path, ext: &str) -> PathBuf {
+    let plain = path.with_extension(ext);
+    if plain.is_file() {
+        return plain;
+    }
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else { return plain };
+    std::fs::read_dir(dir)
+        .ok()
+        .and_then(|entries| {
+            entries.flatten().map(|e| e.path()).find(|p| {
+                p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case(stem))
+                    && p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(ext))
+            })
+        })
+        .unwrap_or(plain)
+}
+
+/// A track of 2448-byte sectors read as 2352-byte ones.
+struct WithoutSubchannel {
+    file: std::fs::File,
+    start: u64,
+}
+
+impl ReadAt for WithoutSubchannel {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let at = offset + done as u64;
+            let (sector, within) = (at / 2352, (at % 2352) as usize);
+            let take = (2352 - within).min(buf.len() - done);
+            self.file.read_at(self.start + sector * u64::from(RAW_WITH_SUB) + within as u64, &mut buf[done..done + take])?;
+            done += take;
+        }
+        Ok(())
+    }
+}
+
 /// A CloneCD (`.ccd` + `.img`) or Alcohol (`.mds` + `.mdf`) image: the track list from
 /// its descriptor, the sectors from the image beside it (same name).
 fn open_raw_image(path: &Path) -> Result<OpenedRom, String> {
     let (tracks, image) = match extension(path).as_str() {
         "ccd" => {
             let text = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            (super::cd_images::ccd(&String::from_utf8_lossy(&text)), path.with_extension("img"))
+            (super::cd_images::ccd(&String::from_utf8_lossy(&text)), beside(path, "img"))
         }
         _ => {
-            let mds = path.with_extension("mds");
+            let mds = beside(path, "mds");
             let bytes = std::fs::read(&mds).map_err(|e| format!("{}: {e}", mds.display()))?;
-            (super::cd_images::mds(&bytes)?, path.with_extension("mdf"))
+            (super::cd_images::mds(&bytes)?, beside(path, "mdf"))
         }
     };
     if tracks.is_empty() {
@@ -480,15 +524,22 @@ fn open_raw_image(path: &Path) -> Result<OpenedRom, String> {
     let file = whole_file(&image)?;
     let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None, title: None };
     for (i, track) in tracks.iter().enumerate() {
-        // Sectors with their subchannel stored after them (2448 bytes) are not read yet.
-        if track.sector != 2352 && track.sector != 2048 {
+        if !matches!(track.sector, 2048 | 2352 | RAW_WITH_SUB) {
             continue;
         }
         let end = tracks.get(i + 1).map(|t| t.start).unwrap_or(file.size()).min(file.size());
         if end <= track.start {
             continue;
         }
-        let view = file.slice(track.start, end - track.start);
+        let view = if track.sector == RAW_WITH_SUB {
+            // Each sector's 96 subchannel bytes are stepped over: what is read is the same
+            // 2352-byte sectors a plain image holds.
+            let sectors = (end - track.start) / u64::from(RAW_WITH_SUB);
+            let image = std::fs::File::open(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+            DiscView::new(Box::new(WithoutSubchannel { file: image, start: track.start }), sectors * 2352)
+        } else {
+            file.slice(track.start, end - track.start)
+        };
         if track.audio {
             out.cdda.push((track.number, view));
         } else {
@@ -918,6 +969,29 @@ impl VgmSource for Held {
             return Some(Box::new(Held { bytes: self.bytes.clone(), name: self.name.clone(), base }));
         }
         self.base.open(name)
+    }
+}
+
+#[cfg(test)]
+mod raw_image_tests {
+    use super::*;
+
+    #[test]
+    fn sectors_with_subchannel_read_as_plain_ones_and_names_match_without_case() {
+        let dir = std::env::temp_dir().join(format!("raw_image_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = Vec::new();
+        for n in 0..3u8 {
+            image.extend(std::iter::repeat_n(n, 2352));
+            image.extend(std::iter::repeat_n(0xEE, 96));
+        }
+        std::fs::write(dir.join("GAME.MDF"), &image).unwrap();
+        let found = beside(&dir.join("Game.mds"), "mdf");
+        let mut r = WithoutSubchannel { file: std::fs::File::open(&found).unwrap(), start: 0 };
+        let mut buf = vec![0u8; 2352 * 3];
+        r.read_at(0, &mut buf).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(buf.iter().enumerate().all(|(i, &b)| b == (i / 2352) as u8));
     }
 }
 
