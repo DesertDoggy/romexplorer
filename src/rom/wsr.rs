@@ -35,6 +35,10 @@ struct Api {
     free: FreeFn,
 }
 
+/// Held while the core is opened or closed: its "already open" check is a plain C global,
+/// so two threads opening at once could both pass it and share one machine.
+static CORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
     API.get_or_init(|| {
@@ -175,7 +179,10 @@ impl Player {
         self.close();
         let api = api().ok_or("the WonderSwan music player (rommusic) is not installed")?;
         let song = self.tracks.get(track as usize).ok_or("no such track")?.song;
-        let state = unsafe { (api.new)(self.data.as_ptr(), self.data.len(), song as i32) };
+        let state = {
+            let _core = CORE.lock().unwrap_or_else(|p| p.into_inner());
+            unsafe { (api.new)(self.data.as_ptr(), self.data.len(), song as i32) }
+        };
         if state.is_null() {
             return Err("another WonderSwan track is playing; try again when it ends".into());
         }
@@ -197,6 +204,7 @@ impl Player {
     fn close(&mut self) {
         if !self.state.is_null() {
             if let Some(api) = api() {
+                let _core = CORE.lock().unwrap_or_else(|p| p.into_inner());
                 unsafe { (api.free)(self.state) };
             }
             self.state = std::ptr::null_mut();
