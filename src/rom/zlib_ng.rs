@@ -202,6 +202,10 @@ mod tests {
         let compressed: [u8; 13] = [
             0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01, 0x00,
         ];
+        // Like the other native tests: nothing to check where the library isn't built.
+        if !available() {
+            return;
+        }
         let out = raw_inflate(&compressed, b"hello world".len()).expect("inflate should succeed");
         assert_eq!(out, b"hello world");
     }
