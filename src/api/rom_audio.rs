@@ -600,8 +600,17 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let main_path: String = row.try_get("main_path")?;
         // A ROM another run is reading right now (a title page's, beside this one) is that
         // run's: the same disc is not read twice at once.
-        let Some(reading) = Reading::start(rom_id) else {
+        // A title page's run waits for it instead: the page is waiting for this ROM's music,
+        // and passing it by would show stand-in music and count it as looked at.
+        let mut reading = Reading::start(rom_id);
+        while reading.is_none() && request.title_id.is_some() && !progress.cancelled().await {
+            progress.report(i as u64, Some(total), &format!("ROM {} of {total}: waiting for another index run reading it", i + 1)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            reading = Reading::start(rom_id);
+        }
+        let Some(reading) = reading else {
             summary.skipped_existing += 1;
+            summary.rom_ids.retain(|&id| id != rom_id);
             continue;
         };
         // A title page opened while this run goes on indexes its own ROMs first, beside it:
