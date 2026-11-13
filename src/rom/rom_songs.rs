@@ -102,8 +102,12 @@ pub fn covers(platform: u16) -> bool {
         || (is_gb(platform) && super::gb_apu::available())
         || ((platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 || platform == P::SegaGenesis as u16
             || platform == P::TurboGrafx16 as u16
+            || platform == P::SuperGrafx as u16
+            || platform == P::Sg1000 as u16
             || platform == P::Msx as u16
             || platform == P::Msx2 as u16
+            || platform == P::Msx2Plus as u16
+            || platform == P::MsxTurbo as u16
             || platform == P::WonderSwan as u16
             || platform == P::WonderSwanColor as u16
             || platform == P::VirtualBoy as u16
@@ -118,7 +122,7 @@ pub fn is_cartridge(platform: u16) -> bool {
     [
         P::Atari2600, P::Atari5200, P::Atari7800, P::AtariLynx, P::AtariJaguar, P::SegaGenesis, P::Sega32x, P::SegaMasterSystem,
         P::SegaGameGear, P::Sg1000, P::Nes, P::Famicom, P::Snes, P::SuperFamicom, P::Nintendo64, P::GameBoy, P::GameBoyColor,
-        P::GameBoyAdvance, P::VirtualBoy, P::TurboGrafx16, P::NeoGeoPocket, P::NeoGeoPocketColor, P::WonderSwan,
+        P::GameBoyAdvance, P::VirtualBoy, P::TurboGrafx16, P::SuperGrafx, P::NeoGeoPocket, P::NeoGeoPocketColor, P::WonderSwan,
         P::WonderSwanColor, P::Intellivision, P::ColecoVision,
     ]
     .iter()
@@ -289,7 +293,8 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
                 }
             }
         }
-        if platform == P::SegaMasterSystem as u16 {
+        // The SG-1000 has the Master System's sound chip and Z80 at the same ports.
+        if platform == P::SegaMasterSystem as u16 || platform == P::Sg1000 as u16 {
             return index_machine::<super::sms_music::MasterSystem>(path, t, SMS, "Master System");
         }
         if platform == P::SegaGameGear as u16 {
@@ -297,6 +302,10 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
         }
         if platform == P::SegaGenesis as u16 {
             return index_machine::<super::md_music::MegaDrive>(path, t, MD, "Mega Drive");
+        }
+        // A SuperGrafx game drives the same sound chip as a PC Engine one.
+        if platform == P::SuperGrafx as u16 {
+            return index_machine::<super::pce_music::PcEngine>(path, t, PCE, "PC Engine");
         }
         if platform == P::TurboGrafx16 as u16 {
             let rom = read_rom(path)?;
@@ -309,7 +318,7 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
             }
             return index_machine::<super::pce_music::PcEngine>(path, t, PCE, "PC Engine");
         }
-        if platform == P::Msx as u16 || platform == P::Msx2 as u16 {
+        if platform == P::Msx as u16 || platform == P::Msx2 as u16 || platform == P::Msx2Plus as u16 || platform == P::MsxTurbo as u16 {
             return index_machine::<super::msx_music::Msx>(path, t, MSX, "MSX");
         }
         if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
