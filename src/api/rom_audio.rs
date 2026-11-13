@@ -634,7 +634,8 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                 }
             }
         }
-        let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
+        // A cartridge's .bin or .img is its ROM, not a disc image to read tracks from.
+        let disc = rom_path(&main_path, &files).filter(|p| vgmstream::available() && !(rom_songs::is_cartridge(platform) && p.is_file()));
         let in_library = library.covers(platform);
         let songs = rom_songs::covers(platform);
         if disc.is_none() && folder.is_none() && !in_library && !songs {
