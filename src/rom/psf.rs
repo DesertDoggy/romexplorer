@@ -662,6 +662,11 @@ pub fn gba_available() -> bool {
     gsf_api().is_some()
 }
 
+/// Held while a player core sets up its process-wide state (the PS1/PS2 kernel, the
+/// Saturn/Dreamcast tables), which the C side does with a plain flag: two threads at once
+/// would both do it.
+static NATIVE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The size of a PS2 BIOS image, the only kind the PS1/PS2 player can build its kernel from.
 pub const PS2_BIOS_BYTES: usize = 0x40_0000;
 
@@ -672,6 +677,8 @@ pub fn set_ps2_bios(image: &[u8]) -> Result<bool, String> {
     if image.len() != PS2_BIOS_BYTES {
         return Err("a PS2 BIOS image is 4 MB".into());
     }
+    // The kernel is built once into C globals, checked without a lock there.
+    let _once = NATIVE_INIT.lock().unwrap_or_else(|p| p.into_inner());
     match unsafe { (api.set_bios)(image.as_ptr(), image.len()) } {
         0 => Ok(true),
         _ => Err("this PS2 BIOS image could not be used".into()),
@@ -776,7 +783,11 @@ impl Player {
             }
             System::Saturn | System::Dreamcast => {
                 let api = sega_api().ok_or("the Saturn/Dreamcast music player (rommusic) is not installed")?;
-                let state = unsafe { (api.new)(if self.loaded.system == System::Saturn { 1 } else { 2 }) };
+                // The first console made sets the core's tables up, checked without a lock in C.
+                let state = {
+                    let _once = NATIVE_INIT.lock().unwrap_or_else(|p| p.into_inner());
+                    unsafe { (api.new)(if self.loaded.system == System::Saturn { 1 } else { 2 }) }
+                };
                 if state.is_null() {
                     return Err("out of memory".into());
                 }
