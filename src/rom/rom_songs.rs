@@ -1683,6 +1683,8 @@ struct MachinePcm<M: Machine> {
     fade: u64,
     tail: u64,
     pending: Vec<i16>,
+    /// Some of the song has been handed out.
+    played: bool,
 }
 
 impl<M: Machine + Send> PcmStream for MachinePcm<M>
@@ -1705,8 +1707,22 @@ where
         }
         let ch = M::CHANNELS as usize;
         while self.pending.len() < 4096 * ch {
-            self.song.frame(&mut self.pending)?;
+            if let Err(e) = self.song.frame(&mut self.pending) {
+                // A song that stops (a jingle reaching its end, a game that halts) before its
+                // measured length ends there: what it played stands. An error before any sound
+                // is the track's error.
+                if !self.played && self.pending.is_empty() {
+                    return Err(e);
+                }
+                self.left = self.left.min((self.pending.len() / ch) as u64);
+                self.fade = self.fade.min(self.left);
+                if self.left == 0 {
+                    return Ok(None);
+                }
+                break;
+            }
         }
+        self.played = true;
         let n = (self.left as usize).min(self.pending.len() / ch);
         let mut buf: Vec<i16> = self.pending.drain(..n * ch).collect();
         if self.fade > 0 {
@@ -1836,7 +1852,7 @@ where
     let player = music_search::Song::<M>::open(&rom, &recipe, v, PLAY_RATE)?;
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
-    Ok(Box::new(MachinePcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+    Ok(Box::new(MachinePcm { song: player, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new(), played: false }))
 }
 
 #[cfg(test)]
