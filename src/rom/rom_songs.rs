@@ -112,6 +112,19 @@ pub fn covers(platform: u16) -> bool {
             && super::vgm_chips::available())
 }
 
+/// A cartridge console: its .bin or .img is a ROM dump, never a disc image.
+pub fn is_cartridge(platform: u16) -> bool {
+    use crate::common::models::Platform as P;
+    [
+        P::Atari2600, P::Atari5200, P::Atari7800, P::AtariLynx, P::AtariJaguar, P::SegaGenesis, P::Sega32x, P::SegaMasterSystem,
+        P::SegaGameGear, P::Sg1000, P::Nes, P::Famicom, P::Snes, P::SuperFamicom, P::Nintendo64, P::GameBoy, P::GameBoyColor,
+        P::GameBoyAdvance, P::VirtualBoy, P::TurboGrafx16, P::NeoGeoPocket, P::NeoGeoPocketColor, P::WonderSwan,
+        P::WonderSwanColor, P::Intellivision, P::ColecoVision,
+    ]
+    .iter()
+    .any(|p| *p as u16 == platform)
+}
+
 fn is_snes(platform: u16) -> bool {
     use crate::common::models::Platform as P;
     platform == P::Snes as u16 || platform == P::SuperFamicom as u16
