@@ -1083,6 +1083,16 @@ fn place(location: &TrackLocation) -> (&'static str, Option<u16>, u16, Option<&s
     }
 }
 
+/// How a track's place is matched to the kind a user set on it: a song record's measured
+/// timing is left out, so a re-index that measures it differently keeps the kind.
+fn manual_key(data_track: u16, inner: &str) -> String {
+    if u32::from(data_track) == rom_songs::ROM_SONG_VIEW {
+        rom_songs::without_timing(inner)
+    } else {
+        inner.to_string()
+    }
+}
+
 /// Replaces `rom_id`'s tracks with `tracks`, keeping the kinds a user set on the ones that
 /// are still there.
 async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str>) -> Result<()> {
@@ -1093,7 +1103,8 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
         .await?
         .iter()
         .filter_map(|r| {
-            let key = (r.try_get("location").ok()?, r.try_get("cd_track").ok()?, r.try_get("data_track").ok()?, r.try_get::<Option<String>, _>("inner_path").ok()?.unwrap_or_default(), r.try_get("subsong").ok()?);
+            let data_track: u16 = r.try_get("data_track").ok()?;
+            let key = (r.try_get("location").ok()?, r.try_get("cd_track").ok()?, data_track, manual_key(data_track, &r.try_get::<Option<String>, _>("inner_path").ok()?.unwrap_or_default()), r.try_get("subsong").ok()?);
             Some((key, r.try_get("kind_manual").ok()?))
         })
         .collect();
@@ -1104,7 +1115,7 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
         );
         q.push_values(chunk, |mut b, t| {
             let (location, cd_track, data_track, inner, subsong) = place(&t.location);
-            let key: PlaceKey = (location.to_string(), cd_track, data_track, inner.unwrap_or_default().to_string(), subsong);
+            let key: PlaceKey = (location.to_string(), cd_track, data_track, manual_key(data_track, inner.unwrap_or_default()), subsong);
             b.push_bind(rom_id)
                 .push_bind(location)
                 .push_bind(cd_track)
