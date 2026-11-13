@@ -21,6 +21,8 @@ use super::source::ReadAt;
 use super::zlib_ng;
 
 pub const MAGIC: &[u8; 4] = b"CISO";
+/// ZSO: the same layout, its blocks LZ4-compressed (PPSSPP and PCSX2 read it).
+pub const ZSO_MAGIC: &[u8; 4] = b"ZISO";
 const HEADER: usize = 24;
 const PLAIN: u32 = 0x8000_0000;
 /// PSP and PS2 sectors are 2048 bytes; PPSSPP reads only this block size.
@@ -44,8 +46,8 @@ pub fn is_cso(head: &[u8]) -> bool {
 }
 
 fn parse_header(h: &[u8; HEADER]) -> std::io::Result<Header> {
-    if !is_cso(h) {
-        return Err(bad("not a CSO file"));
+    if !is_cso(h) && &h[..4] != ZSO_MAGIC {
+        return Err(bad("not a CSO or ZSO file"));
     }
     let header = Header {
         iso_size: u64::from_le_bytes(h[8..16].try_into().unwrap()),
@@ -66,6 +68,8 @@ fn parse_header(h: &[u8; HEADER]) -> std::io::Result<Header> {
 pub struct CsoReader {
     file: File,
     pub header: Header,
+    /// A ZSO: blocks are LZ4, not deflate.
+    lz4: bool,
     index: Vec<u32>,
     file_len: u64,
     /// The last block decoded, for reads smaller than a block.
@@ -87,7 +91,7 @@ impl CsoReader {
         let mut index_bytes = vec![0u8; index_len as usize];
         file.read_exact(&mut index_bytes)?;
         let index: Vec<u32> = index_bytes.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
-        Ok(Self { file, header, index, file_len, cached: None, raw: Vec::new() })
+        Ok(Self { file, header, lz4: &h[..4] == ZSO_MAGIC, index, file_len, cached: None, raw: Vec::new() })
     }
 
     /// The ISO's size.
@@ -116,6 +120,13 @@ impl CsoReader {
                 return Err(bad(format!("block {n}: cut short")));
             }
             self.raw[..want].to_vec()
+        } else if self.lz4 {
+            let mut out = lz4_block(&self.raw, bs as usize).ok_or_else(|| bad(format!("block {n}: does not decompress -- the ZSO may be damaged")))?;
+            if out.len() < want {
+                return Err(bad(format!("block {n}: cut short")));
+            }
+            out.truncate(want);
+            out
         } else {
             // Blocks may carry alignment padding after the deflate stream; inflate stops at its end.
             let mut out = zlib_ng::raw_inflate(&self.raw, bs as usize).or_else(|| zlib_ng::raw_inflate(&self.raw, want));
@@ -129,6 +140,55 @@ impl CsoReader {
         self.cached = Some((n, data));
         Ok(&self.cached.as_ref().unwrap().1)
     }
+}
+
+/// Decodes one LZ4 block (the raw block format, no frame) of at most `max` bytes. Input after
+/// the last sequence (a ZSO block's alignment padding) is left alone. Small and only ever
+/// run over 2 KB blocks, so it is written here rather than taking a library in.
+fn lz4_block(src: &[u8], max: usize) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(max);
+    let mut i = 0;
+    let length = |i: &mut usize, mut n: usize| -> Option<usize> {
+        if n == 15 {
+            loop {
+                let b = *src.get(*i)?;
+                *i += 1;
+                n += b as usize;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        Some(n)
+    };
+    while i < src.len() && out.len() < max {
+        let token = src[i];
+        i += 1;
+        let lit = length(&mut i, (token >> 4) as usize)?;
+        let lits = src.get(i..i.checked_add(lit)?)?;
+        out.extend_from_slice(lits);
+        i += lit;
+        if out.len() >= max || i + 2 > src.len() {
+            break; // the last sequence is literals only
+        }
+        let offset = u16::from_le_bytes([src[i], src[i + 1]]) as usize;
+        i += 2;
+        if offset == 0 && src[i - 2..].iter().all(|&b| b == 0) {
+            break; // alignment padding after the last literals
+        }
+        if offset == 0 || offset > out.len() {
+            return None;
+        }
+        let len = length(&mut i, (token & 15) as usize)? + 4;
+        if out.len() + len > max {
+            return None;
+        }
+        let from = out.len() - offset;
+        for k in 0..len {
+            out.push(out[from + k]);
+        }
+    }
+    (out.len() <= max).then_some(out)
 }
 
 impl ReadAt for CsoReader {
@@ -240,6 +300,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lz4_blocks_decode_literals_and_overlapping_matches() {
+        // "abc", then a match of 9 at offset 3 ("abcabcabc"), then "xyz" as the last literals.
+        let block = [0x35, b'a', b'b', b'c', 3, 0, 0x30, b'x', b'y', b'z', 0, 0];
+        assert_eq!(lz4_block(&block, 2048).unwrap(), b"abcabcabcabcxyz");
+        assert_eq!(lz4_block(&block[..10], 2048).unwrap(), b"abcabcabcabcxyz");
+        // An offset before the start, and output past the block, are refused.
+        assert!(lz4_block(&[0x10, b'a', 5, 0], 2048).is_none());
+        assert!(lz4_block(&[0x1f, b'a', 1, 0, 255, 255, 10], 64).is_none());
+    }
+
+    #[test]
     fn an_iso_comes_back_byte_for_byte() {
         if !zlib_ng::available() {
             eprintln!("skipped: zlib-ng is not built");
@@ -295,3 +366,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
