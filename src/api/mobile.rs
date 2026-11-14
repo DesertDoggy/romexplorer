@@ -73,7 +73,7 @@ pub async fn machines(app: &App) -> Result<Vec<Machine>> {
 }
 
 /// This machine's name for the phone's lists: the computer's own name.
-fn host_name() -> String {
+pub fn host_name() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())

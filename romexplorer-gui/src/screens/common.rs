@@ -248,7 +248,7 @@ pub fn machine_options() -> Vec<(String, String)> {
     }
     let mut o = vec![(String::new(), state::tr("any machine")), (romexplorer_types::mobile::THIS_MACHINE.to_string(), this_label)];
     for m in machines.iter().skip(1) {
-        let role = if s(m, "role") == "main" { state::tr("main server") } else { state::tr("client") };
+        let role = if s(m, "role") == "main" { state::tr("main server") } else { state::tr("peer") };
         o.push((s(m, "id"), format!("{} ({role})", s(m, "name"))));
     }
     o

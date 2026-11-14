@@ -162,5 +162,9 @@
   "sub.config.ai": "AI",
   "tabinfo.config.ai": "The AI that answers in the app (provider, model, API key), the Ask menu's first link, the prices for the approximate cost, and the saved answers.",
   "sub.config.advanced": "Advanced",
-  "tabinfo.config.advanced": "Operations that can corrupt the database or lose files (database optimize, ...). Make a backup first."
+  "tabinfo.config.advanced": "Operations that can corrupt the database or lose files (database optimize, ...). Make a backup first.",
+  "On this network": "On this network",
+  "search again": "search again",
+  "No server answered. Type its address below.": "No server answered. Type its address below.",
+  "Nothing answered. Type the address below.": "Nothing answered. Type the address below."
 }

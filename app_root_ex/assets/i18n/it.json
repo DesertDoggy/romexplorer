@@ -2389,7 +2389,7 @@
   "not held here, nothing to start": "non posseduto qui, niente da avviare",
   "nothing here": "niente qui",
   "on the main server only": "solo sul server principale",
-  "shared clients": "client condivisi",
+  "shared peers": "peer condivisi",
   "supported": "supportato",
   "{n} items": "{n} elementi",
   "{n} more…": "altri {n}…",
@@ -2975,5 +2975,9 @@
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Modalità Big Picture: come vengono disegnate le icone dei pulsanti delle schede.",
   "colour: each icon in its own colour (default)": "colore: ogni icona nel suo colore (predefinito)",
   "outline: thin lines in the text colour": "contorno: linee sottili nel colore del testo",
-  "Language": "Lingua"
+  "Language": "Lingua",
+  "On this network": "Su questa rete",
+  "search again": "cerca di nuovo",
+  "No server answered. Type its address below.": "Nessun server ha risposto. Inserisci il suo indirizzo qui sotto.",
+  "Nothing answered. Type the address below.": "Nessuna risposta. Inserisci l'indirizzo qui sotto."
 }

@@ -255,7 +255,7 @@ fn held_line(r: &Value) -> String {
         out.push(state::tr("main server"));
     }
     if u(r, "peer_games") > 0 {
-        out.push(state::tr("shared clients"));
+        out.push(state::tr("shared peers"));
     }
     out.join(", ")
 }

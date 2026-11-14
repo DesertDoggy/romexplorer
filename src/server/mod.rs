@@ -23,6 +23,7 @@ use crate::api::auth::Principal;
 use crate::api::{self, App, Error, ErrorKind};
 
 pub mod access;
+pub mod discovery;
 pub mod tls;
 
 pub const CONSOLE_HTML: &str = include_str!("console.html");
@@ -1287,6 +1288,11 @@ async fn media_reuse_prompt(State(s): State<Shared>) -> ApiResult<api::media::Re
 
 /// The options and the warning travel with the value so the first-run prompt, the console
 /// and the GUI show the same words instead of three paraphrases that drift apart.
+/// The romexplorer servers and shares on this machine's network, for the Sources dialog.
+async fn sources_discover() -> ApiResult<Vec<romexplorer_types::discovery::Found>> {
+    discovery::search(std::time::Duration::from_millis(1500)).await.map(Json).map_err(|e| api::Error::internal(format!("network search: {e}")).into())
+}
+
 async fn mode_get(State(s): State<Shared>) -> ApiResult<api::sources::ModeView> {
     Ok(Json(api::sources::mode_view(&s.app).await?))
 }
@@ -2877,6 +2883,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/sync/deleted/{table}", get(sync_deleted))
         .route("/api/v1/mode", get(mode_get).put(mode_set))
         .route("/api/v1/sources", get(sources_list).post(sources_create))
+        .route("/api/v1/sources/discover", get(sources_discover))
         .route("/api/v1/sources/{id}/roots", get(source_roots))
         .route("/api/v1/sources/{id}/mounts", get(source_mounts).post(source_mount_create))
         .route("/api/v1/mounts/{id}", delete(mount_delete))
