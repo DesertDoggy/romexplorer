@@ -128,11 +128,14 @@ struct ListQuery {
     platforms: String,
     /// The catalogue's `view`: where the item is held.
     view: String,
+    /// The phone's Machine filter (`machine=`): held on that machine. Apart from `view`, so
+    /// Held (held / not held) and Machine combine.
+    machine: String,
 }
 
 impl ListQuery {
     fn count(&self) -> usize {
-        usize::from(!self.platforms.is_empty()) + usize::from(!self.view.is_empty())
+        usize::from(!self.platforms.is_empty()) + usize::from(!self.view.is_empty()) + usize::from(!self.machine.is_empty())
     }
 }
 
@@ -405,17 +408,20 @@ async fn fetch_list(tab: &str, q: &ListQuery, offset: u64) -> api::ApiResult<(Ve
         p.extend(extra);
         api::qs(&p)
     };
+    // The phone filters every list by Held and Machine; its copy answers them all.
+    let held = || if cfg!(feature = "mobile") { vec![("view", q.view.clone()), ("machine", q.machine.clone())] } else { vec![] };
     let (path, map): (String, fn(&Value) -> Item) = match tab {
-        "crossplatform" => (format!("/api/v1/catalog/crossplatform{}", base(vec![])), cross_item),
-        "titles" => (format!("/api/v1/catalog/titles{}", base(vec![("view", q.view.clone())])), title_item),
-        "releases" => (format!("/api/v1/catalog/releases{}", base(vec![("view", q.view.clone())])), release_item),
-        "definitive" => (format!("/api/v1/catalog/definitive{}", base(vec![])), definitive_item),
+        "crossplatform" => (format!("/api/v1/catalog/crossplatform{}", base(held())), cross_item),
+        "titles" => (format!("/api/v1/catalog/titles{}", base(vec![("view", q.view.clone()), ("machine", q.machine.clone())])), title_item),
+        "releases" => (format!("/api/v1/catalog/releases{}", base(vec![("view", q.view.clone()), ("machine", q.machine.clone())])), release_item),
+        "definitive" => (format!("/api/v1/catalog/definitive{}", base(held())), definitive_item),
         "contents" => (format!("/api/v1/catalog/contents{}", base(vec![])), content_item),
         "games" => (format!("/api/v1/catalog/games{}", base(vec![])), game_item),
         "files" => (format!("/api/v1/catalog/files{}", base(vec![])), file_item),
         ra => {
             let list = ra.strip_prefix("ra-").unwrap_or("titles");
-            let p = vec![("list", list.to_string()), ("q", q.search.clone()), ("limit", PAGE.to_string()), ("offset", offset.to_string())];
+            let mut p = vec![("list", list.to_string()), ("q", q.search.clone()), ("limit", PAGE.to_string()), ("offset", offset.to_string())];
+            p.extend(held());
             (format!("/api/v1/ra/games{}", api::qs(&p)), ra_item)
         }
     };
@@ -948,7 +954,9 @@ fn FilterSheet(tab: String) -> Element {
     let start = QUERIES.read().get(&tab).cloned().unwrap_or_default();
     let mut draft = use_signal(|| start.clone());
     let mut open = use_signal(|| None::<&'static str>);
-    let has_view = matches!(tab.as_str(), "titles" | "releases") || (cfg!(feature = "mobile") && matches!(tab.as_str(), "crossplatform" | "definitive"));
+    let has_view = matches!(tab.as_str(), "titles" | "releases") || (cfg!(feature = "mobile") && (matches!(tab.as_str(), "crossplatform" | "definitive") || tab.starts_with("ra-")));
+    let machines: Vec<(String, String)> = if has_view { super::companion::machine_views() } else { Vec::new() };
+    let has_machine = !machines.is_empty();
     let picked: std::collections::BTreeSet<String> = draft().platforms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect();
     let platforms: Vec<(String, String)> = state::platforms().iter().filter(|p| u(p, "id") > 0).map(|p| (u(p, "id").to_string(), state::platform_label(&s(p, "name")))).collect();
     let views: Vec<(String, String)> = super::companion::held_views();
@@ -964,6 +972,11 @@ fn FilterSheet(tab: String) -> Element {
                     if has_view {
                         button { class: "bp-choice", onclick: move |_| open.set(Some("view")),
                             {state::tr("Held")} if !draft().view.is_empty() { " ✓" }
+                        }
+                    }
+                    if has_machine {
+                        button { class: "bp-choice", onclick: move |_| open.set(Some("machine")),
+                            {state::tr("Machine")} if !draft().machine.is_empty() { " ✓" }
                         }
                     }
                 },
@@ -985,6 +998,12 @@ fn FilterSheet(tab: String) -> Element {
                                 }
                             }
                         }
+                    }
+                },
+                Some("machine") => rsx! {
+                    button { class: "bp-choice", onclick: move |_| open.set(None), "◀ " {state::tr("Machine")} }
+                    for (v, l) in machines.clone() {
+                        button { key: "{v}", class: if draft().machine == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().machine = v.clone(), "{l}" }
                     }
                 },
                 Some(_) => rsx! {

@@ -9,7 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 /// The file format version. A phone refuses a file with another one and syncs again.
-pub const FORMAT: u32 = 1;
+/// 2: RA rows say which synced machines hold them (`_mobile_ra.held`), for the Machine filter.
+pub const FORMAT: u32 = 2;
 
 /// The machine the phone syncs from, by this name in `machines`.
 pub const THIS_MACHINE: &str = "local";
@@ -27,6 +28,11 @@ pub struct SyncOptions {
     /// Platforms (app platform ids) whose whole catalogue comes along with `scope = catalog`.
     /// Empty means none: the whole catalogue is never taken by default.
     pub catalog_platforms: Vec<u16>,
+    /// Machines (of `machines`) whose platforms bring the catalogue's titles along: every
+    /// title, owned or not, on each platform that machine holds games for. The phone sets it
+    /// per machine ("local and catalogue titles"), so the catalogue is bounded by what each
+    /// machine is for rather than a platform list kept by hand.
+    pub catalog_machines: Vec<String>,
     pub tabs: SyncTabs,
     /// Full title / release pages for the held items. A catalogue-only item's page is loaded
     /// live when the phone is connected.
@@ -47,6 +53,7 @@ impl Default for SyncOptions {
             machines: vec![THIS_MACHINE.to_string()],
             scope: "held".to_string(),
             catalog_platforms: Vec::new(),
+            catalog_machines: Vec::new(),
             tabs: SyncTabs::default(),
             pages: true,
             covers: true,
@@ -96,6 +103,10 @@ pub struct Machine {
     pub name: String,
     /// `this`, `main` or `peer`.
     pub role: String,
+    /// The main server: the `main` source, or `this` machine when it has none (it is the
+    /// main server itself).
+    #[serde(default)]
+    pub is_main: bool,
     /// Games it holds, as this machine last saw them.
     pub games: u64,
 }

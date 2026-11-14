@@ -14,27 +14,14 @@ use crate::state;
 pub fn held_views() -> Vec<(String, String)> {
     #[cfg(feature = "mobile")]
     {
-        use crate::api::companion;
-        let mut out = vec![
-            (String::new(), state::tr("anywhere")),
-            ("held".to_string(), state::tr("held on a synced machine")),
-        ];
-        let chosen = companion::settings().options.machines;
-        let machines: Vec<companion::Machine> = companion::copy_meta("machines")
-            .and_then(|m| serde_json::from_str(&m).ok())
-            .unwrap_or_default();
-        for m in machines.into_iter().filter(|m| chosen.contains(&m.id)) {
-            let (view, name) = if m.role == "this" {
-                (
-                    "local".to_string(),
-                    state::tr("the machine this phone syncs from"),
-                )
-            } else {
-                (format!("on:{}", m.id), m.name.clone())
-            };
-            out.push((view, state::trf("on {name}", &[("name", &name)])));
-        }
-        out
+        [
+            ("", "anywhere"),
+            ("held", "held"),
+            ("catalog", "not held (catalogue only)"),
+        ]
+        .into_iter()
+        .map(|(v, l)| (v.to_string(), state::tr(l)))
+        .collect()
     }
     #[cfg(not(feature = "mobile"))]
     {
@@ -48,6 +35,167 @@ pub fn held_views() -> Vec<(String, String)> {
         .map(|(v, l)| (v.to_string(), state::tr(l)))
         .collect()
     }
+}
+
+/// The Machine filter's choices, apart from Held: any machine, this phone, and each machine
+/// the copy was synced with, by name. Empty outside the phone build.
+pub fn machine_views() -> Vec<(String, String)> {
+    #[cfg(feature = "mobile")]
+    {
+        use crate::api::companion;
+        let mut out = vec![
+            (String::new(), state::tr("any machine")),
+            // Nothing is held on the phone yet; the choice is here for when it can be.
+            ("phone".to_string(), state::tr("this phone")),
+        ];
+        let synced: Vec<String> = companion::copy_meta("options")
+            .and_then(|o| serde_json::from_str::<companion::SyncOptions>(&o).ok())
+            .map(|o| o.machines)
+            .unwrap_or_default();
+        let machines: Vec<companion::Machine> = companion::copy_meta("machines")
+            .and_then(|m| serde_json::from_str(&m).ok())
+            .unwrap_or_default();
+        for m in machines.into_iter().filter(|m| synced.contains(&m.id)) {
+            out.push((m.id.clone(), machine_label(&m)));
+        }
+        out
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(feature = "mobile")]
+fn machine_label(m: &crate::api::companion::Machine) -> String {
+    let role = if m.is_main { state::tr("main server") } else { state::tr("client") };
+    format!("{} ({role})", m.name)
+}
+
+/// What to sync from each machine: Local, Local + catalogue, or Don't sync, one row per
+/// machine. `modes` starts from the saved choice or the defaults; `on_change` gets the
+/// whole set after each tap.
+#[component]
+pub fn MachineModes(on_change: EventHandler<std::collections::BTreeMap<String, String>>) -> Element {
+    #[cfg(feature = "mobile")]
+    {
+        use crate::api::companion::{self, MODE_CATALOG, MODE_LOCAL, MODE_NONE};
+        let machines = use_resource(|| async { companion::machines().await });
+        let mut modes = use_signal(|| companion::current_modes());
+        let list = match &*machines.read() {
+            None => return rsx! { div { class: "muted", {state::tr("loading…")} } },
+            Some(Err(e)) => return rsx! { div { class: "muted", {state::trf("Connect to the server to change this ({error}).", &[("error", &e.message)])} } },
+            Some(Ok(list)) => list.clone(),
+        };
+        // Saved choices, with the defaults for any machine added since.
+        let current: std::collections::BTreeMap<String, String> = list
+            .iter()
+            .map(|m| {
+                let saved = modes().and_then(|s| s.get(&m.id).cloned());
+                (m.id.clone(), saved.unwrap_or_else(|| companion::default_mode(m).to_string()))
+            })
+            .collect();
+        rsx! {
+            for m in list {
+                {
+                    let mode = current.get(&m.id).cloned().unwrap_or_default();
+                    let games = state::trf("{n} games", &[("n", &m.games.to_string())]);
+                    rsx! {
+                        div { key: "{m.id}", class: "bp-machine",
+                            div { b { {machine_label(&m)} } span { class: "muted", " · {games}" } }
+                            div { class: "bp-actions",
+                                for (value, label) in [(MODE_LOCAL, "Local titles"), (MODE_CATALOG, "Local + catalogue titles"), (MODE_NONE, "Don't sync")] {
+                                    {
+                                        let mut next = current.clone();
+                                        let id = m.id.clone();
+                                        rsx! {
+                                            button { key: "{value}", class: if mode == value { "bp-choice active" } else { "bp-choice" },
+                                                onclick: move |_| {
+                                                    next.insert(id.clone(), value.to_string());
+                                                    modes.set(Some(next.clone()));
+                                                    on_change.call(next.clone());
+                                                },
+                                                {state::tr(label)}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p { class: "muted", {state::tr("Catalogue titles are the ones not owned yet, on the platforms that machine holds games for.")} }
+        }
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        let _ = on_change;
+        rsx! {}
+    }
+}
+
+/// Asked on the first sync with a server: what to sync from each of its machines. Saved
+/// for that server; changed later under ⚙ Settings.
+#[component]
+pub fn MachineSheet() -> Element {
+    #[cfg(feature = "mobile")]
+    {
+        use crate::api::companion;
+        let mut picked = use_signal(|| None::<std::collections::BTreeMap<String, String>>);
+        rsx! {
+            super::bigpicture::SheetHead { title: state::tr("What to sync from each machine") }
+            div { class: "bp-sheet",
+                MachineModes { on_change: move |m| picked.set(Some(m)) }
+                div { class: "bp-sheet-actions",
+                    button { class: "bp-choice primary",
+                        onclick: move |_| {
+                            spawn(async move {
+                                // Untouched: the defaults as shown.
+                                let modes = match picked() {
+                                    Some(m) => m,
+                                    None => match companion::machines().await {
+                                        Ok(list) => list.iter().map(|m| (m.id.clone(), companion::default_mode(m).to_string())).collect(),
+                                        Err(e) => { crate::ui::toast(e.message, true); return; }
+                                    },
+                                };
+                                companion::save_modes(modes);
+                                crate::ui::close_modal();
+                                start_sync();
+                            });
+                        },
+                        {state::tr("Save and sync")}
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        rsx! {}
+    }
+}
+
+/// Starts a full sync in the background, with its progress in the status line.
+#[cfg(feature = "mobile")]
+pub fn start_sync() {
+    use crate::api::companion::{self, LAST_ERROR, SYNCING};
+    if companion::has_server() && companion::current_modes().is_none() {
+        crate::ui::open_modal(|| rsx! { MachineSheet {} });
+        return;
+    }
+    *SYNCING.write() = Some(companion::Progress::default());
+    *LAST_ERROR.write() = None;
+    spawn(async move {
+        let result = companion::full_sync(|p| *SYNCING.write() = Some(p)).await;
+        *SYNCING.write() = None;
+        match result {
+            Ok(sum) => crate::ui::toast(state::trf("Synced: {size}", &[("size", &crate::html::fmt_size(Some(sum.bytes)))]), false),
+            Err(e) => *LAST_ERROR.write() = Some(e.message),
+        }
+        // The tabs, filters and lists follow the new copy.
+        let _ = crate::state::load().await;
+    });
 }
 
 /// A sync running now: what it is doing and a bar. Nothing when none is.
@@ -96,7 +244,7 @@ fn ago(stamp: Option<&str>) -> String {
 pub fn SyncSheet() -> Element {
     #[cfg(feature = "mobile")]
     {
-        use crate::api::companion::{self, LAST_ERROR, SYNCING};
+        use crate::api::companion::{self, SYNCING};
         let s = companion::settings();
         let busy = SYNCING().is_some();
         let mut ra_busy = use_signal(|| false);
@@ -125,18 +273,9 @@ pub fn SyncSheet() -> Element {
                 SyncLine {}
                 button { class: "bp-choice primary", disabled: busy,
                     onclick: move |_| {
-                        *SYNCING.write() = Some(companion::Progress::default());
-                        *LAST_ERROR.write() = None;
-                        spawn(async move {
-                            let result = companion::full_sync(|p| *SYNCING.write() = Some(p)).await;
-                            *SYNCING.write() = None;
-                            match result {
-                                Ok(sum) => crate::ui::toast(state::trf("Synced: {size}", &[("size", &crate::html::fmt_size(Some(sum.bytes)))]), false),
-                                Err(e) => *LAST_ERROR.write() = Some(e.message),
-                            }
-                            // The tabs, filters and lists follow the new copy.
-                            let _ = crate::state::load().await;
-                        });
+                        // The first sync with a server asks what to take from each machine.
+                        if companion::current_modes().is_none() { crate::ui::close_modal(); }
+                        start_sync();
                     },
                     "⟳ " {state::tr("Sync now")}
                 }
@@ -173,8 +312,12 @@ pub fn PhoneSettings() -> Element {
         let mut cfg = use_signal(companion::settings);
         let mut ra_warn = use_signal(|| false);
         let mut estimate = use_signal(|| None::<Result<companion::SyncEstimate, String>>);
-        let machines = use_resource(|| async { companion::machines().await });
-        let mut save = move |s: Settings| {
+        let mut save = move |mut s: Settings| {
+            // Kept elsewhere (the machine choices, the app's own settings): never from this
+            // screen's older copy.
+            let now = companion::settings();
+            s.server_modes = now.server_modes;
+            s.app_settings = now.app_settings;
             companion::save_settings(&s);
             cfg.set(s);
             estimate.set(None);
@@ -191,16 +334,6 @@ pub fn PhoneSettings() -> Element {
             ("files", "Files", o.tabs.files),
             ("contents", "Contents", o.tabs.contents),
         ];
-        let platforms: Vec<(u16, String)> = state::platforms()
-            .iter()
-            .filter_map(|p| {
-                Some((
-                    p.get("id")?.as_u64()? as u16,
-                    state::platform_label(p.get("name")?.as_str()?),
-                ))
-            })
-            .filter(|(id, _)| *id > 0)
-            .collect();
         let server = crate::api::endpoint().base;
         let signed_in = crate::api::ME().and_then(|m| m.user).map(|u| u.username);
         rsx! {
@@ -218,49 +351,8 @@ pub fn PhoneSettings() -> Element {
                     button { class: "bp-choice", onclick: move |_| { spawn(async move { crate::api::sign_out().await; }); }, {state::tr("Sign out")} }
                 }
             }
-            h4 { {state::tr("Machines")} }
-            p { class: "muted", {state::tr("Whose games count as held. Only their titles and releases are synced, unless the catalogue is added below.")} }
-            match &*machines.read() {
-                None => rsx! { div { class: "muted", {state::tr("loading…")} } },
-                Some(Err(e)) => rsx! { div { class: "muted", {state::trf("Connect to the server to change this ({error}).", &[("error", &e.message)])} } },
-                Some(Ok(list)) => rsx! {
-                    for m in list.clone() {
-                        {
-                            let on = o.machines.contains(&m.id);
-                            let id = m.id.clone();
-                            let name = if m.role == "this" { state::tr("the machine this phone syncs from") } else { format!("{} ({})", m.name, state::tr(if m.role == "main" { "main server" } else { "shared client" })) };
-                            rsx! {
-                                button { key: "{m.id}", class: if on { "bp-choice active" } else { "bp-choice" },
-                                    onclick: move |_| {
-                                        let mut s = cfg();
-                                        if on { s.options.machines.retain(|x| *x != id); } else { s.options.machines.push(id.clone()); }
-                                        save(s);
-                                    },
-                                    if on { "✓ " } "{name} · " {state::trf("{n} games", &[("n", &m.games.to_string())])}
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-            h4 { {state::tr("Catalogue")} }
-            button { class: if o.scope == "held" { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.scope = "held".into(); save(s); }, {state::tr("Only what the machines hold")} }
-            button { class: if o.scope == "catalog" { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.scope = "catalog".into(); save(s); }, {state::tr("Also titles not owned yet, on these platforms:")} }
-            if o.scope == "catalog" {
-                div { class: "bp-choices",
-                    for (id, name) in platforms {
-                        {
-                            let on = o.catalog_platforms.contains(&id);
-                            rsx! {
-                                button { key: "{id}", class: if on { "bp-choice active" } else { "bp-choice" },
-                                    onclick: move |_| { let mut s = cfg(); if on { s.options.catalog_platforms.retain(|x| *x != id); } else { s.options.catalog_platforms.push(id); } save(s); },
-                                    if on { "✓ " } "{name}"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            h4 { {state::tr("What to sync from each machine")} }
+            MachineModes { on_change: move |m| { companion::save_modes(m); estimate.set(None); } }
             h4 { {state::tr("Tabs")} }
             p { class: "muted", {state::tr("Games, Files and Contents are off on a phone by default; turn them on for a handheld with emulators.")} }
             div { class: "bp-choices",
@@ -299,7 +391,11 @@ pub fn PhoneSettings() -> Element {
             }
             div { class: "bp-actions",
                 button { class: "bp-choice",
-                    onclick: move |_| { spawn(async move { let o = cfg().options; estimate.set(Some(companion::estimate(&o).await.map_err(|e| e.message))); }); },
+                    onclick: move |_| { spawn(async move {
+                        let modes = companion::current_modes().unwrap_or_default();
+                        let o = companion::sync_options(&cfg(), &modes);
+                        estimate.set(Some(companion::estimate(&o).await.map_err(|e| e.message)));
+                    }); },
                     {state::tr("Estimate the size")}
                 }
                 match estimate() {
