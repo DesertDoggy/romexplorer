@@ -860,6 +860,13 @@ fn print_n64_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         println!("{name}: not an N64 ROM dump");
         return;
     };
+    // Progress as it goes: an N64 game can take many minutes, and a run cut short should
+    // still show which step it reached.
+    let step = |what: String| {
+        use std::io::Write;
+        println!("{name}: ... {what} ({:.0} s)", started.elapsed().as_secs_f32());
+        std::io::stdout().flush().ok();
+    };
     let mut builder = n64_map::Builder::new(&native);
     let mut real = Vec::new();
     let mut theirs = true;
@@ -871,9 +878,11 @@ fn print_n64_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         if theirs {
             let mut out = vec![0i16; n64_map::RATE as usize * 2 * GBA_CHECK_SECONDS as usize];
             real.push(psf::Player::open(loaded.clone(), n64_map::RATE).and_then(|mut p| p.play(&mut out)).ok().map(|_| out).filter(|o| o.iter().any(|&x| x != 0)));
+            step(format!("track {} loaded and played from the set", real.len()));
         }
     });
     let built = started.elapsed().as_secs_f32();
+    step(format!("{} tracks loaded and laid over the ROM", real.len()));
     let Some(mut m) = builder.finish() else {
         let why = if real.is_empty() && theirs { "the set holds no USF track" } else { "the set's ROM parts are not this ROM's" };
         println!("{name}: {why}");
@@ -887,6 +896,7 @@ fn print_n64_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         println!("{name}: slimming failed: {e}");
     }
     let slim_s = slim_started.elapsed().as_secs_f32();
+    step(format!("slimmed in {slim_s:.0} s"));
     let text = m.encode();
     let back = n64_map::Map::decode(&text).expect("the map reads back");
     let play = |m: &n64_map::Map, i: usize| m.section(&native, i).and_then(|s| n64_map::render(&s, m.compare, m.fifo_full, GBA_CHECK_SECONDS));
@@ -896,6 +906,7 @@ fn print_n64_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
             silent += 1;
             continue;
         };
+        step(format!("checking track {} of {}", i + 1, real.len()));
         match play(&back, i) {
             Ok(got) if gba_map::alike(want, &got) >= 0.99 => right += 1,
             got => {

@@ -607,6 +607,17 @@ pub fn slim(map: &mut Map, rom: &[u8]) -> Result<usize, String> {
 /// seconds)` rendering a track with only `runs` shared (None for a track without sound): see
 /// [`slim`]. Any music map built of [`Run`]s slims this way.
 pub(crate) fn slim_common(common: &[Run], tracks: usize, play: &dyn Fn(&[Run], usize, u32) -> Option<Vec<i16>>) -> std::collections::HashSet<usize> {
+    slim_common_until(common, tracks, play, None)
+}
+
+/// [`slim_common`], giving up on halving further groups once `deadline` has passed: the
+/// groups not yet tried stay in. For players far slower than real time (N64).
+pub(crate) fn slim_common_until(
+    common: &[Run],
+    tracks: usize,
+    play: &dyn Fn(&[Run], usize, u32) -> Option<Vec<i16>>,
+    deadline: Option<std::time::Instant>,
+) -> std::collections::HashSet<usize> {
     use std::collections::HashSet;
     let candidates: Vec<usize> = common.iter().enumerate().filter(|(_, r)| matches!(r, Run::Bytes(..) | Run::Fill(..))).map(|(i, _)| i).collect();
     if candidates.is_empty() {
@@ -615,7 +626,7 @@ pub(crate) fn slim_common(common: &[Run], tracks: usize, play: &dyn Fn(&[Run], u
     let render_all = |seconds| -> Vec<Option<Vec<i16>>> { (0..tracks).map(|t| play(common, t, seconds)).collect() };
     let wanted = render_all(SLIM_SECONDS);
     let order: Vec<usize> = (0..tracks).filter(|&t| wanted[t].is_some()).collect();
-    let mut dropped = leave_out(common, &candidates, order, &wanted, SLIM_SECONDS, play);
+    let mut dropped = leave_out(common, &candidates, order, &wanted, SLIM_SECONDS, play, deadline);
     if !dropped.is_empty() {
         let longer = render_all(SLIM_CHECK_SECONDS);
         let trial = without(common, &dropped);
@@ -626,7 +637,8 @@ pub(crate) fn slim_common(common: &[Run], tracks: usize, play: &dyn Fn(&[Run], u
             // Only what these tracks can do without stays out; the rest goes back in.
             let mut again: Vec<usize> = dropped.iter().copied().collect();
             again.sort_unstable();
-            dropped = leave_out(common, &again, changed, &longer, SLIM_CHECK_SECONDS, play);
+            // No deadline here: what was left out must be checked through, or put back.
+            dropped = leave_out(common, &again, changed, &longer, SLIM_CHECK_SECONDS, play, None);
         }
     }
     dropped
@@ -646,6 +658,7 @@ fn leave_out(
     wanted: &[Option<Vec<i16>>],
     seconds: u32,
     play: &dyn Fn(&[Run], usize, u32) -> Option<Vec<i16>>,
+    deadline: Option<std::time::Instant>,
 ) -> std::collections::HashSet<usize> {
     let mut dropped = std::collections::HashSet::new();
     let finest = (candidates.len() / SLIM_FINEST).max(1);
@@ -667,6 +680,9 @@ fn leave_out(
     };
     let mut groups = vec![candidates.to_vec()];
     while let Some(group) = groups.pop() {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            break;
+        }
         if same_without(&dropped, &group, &mut order) {
             dropped.extend(group);
         } else if group.len() > finest {
