@@ -2974,5 +2974,6 @@
   "Also under Config › Settings › View.": "설정 › 설정 › 보기에서도 바꿀 수 있습니다.",
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Big Picture 모드의 탭 버튼 아이콘 표시 방식입니다.",
   "colour: each icon in its own colour (default)": "컬러: 아이콘마다 고유한 색 (기본)",
-  "outline: thin lines in the text colour": "윤곽선: 글자색의 가는 선"
+  "outline: thin lines in the text colour": "윤곽선: 글자색의 가는 선",
+  "Language": "언어"
 }

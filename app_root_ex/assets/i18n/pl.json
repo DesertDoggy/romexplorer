@@ -2974,5 +2974,6 @@
   "Also under Config › Settings › View.": "Także w Konfiguracja › Ustawienia › Widok.",
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Tryb Big Picture: jak rysowane są ikony przycisków kart.",
   "colour: each icon in its own colour (default)": "kolor: każda ikona we własnym kolorze (domyślnie)",
-  "outline: thin lines in the text colour": "kontur: cienkie linie w kolorze tekstu"
+  "outline: thin lines in the text colour": "kontur: cienkie linie w kolorze tekstu",
+  "Language": "Język"
 }

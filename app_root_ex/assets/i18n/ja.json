@@ -2974,5 +2974,6 @@
   "Also under Config › Settings › View.": "設定 › 設定 › ビューでも変更できます。",
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Big Picture モードのタブボタンのアイコンの表示です。",
   "colour: each icon in its own colour (default)": "カラー：アイコンごとに色分け（既定）",
-  "outline: thin lines in the text colour": "線画：文字色の細い線"
+  "outline: thin lines in the text colour": "線画：文字色の細い線",
+  "Language": "言語"
 }
