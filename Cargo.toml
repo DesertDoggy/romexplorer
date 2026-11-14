@@ -144,6 +144,7 @@ cia-tool = { path = "cia-tool" }
 # src/database: MariaDB-backed reference data (hash -> game/region lookup, later
 # file/content/game "pages" -- see docs/plan and the database module's own doc comments).
 # Async because a GUI and a browser-facing web backend are planned to share this layer.
+socket2 = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "process", "sync", "io-util", "signal"] }
 # sqlx over mysql/mysql_async: pure-Rust wire-protocol client like both (no libmysqlclient
 # dependency on any platform), but with one Pool/FromRow abstraction that already covers

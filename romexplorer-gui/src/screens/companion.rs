@@ -363,17 +363,24 @@ pub fn PhoneSettings() -> Element {
                 }
             }
             h4 { {state::tr("Pages and covers")} }
+            p { class: "muted", {state::tr("What a sync copies to this phone besides the lists, so it is there without a connection.")} }
             button { class: if o.pages { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.pages = !s.options.pages; save(s); },
                 if o.pages { "✓ " } {state::tr("Full pages of held titles and releases")}
             }
+            p { class: "muted", {state::tr("Opening a title or release you hold shows its whole page (details, releases, related titles) even offline. Off: the lists still work, and a page loads from the server when it can be reached. Pages of titles you don't hold always load from the server.")} }
             button { class: if o.covers { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.covers = !s.options.covers; save(s); },
                 if o.covers { "✓ " } {state::tr("Covers (converted on the server, not on the phone)")}
             }
+            p { class: "muted", {state::tr("Cover pictures for the lists and pages. The server shrinks them to the size below before sending, so the phone does no work; off shows names only.")} }
             if o.covers {
+                p { class: "muted", {state::tr("Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.")} }
                 div { class: "bp-actions",
                     for (f, label) in [("avif", "AVIF (smallest)"), ("jpeg", "JPEG (older phones)")] {
                         button { key: "{f}", class: if o.cover_format == f { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.cover_format = f.into(); save(s); }, {state::tr(label)} }
                     }
+                }
+                p { class: "muted", {state::tr("Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.")} }
+                div { class: "bp-actions",
                     for px in [256u32, 512, 768] {
                         button { key: "{px}", class: if o.cover_px == px { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.cover_px = px; save(s); }, "{px} px" }
                     }

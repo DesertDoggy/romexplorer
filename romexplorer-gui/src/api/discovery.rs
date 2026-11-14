@@ -6,13 +6,13 @@
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use romexplorer_types::discovery::{Announce, Found, PORTS, PROBE};
+use romexplorer_types::discovery::{Announce, Found, PORT, PROBE};
 
 fn search_blocking(wait: Duration) -> Vec<Found> {
     let Ok(socket) = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))) else { return Vec::new() };
     let _ = socket.set_broadcast(true);
-    for port in PORTS {
-        let _ = socket.send_to(PROBE, SocketAddr::from((Ipv4Addr::BROADCAST, port)));
+    for to in romexplorer_types::discovery::broadcast_targets() {
+        let _ = socket.send_to(PROBE, SocketAddr::from((to, PORT)));
     }
     let mut found: Vec<Found> = Vec::new();
     let mut buf = [0u8; 2048];

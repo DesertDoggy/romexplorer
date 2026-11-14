@@ -6665,10 +6665,27 @@ async function mountDialog(sourceId, sourceName, done) {
   };
 }
 
+// A server address as the forms show it: the address (scheme kept) and the port apart.
+function splitBase(base) {
+  base = (base || '').trim().replace(/\/+$/, '');
+  const m = base.match(/^(.*?(?:\]|[^:\]]))(?::(\d+))$/);
+  const rest = base.replace(/^[a-z]+:\/\//i, '');
+  // `host:7337` or `[::1]:7337`, not a bare IPv6 address's own colons.
+  if (m && (/\]:\d+$/.test(rest) || (rest.match(/:/g) || []).length === 1)) return [m[1], m[2]];
+  return [base, ''];
+}
+// Put back together; a port typed into the address wins.
+function joinBase(address, port) {
+  const [a, own] = splitBase(address);
+  const p = own || (port || '').trim();
+  return a && p ? `${a}:${p}` : a;
+}
+
 function sourceDialog(s, done) {
   const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3>${s.id ? '' : `<div class="muted" style="margin-bottom:6px">${tr('On this network')}</div><div class="toolbar" id="src-found" style="flex-wrap:wrap;margin-bottom:10px"></div>`}<form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
     <div>${tr('name')}</div><div><input name="name" value="${esc(s.name)}" required style="width:100%"></div>
-    <div>${tr('address')}</div><div><input name="base_url" value="${esc(s.base_url)}" required style="width:100%" placeholder="http://192.168.1.10:7337"><div class="muted">${tr("host and port only, no /api/v1 — a main server's main port, a peer's share port")}</div></div>
+    <div>${tr('address')}</div><div><input name="base_url" value="${esc(splitBase(s.base_url)[0])}" required style="width:100%" placeholder="https://192.168.1.10"><div class="muted">${tr("the other machine's IP address or name, no /api/v1")}</div></div>
+    <div>${tr('port')}</div><div><input name="port" inputmode="numeric" value="${esc(splitBase(s.base_url)[1] || (s.id ? '' : '7337'))}" style="width:8em" placeholder="7337"><div class="muted">${tr('a main server\'s port (7337 unless changed), or the port a peer shares on')}</div></div>
     <div>${tr('sign in as')}</div><div><input name="username" style="width:48%" autocomplete="off" placeholder="${tr('username on that machine')}"> <input name="password" type="password" style="width:48%" autocomplete="off" placeholder="${tr('password')}">
       <div class="muted">${tr('This machine signs in once and keeps only the token it is given for itself — the password is not stored. Its certificate is trusted on that first connection.')}</div></div>
     <div>${tr('or a token')}</div><div><input name="token" type="password" style="width:100%" autocomplete="off" placeholder="${s.id ? (s.has_token ? tr('stored — leave blank to keep it') : tr('none stored')) : tr("the other machine's bearer token")}"></div>
@@ -6690,7 +6707,7 @@ function sourceDialog(s, done) {
       : `<span class="muted">${tr('Nothing answered. Type the address below.')}</span>`) + ` <button class="btn" type="button" id="src-search">${tr('search again')}</button>`;
     for (const b of found.querySelectorAll('[data-found]')) b.onclick = () => {
       const x = list[+b.dataset.found];
-      f.name.value = x.name; f.base_url.value = base(x);
+      f.name.value = x.name; [f.base_url.value, f.port.value] = splitBase(base(x));
       f.querySelector(`input[name=role][value=${x.kind === 'server' ? 'main' : 'peer'}]`).checked = true;
       f.username.focus();
     };
@@ -6699,7 +6716,7 @@ function sourceDialog(s, done) {
   if (found) search();
   f.onsubmit = async ev => {
     ev.preventDefault();
-    const body = { name: f.name.value.trim(), base_url: f.base_url.value.trim(), role: f.role.value, enabled: f.enabled.checked };
+    const body = { name: f.name.value.trim(), base_url: joinBase(f.base_url.value, f.port.value), role: f.role.value, enabled: f.enabled.checked };
     if (f.token.value) body.token = f.token.value;
     if (f.username.value.trim()) { body.username = f.username.value.trim(); body.password = f.password.value; }
     try { await send(body); toast(tr('saved')); closeModal(); done(); }
