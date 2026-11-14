@@ -2974,5 +2974,6 @@
   "Also under Config › Settings › View.": "También en Configuración › Ajustes › Vista.",
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Modo Big Picture: cómo se dibujan los iconos de sus botones de pestaña.",
   "colour: each icon in its own colour (default)": "color: cada icono con su propio color (predeterminado)",
-  "outline: thin lines in the text colour": "contorno: líneas finas del color del texto"
+  "outline: thin lines in the text colour": "contorno: líneas finas del color del texto",
+  "Language": "Idioma"
 }

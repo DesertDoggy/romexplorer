@@ -312,6 +312,8 @@ pub fn PhoneSettings() -> Element {
             companion::save_settings(&s);
             cfg.set(s);
             estimate.set(None);
+            // The tab buttons read these: show the change at once, not on the next tab.
+            *state::LOADED.write() += 1;
         };
         let c = cfg();
         let o = c.options.clone();

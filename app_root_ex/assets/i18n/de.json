@@ -2974,5 +2974,6 @@
   "Also under Config › Settings › View.": "Auch unter Konfiguration › Einstellungen › Ansicht.",
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Big-Picture-Modus: wie die Symbole der Tab-Schaltflächen gezeichnet werden.",
   "colour: each icon in its own colour (default)": "Farbe: jedes Symbol in eigener Farbe (Standard)",
-  "outline: thin lines in the text colour": "Umriss: dünne Linien in Textfarbe"
+  "outline: thin lines in the text colour": "Umriss: dünne Linien in Textfarbe",
+  "Language": "Sprache"
 }

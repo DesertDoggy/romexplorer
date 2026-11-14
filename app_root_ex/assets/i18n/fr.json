@@ -2974,5 +2974,6 @@
   "Also under Config › Settings › View.": "Aussi dans Configuration › Paramètres › Affichage.",
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Mode Big Picture : comment sont dessinées les icônes de ses boutons d'onglet.",
   "colour: each icon in its own colour (default)": "couleur : chaque icône dans sa couleur (par défaut)",
-  "outline: thin lines in the text colour": "contour : traits fins de la couleur du texte"
+  "outline: thin lines in the text colour": "contour : traits fins de la couleur du texte",
+  "Language": "Langue"
 }

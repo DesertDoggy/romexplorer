@@ -847,6 +847,7 @@ pub fn BigPictureShell() -> Element {
                     }
                 }
                 span { class: "bp-spacer" }
+                button { class: "bp-btn bp-tool bp-flag", title: state::tr("Language"), onclick: move |_| ui::open_modal(|| rsx! { LanguageSheet {} }), {language_flag()} }
                 button { class: "bp-btn bp-layout", title: state::tr("layout"), onclick: move |_| { let n = LAYOUT().next(); *LAYOUT.write() = n; set_pref(PREF_LAYOUT, n.key()); ui::toast(n.label(), false); }, "▦" }
                 if cfg!(feature = "mobile") {
                     button { class: "bp-btn bp-tool", title: state::tr("Sync"), onclick: move |_| ui::open_modal(|| rsx! { super::companion::SyncSheet {} }), {icon("sync")} }
@@ -889,14 +890,51 @@ pub fn SheetHead(title: String) -> Element {
     }
 }
 
+/// The UI language's choices, as a sheet's buttons: the same `ui_language` the first-start
+/// question and Config › Settings set.
+#[component]
+fn LanguageChoices() -> Element {
+    let _ = state::LOADED();
+    let current = state::setting("ui_language").as_str().unwrap_or("en").to_string();
+    rsx! {
+        div { class: "bp-choices",
+            for code in super::language::ui_languages() {
+                button { key: "{code}", class: if code == current { "bp-choice active" } else { "bp-choice" },
+                    onclick: move |_| { let c = code.clone(); spawn(async move { super::language::set_ui_language(c).await; }); },
+                    {super::language::choice_text(&code)}
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn LanguageSheet() -> Element {
+    rsx! {
+        SheetHead { title: state::tr("Language") }
+        div { class: "bp-sheet", LanguageChoices {} }
+    }
+}
+
+/// The top bar's language button: the current language's flag.
+fn language_flag() -> String {
+    let code = state::setting("ui_language").as_str().unwrap_or("en").to_string();
+    let flag = crate::html::lang_flag(&code);
+    if flag.is_empty() { code.to_uppercase() } else { flag }
+}
+
 #[component]
 fn Settings() -> Element {
+    // The icon style and language are settings: show a choice as soon as it is saved.
+    let _ = state::LOADED();
     let mut start = use_signal(|| false);
     use_future(move || async move { start.set(starts_in_big_picture().await) });
     rsx! {
         SheetHead { title: if CAN_START { state::tr("Big Picture settings") } else { state::tr("Settings") } }
         div { class: "bp-sheet",
             p { class: "muted", {state::tr("Saved on this device only.")} }
+            h4 { {state::tr("Language")} }
+            LanguageChoices {}
             h4 { {state::tr("Covers")} }
             for l in [Layout::Auto, Layout::Single, Layout::Multi] {
                 button { class: if LAYOUT() == l { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { *LAYOUT.write() = l; set_pref(PREF_LAYOUT, l.key()); }, {l.label()} }
