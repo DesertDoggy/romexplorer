@@ -42,8 +42,9 @@ pub async fn machines(app: &App) -> Result<Vec<Machine>> {
         .await?;
     let mut out = vec![Machine {
         id: THIS_MACHINE.to_string(),
-        name: String::new(),
+        name: host_name(),
         role: "this".to_string(),
+        is_main: false,
         games: here as u64,
     }];
     let rows = sqlx::query(
@@ -59,10 +60,26 @@ pub async fn machines(app: &App) -> Result<Vec<Machine>> {
             id: id.to_string(),
             name: r.try_get("name")?,
             role: r.try_get("role")?,
+            is_main: false,
             games: games as u64,
         });
     }
+    // This machine is the main server when it follows none.
+    let has_main = out.iter().any(|m| m.role == "main");
+    for m in &mut out {
+        m.is_main = m.role == "main" || (m.role == "this" && !has_main);
+    }
     Ok(out)
+}
+
+/// This machine's name for the phone's lists: the computer's own name.
+pub fn host_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "this machine".to_string())
 }
 
 /// Checks a phone's options before anything runs, so a typo is a 400 and not a failed job.
@@ -76,6 +93,11 @@ pub fn validate(o: &SyncOptions) -> Result<()> {
                 "machine {m:?} must be {THIS_MACHINE:?} or a remote source id"
             )));
         }
+    }
+    if let Some(m) = o.catalog_machines.iter().find(|m| !o.machines.contains(m)) {
+        return Err(Error::invalid(format!(
+            "catalogue machine {m:?} is not one of the machines synced"
+        )));
     }
     if !matches!(o.scope.as_str(), "held" | "catalog") {
         return Err(Error::invalid("scope must be held or catalog"));
@@ -189,10 +211,22 @@ async fn scope(app: &App, o: &SyncOptions) -> Result<Scope> {
     // A release deleted since it was matched is not in reach.
     s.releases.retain(|r| s.release_platform.contains_key(r));
 
-    // The catalogue's unheld titles and releases, for the platforms picked.
-    if o.scope == "catalog" && !o.catalog_platforms.is_empty() {
-        let list = o
-            .catalog_platforms
+    // The catalogue's unheld titles and releases: on the platforms each catalogue machine
+    // holds games for, and on any picked by hand.
+    let mut catalog_platforms: BTreeSet<u16> = if o.scope == "catalog" {
+        o.catalog_platforms.iter().copied().collect()
+    } else {
+        BTreeSet::new()
+    };
+    for (release, machines) in &s.held {
+        if machines.iter().any(|m| o.catalog_machines.contains(m)) {
+            if let Some(p) = s.release_platform.get(release) {
+                catalog_platforms.insert(*p);
+            }
+        }
+    }
+    if !catalog_platforms.is_empty() {
+        let list = catalog_platforms
             .iter()
             .map(u16::to_string)
             .collect::<Vec<_>>()
@@ -323,7 +357,7 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX _mobile_rows_igdb ON _mobile_rows (tab, igdb)",
     "CREATE TABLE _mobile_pages (kind TEXT NOT NULL, id INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (kind, id))",
     "CREATE TABLE _mobile_images (key TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes BLOB NOT NULL)",
-    "CREATE TABLE _mobile_ra (game_id INTEGER PRIMARY KEY, ord INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', console_id INTEGER, local INTEGER NOT NULL DEFAULT 0, num_awarded INTEGER NOT NULL DEFAULT 0, highest_award_kind TEXT NOT NULL DEFAULT '', most_recent_awarded TEXT, body TEXT NOT NULL)",
+    "CREATE TABLE _mobile_ra (game_id INTEGER PRIMARY KEY, ord INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', console_id INTEGER, local INTEGER NOT NULL DEFAULT 0, held TEXT NOT NULL DEFAULT '', num_awarded INTEGER NOT NULL DEFAULT 0, highest_award_kind TEXT NOT NULL DEFAULT '', most_recent_awarded TEXT, body TEXT NOT NULL)",
 ];
 
 struct Out {
@@ -940,7 +974,7 @@ pub async fn export(
                 "RetroAchievements games and progress (step 4 of 7)",
             )
             .await;
-        let n = write_ra(app, &out.db, &mut covers, &mut ra_boxart).await?;
+        let n = write_ra(app, &out.db, &s, &mut covers, &mut ra_boxart).await?;
         out.count("ra", n);
     }
 
@@ -991,10 +1025,25 @@ pub async fn export(
 async fn write_ra(
     app: &App,
     db: &sqlx::SqlitePool,
+    s: &Scope,
     covers: &mut BTreeSet<u64>,
     boxart: &mut Vec<u64>,
 ) -> Result<u64> {
     let rows = ra_rows(app).await?;
+    // Which synced machines hold each RA game: through the releases linked to it.
+    let links = sqlx::query(
+        "SELECT release_id, provider_id FROM release_provider_links WHERE provider = 'retroachievements' AND deleted = FALSE",
+    )
+    .fetch_all(&app.pool)
+    .await?;
+    let mut held: HashMap<u64, BTreeSet<String>> = HashMap::new();
+    for l in links {
+        let release: u64 = l.try_get(0)?;
+        let game: String = l.try_get(1)?;
+        if let (Some(machines), Ok(game)) = (s.held.get(&release), game.parse::<u64>()) {
+            held.entry(game).or_default().extend(machines.iter().cloned());
+        }
+    }
     let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM _mobile_ra")
         .execute(&mut *tx)
@@ -1007,7 +1056,8 @@ async fn write_ra(
             }
             None => boxart.push(r.game_id),
         }
-        insert_ra(&mut tx, i as i64, r, &body).await?;
+        let held = Scope::held_text(held.get(&(r.game_id as u64)));
+        insert_ra(&mut tx, i as i64, r, &held, &body).await?;
     }
     tx.commit().await?;
     Ok(rows.len() as u64)
@@ -1017,14 +1067,16 @@ async fn insert_ra(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ord: i64,
     r: &super::ra::GameRow,
+    held: &str,
     body: &Value,
 ) -> Result<()> {
-    sqlx::query("INSERT OR REPLACE INTO _mobile_ra (game_id, ord, title, console_id, local, num_awarded, highest_award_kind, most_recent_awarded, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT OR REPLACE INTO _mobile_ra (game_id, ord, title, console_id, local, held, num_awarded, highest_award_kind, most_recent_awarded, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(r.game_id as i64)
         .bind(ord)
         .bind(r.title.clone().unwrap_or_default().to_lowercase())
         .bind(r.console_id)
         .bind(r.local as i64)
+        .bind(held)
         .bind(r.num_awarded)
         .bind(r.highest_award_kind.clone().unwrap_or_default())
         .bind(r.most_recent_awarded.map(|d| d.to_string()))
@@ -1446,6 +1498,19 @@ mod tests {
             ..Default::default()
         })
         .is_ok());
+        assert!(validate(&SyncOptions {
+            machines: vec!["local".into(), "3".into()],
+            catalog_machines: vec!["3".into()],
+            ..Default::default()
+        })
+        .is_ok());
+        // A catalogue machine has to be one that is synced.
+        assert!(validate(&SyncOptions {
+            machines: vec!["local".into()],
+            catalog_machines: vec!["3".into()],
+            ..Default::default()
+        })
+        .is_err());
     }
 
     #[test]

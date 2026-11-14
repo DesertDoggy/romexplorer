@@ -91,17 +91,32 @@ pub fn image(conn: &Connection, key: &str) -> Option<(String, Vec<u8>)> {
 /// Replaces the RetroAchievements rows (RA progress synced on its own).
 pub fn replace_ra(conn: &mut Connection, rows: &[Value]) -> Result<usize, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // Which machines hold each game came with the full sync (an RA-only sync doesn't know
+    // the phone's machine choices): kept across the swap.
+    let held: HashMap<i64, String> = {
+        let mut stmt = tx
+            .prepare("SELECT game_id, held FROM _mobile_ra")
+            .map_err(|e| e.to_string())?;
+        let map = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        map
+    };
     tx.execute("DELETE FROM _mobile_ra", [])
         .map_err(|e| e.to_string())?;
     for (i, r) in rows.iter().enumerate() {
+        let game = r.get("game_id").and_then(Value::as_i64).unwrap_or(0);
         tx.execute(
-            "INSERT OR REPLACE INTO _mobile_ra (game_id, ord, title, console_id, local, num_awarded, highest_award_kind, most_recent_awarded, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO _mobile_ra (game_id, ord, title, console_id, local, held, num_awarded, highest_award_kind, most_recent_awarded, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
-                r.get("game_id").and_then(Value::as_i64).unwrap_or(0),
+                game,
                 i as i64,
                 r.get("title").and_then(Value::as_str).unwrap_or_default().to_lowercase(),
                 r.get("console_id").and_then(Value::as_i64),
                 r.get("local").and_then(Value::as_bool).unwrap_or(false) as i64,
+                held.get(&game).cloned().unwrap_or_default(),
                 r.get("num_awarded").and_then(Value::as_i64).unwrap_or(0),
                 r.get("highest_award_kind").and_then(Value::as_str).unwrap_or_default(),
                 r.get("most_recent_awarded").and_then(Value::as_str),
@@ -237,8 +252,10 @@ fn decode(s: &str) -> String {
 /// Query keys the list answer understands. With any other key the answer would be wrong
 /// rather than merely incomplete, so the caller asks the server instead (and only falls back
 /// to this, ignoring those keys, when the server can't be reached: see [`answer`]).
-const LIST_KEYS: [&str; 10] = [
+const LIST_KEYS: [&str; 12] = [
     "search",
+    "held",
+    "machine",
     "platform",
     "platforms",
     "view",
@@ -398,27 +415,18 @@ fn list(conn: &Connection, tab: &str, q: &HashMap<String, String>) -> Result<Str
             wh.push("held LIKE ?".into());
             args.push(format!("%,{THIS_MACHINE},%"));
         }
-        "held" => wh.push("held <> ''".into()),
         "server" | "missing_on_server" => {
-            let mains = main_ids(conn);
-            let cond = if mains.is_empty() {
-                "0".to_string()
-            } else {
-                format!("({})", vec!["held LIKE ?"; mains.len()].join(" OR "))
-            };
+            let (cond, mains) = on_main(conn);
             if view == "server" {
                 wh.push(cond);
             } else {
                 wh.push(format!("held <> '' AND NOT {cond}"));
             }
-            args.extend(mains.iter().map(|m| format!("%,{m},%")));
-        }
-        v if v.starts_with("on:") => {
-            wh.push("held LIKE ?".into());
-            args.push(format!("%,{},%", &v[3..]));
+            args.extend(mains);
         }
         _ => {}
     }
+    held_filter(conn, q, &mut wh, &mut args);
     // A page's own list of a title's releases is in the order the server gave, held or not.
     if q.contains_key("title_id") || q.contains_key("igdb") {
         held_first = false;
@@ -449,6 +457,44 @@ fn list(conn: &Connection, tab: &str, q: &HashMap<String, String>) -> Result<Str
         "{{\"items\":[{}],\"total\":{total},\"limit\":{limit},\"offset\":{offset}}}",
         items.join(",")
     ))
+}
+
+/// "Held on the main server" over the `held` column, with its binds.
+fn on_main(conn: &Connection) -> (String, Vec<String>) {
+    let mains = main_ids(conn);
+    let cond = if mains.is_empty() {
+        "0".to_string()
+    } else {
+        format!("({})", vec!["held LIKE ?"; mains.len()].join(" OR "))
+    };
+    (cond, mains.iter().map(|m| format!("%,{m},%")).collect())
+}
+
+/// The Held and Machine filters, as the server reads them (`api::catalog::held_having`):
+/// `held` is held / not_held / missing_on_main, on the machine `machine` names (a synced
+/// machine's id, `phone` for this phone, which holds nothing yet, or any of them). A machine
+/// alone is held on it.
+fn held_filter(conn: &Connection, q: &HashMap<String, String>, wh: &mut Vec<String>, args: &mut Vec<String>) {
+    let held = q.get("held").map(String::as_str).unwrap_or("");
+    let machine = q.get("machine").map(String::as_str).unwrap_or("");
+    if held.is_empty() && machine.is_empty() {
+        return;
+    }
+    if held == "missing_on_main" {
+        let (cond, mains) = on_main(conn);
+        wh.push(format!("held <> '' AND NOT {cond}"));
+        args.extend(mains);
+        return;
+    }
+    let cond = match machine {
+        "" => "held <> ''".to_string(),
+        "phone" => "0".to_string(),
+        m => {
+            args.push(format!("%,{m},%"));
+            "held LIKE ?".to_string()
+        }
+    };
+    wh.push(if held == "not_held" { format!("NOT ({cond})") } else { cond });
 }
 
 /// The RetroAchievements lists, with the server's own conditions (`api::ra::list_condition`).
@@ -498,6 +544,7 @@ fn ra(conn: &Connection, q: &HashMap<String, String>) -> Result<String, String> 
     if local_only {
         wh.push("local = 1".into());
     }
+    held_filter(conn, q, &mut wh, &mut args);
     let base = if wh.is_empty() {
         "1".to_string()
     } else {
@@ -553,7 +600,7 @@ mod tests {
         "CREATE TABLE _mobile_rows (tab TEXT NOT NULL, key TEXT NOT NULL, ord INTEGER NOT NULL, id INTEGER, title_id INTEGER, igdb TEXT, platforms TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', held TEXT NOT NULL DEFAULT '', body TEXT NOT NULL, PRIMARY KEY (tab, key))",
         "CREATE TABLE _mobile_pages (kind TEXT NOT NULL, id INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (kind, id))",
         "CREATE TABLE _mobile_images (key TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes BLOB NOT NULL)",
-        "CREATE TABLE _mobile_ra (game_id INTEGER PRIMARY KEY, ord INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', console_id INTEGER, local INTEGER NOT NULL DEFAULT 0, num_awarded INTEGER NOT NULL DEFAULT 0, highest_award_kind TEXT NOT NULL DEFAULT '', most_recent_awarded TEXT, body TEXT NOT NULL)",
+        "CREATE TABLE _mobile_ra (game_id INTEGER PRIMARY KEY, ord INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', console_id INTEGER, local INTEGER NOT NULL DEFAULT 0, held TEXT NOT NULL DEFAULT '', num_awarded INTEGER NOT NULL DEFAULT 0, highest_award_kind TEXT NOT NULL DEFAULT '', most_recent_awarded TEXT, body TEXT NOT NULL)",
     ];
 
     fn fixture() -> Connection {
@@ -642,6 +689,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ids(&main), vec![12]);
+        // Held and Machine are separate filters, and combine.
+        let not_held = answer(&c, "/api/v1/catalog/titles?held=not_held", true).unwrap().unwrap();
+        assert_eq!(ids(&not_held), vec![11]);
+        let on_main = answer(&c, "/api/v1/catalog/titles?held=held&machine=3", true).unwrap().unwrap();
+        assert_eq!(ids(&on_main), vec![12]);
+        let on_phone = answer(&c, "/api/v1/catalog/titles?machine=phone", true).unwrap().unwrap();
+        assert!(ids(&on_phone).is_empty(), "the phone holds nothing yet");
         let page: Value = serde_json::from_str(
             &answer(&c, "/api/v1/catalog/titles?limit=1&offset=1", true)
                 .unwrap()

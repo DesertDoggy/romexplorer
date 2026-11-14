@@ -98,6 +98,49 @@ pub struct Settings {
     /// like). The phone is a client of its own, so they never change the server's; the
     /// synced copy's settings are only their defaults.
     pub app_settings: serde_json::Map<String, Value>,
+    /// What is synced from each machine, per server the phone syncs from (by its address):
+    /// machine id -> [`MODE_LOCAL`], [`MODE_CATALOG`] or [`MODE_NONE`]. A server not in here
+    /// has not been asked yet: its first sync asks, starting from [`default_mode`].
+    pub server_modes: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+}
+
+/// The titles and releases that machine holds.
+pub const MODE_LOCAL: &str = "local";
+/// Those, plus the catalogue's titles not owned yet on the platforms it holds games for.
+pub const MODE_CATALOG: &str = "catalog";
+/// Nothing from that machine.
+pub const MODE_NONE: &str = "none";
+
+/// Where a machine starts before the user chooses: the main server brings the catalogue
+/// along, each client only what it holds.
+pub fn default_mode(m: &Machine) -> &'static str {
+    if m.is_main {
+        MODE_CATALOG
+    } else {
+        MODE_LOCAL
+    }
+}
+
+/// The choices saved for the server the phone is connected to, if it was asked already.
+pub fn current_modes() -> Option<std::collections::BTreeMap<String, String>> {
+    settings().server_modes.get(&super::endpoint().base).cloned()
+}
+
+pub fn save_modes(modes: std::collections::BTreeMap<String, String>) {
+    let mut s = settings();
+    s.server_modes.insert(super::endpoint().base, modes);
+    save_settings(&s);
+}
+
+/// The options a sync sends: the phone's own, with the machines from the saved choices.
+pub fn sync_options(s: &Settings, modes: &std::collections::BTreeMap<String, String>) -> SyncOptions {
+    let mut o = s.options.clone();
+    o.machines = modes.iter().filter(|(_, m)| *m != MODE_NONE).map(|(id, _)| id.clone()).collect();
+    o.catalog_machines = modes.iter().filter(|(_, m)| *m == MODE_CATALOG).map(|(id, _)| id.clone()).collect();
+    // The catalogue comes by machine now, not from a hand-kept platform list.
+    o.scope = "held".into();
+    o.catalog_platforms.clear();
+    o
 }
 
 impl Default for Settings {
@@ -111,6 +154,7 @@ impl Default for Settings {
             last_ra_sync: None,
             last_summary: None,
             app_settings: Default::default(),
+            server_modes: Default::default(),
         }
     }
 }
@@ -417,11 +461,20 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
         return Err(no_server());
     }
     let mut s = settings();
+    let Some(modes) = current_modes() else {
+        return Err(err(crate::state::tr(
+            "Choose what to sync from each machine first (⟳ Sync now).",
+        )));
+    };
+    let options = sync_options(&s, &modes);
+    if options.machines.is_empty() {
+        return Err(err(crate::state::tr("Every machine is set to Don't sync.")));
+    }
     report(Progress {
         message: crate::state::tr("asking the server for a copy"),
         ..Default::default()
     });
-    let queued: Value = super::post_as("/api/v1/mobile/sync", &s.options).await?;
+    let queued: Value = super::post_as("/api/v1/mobile/sync", &options).await?;
     let job = queued
         .get("job_id")
         .and_then(Value::as_u64)
@@ -585,6 +638,7 @@ pub async fn background() {
     let s = settings();
     if s.auto_sync
         && has_server()
+        && current_modes().is_some()
         && age(s.last_sync.as_deref()).is_none_or(|a| a > 24 * 3600)
         && super::get("/api/v1/ping").await.is_ok()
     {

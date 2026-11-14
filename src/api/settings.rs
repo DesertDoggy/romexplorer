@@ -574,6 +574,11 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid("definitive_pc_max_age must be a number of years, 0 to 100"));
             }
         }
+        db_settings::KEY_BIGPICTURE_ICON_STYLE => {
+            if !value.as_str().is_some_and(|v| db_settings::BIGPICTURE_ICON_STYLES.contains(&v)) {
+                return Err(Error::invalid(format!("bigpicture_icon_style must be one of {}", db_settings::BIGPICTURE_ICON_STYLES.join(", "))));
+            }
+        }
         crate::database::title_family::KEY_TWO_COVER_LAYOUT => {
             if !value.as_str().is_some_and(|l| crate::database::title_family::TWO_COVER_LAYOUTS.contains(&l)) {
                 return Err(Error::invalid(format!("definitive_two_cover_layout must be one of {}", crate::database::title_family::TWO_COVER_LAYOUTS.join(", "))));

@@ -4,6 +4,7 @@ mod about;
 pub mod ai;
 mod advanced;
 pub mod art;
+mod bp_icons;
 mod audio;
 mod backup;
 pub mod bigpicture;

@@ -61,6 +61,8 @@ fn titles_spec(q: &str, reload: Signal<u64>) -> GridSpec {
     let mut filters = vec![
         common::platform_filter(),
         common::view_filter(),
+        common::held_filter(),
+        common::machine_filter(),
         common::kinds_filter(),
         common::material_filter(),
         Filter::Select {

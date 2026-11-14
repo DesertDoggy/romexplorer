@@ -310,6 +310,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tls_fingerprint: tls.as_ref().map(|t| t.fingerprint.clone()),
     });
     let options = ServeOptions { bind, port, tls: tls.clone() };
+    // Found by a network search (the sign-in screen's "on this network"): the server always,
+    // a share only when it is set to advertise itself.
+    let discovery_task = {
+        let lifecycle = lifecycle.clone();
+        let tls = tls.is_some();
+        let mut listeners = vec![server::discovery::Listener { port, kind: "server" }];
+        if let Some(share_port) = args.share_port.filter(|_| stored.share_advertise) {
+            listeners.push(server::discovery::Listener { port: share_port, kind: "share" });
+        }
+        tokio::spawn(async move { server::discovery::answer(bind, tls, listeners, async move { let _ = lifecycle.requested().await; }).await })
+    };
     // The share listener, when asked for: four read-only routes on a port of its own, so a
     // peer can mirror this machine without being handed the control surface.
     let share_task = args.share_port.map(|share_port| {
@@ -343,6 +354,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(task) = share_task {
         task.abort();
     }
+    discovery_task.abort();
     // Each step says so: a stop that hangs otherwise gives no clue where.
     if let Some(mut task) = worker_task {
         eprintln!("stopping: worker");

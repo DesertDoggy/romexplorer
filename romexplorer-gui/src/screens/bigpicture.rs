@@ -19,12 +19,13 @@ use crate::state;
 use crate::ui::{self, MenuItem};
 use crate::Route;
 
-/// The list tabs: the collection's browse lists, then the RetroAchievements lists.
+/// The list tabs, with their short labels on the sub-tab buttons: the collection's browse
+/// lists, then the RetroAchievements lists. The two groups are the top buttons.
 const TABS: [(&str, &str); 13] = [
-    ("crossplatform", "Cross-platform"),
-    ("definitive", "Definitive"),
+    ("definitive", "Def."),
+    ("crossplatform", "Cross."),
     ("titles", "Titles"),
-    ("releases", "Releases"),
+    ("releases", "Release"),
     ("games", "Games"),
     ("files", "Files"),
     ("contents", "Contents"),
@@ -35,6 +36,28 @@ const TABS: [(&str, &str); 13] = [
     ("ra-in_progress", "In progress"),
     ("ra-to_play", "To be played"),
 ];
+
+/// The top buttons' groups: which tabs are under each, and the tab each opens on first.
+fn group_of(tab: &str) -> &'static str {
+    if tab.starts_with("ra-") { "ra" } else { "collection" }
+}
+
+fn group_default(group: &str) -> &'static str {
+    if group == "ra" { "ra-titles" } else { "titles" }
+}
+
+/// The tab each group was last on, so a top button goes back to it.
+static LAST_TAB: GlobalSignal<std::collections::HashMap<&'static str, String>> = Signal::global(std::collections::HashMap::new);
+
+/// `bigpicture_icon_style`: color (default) | outline.
+fn icon_style() -> &'static str {
+    if state::setting("bigpicture_icon_style").as_str() == Some("outline") { "outline" } else { "color" }
+}
+
+/// An icon, as the frame's icon style draws it.
+fn icon(key: &str) -> Element {
+    rsx! { span { class: "bp-ic", dangerous_inner_html: super::bp_icons::svg(key) } }
+}
 
 const PAGE: u64 = 60;
 
@@ -66,13 +89,29 @@ fn tab_shown(key: &str) -> bool {
     }
 }
 
-/// The tab a list opens on: the first one shown.
+/// The tab a list opens on: Titles, else the first one shown.
 pub fn first_tab() -> String {
+    if tab_shown("titles") {
+        return "titles".to_string();
+    }
     TABS.iter()
         .map(|(k, _)| *k)
         .find(|k| tab_shown(k))
         .unwrap_or("titles")
         .to_string()
+}
+
+/// The tab a top button opens: where its group was last, else its default, else its first
+/// shown tab.
+fn group_tab(group: &str) -> Option<String> {
+    if let Some(t) = LAST_TAB.read().get(group).filter(|t| tab_shown(t)) {
+        return Some(t.clone());
+    }
+    let d = group_default(group);
+    if tab_shown(d) {
+        return Some(d.to_string());
+    }
+    TABS.iter().map(|(k, _)| *k).find(|k| group_of(k) == group && tab_shown(k)).map(str::to_string)
 }
 
 /// How the covers are laid out. Auto follows the screen: one column in portrait, one row in
@@ -126,13 +165,15 @@ struct ListQuery {
     search: String,
     /// Platform ids, comma-separated.
     platforms: String,
-    /// The catalogue's `view`: where the item is held.
-    view: String,
+    /// The Held filter (`held=`): held, not held, ... on the Machine filter's machine.
+    held: String,
+    /// The Machine filter (`machine=`): whose holdings Held is about; alone, held there.
+    machine: String,
 }
 
 impl ListQuery {
     fn count(&self) -> usize {
-        usize::from(!self.platforms.is_empty()) + usize::from(!self.view.is_empty())
+        usize::from(!self.platforms.is_empty()) + usize::from(!self.held.is_empty()) + usize::from(!self.machine.is_empty())
     }
 }
 
@@ -214,7 +255,7 @@ fn held_line(r: &Value) -> String {
         out.push(state::tr("main server"));
     }
     if u(r, "peer_games") > 0 {
-        out.push(state::tr("shared clients"));
+        out.push(state::tr("shared peers"));
     }
     out.join(", ")
 }
@@ -405,17 +446,21 @@ async fn fetch_list(tab: &str, q: &ListQuery, offset: u64) -> api::ApiResult<(Ve
         p.extend(extra);
         api::qs(&p)
     };
+    // The phone filters every list by Held and Machine; its copy answers them all.
+    let held_of = || vec![("held", q.held.clone()), ("machine", q.machine.clone())];
+    let held = || if cfg!(feature = "mobile") { held_of() } else { vec![] };
     let (path, map): (String, fn(&Value) -> Item) = match tab {
-        "crossplatform" => (format!("/api/v1/catalog/crossplatform{}", base(vec![])), cross_item),
-        "titles" => (format!("/api/v1/catalog/titles{}", base(vec![("view", q.view.clone())])), title_item),
-        "releases" => (format!("/api/v1/catalog/releases{}", base(vec![("view", q.view.clone())])), release_item),
-        "definitive" => (format!("/api/v1/catalog/definitive{}", base(vec![])), definitive_item),
+        "crossplatform" => (format!("/api/v1/catalog/crossplatform{}", base(held())), cross_item),
+        "titles" => (format!("/api/v1/catalog/titles{}", base(held_of())), title_item),
+        "releases" => (format!("/api/v1/catalog/releases{}", base(held_of())), release_item),
+        "definitive" => (format!("/api/v1/catalog/definitive{}", base(held())), definitive_item),
         "contents" => (format!("/api/v1/catalog/contents{}", base(vec![])), content_item),
         "games" => (format!("/api/v1/catalog/games{}", base(vec![])), game_item),
         "files" => (format!("/api/v1/catalog/files{}", base(vec![])), file_item),
         ra => {
             let list = ra.strip_prefix("ra-").unwrap_or("titles");
-            let p = vec![("list", list.to_string()), ("q", q.search.clone()), ("limit", PAGE.to_string()), ("offset", offset.to_string())];
+            let mut p = vec![("list", list.to_string()), ("q", q.search.clone()), ("limit", PAGE.to_string()), ("offset", offset.to_string())];
+            p.extend(held());
             (format!("/api/v1/ra/games{}", api::qs(&p)), ra_item)
         }
     };
@@ -684,6 +729,12 @@ if (!window.__rxBigPicture) {
     const i = tabs.findIndex(t => t.classList.contains('active'));
     tabs[(i + step + tabs.length) % tabs.length].click();
   };
+  // LT / RT: the top buttons, Collection and RetroAchievements.
+  const group = step => {
+    const gs = [...document.querySelectorAll('.bp-groups [data-group]')]; if (gs.length < 2) return;
+    const i = gs.findIndex(g => g.classList.contains('active'));
+    gs[(i + step + gs.length) % gs.length].click();
+  };
   document.addEventListener('keydown', e => {
     if (!document.querySelector('.bp')) return;
     const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement && document.activeElement.tagName);
@@ -700,13 +751,14 @@ if (!window.__rxBigPicture) {
     else if (k === 'y' || k === 'Y') { const a = document.activeElement; if (a && a !== document.body) { const r = a.getBoundingClientRect(); a.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } }
     else if (k === 'q' || k === 'Q' || k === 'PageUp') tab(-1);
     else if (k === 'e' || k === 'E' || k === 'PageDown') tab(1);
+    else if (k === '[' || k === ']') group(k === '[' ? -1 : 1);
     else if (k === 'f' || k === 'F') press('#bp-filter');
     else if (k === '/') press('#bp-search');
     else done = false;
     if (done && !(typing && k === 'Enter')) e.preventDefault();
   });
   // The controller: standard mapping (A B X Y, LB RB, LT RT, Select Start, D-pad 12-15).
-  const keyOf = { 0: 'Enter', 1: 'Escape', 2: 'x', 3: 'y', 4: 'q', 5: 'e', 8: 'f', 9: '/', 12: 'ArrowUp', 13: 'ArrowDown', 14: 'ArrowLeft', 15: 'ArrowRight' };
+  const keyOf = { 0: 'Enter', 1: 'Escape', 2: 'x', 3: 'y', 4: 'q', 5: 'e', 6: '[', 7: ']', 8: 'f', 9: '/', 12: 'ArrowUp', 13: 'ArrowDown', 14: 'ArrowLeft', 15: 'ArrowRight' };
   const held = {}; const next = {};
   const send = key => document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
   const poll = t => {
@@ -733,10 +785,13 @@ if (!window.__rxBigPicture) {
 const BP_CSS: &str = include_str!("../../assets/bigpicture.css");
 
 fn tab_label(key: &str, label: &str) -> String {
-    if let Some(list) = key.strip_prefix("ra-") {
-        format!("RA · {}", state::t(&format!("sub.ra.{list}"), label))
-    } else {
-        state::t(&format!("sub.collection.{key}"), label)
+    match key {
+        // Short on a button; the full names are the list pages' own.
+        "definitive" | "crossplatform" | "releases" => state::tr(label),
+        k => match k.strip_prefix("ra-") {
+            Some(list) => state::t(&format!("sub.ra.{list}"), label),
+            None => state::t(&format!("sub.collection.{k}"), label),
+        },
     }
 }
 
@@ -757,9 +812,17 @@ pub fn BigPictureShell() -> Element {
         }
     });
     let layout = LAYOUT();
+    // The icon style is a setting: redraw when the settings are reloaded.
+    let _ = state::LOADED();
+    if on_list && !current.is_empty() {
+        let g = group_of(&current);
+        if LAST_TAB.peek().get(g) != Some(&current) {
+            LAST_TAB.write().insert(g, current.clone());
+        }
+    }
     rsx! {
         document::Style { {BP_CSS} }
-        div { class: "bp layout-{layout.key()}", onclick: move |_| ui::close_menu(),
+        div { class: "bp layout-{layout.key()} icons-{icon_style()}", onclick: move |_| ui::close_menu(),
             div { class: "bp-top",
                 button { id: "bp-back", class: "bp-btn", title: state::tr("back (B)"),
                     onclick: move |_| {
@@ -772,21 +835,37 @@ pub fn BigPictureShell() -> Element {
                     },
                     "◀"
                 }
-                nav { class: "bp-tabs",
-                    for (key, label) in TABS.into_iter().filter(|(k, _)| tab_shown(k)) {
-                        button { key: "{key}", "data-tab": "{key}", class: if key == current { "active" } else { "" },
-                            onclick: move |_| { navigator().replace(Route::BigPicture { tab: key.to_string() }); },
-                            {tab_label(key, label)}
+                div { class: "bp-groups",
+                    for (group, label) in [("collection", state::t("tab.collection", "Collection")), ("ra", "RA".to_string())] {
+                        if let Some(target) = group_tab(group) {
+                            button { key: "{group}", "data-group": "{group}", class: if group_of(&current) == group { "bp-group active" } else { "bp-group" },
+                                title: if group == "ra" { "RetroAchievements".to_string() } else { label.clone() },
+                                onclick: move |_| { navigator().replace(Route::BigPicture { tab: target.clone() }); },
+                                {icon(group)} span { "{label}" }
+                            }
                         }
                     }
                 }
-                button { class: "bp-btn", title: state::tr("layout"), onclick: move |_| { let n = LAYOUT().next(); *LAYOUT.write() = n; set_pref(PREF_LAYOUT, n.key()); ui::toast(n.label(), false); }, "▦" }
+                span { class: "bp-spacer" }
+                button { class: "bp-btn bp-tool bp-flag", title: state::tr("Language"), onclick: move |_| ui::open_modal(|| rsx! { LanguageSheet {} }), {language_flag()} }
+                button { class: "bp-btn bp-layout", title: state::tr("layout"), onclick: move |_| { let n = LAYOUT().next(); *LAYOUT.write() = n; set_pref(PREF_LAYOUT, n.key()); ui::toast(n.label(), false); }, "▦" }
                 if cfg!(feature = "mobile") {
-                    button { class: "bp-btn", title: state::tr("Sync"), onclick: move |_| ui::open_modal(|| rsx! { super::companion::SyncSheet {} }), "⟳" }
-                    button { class: "bp-btn", title: state::tr("Settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), "⚙" }
+                    button { class: "bp-btn bp-tool", title: state::tr("Sync"), onclick: move |_| ui::open_modal(|| rsx! { super::companion::SyncSheet {} }), {icon("sync")} }
+                    button { class: "bp-btn bp-tool", title: state::tr("Settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), {icon("settings")} }
                 } else {
-                    button { class: "bp-btn", title: state::tr("Big Picture settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), "⚙" }
+                    button { class: "bp-btn bp-tool", title: state::tr("Big Picture settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), {icon("settings")} }
                     button { class: "bp-btn", title: state::tr("leave Big Picture"), onclick: move |_| { navigator().push(Route::Status {}); }, "✕" }
+                }
+            }
+            // The open group's lists, as icon buttons in one swipeable row.
+            if on_list {
+                div { class: "bp-tabs",
+                    for (key, label) in TABS.into_iter().filter(|(k, _)| tab_shown(k) && group_of(k) == group_of(&current)) {
+                        button { key: "{key}", "data-tab": "{key}", class: if key == current { "bp-tab active" } else { "bp-tab" },
+                            onclick: move |_| { navigator().replace(Route::BigPicture { tab: key.to_string() }); },
+                            {icon(key)} span { {tab_label(key, label)} }
+                        }
+                    }
                 }
             }
             super::companion::SyncLine {}
@@ -798,17 +877,84 @@ pub fn BigPictureShell() -> Element {
     }
 }
 
+/// A sheet's title with its close button at the top right, where a thumb finds it and the
+/// phone's navigation bar can't cover it. Stays in view while the sheet scrolls. B / Back
+/// closes the sheet too.
+#[component]
+pub fn SheetHead(title: String) -> Element {
+    rsx! {
+        div { class: "bp-sheet-head",
+            h3 { "{title}" }
+            button { class: "bp-btn bp-close", title: state::tr("close (B)"), onclick: move |_| ui::close_modal(), "✕" }
+        }
+    }
+}
+
+/// The UI language's choices, as a sheet's buttons: the same `ui_language` the first-start
+/// question and Config › Settings set.
+#[component]
+fn LanguageChoices() -> Element {
+    let _ = state::LOADED();
+    let current = state::setting("ui_language").as_str().unwrap_or("en").to_string();
+    rsx! {
+        div { class: "bp-choices",
+            for code in super::language::ui_languages() {
+                button { key: "{code}", class: if code == current { "bp-choice active" } else { "bp-choice" },
+                    onclick: move |_| { let c = code.clone(); spawn(async move { super::language::set_ui_language(c).await; }); },
+                    {super::language::choice_text(&code)}
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn LanguageSheet() -> Element {
+    rsx! {
+        SheetHead { title: state::tr("Language") }
+        div { class: "bp-sheet", LanguageChoices {} }
+    }
+}
+
+/// The top bar's language button: the current language's flag.
+fn language_flag() -> String {
+    let code = state::setting("ui_language").as_str().unwrap_or("en").to_string();
+    let flag = crate::html::lang_flag(&code);
+    if flag.is_empty() { code.to_uppercase() } else { flag }
+}
+
 #[component]
 fn Settings() -> Element {
+    // The icon style and language are settings: show a choice as soon as it is saved.
+    let _ = state::LOADED();
     let mut start = use_signal(|| false);
     use_future(move || async move { start.set(starts_in_big_picture().await) });
     rsx! {
-        h3 { {state::tr("Big Picture settings")} }
+        SheetHead { title: if CAN_START { state::tr("Big Picture settings") } else { state::tr("Settings") } }
         div { class: "bp-sheet",
             p { class: "muted", {state::tr("Saved on this device only.")} }
-            h4 { {state::tr("Covers")} }
+            h4 { {state::tr("Language")} }
+            LanguageChoices {}
+            h4 { {state::tr("Cover layout")} }
+            p { class: "muted", {state::tr("How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.")} }
             for l in [Layout::Auto, Layout::Single, Layout::Multi] {
                 button { class: if LAYOUT() == l { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { *LAYOUT.write() = l; set_pref(PREF_LAYOUT, l.key()); }, {l.label()} }
+            }
+            // The same setting as Config › Settings › View, so it is stored where that is.
+            h4 { {state::tr("Icons")} }
+            if CAN_START { p { class: "muted", {state::tr("Also under Config › Settings › View.")} } }
+            for (v, l) in [("color", "colour: each icon in its own colour (default)"), ("outline", "outline: thin lines in the text colour")] {
+                button { class: if icon_style() == v { "bp-choice active" } else { "bp-choice" },
+                    onclick: move |_| {
+                        spawn(async move {
+                            match api::put("/api/v1/settings/bigpicture_icon_style", json!(v)).await {
+                                Ok(_) => state::reload_settings().await,
+                                Err(e) => ui::toast(e.message, true),
+                            }
+                        });
+                    },
+                    {state::tr(l)}
+                }
             }
             if CAN_START {
                 h4 { {state::tr("Starting")} }
@@ -822,7 +968,6 @@ fn Settings() -> Element {
             } else {
                 super::companion::PhoneSettings {}
             }
-            div { style: "margin-top:12px", button { class: "bp-choice", onclick: move |_| ui::close_modal(), {state::tr("close")} } }
         }
     }
 }
@@ -936,13 +1081,16 @@ fn FilterSheet(tab: String) -> Element {
     let start = QUERIES.read().get(&tab).cloned().unwrap_or_default();
     let mut draft = use_signal(|| start.clone());
     let mut open = use_signal(|| None::<&'static str>);
-    let has_view = matches!(tab.as_str(), "titles" | "releases") || (cfg!(feature = "mobile") && matches!(tab.as_str(), "crossplatform" | "definitive"));
+    let has_view = matches!(tab.as_str(), "titles" | "releases") || (cfg!(feature = "mobile") && (matches!(tab.as_str(), "crossplatform" | "definitive") || tab.starts_with("ra-")));
+    let machines: Vec<(String, String)> = if has_view { super::companion::machine_views() } else { Vec::new() };
+    // A server or a standalone machine has only itself: no choice to offer.
+    let has_machine = machines.len() > 1;
     let picked: std::collections::BTreeSet<String> = draft().platforms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect();
     let platforms: Vec<(String, String)> = state::platforms().iter().filter(|p| u(p, "id") > 0).map(|p| (u(p, "id").to_string(), state::platform_label(&s(p, "name")))).collect();
     let views: Vec<(String, String)> = super::companion::held_views();
     let apply_tab = tab.clone();
     rsx! {
-        h3 { {state::tr("Filter")} }
+        SheetHead { title: state::tr("Filter") }
         div { class: "bp-sheet",
             match open() {
                 None => rsx! {
@@ -951,7 +1099,12 @@ fn FilterSheet(tab: String) -> Element {
                     }
                     if has_view {
                         button { class: "bp-choice", onclick: move |_| open.set(Some("view")),
-                            {state::tr("Held")} if !draft().view.is_empty() { " ✓" }
+                            {state::tr("Held")} if !draft().held.is_empty() { " ✓" }
+                        }
+                    }
+                    if has_machine {
+                        button { class: "bp-choice", onclick: move |_| open.set(Some("machine")),
+                            {state::tr("Machine")} if !draft().machine.is_empty() { " ✓" }
                         }
                     }
                 },
@@ -975,10 +1128,16 @@ fn FilterSheet(tab: String) -> Element {
                         }
                     }
                 },
+                Some("machine") => rsx! {
+                    button { class: "bp-choice", onclick: move |_| open.set(None), "◀ " {state::tr("Machine")} }
+                    for (v, l) in machines.clone() {
+                        button { key: "{v}", class: if draft().machine == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().machine = v.clone(), "{l}" }
+                    }
+                },
                 Some(_) => rsx! {
                     button { class: "bp-choice", onclick: move |_| open.set(None), "◀ " {state::tr("Held")} }
                     for (v, l) in views {
-                        button { key: "{v}", class: if draft().view == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().view = v.clone(), "{l}" }
+                        button { key: "{v}", class: if draft().held == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().held = v.clone(), "{l}" }
                     }
                 },
             }
