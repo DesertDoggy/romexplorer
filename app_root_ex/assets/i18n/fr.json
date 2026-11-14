@@ -2979,5 +2979,20 @@
   "On this network": "Sur ce réseau",
   "search again": "rechercher à nouveau",
   "No server answered. Type its address below.": "Aucun serveur n'a répondu. Saisissez son adresse ci-dessous.",
-  "Nothing answered. Type the address below.": "Aucune réponse. Saisissez l'adresse ci-dessous."
+  "Nothing answered. Type the address below.": "Aucune réponse. Saisissez l'adresse ci-dessous.",
+  "port": "port",
+  "The romexplorer server's IP address or name.": "L'adresse IP ou le nom du serveur romexplorer.",
+  "7337 unless the server was set to another one.": "7337, sauf si le serveur a été réglé autrement.",
+  "the other machine's IP address or name, no /api/v1": "l'adresse IP ou le nom de l'autre machine, sans /api/v1",
+  "a main server's port (7337 unless changed), or the port a peer shares on": "le port du serveur principal (7337 par défaut), ou le port de partage d'un pair",
+  "Pages and covers": "Pages et jaquettes",
+  "Full pages of held titles and releases": "Pages complètes des titres et éditions possédés",
+  "Covers (converted on the server, not on the phone)": "Jaquettes (converties sur le serveur, pas sur le téléphone)",
+  "What a sync copies to this phone besides the lists, so it is there without a connection.": "Ce qu'une synchronisation copie sur ce téléphone en plus des listes, pour l'avoir hors connexion.",
+  "Opening a title or release you hold shows its whole page (details, releases, related titles) even offline. Off: the lists still work, and a page loads from the server when it can be reached. Pages of titles you don't hold always load from the server.": "Ouvrir un titre ou une édition possédés affiche toute sa page (détails, éditions, titres liés), même hors ligne. Désactivé : les listes fonctionnent toujours et la page se charge depuis le serveur quand il est joignable. Les pages des titres non possédés viennent toujours du serveur.",
+  "Cover pictures for the lists and pages. The server shrinks them to the size below before sending, so the phone does no work; off shows names only.": "Les jaquettes des listes et des pages. Le serveur les réduit à la taille ci-dessous avant l'envoi, le téléphone n'a rien à faire ; désactivé, seuls les noms s'affichent.",
+  "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "Format : l'AVIF fait environ la moitié du JPEG ; choisissez JPEG seulement si les jaquettes ne s'affichent pas.",
+  "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "Taille : le plus grand côté. 512 px est net sur la plupart des téléphones ; 768 px pour un grand écran ou haute résolution, 256 px pour gagner de la place.",
+  "Cover layout": "Disposition des jaquettes",
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Comment les listes affichent les jaquettes. Auto et Simple : grandes jaquettes avec leurs détails, en colonne à la verticale et en ligne à l'horizontale. Grille : autant de petites jaquettes que possible, avec les détails de la sélection à côté s'il y a la place."
 }

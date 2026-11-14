@@ -2979,5 +2979,20 @@
   "On this network": "이 네트워크",
   "search again": "다시 검색",
   "No server answered. Type its address below.": "응답한 서버가 없습니다. 아래에 주소를 입력하세요.",
-  "Nothing answered. Type the address below.": "응답이 없습니다. 아래에 주소를 입력하세요."
+  "Nothing answered. Type the address below.": "응답이 없습니다. 아래에 주소를 입력하세요.",
+  "port": "포트",
+  "The romexplorer server's IP address or name.": "romexplorer 서버의 IP 주소 또는 이름입니다.",
+  "7337 unless the server was set to another one.": "서버에서 바꾸지 않았다면 7337입니다.",
+  "the other machine's IP address or name, no /api/v1": "상대 기기의 IP 주소 또는 이름(/api/v1 제외)",
+  "a main server's port (7337 unless changed), or the port a peer shares on": "메인 서버는 해당 포트(기본 7337), 피어는 공유 포트",
+  "Pages and covers": "페이지와 커버",
+  "Full pages of held titles and releases": "보유한 타이틀·릴리스의 전체 페이지",
+  "Covers (converted on the server, not on the phone)": "커버(서버에서 변환)",
+  "What a sync copies to this phone besides the lists, so it is there without a connection.": "목록 외에 동기화로 휴대폰에 복사하는 항목입니다. 오프라인에서도 볼 수 있습니다.",
+  "Opening a title or release you hold shows its whole page (details, releases, related titles) even offline. Off: the lists still work, and a page loads from the server when it can be reached. Pages of titles you don't hold always load from the server.": "보유한 타이틀이나 릴리스의 전체 페이지(상세, 릴리스, 관련 타이틀)를 오프라인에서도 열 수 있습니다. 끄면 목록은 그대로 쓰고, 페이지는 서버에 연결될 때 불러옵니다. 보유하지 않은 타이틀의 페이지는 항상 서버에서 불러옵니다.",
+  "Cover pictures for the lists and pages. The server shrinks them to the size below before sending, so the phone does no work; off shows names only.": "목록과 페이지의 커버 이미지입니다. 서버가 아래 크기로 줄여서 보내므로 휴대폰에 부담이 없습니다. 끄면 이름만 표시합니다.",
+  "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "형식: AVIF는 JPEG의 약 절반 크기입니다. 커버가 보이지 않을 때만 JPEG를 고르세요.",
+  "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "크기: 긴 변의 픽셀 수입니다. 대부분의 휴대폰은 512 px면 충분하고, 큰 화면이나 고해상도는 768 px, 용량 절약은 256 px.",
+  "Cover layout": "커버 배치",
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "목록의 커버 표시 방식입니다. 자동과 단일: 큰 커버와 상세 정보를 세로로 들면 한 열, 가로로 들면 한 줄로 표시합니다. 격자: 작은 커버를 들어가는 만큼 표시하고, 공간이 있으면 선택한 항목의 상세를 옆에 표시합니다."
 }

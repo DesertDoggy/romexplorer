@@ -2979,5 +2979,20 @@
   "On this network": "Nesta rede",
   "search again": "pesquisar de novo",
   "No server answered. Type its address below.": "Nenhum servidor respondeu. Escreva o endereço abaixo.",
-  "Nothing answered. Type the address below.": "Ninguém respondeu. Escreva o endereço abaixo."
+  "Nothing answered. Type the address below.": "Ninguém respondeu. Escreva o endereço abaixo.",
+  "port": "porta",
+  "The romexplorer server's IP address or name.": "O endereço IP ou o nome do servidor romexplorer.",
+  "7337 unless the server was set to another one.": "7337, a não ser que o servidor use outra.",
+  "the other machine's IP address or name, no /api/v1": "o endereço IP ou o nome da outra máquina, sem /api/v1",
+  "a main server's port (7337 unless changed), or the port a peer shares on": "a porta do servidor principal (7337 se não mudou) ou a porta de partilha de um par",
+  "Pages and covers": "Páginas e capas",
+  "Full pages of held titles and releases": "Páginas completas de títulos e edições que tem",
+  "Covers (converted on the server, not on the phone)": "Capas (convertidas no servidor, não no telemóvel)",
+  "What a sync copies to this phone besides the lists, so it is there without a connection.": "O que a sincronização copia para o telemóvel além das listas, para o ter sem ligação.",
+  "Opening a title or release you hold shows its whole page (details, releases, related titles) even offline. Off: the lists still work, and a page loads from the server when it can be reached. Pages of titles you don't hold always load from the server.": "Abrir um título ou edição que tem mostra a página completa (detalhes, edições, títulos relacionados), mesmo sem ligação. Desligado: as listas continuam a funcionar e a página carrega do servidor quando está acessível. As páginas de títulos que não tem carregam sempre do servidor.",
+  "Cover pictures for the lists and pages. The server shrinks them to the size below before sending, so the phone does no work; off shows names only.": "As capas das listas e páginas. O servidor reduz-as ao tamanho abaixo antes de enviar, por isso o telemóvel não trabalha; desligado mostra só os nomes.",
+  "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "Formato: AVIF ocupa cerca de metade do JPEG; escolha JPEG só se as capas não aparecerem neste telemóvel.",
+  "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "Tamanho: o lado mais longo. 512 px fica nítido na maioria dos telemóveis; 768 px para ecrãs grandes ou de alta resolução, 256 px para poupar espaço.",
+  "Cover layout": "Disposição das capas",
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Como as listas mostram as capas. Auto e Simples: capas grandes com os detalhes, em coluna na vertical e em linha na horizontal. Grelha: tantas capas pequenas quanto couberem, com os detalhes da selecionada ao lado se houver espaço."
 }

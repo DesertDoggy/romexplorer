@@ -2979,5 +2979,20 @@
   "On this network": "In diesem Netzwerk",
   "search again": "erneut suchen",
   "No server answered. Type its address below.": "Kein Server hat geantwortet. Gib die Adresse unten ein.",
-  "Nothing answered. Type the address below.": "Keine Antwort. Gib die Adresse unten ein."
+  "Nothing answered. Type the address below.": "Keine Antwort. Gib die Adresse unten ein.",
+  "port": "Port",
+  "The romexplorer server's IP address or name.": "Die IP-Adresse oder der Name des romexplorer-Servers.",
+  "7337 unless the server was set to another one.": "7337, sofern am Server nicht anders eingestellt.",
+  "the other machine's IP address or name, no /api/v1": "IP-Adresse oder Name des anderen Rechners, ohne /api/v1",
+  "a main server's port (7337 unless changed), or the port a peer shares on": "Port des Hauptservers (7337, sofern nicht geändert) oder Freigabeport eines Peers",
+  "Pages and covers": "Seiten und Cover",
+  "Full pages of held titles and releases": "Vollständige Seiten vorhandener Titel und Releases",
+  "Covers (converted on the server, not on the phone)": "Cover (am Server umgewandelt, nicht am Handy)",
+  "What a sync copies to this phone besides the lists, so it is there without a connection.": "Was eine Synchronisierung neben den Listen aufs Handy kopiert, damit es auch offline da ist.",
+  "Opening a title or release you hold shows its whole page (details, releases, related titles) even offline. Off: the lists still work, and a page loads from the server when it can be reached. Pages of titles you don't hold always load from the server.": "Ein vorhandener Titel oder Release zeigt seine ganze Seite (Details, Releases, verwandte Titel) auch offline. Aus: Die Listen funktionieren weiter, und die Seite lädt vom Server, wenn er erreichbar ist. Seiten nicht vorhandener Titel kommen immer vom Server.",
+  "Cover pictures for the lists and pages. The server shrinks them to the size below before sending, so the phone does no work; off shows names only.": "Coverbilder für Listen und Seiten. Der Server verkleinert sie vor dem Senden auf die Größe unten, das Handy hat keine Arbeit; aus zeigt nur Namen.",
+  "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "Format: AVIF ist etwa halb so groß wie JPEG; JPEG nur wählen, wenn Cover auf diesem Handy nicht erscheinen.",
+  "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "Größe: die längste Kante. 512 px ist auf den meisten Handys scharf; 768 px für große oder hochauflösende Bildschirme, 256 px spart Platz.",
+  "Cover layout": "Cover-Anordnung",
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Wie die Listen Cover zeigen. Auto und Einzeln: große Cover mit Details, hochkant als Spalte, quer als Zeile. Raster: so viele kleine Cover wie passen, mit den Details der Auswahl daneben, wenn Platz ist."
 }

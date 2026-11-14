@@ -2979,5 +2979,20 @@
   "On this network": "En esta red",
   "search again": "buscar de nuevo",
   "No server answered. Type its address below.": "Ningún servidor respondió. Escribe su dirección abajo.",
-  "Nothing answered. Type the address below.": "Nadie respondió. Escribe la dirección abajo."
+  "Nothing answered. Type the address below.": "Nadie respondió. Escribe la dirección abajo.",
+  "port": "puerto",
+  "The romexplorer server's IP address or name.": "La dirección IP o el nombre del servidor romexplorer.",
+  "7337 unless the server was set to another one.": "7337, salvo que el servidor use otro.",
+  "the other machine's IP address or name, no /api/v1": "la dirección IP o el nombre del otro equipo, sin /api/v1",
+  "a main server's port (7337 unless changed), or the port a peer shares on": "el puerto del servidor principal (7337 salvo cambio) o el puerto de compartición de un par",
+  "Pages and covers": "Páginas y portadas",
+  "Full pages of held titles and releases": "Páginas completas de títulos y ediciones que tienes",
+  "Covers (converted on the server, not on the phone)": "Portadas (convertidas en el servidor, no en el móvil)",
+  "What a sync copies to this phone besides the lists, so it is there without a connection.": "Lo que la sincronización copia al móvil además de las listas, para tenerlo sin conexión.",
+  "Opening a title or release you hold shows its whole page (details, releases, related titles) even offline. Off: the lists still work, and a page loads from the server when it can be reached. Pages of titles you don't hold always load from the server.": "Abrir un título o edición que tienes muestra su página completa (detalles, ediciones, títulos relacionados) incluso sin conexión. Desactivado: las listas siguen funcionando y la página se carga del servidor cuando está accesible. Las páginas de títulos que no tienes siempre se cargan del servidor.",
+  "Cover pictures for the lists and pages. The server shrinks them to the size below before sending, so the phone does no work; off shows names only.": "Las portadas de listas y páginas. El servidor las reduce al tamaño de abajo antes de enviarlas, así el móvil no trabaja; desactivado, solo se ven los nombres.",
+  "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "Formato: AVIF ocupa más o menos la mitad que JPEG; elige JPEG solo si las portadas no se ven en este móvil.",
+  "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "Tamaño: el lado más largo. 512 px se ve nítido en casi todos los móviles; 768 px para pantallas grandes o de alta resolución, 256 px para ahorrar espacio.",
+  "Cover layout": "Disposición de portadas",
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Cómo muestran las listas las portadas. Auto y Simple: portadas grandes con sus detalles, en columna en vertical y en fila en horizontal. Cuadrícula: tantas portadas pequeñas como quepan, con los detalles de la seleccionada al lado si hay sitio."
 }

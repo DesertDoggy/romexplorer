@@ -358,7 +358,9 @@ fn NetworkSources(on_pick: EventHandler<romexplorer_types::discovery::Found>) ->
 fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> Element {
     let (id, has_token) = existing.as_ref().map(|s| (Some(s.id), s.has_token)).unwrap_or((None, false));
     let mut name = use_signal(|| existing.as_ref().map(|s| s.name.clone()).unwrap_or_default());
-    let mut base_url = use_signal(|| existing.as_ref().map(|s| s.base_url.clone()).unwrap_or_default());
+    let (address0, port0) = api::split_base(&existing.as_ref().map(|s| s.base_url.clone()).unwrap_or_default());
+    let mut address = use_signal(|| address0);
+    let mut port = use_signal(|| if port0.is_empty() && id.is_none() { api::DEFAULT_PORT.to_string() } else { port0 });
     let mut token = use_signal(String::new);
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
@@ -368,7 +370,7 @@ fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> El
     let submit = move |_| {
         let spec = SourceSpec {
             name: name().trim().to_string(),
-            base_url: base_url().trim().to_string(),
+            base_url: api::join_base(&address(), &port()),
             token: Some(token()).filter(|t| !t.is_empty()),
             username: Some(username().trim().to_string()).filter(|u| !u.is_empty()),
             password: Some(password()).filter(|_| !username().trim().is_empty()),
@@ -419,15 +421,21 @@ fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> El
         if id.is_none() {
             NetworkSources { on_pick: move |f: romexplorer_types::discovery::Found| {
                 name.set(f.announce.name.clone());
-                base_url.set(f.base());
+                let (a, p) = api::split_base(&f.base());
+                address.set(a);
+                port.set(p);
                 role.set(if f.announce.kind == "server" { "main".into() } else { "peer".into() });
             } }
         }
         form { class: "kv", style: "grid-template-columns:110px 1fr", onsubmit: move |e| { e.prevent_default(); submit(()); },
             div { {state::tr("name")} } div { input { value: "{name}", required: true, style: "width:100%", oninput: move |e| name.set(e.value()) } }
             div { {state::tr("address")} } div {
-                input { value: "{base_url}", required: true, style: "width:100%", placeholder: "http://192.168.1.10:7337", oninput: move |e| base_url.set(e.value()) }
-                div { class: "muted", {state::tr("host and port only, no /api/v1 — a main server's main port, a peer's share port")} }
+                input { value: "{address}", required: true, style: "width:100%", placeholder: "https://192.168.1.10", oninput: move |e| address.set(e.value()) }
+                div { class: "muted", {state::tr("the other machine's IP address or name, no /api/v1")} }
+            }
+            div { {state::tr("port")} } div {
+                input { value: "{port}", inputmode: "numeric", style: "width:8em", placeholder: api::DEFAULT_PORT, oninput: move |e| port.set(e.value()) }
+                div { class: "muted", {state::tr("a main server's port (7337 unless changed), or the port a peer shares on")} }
             }
             div { {state::tr("sign in as")} } div {
                 input { value: "{username}", style: "width:48%", autocomplete: "off", placeholder: state::tr("username on that machine"), oninput: move |e| username.set(e.value()) }

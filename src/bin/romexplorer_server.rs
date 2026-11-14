@@ -315,13 +315,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let discovery_task = {
         let lifecycle = lifecycle.clone();
         let tls = tls.is_some();
-        tokio::spawn(async move { server::discovery::answer(bind, port, tls, "server", async move { let _ = lifecycle.requested().await; }).await })
+        let mut listeners = vec![server::discovery::Listener { port, kind: "server" }];
+        if let Some(share_port) = args.share_port.filter(|_| stored.share_advertise) {
+            listeners.push(server::discovery::Listener { port: share_port, kind: "share" });
+        }
+        tokio::spawn(async move { server::discovery::answer(bind, tls, listeners, async move { let _ = lifecycle.requested().await; }).await })
     };
-    let share_discovery_task = args.share_port.filter(|_| stored.share_advertise).map(|share_port| {
-        let lifecycle = lifecycle.clone();
-        let tls = tls.is_some();
-        tokio::spawn(async move { server::discovery::answer(bind, share_port, tls, "share", async move { let _ = lifecycle.requested().await; }).await })
-    });
     // The share listener, when asked for: four read-only routes on a port of its own, so a
     // peer can mirror this machine without being handed the control surface.
     let share_task = args.share_port.map(|share_port| {
@@ -356,9 +355,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         task.abort();
     }
     discovery_task.abort();
-    if let Some(task) = share_discovery_task {
-        task.abort();
-    }
     // Each step says so: a stop that hangs otherwise gives no clue where.
     if let Some(mut task) = worker_task {
         eprintln!("stopping: worker");

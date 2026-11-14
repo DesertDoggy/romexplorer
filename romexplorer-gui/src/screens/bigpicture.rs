@@ -935,7 +935,8 @@ fn Settings() -> Element {
             p { class: "muted", {state::tr("Saved on this device only.")} }
             h4 { {state::tr("Language")} }
             LanguageChoices {}
-            h4 { {state::tr("Covers")} }
+            h4 { {state::tr("Cover layout")} }
+            p { class: "muted", {state::tr("How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.")} }
             for l in [Layout::Auto, Layout::Single, Layout::Multi] {
                 button { class: if LAYOUT() == l { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { *LAYOUT.write() = l; set_pref(PREF_LAYOUT, l.key()); }, {l.label()} }
             }
