@@ -475,10 +475,12 @@ async fn sets(pool: &MySqlPool, user_group: &[(u64, u64)], ungroup: &HashSet<u64
         .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()))
         .collect();
     let mut keyed: HashMap<u64, String> = HashMap::new();
+    // `hashes.value_hex` is stored lowercase and the list is lowercased above, so the
+    // comparison is on the bare column and uses `idx_hashes_algo_value`.
     if !hashes.is_empty() {
         let found = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT LOWER(h.value_hex) AS sha1, r.name, tr.title_id FROM hashes h JOIN release_contents rc ON rc.content_id = h.content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE \
-             JOIN title_releases tr ON tr.release_id = r.id JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE WHERE h.algorithm = 'sha1' AND LOWER(h.value_hex) IN ({})",
+            "SELECT h.value_hex AS sha1, r.name, tr.title_id FROM hashes h JOIN release_contents rc ON rc.content_id = h.content_id JOIN `release` r ON r.id = rc.release_id AND r.deleted = FALSE \
+             JOIN title_releases tr ON tr.release_id = r.id JOIN title t ON t.id = tr.title_id AND t.deleted = FALSE WHERE h.algorithm = 'sha1' AND h.value_hex IN ({})",
             hashes.iter().map(|h| format!("'{h}'")).collect::<Vec<_>>().join(",")
         )))
         .fetch_all(pool)

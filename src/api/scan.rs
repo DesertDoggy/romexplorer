@@ -88,6 +88,9 @@ pub struct ScanSummary {
     /// DAT hash match identifies them (the hint -- a folder's platform, an extension -- is
     /// never recorded on its own).
     pub platform_unconfirmed: u64,
+    /// Files the walk took for no ROM (a `.txt`, a `.jpg`) that nothing identified: recorded
+    /// and hashed, for a DAT to identify later, but not made roms or games.
+    pub strays_unidentified: u64,
     /// Files recorded before whose bytes have changed since (same path, another hash): the
     /// file now points at the new content, its integrity stamp is cleared, its rom takes the
     /// new platform, and its game's release links are checked again.
@@ -700,7 +703,9 @@ async fn content_replaced(pool: &MySqlPool, path: &str, content_id: u64) -> Resu
 /// For roms whose bytes changed: drops their games' release links that no live file of the
 /// game backs any more -- neither the file's content nor one of its members is a content of
 /// that release. Run once a scan has recorded every file, so a disc not re-read yet does not
-/// count as gone. Returns the links dropped.
+/// count as gone. A link a serial made (`serial_match`) is kept: no release content backs it
+/// by definition -- it says which game the file is, not that its bytes are a listed dump --
+/// so new bytes with the same header serial are still that game. Returns the links dropped.
 async fn drop_unbacked_release_links(pool: &MySqlPool, roms: &[u64]) -> Result<u64> {
     if roms.is_empty() {
         return Ok(0);
@@ -708,7 +713,7 @@ async fn drop_unbacked_release_links(pool: &MySqlPool, roms: &[u64]) -> Result<u
     let list = roms.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     let done = sqlx::query(sqlx::AssertSqlSafe(format!(
         "DELETE lrg FROM local_release_games lrg WHERE lrg.game_id IN (SELECT game_id FROM local_game_roms WHERE rom_id IN ({list})) \
-         AND NOT EXISTS (SELECT 1 FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE \
+         AND lrg.serial_match IS NULL AND NOT EXISTS (SELECT 1 FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE \
              JOIN release_contents rc ON rc.release_id = lrg.release_id AND (rc.content_id = f.content_id OR rc.content_id IN (SELECT cc.child_content_id FROM content_contents cc WHERE cc.parent_content_id = f.content_id)) \
              WHERE lgr.game_id = lrg.game_id)"
     )))
@@ -764,12 +769,18 @@ async fn local_file_is_live(pool: &MySqlPool, path: &str) -> Result<bool> {
     Ok(matches!(row, Some(r) if !r.try_get::<bool, _>("deleted").unwrap_or(true)))
 }
 
+/// `local_rom.main_path` equal to a path (bound twice): the case-insensitive comparison finds
+/// the row through the column's prefix index (`idx_lrom_main_path`), the byte comparison keeps
+/// `A.gb` and `a.gb` apart -- two files on Linux, and two `local_files` rows everywhere
+/// (`path_hash` is the sha1 of the exact path).
+pub(crate) const MAIN_PATH_EQ: &str = "main_path = ? AND CAST(main_path AS BINARY) = CAST(? AS BINARY)";
+
 /// One `local_rom` per input path; its file set is replaced with what was just hashed.
 ///
 /// Shared with `api::copy`, which registers what it wrote through these same three writers
 /// rather than a second implementation of them.
 pub(crate) async fn upsert_rom(pool: &MySqlPool, main_path: &str, platform: Platform, file_ids: &[u64]) -> Result<(u64, bool)> {
-    let existing = sqlx::query("SELECT id FROM local_rom WHERE main_path = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(main_path).fetch_optional(pool).await?;
+    let existing = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id FROM local_rom WHERE {MAIN_PATH_EQ} AND deleted = FALSE ORDER BY id LIMIT 1"))).bind(main_path).bind(main_path).fetch_optional(pool).await?;
     let (rom_id, is_new) = match existing {
         Some(row) => {
             let id: u64 = row.try_get("id")?;
@@ -789,6 +800,46 @@ pub(crate) async fn upsert_rom(pool: &MySqlPool, main_path: &str, platform: Plat
     }
     supersede_covered_roms(pool, rom_id, file_ids).await?;
     Ok((rom_id, is_new))
+}
+
+/// Whether any of `contents` -- or a member of one -- is a line of an imported DAT.
+async fn listed_in_a_dat(pool: &MySqlPool, contents: &[u64]) -> Result<bool> {
+    if contents.is_empty() {
+        return Ok(false);
+    }
+    let list = contents.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let hit: Option<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT rc.release_id FROM release_contents rc WHERE rc.content_id IN ({list}) \
+            OR rc.content_id IN (SELECT cc.child_content_id FROM content_contents cc WHERE cc.parent_content_id IN ({list})) LIMIT 1"
+    )))
+    .fetch_optional(pool)
+    .await?;
+    Ok(hit.is_some())
+}
+
+/// Whether `main_path` is a rom the DAT resolve joined into another (a loose track folded
+/// into its disc): its own rom is retired and every one of `file_ids` belongs to one live
+/// rom with another main file. A scan then records the files and leaves the rom joined,
+/// instead of making the track a rom of its own again until the next hash match.
+async fn merged_into_another(pool: &MySqlPool, main_path: &str, file_ids: &[u64]) -> Result<bool> {
+    let live: Option<u64> = sqlx::query_scalar("SELECT id FROM local_rom WHERE main_path = ? AND deleted = FALSE LIMIT 1").bind(main_path).fetch_optional(pool).await?;
+    if live.is_some() {
+        return Ok(false);
+    }
+    let retired: Option<u64> = sqlx::query_scalar("SELECT id FROM local_rom WHERE main_path = ? AND deleted = TRUE LIMIT 1").bind(main_path).fetch_optional(pool).await?;
+    if retired.is_none() {
+        return Ok(false);
+    }
+    let files = file_ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let holder: Option<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT lrf.rom_id FROM local_rom_files lrf JOIN local_rom lr ON lr.id = lrf.rom_id AND lr.deleted = FALSE AND lr.main_path <> ? \
+         WHERE lrf.file_id IN ({files}) GROUP BY lrf.rom_id HAVING COUNT(DISTINCT lrf.file_id) = ? LIMIT 1"
+    )))
+    .bind(main_path)
+    .bind(file_ids.len() as u64)
+    .fetch_optional(pool)
+    .await?;
+    Ok(holder.is_some())
 }
 
 /// Retires the other roms whose every file is one of `rom_id`'s: what an earlier scan made of
@@ -863,7 +914,12 @@ async fn directory_scope(pool: &MySqlPool, dir: &Directory) -> Result<String> {
 /// it), a `local_files` row per file, a sheet's tracks linked under the sheet, then the rom
 /// and its game.
 /// Records one candidate; the rom's id when it was recorded as a rom.
-async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, platform: Platform, as_roms: bool, outcome: &SingleOutcome, summary: &mut ScanSummary) -> Result<Option<u64>> {
+///
+/// `stray`: a file the walk took for no ROM (`CandidateKind::Unknown`: a `.txt`, a `.jpg`)
+/// and no system file. It is hashed and recorded like any file, for a DAT to identify, but
+/// made a rom and a game only when it is identified: a platform detected, or its bytes (or a
+/// member's) a line of a DAT already imported.
+async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, platform: Platform, as_roms: bool, stray: bool, outcome: &SingleOutcome, summary: &mut ScanSummary) -> Result<Option<u64>> {
     let set = &outcome.input;
     let archive_tag = match set.kind {
         InputKind::Archive(format) => Some(format.to_string()),
@@ -872,6 +928,7 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
     };
     let files = scanned_files(outcome).map_err(Error::internal)?;
     let mut file_ids = Vec::new();
+    let mut content_ids = Vec::new();
     // A cue / gdi sheet's contents are its tracks: recorded like an archive's members.
     let is_sheet = matches!(set.kind, InputKind::Sheet(_));
     let mut sheet_content: Option<u64> = None;
@@ -880,6 +937,7 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
         summary.files_hashed += 1;
         let file_name = file.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let content_id = upsert_content(&app.pool, platform, &file_name, file.hashed.size, &file.hashed.report, summary).await?;
+        content_ids.push(content_id);
         if let Err(e) = record_members(&app.pool, platform, content_id, &file.members, summary).await {
             summary.errors.push(format!("{}: members: {e}", file.path.display()));
         }
@@ -910,6 +968,13 @@ async fn record_candidate(app: &App, dir: &Directory, candidate: &RomCandidate, 
         file_ids.push(id);
     }
     if file_ids.is_empty() || !as_roms {
+        return Ok(None);
+    }
+    if stray && platform == Platform::Unknown && !listed_in_a_dat(&app.pool, &content_ids).await? {
+        summary.strays_unidentified += 1;
+        return Ok(None);
+    }
+    if merged_into_another(&app.pool, &candidate.path.display().to_string(), &file_ids).await? {
         return Ok(None);
     }
     let (rom_id, rom_new) = upsert_rom(&app.pool, &candidate.path.display().to_string(), platform, &file_ids).await?;
@@ -1088,7 +1153,18 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     };
     let (ext_heuristics, path_heuristics) = settings::scan_heuristics(&app.pool).await?;
     let files_seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let ctx = ScanContext { dir_type, platform: PlatformContext::None, heuristics: HeuristicFlags::new(ext_heuristics, path_heuristics), shapes: Vec::new(), files_seen: Some(std::sync::Arc::clone(&files_seen)) };
+    // Directories configured below this one keep their own settings in a scan from here:
+    // their type, platform and whether their files are roms, and their rows stay theirs.
+    let children = configured_below(&app.pool, &dir).await?;
+    let configured: Vec<rom_scan::ConfiguredDir> = children.iter().map(|c| rom_scan::ConfiguredDir { path: PathBuf::from(&c.dir.path), dir_type: c.dir_type, platform: c.platform }).collect();
+    let ctx = ScanContext {
+        dir_type,
+        platform: PlatformContext::None,
+        heuristics: HeuristicFlags::new(ext_heuristics, path_heuristics),
+        shapes: Vec::new(),
+        files_seen: Some(std::sync::Arc::clone(&files_seen)),
+        configured: std::sync::Arc::new(configured),
+    };
     progress.force(0, None, &format!("walking {}", dir.path)).await;
     // The walk runs to completion on a blocking thread and only then says anything, so the
     // count of files it has listed is reported from here while it runs: before this, a scan
@@ -1109,6 +1185,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     // after it is written. They used to be set aside and never recorded at all.
     let mut walk = walk;
     let mut system_files: Vec<(String, &'static str, Option<u16>)> = Vec::with_capacity(walk.system_files.len());
+    let system_paths: std::collections::HashSet<PathBuf> = walk.system_files.iter().map(|(p, _)| p.clone()).collect();
     for (path, found) in std::mem::take(&mut walk.system_files) {
         let platform = found.platform.filter(|p| *p != Platform::Unknown);
         system_files.push((path.display().to_string(), system_type_name(found.file_type), platform.map(|p| p.igdb_id())));
@@ -1127,7 +1204,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     let mut skip = vec![false; n];
     if req.mode == FileScanMode::NewOnly {
         for (i, candidate) in walk.rom_candidates.iter().enumerate() {
-            skip[i] = local_file_is_live(&app.pool, &candidate.path.display().to_string()).await?;
+            skip[i] = if candidate.kind == rom_scan::CandidateKind::DirectoryBundle { bundle_is_recorded(&app.pool, &candidate.path).await? } else { local_file_is_live(&app.pool, &candidate.path.display().to_string()).await? };
         }
     }
     // A full scan started again goes on from where it was (`run_file_scan_since`).
@@ -1154,7 +1231,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
         if skip[i] {
             continue;
         }
-        let detect = detect_for(candidate, hint_for(candidate, forced));
+        let detect = detect_for(candidate, hint_for(candidate, owner_of(&children, &candidate.path).and_then(|c| c.platform).or(forced)));
         let name = candidate.path.display().to_string();
         jobs.push((first_folder(Path::new(&dir.path), &candidate.path), sizes[i], name, (candidate.path.clone(), scan_args(detect, flags, style, false), sizes[i], (i, detect))));
     }
@@ -1215,7 +1292,9 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
                 if platform == Platform::Unknown {
                     summary.platform_unconfirmed += 1;
                 }
-                match record_candidate(app, &dir, candidate, platform, as_roms, &outcome, &mut summary).await {
+                let (owner, as_roms) = owner_of(&children, &candidate.path).map_or((&dir, as_roms), |c| (&c.dir, c.as_roms));
+                let stray = candidate.kind == rom_scan::CandidateKind::Unknown && !system_paths.contains(&candidate.path);
+                match record_candidate(app, owner, candidate, platform, as_roms, stray, &outcome, &mut summary).await {
                     Ok(Some(rom_id)) if ra_wanted && platform != Platform::Unknown => record_ra_hash(&app.pool, rom_id, &candidate.path, platform, ra_ready, &mut summary).await,
                     Ok(_) => Ok(()),
                     Err(e) => Err(e),
@@ -1232,7 +1311,9 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     report.finish().await;
     for playlist in &walk.playlists {
         let step = Step { progress, done_bytes: total_bytes, total_bytes, file_bytes: 0, label: "playlists".to_string() };
-        if let Err(e) = apply_playlist(&app.pool, &dir, playlist, forced.unwrap_or(Platform::Unknown), flags, &mut summary, &step).await {
+        let owner = owner_of(&children, &playlist.m3u_path);
+        let platform = owner.and_then(|c| c.platform).or(forced).unwrap_or(Platform::Unknown);
+        if let Err(e) = apply_playlist(&app.pool, owner.map_or(&dir, |c| &c.dir), playlist, platform, flags, &mut summary, &step).await {
             summary.errors.push(format!("{}: playlist: {e}", playlist.m3u_path.display()));
         }
     }
@@ -1241,6 +1322,10 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     }
     if let Some(started) = full_scan_started {
         summary.marked_missing = mark_unseen_missing(&app.pool, dir.id, started).await?;
+        // The directories below were walked too, so what they did not see is gone as well.
+        for child in &children {
+            summary.marked_missing += mark_unseen_missing(&app.pool, child.dir.id, started).await?;
+        }
     }
     summary.release_links_dropped = drop_unbacked_release_links(&app.pool, &std::mem::take(&mut summary.replaced_roms)).await?;
     (summary.chd_compared, summary.chd_not_compared, summary.chd_reader_differences) = crate::rom::chd_info::take_check_report();
@@ -1352,7 +1437,7 @@ async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: Hash
                         summary.ra_hash_skipped_unknown_platform += 1;
                     }
                 }
-                match record_candidate(app, &dir, candidate, platform, as_roms, &outcome, &mut summary).await {
+                match record_candidate(app, &dir, candidate, platform, as_roms, false, &outcome, &mut summary).await {
                     Ok(Some(rom_id)) => {
                         roms.push(rom_id);
                         if ra_wanted && platform != Platform::Unknown {
@@ -1500,6 +1585,58 @@ async fn mark_unseen_missing(pool: &MySqlPool, directory_id: u64, started: chron
     Ok(gone.len() as u64)
 }
 
+/// A directory configured below the one being scanned, with its effective settings.
+struct ConfiguredChild {
+    dir: Directory,
+    dir_type: DirType,
+    platform: Option<Platform>,
+    as_roms: bool,
+}
+
+/// The live directories configured strictly below `dir`, deepest first, each with its
+/// effective type and platform (inherited where it sets none) -- what a scan of that
+/// directory itself would use.
+async fn configured_below(pool: &MySqlPool, dir: &Directory) -> Result<Vec<ConfiguredChild>> {
+    let all = db_dirs::list(pool, false).await?;
+    let mut out = Vec::new();
+    for d in all.into_iter().filter(|d| d.id != dir.id && !db_dirs::same_path(&d.path, &dir.path) && db_dirs::path_contains(&dir.path, &d.path)) {
+        let effective = db_dirs::resolve(pool, &d.path).await?;
+        let dir_type = match effective.dir_type.as_deref() {
+            Some("bios") => DirType::Bios,
+            Some("rom") => DirType::Rom,
+            _ => DirType::Mixed,
+        };
+        let as_roms = effective.dir_type.as_deref() != Some("patch");
+        out.push(ConfiguredChild { platform: effective.app_platform_id.and_then(Platform::from_igdb_id), dir: d, dir_type, as_roms });
+    }
+    out.sort_by_key(|c| std::cmp::Reverse(c.dir.path.len()));
+    Ok(out)
+}
+
+/// The deepest configured directory below the scanned one that holds `path`.
+fn owner_of<'a>(children: &'a [ConfiguredChild], path: &Path) -> Option<&'a ConfiguredChild> {
+    let path = path.display().to_string();
+    children.iter().find(|c| db_dirs::path_contains(&c.dir.path, &path))
+}
+
+/// Whether a folder game is already recorded as it is: every file in it has a live row of
+/// the same size. A folder has no row of its own, so asking for its path found nothing and
+/// a new-files-only scan read every folder game again.
+async fn bundle_is_recorded(pool: &MySqlPool, dir: &Path) -> Result<bool> {
+    let files = crate::rom::platforms::directory_payload_paths(dir);
+    if files.is_empty() {
+        return Ok(false);
+    }
+    for file in files {
+        let Ok(meta) = std::fs::metadata(&file) else { return Ok(false) };
+        let size: Option<u64> = sqlx::query_scalar("SELECT size FROM local_files WHERE path_hash = ? AND deleted = FALSE").bind(sha1_hex(&file.display().to_string())).fetch_optional(pool).await?;
+        if size != Some(meta.len()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// The platforms configured on `dir`'s immediate subfolders, by folder name: the hint each
 /// subfolder's files get in a scan of `dir` (a folder's name is the fallback hint).
 async fn configured_subfolder_platforms(app: &App, dir: &Directory) -> Result<HashMap<String, Platform>> {
@@ -1589,7 +1726,7 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
                     summary.contents_replaced += 1;
                     let roms: Vec<u64> = sqlx::query_scalar("SELECT rom_id FROM local_rom_files WHERE file_id = ?").bind(file_id).fetch_all(&app.pool).await?;
                     // The rom's platform follows its main file's bytes.
-                    sqlx::query("UPDATE local_rom SET app_platform_id = ? WHERE main_path = ? AND deleted = FALSE").bind(platform.igdb_id()).bind(&path).execute(&app.pool).await?;
+                    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_rom SET app_platform_id = ? WHERE {MAIN_PATH_EQ} AND deleted = FALSE"))).bind(platform.igdb_id()).bind(&path).bind(&path).execute(&app.pool).await?;
                     summary.replaced_roms.extend(roms);
                 }
             }
@@ -1751,13 +1888,28 @@ pub fn game_groups(roms: &[(u64, Option<u8>, Option<String>, Option<String>)]) -
         p[x] = r;
         r
     }
+    // Linear: each rom is joined to the first rom seen with its release and, when it has a
+    // disc number, to the first with its set key -- the same components as joining every
+    // matching pair, which was quadratic over a directory's roms.
+    let mut by_release: HashMap<u64, usize> = HashMap::new();
+    let mut by_set: HashMap<&str, usize> = HashMap::new();
     for i in 0..n {
-        for j in (i + 1)..n {
-            let same_release = roms[i].0 == roms[j].0;
-            let same_set = roms[i].1.is_some() && roms[j].1.is_some() && roms[i].2.is_some() && roms[i].2 == roms[j].2;
-            if same_release || same_set {
-                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
-                parent[a] = b;
+        let mut join = |j: usize, p: &mut Vec<usize>| {
+            let (a, b) = (find(p, i), find(p, j));
+            p[a] = b;
+        };
+        match by_release.get(&roms[i].0) {
+            Some(&j) => join(j, &mut parent),
+            None => {
+                by_release.insert(roms[i].0, i);
+            }
+        }
+        if let (Some(_), Some(key)) = (roms[i].1, roms[i].2.as_deref()) {
+            match by_set.get(key) {
+                Some(&j) => join(j, &mut parent),
+                None => {
+                    by_set.insert(key, i);
+                }
             }
         }
     }
@@ -2008,7 +2160,8 @@ async fn resolve_by_dat(pool: &MySqlPool, scope: &str, progress: &crate::databas
     roms.sort_by_key(|r| r.0);
     let keyed: Vec<(u64, Option<u8>, Option<String>, Option<String>)> = roms.iter().map(|r| (r.1, r.2, r.3.clone(), Some(r.4.clone()).filter(|p| !p.is_empty()))).collect();
     let mut games_merged = 0u64;
-    let groups = game_groups(&keyed);
+    progress.force(0, None, &format!("DAT resolve: grouping {} rom(s) into games", keyed.len())).await;
+    let groups = tokio::task::spawn_blocking(move || game_groups(&keyed)).await.map_err(|e| Error::internal(format!("grouping: {e}")))?;
     let n_groups = groups.len() as u64;
     for (i, group) in groups.into_iter().enumerate() {
         progress.report(i as u64, Some(n_groups.max(1)), &format!("DAT resolve: grouping discs into games, {} of {n_groups}, {games_merged} merged", i + 1)).await;
@@ -2048,7 +2201,8 @@ async fn apply_playlist(pool: &MySqlPool, dir: &Directory, playlist: &rom_scan::
     // Its discs, in playlist order.
     let mut roms: Vec<(u64, u16)> = Vec::new();
     for (i, member) in playlist.member_paths.iter().enumerate() {
-        let rom: Option<u64> = sqlx::query_scalar("SELECT id FROM local_rom WHERE main_path = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(member.display().to_string()).fetch_optional(pool).await?;
+        let member = member.display().to_string();
+        let rom: Option<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM local_rom WHERE {MAIN_PATH_EQ} AND deleted = FALSE ORDER BY id LIMIT 1"))).bind(&member).bind(&member).fetch_optional(pool).await?;
         if let Some(rom) = rom {
             roms.push((rom, i as u16 + 1));
         }
@@ -2198,6 +2352,19 @@ mod dat_resolve_tests {
 
     /// The same two-disc release in two folders of one scanned directory: one game per
     /// folder, not four games of one disc.
+    /// Grouping is linear: a directory of many roms groups at once, with the same result as
+    /// joining every matching pair (two-disc sets by set key, one release twice).
+    #[test]
+    fn grouping_many_roms_is_linear() {
+        let n = 200_000u64;
+        let roms: Vec<(u64, Option<u8>, Option<String>, Option<String>)> = (0..n).map(|i| (i, Some((i % 2) as u8 + 1), Some(format!("p|Set {}", i / 2)), None)).collect();
+        let started = std::time::Instant::now();
+        let groups = game_groups(&roms);
+        assert_eq!(groups.len(), (n / 2) as usize);
+        assert!(groups.iter().all(|g| g.len() == 2 && g[1] == g[0] + 1));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
     #[test]
     fn copies_of_a_disc_set_in_two_folders_are_a_game_each() {
         let at = |p: &str| Some(p.to_string());

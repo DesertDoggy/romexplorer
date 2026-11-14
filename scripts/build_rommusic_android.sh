@@ -119,11 +119,15 @@ fi
 
 # --- native libraries ---------------------------------------------------------------------------
 LIB_DIR="$ROOT_DIR/app_root_ex/lib/android/arm64"
-# What the APK carries: the two players (required), then the disc readers, each needed only
-# for some inputs. app_root_ex/lib/android/arm64/ is shared with chdlite, so only these go in.
-APK_LIBS=(librommusic.so librvgmstream.so libchdman.so libdolphinrvz.so libcemuwua.so libz.so)
+# What the APK carries: the two players (required), then the disc readers and 7-Zip (zip and
+# 7z sets), each needed only for some inputs. app_root_ex/lib/android/arm64/ is shared with
+# chdlite, so only these go in. Names as the APK carries them: Android extracts only lib*.so,
+# so 7-Zip's 7z.so goes in as lib7z.so (src/natives.rs links it back under 7z.so).
+APK_LIBS=(librommusic.so librvgmstream.so libchdman.so libdolphinrvz.so libcemuwua.so libz.so lib7z.so)
+# The file in $LIB_DIR an APK name comes from.
+lib_source() { if [[ "$1" == lib7z.so ]]; then echo 7z.so; else echo "$1"; fi; }
 if [[ "$NATIVES" -eq 1 ]]; then
-    ANDROID_API="${ANDROID_API:-28}" bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu android arm64
+    ANDROID_API="${ANDROID_API:-28}" bash "$SCRIPT_DIR/build_native_deps.sh" --only zlib-ng,7-Zip-zstd,chdman-simd,dolphin,ffmpeg,vgmstream,rommusic,cemu android arm64
 fi
 for lib in librommusic.so librvgmstream.so; do
     [[ -f "$LIB_DIR/$lib" ]] || echo "warning: $LIB_DIR/$lib is not built (run with --natives); rommusic plays nothing without it" >&2
@@ -152,8 +156,10 @@ if [[ "$CLI" -eq 1 ]]; then
     rm -rf "$CLI_LIB"
     mkdir -p "$CLI_LIB"
     cp -f "$ROOT_DIR/target/$TARGET/$CLI_PROFILE/rommusic" "$CLI_OUT/rommusic"
+    # Under the names romexplorer loads (7z.so), as on a desktop.
     for name in "${APK_LIBS[@]}"; do
-        [[ -f "$LIB_DIR/$name" ]] && cp -f "$LIB_DIR/$name" "$CLI_LIB/"
+        source_name="$(lib_source "$name")"
+        [[ -f "$LIB_DIR/$source_name" ]] && cp -f "$LIB_DIR/$source_name" "$CLI_LIB/"
     done
     echo
     echo "command-line tool ($CLI_PROFILE):"
@@ -189,9 +195,9 @@ JNI_DIR="$PROJECT/app/src/main/jniLibs/$ABI"
 mkdir -p "$JNI_DIR"
 copied=0
 for name in "${APK_LIBS[@]}"; do
-    lib="$LIB_DIR/$name"
+    lib="$LIB_DIR/$(lib_source "$name")"
     [[ -f "$lib" ]] || continue
-    cp -f "$lib" "$JNI_DIR/"
+    cp -f "$lib" "$JNI_DIR/$name"
     copied=$((copied + 1))
 done
 echo "copied $copied native librar$([[ $copied -eq 1 ]] && echo y || echo ies) into $JNI_DIR"
@@ -203,6 +209,24 @@ RES_DIR="$PROJECT/app/src/main/res"
 rm -f "$RES_DIR"/mipmap-*/ic_launcher.webp
 cp -Rf "$ICON_DIR/." "$RES_DIR/"
 echo "launcher icon from $ICON_DIR"
+
+# The music maps (app_root_ex/assets/music_maps*.zst, numbers only): where each matched game's
+# music is in its ROM, so a cartridge plays from its map rather than a search from boot. Into
+# the APK's assets; at each start src/natives.rs copies them to where rom_songs reads them.
+ASSETS_DIR="$PROJECT/app/src/main/assets"
+mkdir -p "$ASSETS_DIR"
+rm -f "$ASSETS_DIR"/music_maps*.zst
+maps=0
+for map in "$ROOT_DIR"/app_root_ex/assets/music_maps*.zst; do
+    [[ -f "$map" ]] || continue
+    cp -f "$map" "$ASSETS_DIR/"
+    maps=$((maps + 1))
+done
+if [[ "$maps" -gt 0 ]]; then
+    echo "copied $maps music map bundle(s) into $ASSETS_DIR"
+else
+    echo "warning: no app_root_ex/assets/music_maps*.zst: cartridges fall back to the search from boot" >&2
+fi
 
 TASK=assembleDebug
 [[ "$RELEASE" -eq 1 ]] && TASK=assembleRelease

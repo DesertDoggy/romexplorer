@@ -766,6 +766,11 @@ pub async fn pull(app: &App, source_id: u16, full: bool, progress: &crate::datab
         }
 
         if !changes_only {
+            // Forget where this table stood before anything below empties it: a pull cut short
+            // after a DELETE would otherwise leave the table part-filled under the old hash,
+            // and every later pull would take it as unchanged. With no record, the next pull
+            // takes the table whole again. Written back below once this one has finished.
+            sqlx::query("DELETE FROM remote_sync_state WHERE source_id = ? AND table_name = ?").bind(source.id).bind(&state.table).execute(&mut *conn).await?;
             let junction = (state.group == GROUP_OWNERSHIP && OWNERSHIP_JUNCTIONS.contains(&state.table.as_str()))
                 || (state.group == GROUP_MEDIA && MEDIA_JUNCTIONS.contains(&state.table.as_str()));
             // A table that is not emptied first keeps whatever the source no longer has unless

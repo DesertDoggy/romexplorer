@@ -81,6 +81,9 @@ pub struct App {
     /// The provider clients, rebuilt from `api.env` whenever it changes -- see [`Self::clients`].
     pub providers: std::sync::Arc<ProviderState>,
     pub http: reqwest::Client,
+    /// For URLs a signed-in account chose rather than this server: it never connects into
+    /// this machine's network (`providers::build_public_http_client`).
+    pub http_public: reqwest::Client,
     /// Seals provider keys and peer tokens at rest (`database::vault`).
     pub vault: Vault,
 }
@@ -110,10 +113,11 @@ impl App {
     pub fn with_pool(pool: MySqlPool, paths: AppPaths, config: DatabaseConfig) -> Result<Self> {
         let vault = Vault::load_or_create(&paths.master_key_path())?;
         let http = database::providers::build_http_client()?;
+        let http_public = database::providers::build_public_http_client()?;
         let providers = std::sync::Arc::new(ProviderState::load(paths.api_env(), vault.clone(), http.clone())?);
         // Where each game's music map is kept (built from a matched original audio format file).
         crate::rom::rom_songs::set_maps_dir(paths.media_dir().join("_music_maps"));
-        Ok(Self { pool, paths, config, providers, http, vault })
+        Ok(Self { pool, paths, config, providers, http, http_public, vault })
     }
 
     /// The provider clients as `api.env` stands now. Cheap: one `stat` per call, and a

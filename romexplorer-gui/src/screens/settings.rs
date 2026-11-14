@@ -44,7 +44,7 @@ const EDITORS: &[&str] = &[
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
     "audio_dsd_cache_format", "audio_cache_max_mb", "audio_ram_cache_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_limiter", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
-    "merge_review_order", "gemini_model", "dat_sync_platforms",
+    "merge_review_order", "dat_sync_platforms", "ai_cost_warning_seen",
 ];
 
 /// Which media types each provider's sync can download (the vocabulary's `media.providers`).
@@ -88,6 +88,9 @@ fn edited_elsewhere(key: &str) -> Option<(crate::Route, &'static str)> {
     match key {
         "instance_mode" | "catalog_from" => Some((crate::Route::ConfigMode {}, "Config › Mode")),
         "copy_folder_scheme" | "copy_platform_combine" | "copy_output_defaults" | "copy_decide_on_copy" | "copy_header_preference" | "copy_wiiu_preference" | "copy_format_order" | "copy_prefer_decrypted" => Some((crate::Route::ConfigCopy {}, "Config › Copy")),
+        // The AI choices, prices and answer order, and `gemini_model` (the Gemini row there).
+        "gemini_model" => Some((crate::Route::ConfigAi {}, "Config › AI")),
+        k if k.starts_with("ai_") && k != "ai_cost_warning_seen" => Some((crate::Route::ConfigAi {}, "Config › AI")),
         _ => None,
     }
 }
@@ -106,10 +109,13 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
     ("audio_keep_playing", true, "keep a title's music playing on other screens until another title page opens (default)", "stop the music when the page is left"),
     ("audio_rom_videos", false, "play the sound of video files in ROMs, such as title movies", "leave video sound out (default)"),
     ("audio_rom_limiter", true, "soften sudden loud bursts in music played from ROMs (default)", "play it as the sound chip makes it"),
+    ("ai_cost_warning_seen", false, "the AI cost warning was accepted: don't show it again", "show the AI cost warning before the next paid question (default)"),
 ];
 
 /// Hashes a file scan can compute, in the order they are shown. Default: all but sha256.
 const SCAN_HASHES: &[(&str, bool)] = &[("crc32", true), ("xxh3_128", true), ("md5", true), ("sha1", true), ("sha256", false), ("ra_hash", true)];
+/// The `SCAN_HASHES` DATs are matched by; one of them always stays on.
+const SCAN_HASHES_DAT: [&str; 3] = ["crc32", "md5", "sha1"];
 /// `serial_match`: key, default, label -- the same list as the web console's.
 const SERIAL_MATCH: &[(&str, bool, &str)] = &[
     ("cia", true, ".cia / .zcia (3DS)"),
@@ -270,6 +276,11 @@ fn initial(key: &str, value: &Value) -> Value {
             for (name, def) in SCAN_HASHES {
                 m.insert(name.to_string(), json!(value.get(name).and_then(Value::as_bool).unwrap_or(*def)));
             }
+            // DATs are matched by crc32, md5 or sha1: a stored list without one (saved before
+            // the server refused that) opens with crc32 back on, as in the console.
+            if !SCAN_HASHES_DAT.iter().any(|k| m.get(*k).and_then(Value::as_bool) == Some(true)) {
+                m.insert("crc32".to_string(), json!(true));
+            }
             Value::Object(m)
         }
         "scan_parallel_files" | "copy_parallel_files" => {
@@ -296,7 +307,6 @@ fn initial(key: &str, value: &Value) -> Value {
         }
         "raw_response_retention" => if value.is_null() { json!("keep_latest") } else { value.clone() },
         "merge_review_order" => if value.is_null() { json!("regional") } else { value.clone() },
-        "gemini_model" => if value.is_null() { json!("") } else { value.clone() },
         "cache_ttl_days" => if value.is_null() { json!(90) } else { value.clone() },
         "language_display" => if value.is_null() { json!("code") } else { value.clone() },
         "grid_media_type" => if value.is_null() { json!("box") } else { value.clone() },
@@ -778,9 +788,6 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
         }
         "raw_response_retention" => radios(&[("keep_all", "keep all"), ("keep_latest", "keep latest"), ("discard", "discard")], sv("keep_latest")),
         "merge_review_order" => radios(&[("regional", "regional cases first (default)"), ("english", "titles sharing an IGDB game first")], sv("regional")),
-        "gemini_model" => rsx! {
-            label { input { r#type: "text", placeholder: state::tr("newest Flash model (default)"), value: "{sv(\"\")}", oninput: move |e| set(json!(e.value().trim())) } }
-        },
         "cache_ttl_days" => rsx! {
             label { input { r#type: "number", min: "1", value: "{v}", oninput: move |e| set(json!(e.value().parse::<i64>().unwrap_or(1).max(1))) } " " span { class: "muted", {state::tr("days")} } }
         },
@@ -1017,13 +1024,19 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
                 input { r#type: "text", style: "min-width:420px", placeholder: "data/backups", value: "{current}", oninput: move |e| set(json!(e.value())) }
             }
         }
-        "scan_hashes" => rsx! {
-            div { class: "radios",
-                for (name, _) in SCAN_HASHES {
-                    label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {name}" }
+        "scan_hashes" => {
+            // The last of crc32 / md5 / sha1 that is on can't be turned off: DATs are matched by
+            // those three (the server refuses a list without one). The console's same rule.
+            let dat_on: Vec<&str> = SCAN_HASHES_DAT.iter().copied().filter(|k| v.get(*k).and_then(Value::as_bool) == Some(true)).collect();
+            rsx! {
+                div { class: "radios",
+                    for (name, _) in SCAN_HASHES {
+                        label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), disabled: dat_on.len() == 1 && dat_on[0] == *name, onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {name}" }
+                    }
                 }
+                {muted("At least one of crc32, md5 and sha1 stays on: DATs are matched by those.")}
             }
-        },
+        }
         "serial_match" => rsx! {
             {muted("Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.")}
             div { class: "radios",
@@ -1415,6 +1428,16 @@ pub fn ConfigSettingsJson() -> Element {
     rsx! { SettingsPage { json: true } }
 }
 
+/// A whole translated sentence with one `{link}` in it, rendered with `link` in that place, so
+/// the sentence is translated as one string in whatever word order the language needs.
+fn with_link(sentence: String, link: Element) -> Element {
+    let (before, after) = match sentence.split_once("{link}") {
+        Some((before, after)) => (before.to_string(), after.to_string()),
+        None => (sentence.clone(), String::new()),
+    };
+    rsx! { "{before}" {link} "{after}" }
+}
+
 #[component]
 fn SettingsPage(json: bool) -> Element {
     let mut list = use_resource(|| async { api::get("/api/v1/settings").await.map(|v| api::items(&v)) });
@@ -1446,6 +1469,7 @@ fn SettingsPage(json: bool) -> Element {
     }
     let active = if all.iter().any(|(g, ..)| *g == section()) { section() } else { all.first().map(|(g, ..)| g.clone()).unwrap_or_default() };
     let tabs: Vec<(String, String, usize)> = all.iter().map(|(g, l, list)| (g.clone(), l.clone(), list.len())).collect();
+    let total: usize = tabs.iter().map(|(.., n)| n).sum();
     let groups: Vec<(String, String, Vec<Value>)> = all
         .into_iter()
         .filter(|(g, ..)| !q.is_empty() || *g == active)
@@ -1468,13 +1492,14 @@ fn SettingsPage(json: bool) -> Element {
             div { class: "card",
                 h2 { {state::tr("Settings")} }
                 Explain {
-                    {state::tr("Changes apply after saving. \"reset to default\" removes the stored value. ")}
-                    {state::tr("The ")} Link { to: crate::Route::ConfigSettingsJson {}, {state::tr("JSON view")} } {state::tr(" shows the stored values as they are.")}
+                    {with_link(state::tr("Changes apply after saving. \"reset to default\" removes the stored value. The {link} shows the stored values as they are."), rsx! { Link { to: crate::Route::ConfigSettingsJson {}, {state::tr("JSON view")} } })}
                 }
                 div { class: "toolbar",
                     // Uncontrolled: the box keeps what is typed while the rows re-render, so fast typing
                     // never loses a character to a render that is still catching up.
                     input { r#type: "text", style: "min-width:240px", placeholder: state::tr("filter settings…"), oninput: move |e| filter.set(e.value()) }
+                    span { class: "grow" }
+                    span { class: "muted", {state::trf("{n} settings", &[("n", &total.to_string())])} }
                 }
             }
             for (id, label, list) in groups {
@@ -1493,9 +1518,8 @@ fn SettingsPage(json: bool) -> Element {
         div { class: "card",
             h2 { if json { {state::tr("Settings (JSON)")} } else { {state::tr("Settings")} } }
             Explain {
-                {state::tr("Changes apply after saving. \"reset to default\" removes the stored value. ")}
-                if json { {state::tr("Every value as the server stores it; the ")} Link { to: crate::Route::ConfigSettings {}, {state::tr("form")} } {state::tr(" covers the same keys.")} }
-                else { {state::tr("The ")} Link { to: crate::Route::ConfigSettingsJson {}, {state::tr("JSON view")} } {state::tr(" shows the stored values as they are.")} }
+                if json { {with_link(state::tr("Changes apply after saving. \"reset to default\" removes the stored value. Every value as the server stores it; the {link} covers the same keys."), rsx! { Link { to: crate::Route::ConfigSettings {}, {state::tr("form")} } })} }
+                else { {with_link(state::tr("Changes apply after saving. \"reset to default\" removes the stored value. The {link} shows the stored values as they are."), rsx! { Link { to: crate::Route::ConfigSettingsJson {}, {state::tr("JSON view")} } })} }
             }
             {section_tabs}
             div { class: "toolbar",

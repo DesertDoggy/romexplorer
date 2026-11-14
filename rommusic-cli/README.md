@@ -88,7 +88,7 @@ What `--format original` writes:
 - Original-format music sets: the set's files (the NSF, SPC, GBS... and its playlist; a zipped set is copied
   as it is).
 - SNES cartridges: an `.spc` of the sound chip after the game has run.
-- CD audio and music sequenced in a cartridge (Game Boy Advance) have no original file. Use
+- CD audio and music played from a cartridge's own sound code have no original file. Use
   FLAC for these.
 
 Original files hold the game's own code and data. Keep them with your ROMs and don't share
@@ -115,10 +115,8 @@ Wii U: `.wua`, and `.wud`/`.wux` or a downloaded title folder when its key is be
 | Nintendo 3DS | Music files in images stored decrypted. Encrypted images are not read. | as stored |
 | Game Boy Advance | Straight from the ROM, for games using Nintendo's standard sound engine (about half of all games). | 48 kHz |
 | SNES / Super Famicom | The game runs for a few seconds without a screen, and its sound chip is then played on. This gives one track, usually the title music. SA-1, Super FX and S-DD1 games are not supported. With `--originals`, the game's SPC set gives every song instead. | 32 kHz |
-| NES, Famicom, FDS | The game's NSF set from `--originals`. | 44.1 kHz |
-| Game Boy, Game Boy Color | The game's GBS set from `--originals`. | 44.1 kHz |
-| PC Engine, SuperGrafx | The game's HES set from `--originals`. | 44.1 kHz |
-| Master System, Game Gear, SG-1000, MSX, ColecoVision | The game's SGC or KSS set from `--originals`. | 44.1 kHz |
+| NES, Famicom, FDS; Game Boy, Game Boy Color; Master System, Game Gear, Mega Drive / Genesis; PC Engine; MSX; WonderSwan, WonderSwan Color; Virtual Boy; Neo Geo Pocket | Straight from the ROM: from the game's music map when one ships with rommusic, otherwise found by running the game's own sound code. No other files are needed; with `--originals`, a matching set fills in songs the ROM alone misses. | 44.1 kHz |
+| SG-1000, ColecoVision, SuperGrafx | The game's SGC, KSS or HES set from `--originals`. | 44.1 kHz |
 
 **Original audio formats.** A file in an original audio format, or a zip of them, dropped on its own is played as it is: NSF, NSFE, SPC, GBS,
 HES, KSS, SGC, VGM, VGZ, GYM, AY, SAP, N64 USF, PS1 PSF, PS2 PSF2, Saturn SSF, Dreamcast DSF, GBA GSF and WonderSwan WSR, and Neo Geo Pocket and Virtual Boy VGM (with the set's library

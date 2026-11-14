@@ -180,7 +180,7 @@ fn App() -> Element {
         run.set(Run { percents: vec![0.0; names.len()], names, done: 0 });
         running.set(true);
         CANCEL.store(false, Ordering::Relaxed);
-        let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true };
+        let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true, ctrl_c_cancels: false };
         #[cfg(target_os = "android")]
         chdlite::android::run_started(&format!("{} · {} file{}", with.label(), batch.inputs.len(), if batch.inputs.len() == 1 { "" } else { "s" }));
         std::thread::spawn(move || {
@@ -474,6 +474,7 @@ fn App() -> Element {
                 input {
                     r#type: "text",
                     placeholder: "next to each input",
+                    title: "A relative folder is taken from each input's own folder",
                     value: "{output_dir}",
                     oninput: move |event| settings.write().output.dir = event.value(),
                     onchange: move |_| { let _ = settings.read().save(); },
@@ -801,7 +802,7 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                             label { "Threads" }
                             select {
                                 onchange: move |event| draft.write().jobs.threads = if event.value() == "custom" { auto_threads as u32 } else { 0 },
-                                option { value: "auto", selected: !threads_custom, "Auto ({auto_threads}, every core)" }
+                                option { value: "auto", selected: !threads_custom, "Auto ({auto_threads}, the physical cores but 4)" }
                                 option { value: "custom", selected: threads_custom, "Custom" }
                             }
                             input { r#type: "number", min: "1", max: "256", disabled: !threads_custom, value: "{cores}", oninput: move |event| draft.write().jobs.threads = number(&event.value()).max(1) }

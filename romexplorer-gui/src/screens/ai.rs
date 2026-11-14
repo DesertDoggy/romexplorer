@@ -76,6 +76,12 @@ fn AiChoices(o: Value, on_saved: EventHandler<()>) -> Element {
                     result = set_key(&format!("ai_model_{id}"), json!(model.trim())).await;
                 }
             }
+            // The Gemini row shows `gemini_model` (the older name) while `ai_model_gemini` is
+            // unset, and now saves it as `ai_model_gemini`: drop the old one, or clearing the row
+            // would bring it back.
+            if result.is_ok() {
+                result = set_key("gemini_model", Value::Null).await;
+            }
             if result.is_ok() {
                 result = set_key("ai_ask_first", json!(ask_first())).await;
             }

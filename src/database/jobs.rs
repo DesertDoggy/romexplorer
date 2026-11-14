@@ -1,6 +1,9 @@
 //! The `jobs` table: the only channel between the app and the background worker
-//! (`romexplorer-worker`). Claiming uses `SELECT ... FOR UPDATE SKIP LOCKED`, so several
-//! workers (or worker threads) never hand out the same row twice.
+//! (`romexplorer-worker`). The worker picks the head of each idle lane ([`peek_lane_heads`])
+//! and claims it with a conditional update ([`claim_by_id`]: only a row still `pending`, so
+//! several workers never start the same job twice). Each worker holds a named lock while it
+//! lives ([`hold_worker_lock`]); a running job whose worker's lock is gone is put right by
+//! [`release_orphans`].
 
 use sqlx::mysql::MySqlPool;
 use sqlx::Row;
@@ -52,11 +55,13 @@ async fn set_queue_order(pool: &MySqlPool, id: u64) -> Result<(), DatabaseError>
     Ok(())
 }
 
-/// Claims up to `limit` pending jobs of `job_type` (oldest first), marking them
-/// `in_progress` and bumping `attempts`.
+/// Claims up to `limit` pending jobs of `job_type` (first in line first), marking them
+/// `in_progress` and bumping `attempts` -- for tools and tests that drain one job type
+/// without the scheduler (the worker uses [`claim_by_id`]). Like that one, never a job a
+/// cancel was asked for.
 pub async fn claim(pool: &MySqlPool, job_type: JobType, limit: u32) -> Result<Vec<Job>, DatabaseError> {
     let mut tx = pool.begin().await?;
-    let rows = sqlx::query("SELECT id, payload, attempts FROM jobs WHERE job_type = ? AND status = 'pending' ORDER BY COALESCE(queue_order, id), id LIMIT ? FOR UPDATE SKIP LOCKED")
+    let rows = sqlx::query("SELECT id, payload, attempts FROM jobs WHERE job_type = ? AND status = 'pending' AND cancel_requested = FALSE ORDER BY COALESCE(queue_order, id), id LIMIT ? FOR UPDATE SKIP LOCKED")
         .bind(job_type.name())
         .bind(limit)
         .fetch_all(&mut *tx)
@@ -487,6 +492,18 @@ pub struct Orphans {
     pub failed: Vec<u64>,
 }
 
+/// How long another worker's running job must stay without its worker's lock before it counts
+/// as orphaned. A database restart frees every worker's lock at once; each takes its own again
+/// on its next loop (seconds), and until then its jobs are still running. Without the wait,
+/// the first worker back queued the others' running jobs again, and they ran twice.
+const ORPHAN_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// When each running job of another worker was first seen without that worker's lock.
+fn orphan_seen() -> &'static std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
 /// Running jobs nothing runs any more (`running`: this worker's own tasks): a cancel asked
 /// for is done, and a job of a type that does not resume by itself (a copy) is cancelled too;
 /// otherwise the job goes back to `pending`, or to `failed` once it has used up
@@ -499,13 +516,35 @@ pub async fn release_orphans(pool: &MySqlPool, running: &[u64]) -> Result<Orphan
     if stale > 0 {
         log::info!("{stale} queued job(s) a cancel was asked for are cancelled");
     }
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id, job_type, cancel_requested, attempts FROM jobs WHERE status = 'in_progress' AND (worker_id = ? OR {NO_WORKER_SQL})"))).bind(worker_id()).fetch_all(pool).await?;
-    let mut out = Orphans::default();
-    for row in rows {
-        let id: u64 = row.try_get("id")?;
-        if running.contains(&id) {
-            continue;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id, job_type, cancel_requested, attempts, worker_id FROM jobs WHERE status = 'in_progress' AND (worker_id = ? OR {NO_WORKER_SQL})"))).bind(worker_id()).fetch_all(pool).await?;
+    // Another worker's job (its lock free) waits out `ORPHAN_GRACE` first; this worker's own,
+    // and one claimed before workers wrote their id, are known to have no task now.
+    let now = std::time::Instant::now();
+    let mut ready: Vec<&sqlx::mysql::MySqlRow> = Vec::new();
+    {
+        let mut seen = orphan_seen().lock().unwrap_or_else(|e| e.into_inner());
+        let mut still: std::collections::HashMap<u64, std::time::Instant> = std::collections::HashMap::new();
+        for row in &rows {
+            let id: u64 = row.try_get("id")?;
+            if running.contains(&id) {
+                continue;
+            }
+            let owner: Option<String> = row.try_get("worker_id")?;
+            if owner.as_deref().is_some_and(|w| w != worker_id()) {
+                let since = seen.get(&id).copied().unwrap_or(now);
+                if now.duration_since(since) < ORPHAN_GRACE {
+                    still.insert(id, since);
+                    continue;
+                }
+            }
+            ready.push(row);
         }
+        // Jobs whose worker came back, or that finished, are forgotten.
+        *seen = still;
+    }
+    let mut out = Orphans::default();
+    for row in ready {
+        let id: u64 = row.try_get("id")?;
         let cancel: bool = row.try_get("cancel_requested")?;
         let attempts: u16 = row.try_get("attempts")?;
         let job_type: String = row.try_get("job_type")?;
@@ -718,7 +757,10 @@ pub async fn peek_pending(pool: &MySqlPool, limit: u32) -> Result<Vec<JobRow>, D
 }
 
 /// The first pending job of every lane group (job type x priority x provider x the hash
-/// match service flags -- everything `lane_of` and the `:fast` slot depend on), highest
+/// match service flags x a sync's source x a copy's destination x an artwork export's folder
+/// or emulator -- everything `lane_of` and the `:fast` slot depend on; a payload field
+/// `lane_of` reads must be added here too, or a job for an idle lane can wait behind one of
+/// a busy lane in the same group), highest
 /// priority then first in line. "First" is the lowest `queue_order` (migration 0077): the
 /// oldest, unless "Run next" ([`run_next`]) moved a job ahead. What the scheduler starts from: unlike a fixed-size
 /// `peek_pending` window, a job whose lane is idle is always seen, however many jobs are
@@ -728,7 +770,8 @@ pub async fn peek_pending(pool: &MySqlPool, limit: u32) -> Result<Vec<JobRow>, D
 /// lane group would hide the ordinary jobs behind it, which are the very jobs it waits for.
 pub async fn peek_lane_heads(pool: &MySqlPool) -> Result<Vec<JobRow>, DatabaseError> {
     let sql = format!(
-        "{JOB_SELECT} WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY job_type, priority, LOWER(JSON_VALUE(payload, '$.provider')), JSON_VALUE(payload, '$.to_hasheous'), JSON_VALUE(payload, '$.to_playmatch') ORDER BY {QUEUE_ORDER}) AS n FROM jobs WHERE status = 'pending' AND in_turn = FALSE) heads WHERE n = 1) ORDER BY priority DESC, {QUEUE_ORDER}"
+        "{JOB_SELECT} WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY job_type, priority, LOWER(JSON_VALUE(payload, '$.provider')), JSON_VALUE(payload, '$.to_hasheous'), JSON_VALUE(payload, '$.to_playmatch'), \
+         JSON_VALUE(payload, '$.source_id'), JSON_VALUE(payload, '$.destination'), JSON_VALUE(payload, '$.target.dir'), JSON_VALUE(payload, '$.emulator_id') ORDER BY {QUEUE_ORDER}) AS n FROM jobs WHERE status = 'pending' AND in_turn = FALSE) heads WHERE n = 1) ORDER BY priority DESC, {QUEUE_ORDER}"
     );
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?;
     rows.iter().map(row_to_job).collect()
@@ -762,47 +805,43 @@ const QUEUE_ORDER: &str = "COALESCE(queue_order, id), id";
 /// `ids` together (a selection) keep their relative order: they are moved last first, so
 /// the first of them ends up in front.
 pub async fn run_next(pool: &MySqlPool, ids: &[u64]) -> Result<Vec<(u64, Option<u64>)>, DatabaseError> {
-    let mut wanted: Vec<JobRow> = Vec::new();
-    for id in ids {
-        if let Some(row) = get(pool, *id).await?.filter(|r| r.status == "pending") {
-            wanted.push(row);
-        }
-    }
+    // Every waiting job's lane, worked out once: the moves and the places below are all
+    // read from this.
+    let mut queue = waiting(pool).await?;
     // Their order in line as it is now, so moving them one by one, last first, keeps it.
-    let mut order: Vec<(i64, u64)> = Vec::new();
-    for row in &wanted {
-        let q: Option<i64> = sqlx::query_scalar("SELECT queue_order FROM jobs WHERE id = ?").bind(row.id).fetch_one(pool).await?;
-        order.push((q.unwrap_or(row.id as i64), row.id));
-    }
+    let mut order: Vec<(i64, u64)> = queue.iter().filter(|w| ids.contains(&w.id)).map(|w| (w.q, w.id)).collect();
     order.sort();
     for (_, id) in order.iter().rev() {
-        let Some(row) = wanted.iter().find(|r| r.id == *id) else { continue };
-        let lowest = lane_peers(pool, row).await?.into_iter().map(|(_, q)| q).min();
+        let Some(me) = queue.iter().position(|w| w.id == *id) else { continue };
+        let lowest = queue.iter().filter(|w| w.lane == queue[me].lane && w.in_turn == queue[me].in_turn).map(|w| w.q).min();
         if let Some(lowest) = lowest {
-            sqlx::query("UPDATE jobs SET queue_order = ? WHERE id = ? AND status = 'pending'").bind(lowest - 1).bind(row.id).execute(pool).await?;
+            sqlx::query("UPDATE jobs SET queue_order = ? WHERE id = ? AND status = 'pending'").bind(lowest - 1).bind(*id).execute(pool).await?;
+            queue[me].q = lowest - 1;
         }
     }
-    let mut out = Vec::new();
-    for id in ids {
-        out.push((*id, position_in_lane(pool, *id).await?));
-    }
-    Ok(out)
+    Ok(ids.iter().map(|id| (*id, place_in_lane(&queue, *id))).collect())
 }
 
 /// Where pending job `id` stands among the jobs waiting in its lane: 1 = starts next. `None`
 /// when it is not pending.
 pub async fn position_in_lane(pool: &MySqlPool, id: u64) -> Result<Option<u64>, DatabaseError> {
-    let Some(row) = get(pool, id).await?.filter(|r| r.status == "pending") else { return Ok(None) };
-    let mut peers = lane_peers(pool, &row).await?;
-    peers.sort_by_key(|(peer, q)| (*q, *peer));
-    Ok(peers.iter().position(|(peer, _)| *peer == id).map(|i| i as u64 + 1))
+    Ok(place_in_lane(&waiting(pool).await?, id))
 }
 
-/// Every pending job in `row`'s lane (same lane name and `in_turn` flag, `row` included),
-/// with its place in line.
-async fn lane_peers(pool: &MySqlPool, row: &JobRow) -> Result<Vec<(u64, i64)>, DatabaseError> {
-    let rows = sqlx::query("SELECT id, job_type, payload, priority, COALESCE(queue_order, id) AS q FROM jobs WHERE status = 'pending' AND in_turn = ?").bind(row.in_turn).fetch_all(pool).await?;
-    let mut out = Vec::new();
+/// A pending job, as the lane order sees it.
+struct Waiting {
+    id: u64,
+    /// [`lane_of`], with `:fast` for a priority job.
+    lane: String,
+    in_turn: bool,
+    /// Its place in line ([`QUEUE_ORDER`]).
+    q: i64,
+}
+
+/// Every pending job with its lane, each payload read once.
+async fn waiting(pool: &MySqlPool) -> Result<Vec<Waiting>, DatabaseError> {
+    let rows = sqlx::query("SELECT id, job_type, payload, priority, in_turn, COALESCE(queue_order, id) AS q FROM jobs WHERE status = 'pending'").fetch_all(pool).await?;
+    let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let type_name: String = r.try_get("job_type")?;
         let Some(job_type) = JobType::from_name(&type_name) else { continue };
@@ -812,11 +851,17 @@ async fn lane_peers(pool: &MySqlPool, row: &JobRow) -> Result<Vec<(u64, i64)>, D
         if priority > 0 {
             lane.push_str(":fast");
         }
-        if lane == row.lane {
-            out.push((r.try_get("id")?, r.try_get("q")?));
-        }
+        out.push(Waiting { id: r.try_get("id")?, lane, in_turn: r.try_get("in_turn")?, q: r.try_get("q")? });
     }
     Ok(out)
+}
+
+/// `id`'s place among the jobs of its lane (same lane name and `in_turn` flag), 1 = next.
+fn place_in_lane(queue: &[Waiting], id: u64) -> Option<u64> {
+    let me = queue.iter().find(|w| w.id == id)?;
+    let mut peers: Vec<(i64, u64)> = queue.iter().filter(|w| w.lane == me.lane && w.in_turn == me.in_turn).map(|w| (w.q, w.id)).collect();
+    peers.sort();
+    peers.iter().position(|(_, peer)| *peer == id).map(|i| i as u64 + 1)
 }
 
 pub const STATUSES: [&str; 5] = ["pending", "in_progress", "done", "failed", "cancelled"];
@@ -1005,6 +1050,17 @@ mod tests {
         assert_eq!(progress.framed(9, Some(9)), (4000, Some(7000)), "never past the step's end");
         progress.set_inner_frame(None);
         assert_eq!(progress.framed(1, Some(4)), (3250, Some(7000)));
+    }
+
+    #[test]
+    fn a_place_in_line_counts_only_its_own_lane() {
+        let w = |id: u64, lane: &str, in_turn: bool, q: i64| Waiting { id, lane: lane.to_string(), in_turn, q };
+        let queue = vec![w(1, "cpu", false, 1), w(2, "copy:aa", false, 2), w(3, "cpu", false, 3), w(4, "copy:bb", false, 4), w(5, "cpu", true, 0), w(6, "cpu", false, -1)];
+        assert_eq!(place_in_lane(&queue, 6), Some(1), "moved ahead");
+        assert_eq!(place_in_lane(&queue, 3), Some(3));
+        assert_eq!(place_in_lane(&queue, 4), Some(1), "another drive is another lane");
+        assert_eq!(place_in_lane(&queue, 5), Some(1), "waiting its turn is a line of its own");
+        assert_eq!(place_in_lane(&queue, 9), None);
     }
 
     #[test]

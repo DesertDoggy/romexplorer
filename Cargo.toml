@@ -18,7 +18,6 @@ name = "romexplorer"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
-build = "build.rs"
 
 [[bin]]
 name = "biosdb_gen"
@@ -105,10 +104,6 @@ name = "test_tls"
 path = "tests/src/test_tls.rs"
 
 [features]
-# Hook for the optional hand-written x86_64 MASM decode loop for LZMA (see build.rs). Off by
-# default: has no effect on non-x86_64 hosts, and falls back to the portable C decoder if no
-# MASM-compatible assembler is found even when enabled on x86_64.
-lzma_dec_asm = []
 # AVIF *decoding* of media sources through dav1d (C, via the image crate's avif-native).
 # Off by default: provider art is JPEG/PNG/WebP, and dav1d would need building per target
 # (incl. iOS/Android). Without it an AVIF source is served as-is, with no thumbnail.
@@ -270,9 +265,6 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 tower = { version = "0.5", features = ["util"] }
 # Encrypted 3DS test files made with fake keys (`tests/src/test_n3ds.rs`).
 cia-tool = { path = "cia-tool", features = ["testkit"] }
-
-[build-dependencies]
-cc = "1.1"
 
 # Release binaries are shipped, so they carry no symbol table: the server binary is 40.6 MB
 # built and ~31.4 MB stripped, and nothing needs `.symtab` at run time -- every `dlopen`ed
