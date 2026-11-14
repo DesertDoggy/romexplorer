@@ -44,7 +44,7 @@ const EDITORS: &[&str] = &[
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
     "audio_dsd_cache_format", "audio_cache_max_mb", "audio_ram_cache_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_limiter", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
     "scan_parallel_files", "copy_parallel_files", "media_export_prefer_region", "media_export_cache_max_mb", "media_export_priority",
-    "merge_review_order", "dat_sync_platforms", "ai_cost_warning_seen",
+    "merge_review_order", "dat_sync_platforms", "ai_cost_warning_seen", "bigpicture_icon_style",
 ];
 
 /// Which media types each provider's sync can download (the vocabulary's `media.providers`).
@@ -331,6 +331,7 @@ fn initial(key: &str, value: &Value) -> Value {
         "ra_source_default" => if value.as_str() == Some("local") { json!("local") } else { json!("all") },
         "media_thumb_format" => if value.is_null() { json!("avif") } else { value.clone() },
         "definitive_two_cover_layout" => if matches!(value.as_str(), Some("diagonal" | "left_right")) { value.clone() } else { json!("top_bottom") },
+        "bigpicture_icon_style" => if value.as_str() == Some("outline") { json!("outline") } else { json!("color") },
         k => match num_spec(k) {
             Some((def, ..)) if value.is_null() => json!(def),
             _ => value.clone(),
@@ -818,6 +819,10 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
                 PlatformPriority { items, labels, on_change: move |o: Vec<String>| set(json!(o.iter().filter_map(|id| id.parse::<u64>().ok()).collect::<Vec<_>>())) }
             }
         }
+        "bigpicture_icon_style" => rsx! {
+            {muted("Big Picture mode: how the icons on its tab buttons are drawn.")}
+            {radios(&[("color", "colour: each icon in its own colour (default)"), ("outline", "outline: thin lines in the text colour")], sv("color"))}
+        },
         "definitive_two_cover_layout" => rsx! {
             {muted("Collection › Definitive, two-cover grid: how the definitive version's and the base game's covers share a card. Each cover is cropped to fill its half.")}
             {radios(&[("top_bottom", "top / bottom (default)"), ("diagonal", "diagonal (top left / bottom right)"), ("left_right", "left / right")], sv("top_bottom"))}

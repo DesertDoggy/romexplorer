@@ -2966,5 +2966,13 @@
   "Local titles": "Titres locaux",
   "Local + catalogue titles": "Titres locaux + du catalogue",
   "Don't sync": "Ne pas synchroniser",
-  "Choose what to sync from each machine first (⟳ Sync now).": "Choisissez d'abord quoi synchroniser depuis chaque machine (⟳ Synchroniser maintenant)."
+  "Choose what to sync from each machine first (⟳ Sync now).": "Choisissez d'abord quoi synchroniser depuis chaque machine (⟳ Synchroniser maintenant).",
+  "View": "Affichage",
+  "Def.": "Déf.",
+  "Cross.": "Multi",
+  "Icons": "Icônes",
+  "Also under Config › Settings › View.": "Aussi dans Configuration › Paramètres › Affichage.",
+  "Big Picture mode: how the icons on its tab buttons are drawn.": "Mode Big Picture : comment sont dessinées les icônes de ses boutons d'onglet.",
+  "colour: each icon in its own colour (default)": "couleur : chaque icône dans sa couleur (par défaut)",
+  "outline: thin lines in the text colour": "contour : traits fins de la couleur du texte"
 }
