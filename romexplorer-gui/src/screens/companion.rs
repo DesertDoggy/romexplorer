@@ -103,7 +103,7 @@ pub fn SyncSheet() -> Element {
         let server = crate::api::endpoint().base;
         let summary = s.last_summary.clone();
         rsx! {
-            h3 { {state::tr("Sync")} }
+            super::bigpicture::SheetHead { title: state::tr("Sync") }
             div { class: "bp-sheet",
                 if server.is_empty() {
                     div { class: "card",
@@ -154,7 +154,6 @@ pub fn SyncSheet() -> Element {
                     if ra_busy() { {state::tr("syncing RA progress…")} } else { {state::tr("Sync RA progress only")} }
                 }
                 p { class: "muted", {state::tr("What is synced, and when, is under ⚙ Settings.")} }
-                div { class: "bp-sheet-actions", button { class: "bp-choice", onclick: move |_| crate::ui::close_modal(), {state::tr("close")} } }
             }
         }
     }
@@ -350,6 +349,7 @@ pub fn ServerSheet() -> Element {
     {
         let error = crate::api::NEEDS_SIGN_IN().unwrap_or_default();
         rsx! {
+            super::bigpicture::SheetHead { title: state::tr("Server") }
             div { class: "bp-sheet",
                 crate::screens::SignIn {
                     error,
@@ -361,7 +361,6 @@ pub fn ServerSheet() -> Element {
                         spawn(async move { let _ = state::load().await; });
                     },
                 }
-                div { class: "bp-sheet-actions", button { class: "bp-choice", onclick: move |_| crate::ui::close_modal(), {state::tr("close")} } }
             }
         }
     }

@@ -3,9 +3,12 @@
 
 [application]
 name = "romcompanion"
+# Both replace dx's generated ones; see the comments at the top of each.
 android_manifest = "android/AndroidManifest.xml"
+android_main_activity = "android/MainActivity.kt"
 
 [bundle]
+# Also hard-coded in android/MainActivity.kt (`typealias BuildConfig`).
 identifier = "com.desertdoggy.romcompanion"
 publisher = "DesertDoggy"
 icon = ["assets/icon.png"]
