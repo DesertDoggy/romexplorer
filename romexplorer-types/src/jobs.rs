@@ -706,6 +706,9 @@ pub struct SqliteExportRequest {
     /// database | catalog | all (the default -- a phone needs both halves to render).
     #[serde(default = "default_cache_kind")]
     pub kind: String,
+    /// `kind = mobile` only: what goes into the phone's copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile: Option<crate::mobile::SyncOptions>,
 }
 
 fn default_cache_kind() -> String {

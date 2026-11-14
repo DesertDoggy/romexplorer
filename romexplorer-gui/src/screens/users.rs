@@ -26,7 +26,7 @@ fn grouped(fingerprint: &str) -> String {
 /// confirm before anything is sent -- the server's certificate is self-signed, so this is
 /// where trust in it comes from, the way SSH asks about a new host.
 #[component]
-pub fn SignIn(error: String, on_done: EventHandler<()>) -> Element {
+pub fn SignIn(error: String, on_done: EventHandler<()>, #[props(default)] embedded: bool) -> Element {
     let ep = api::endpoint();
     let web = cfg!(target_arch = "wasm32");
     let mut server = use_signal(|| ep.base.clone());
@@ -89,58 +89,62 @@ pub fn SignIn(error: String, on_done: EventHandler<()>) -> Element {
             finish(String::new());
         });
     };
-    rsx! {
-        header { h1 { "romexplorer" } }
-        main { id: "view",
-            if !error.is_empty() && message().is_none() { div { class: "card warn", p { "{error}" } } }
-            if let Some(m) = message() { div { class: "card bad", p { "{m}" } } }
-            if let Some(fp) = pending() {
-                div { class: "card",
-                    h2 { {state::tr("Trust this server?")} }
-                    p { {state::tr("This is the first time this app has connected to ")} b { "{api::normalize_base(&server())}" } {state::tr(". Its certificate's fingerprint is:")} }
-                    p { class: "mono", style: "word-break:break-all", "{grouped(&fp)}" }
-                    Explain { {state::tr("Compare it with the one the server shows — in its log when it starts, or under Config › Server. If they match, trust it: from then on this app only talks to that server with that certificate.")} }
-                    div { class: "toolbar",
-                        button { class: "btn primary", disabled: busy(), onclick: move |_| { let fp = fp.clone(); pending.set(None); finish(fp); }, {state::tr("trust and sign in")} }
-                        button { class: "btn", onclick: move |_| pending.set(None), {state::tr("cancel")} }
-                    }
+    let body = rsx! {
+        if !error.is_empty() && message().is_none() { div { class: "card warn", p { "{error}" } } }
+        if let Some(m) = message() { div { class: "card bad", p { "{m}" } } }
+        if let Some(fp) = pending() {
+            div { class: "card",
+                h2 { {state::tr("Trust this server?")} }
+                p { {state::tr("This is the first time this app has connected to ")} b { "{api::normalize_base(&server())}" } {state::tr(". Its certificate's fingerprint is:")} }
+                p { class: "mono", style: "word-break:break-all", "{grouped(&fp)}" }
+                Explain { {state::tr("Compare it with the one the server shows — in its log when it starts, or under Config › Server. If they match, trust it: from then on this app only talks to that server with that certificate.")} }
+                div { class: "toolbar",
+                    button { class: "btn primary", disabled: busy(), onclick: move |_| { let fp = fp.clone(); pending.set(None); finish(fp); }, {state::tr("trust and sign in")} }
+                    button { class: "btn", onclick: move |_| pending.set(None), {state::tr("cancel")} }
                 }
-            } else {
-                div { class: "card",
-                    h2 { {state::tr("Sign in")} }
-                    form { class: "kv", style: "grid-template-columns:120px 1fr",
-                        onsubmit: move |e| { e.prevent_default(); submit(()); },
-                        if !web {
-                            div { {state::tr("server")} }
-                            div {
-                                input { r#type: "text", style: "width:100%", placeholder: "192.168.1.10:7337", value: "{server}", oninput: move |e| server.set(e.value()) }
-                                div { class: "muted", {state::tr("The romexplorer server's address (its port is 7337 unless changed).")} }
-                            }
-                        }
-                        if use_setup() {
-                            div { {state::tr("setup token")} }
-                            div {
-                                input { r#type: "password", style: "width:100%", autocomplete: "off", value: "{setup_token}", oninput: move |e| setup_token.set(e.value()) }
-                                div { class: "muted", {state::tr("The contents of data/server_token on the server. It works only until an admin account exists — use it to create one.")} }
-                            }
-                        } else {
-                            div { {state::tr("username")} }
-                            div { input { r#type: "text", style: "width:100%", autocomplete: "username", value: "{username}", oninput: move |e| username.set(e.value()) } }
-                            div { {state::tr("password")} }
-                            div { input { r#type: "password", style: "width:100%", autocomplete: "current-password", value: "{password}", oninput: move |e| password.set(e.value()) } }
-                        }
-                        div {}
+            }
+        } else {
+            div { class: "card",
+                h2 { {state::tr("Sign in")} }
+                form { class: "kv", style: "grid-template-columns:120px 1fr",
+                    onsubmit: move |e| { e.prevent_default(); submit(()); },
+                    if !web {
+                        div { {state::tr("server")} }
                         div {
-                            button { class: "btn primary", disabled: busy(), if use_setup() { {state::tr("continue")} } else { {state::tr("sign in")} } }
-                            " "
-                            span { class: "link", onclick: move |_| use_setup.set(!use_setup()),
-                                if use_setup() { {state::tr("sign in with an account instead")} } else { {state::tr("a new server? use the setup token")} }
-                            }
+                            input { r#type: "text", style: "width:100%", placeholder: "192.168.1.10:7337", value: "{server}", oninput: move |e| server.set(e.value()) }
+                            div { class: "muted", {state::tr("The romexplorer server's address (its port is 7337 unless changed).")} }
+                        }
+                    }
+                    if use_setup() {
+                        div { {state::tr("setup token")} }
+                        div {
+                            input { r#type: "password", style: "width:100%", autocomplete: "off", value: "{setup_token}", oninput: move |e| setup_token.set(e.value()) }
+                            div { class: "muted", {state::tr("The contents of data/server_token on the server. It works only until an admin account exists — use it to create one.")} }
+                        }
+                    } else {
+                        div { {state::tr("username")} }
+                        div { input { r#type: "text", style: "width:100%", autocomplete: "username", value: "{username}", oninput: move |e| username.set(e.value()) } }
+                        div { {state::tr("password")} }
+                        div { input { r#type: "password", style: "width:100%", autocomplete: "current-password", value: "{password}", oninput: move |e| password.set(e.value()) } }
+                    }
+                    div {}
+                    div {
+                        button { class: "btn primary", disabled: busy(), if use_setup() { {state::tr("continue")} } else { {state::tr("sign in")} } }
+                        " "
+                        span { class: "link", onclick: move |_| use_setup.set(!use_setup()),
+                            if use_setup() { {state::tr("sign in with an account instead")} } else { {state::tr("a new server? use the setup token")} }
                         }
                     }
                 }
             }
         }
+    };
+    if embedded {
+        return body;
+    }
+    rsx! {
+        header { h1 { "romexplorer" } }
+        main { id: "view", {body} }
     }
 }
 

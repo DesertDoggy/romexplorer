@@ -229,6 +229,10 @@ pub async fn maybe_first_run() {
 /// `media_show` has no answer for bgm; the answer goes there (Config › Settings › Media,
 /// "show in UI"). The console asks the same (`askAudio`). Then the mode question.
 async fn ask_audio() {
+    // The phone: music is off there and it is always a client, so the language is all it asks.
+    if cfg!(feature = "mobile") {
+        return;
+    }
     if !api::is_admin() {
         ask_mode().await;
         return;

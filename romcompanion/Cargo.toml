@@ -1,0 +1,33 @@
+[package]
+name = "romcompanion"
+# Its own version, released and noted separately from romexplorer (like chdlite and rommusic).
+version = "0.1.0"
+edition.workspace = true
+repository.workspace = true
+description = "romexplorer on a phone (Android now, iOS later): the app's Big Picture screens over a synced SQLite copy of a server's or client's catalogue."
+
+# Not a second app's code: romexplorer-gui's own sources, built with its `mobile` feature.
+# This crate exists for what `dx` reads per crate -- the app's name, package id, icon and
+# Android manifest (Dioxus.toml) -- so romcompanion installs beside a full romexplorer for
+# Android later instead of replacing it. Keep [dependencies] in step with romexplorer-gui's
+# (minus the desktop-only `local` ones).
+[[bin]]
+name = "romcompanion"
+path = "../romexplorer-gui/src/main.rs"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["router"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+romexplorer-types = { path = "../romexplorer-types", features = ["pinning", "private-files"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+[features]
+default = ["mobile"]
+mobile = ["dioxus/mobile"]
+
+[lints.rust]
+# romexplorer-gui's other builds (desktop, web, the in-process backend), never enabled here.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("local", "desktop", "web"))'] }

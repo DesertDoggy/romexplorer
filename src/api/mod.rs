@@ -36,6 +36,7 @@ pub mod links;
 pub mod media;
 pub mod media_backfill;
 pub mod media_sync;
+pub mod mobile;
 pub mod naming;
 pub mod parallel;
 pub mod patches;

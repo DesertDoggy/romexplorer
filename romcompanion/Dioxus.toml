@@ -1,0 +1,20 @@
+# Read by `dx` only, for the phone app (scripts/build_romcompanion_android.sh). The code is
+# romexplorer-gui's; this names the app and gives it its own package id and icon.
+
+[application]
+name = "romcompanion"
+android_manifest = "android/AndroidManifest.xml"
+
+[bundle]
+identifier = "com.desertdoggy.romcompanion"
+publisher = "DesertDoggy"
+icon = ["assets/icon.png"]
+
+[android]
+min_sdk = 26
+target_sdk = 35
+compile_sdk = 35
+
+[ios]
+# iOS builds from the same code (`dx bundle --ios`) once it is tested; nothing in the app is
+# Android-only. Not shipped yet.
