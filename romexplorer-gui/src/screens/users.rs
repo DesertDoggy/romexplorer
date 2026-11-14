@@ -104,6 +104,9 @@ pub fn SignIn(error: String, on_done: EventHandler<()>, #[props(default)] embedd
                 }
             }
         } else {
+            if !web {
+                NetworkServers { on_pick: move |base: String| { server.set(base); message.set(None); } }
+            }
             div { class: "card",
                 h2 { {state::tr("Sign in")} }
                 form { class: "kv", style: "grid-template-columns:120px 1fr",
@@ -145,6 +148,42 @@ pub fn SignIn(error: String, on_done: EventHandler<()>, #[props(default)] embedd
     rsx! {
         header { h1 { "romexplorer" } }
         main { id: "view", {body} }
+    }
+}
+
+/// The romexplorer servers that answered a search of this network: one tap puts the address
+/// in the sign-in form, which then asks for the account (or the setup token). Shares are left
+/// out: they are for another romexplorer to mirror, not to sign in to.
+#[component]
+fn NetworkServers(on_pick: EventHandler<String>) -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut found = use_resource(|| async { api::discovery::search().await });
+        let list: Option<Vec<romexplorer_types::discovery::Found>> = found.read().as_ref().map(|f| f.iter().filter(|f| f.announce.kind == "server").cloned().collect());
+        rsx! {
+            div { class: "card",
+                h2 { {state::tr("On this network")} }
+                match list {
+                    None => rsx! { p { class: "muted", {state::tr("searching…")} } },
+                    Some(l) if l.is_empty() => rsx! { p { class: "muted", {state::tr("No server answered. Type its address below.")} } },
+                    Some(l) => rsx! {
+                        div { class: "toolbar", style: "flex-wrap:wrap",
+                            for f in l {
+                                button { key: "{f.base()}", class: "btn", onclick: { let b = f.base(); move |_| on_pick.call(b.clone()) },
+                                    b { "{f.announce.name}" } " " span { class: "muted", "{f.ip}:{f.announce.port}" }
+                                }
+                            }
+                        }
+                    },
+                }
+                button { class: "btn", r#type: "button", onclick: move |_| found.restart(), {state::tr("search again")} }
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = on_pick;
+        rsx! {}
     }
 }
 

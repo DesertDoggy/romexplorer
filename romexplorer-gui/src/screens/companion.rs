@@ -59,7 +59,7 @@ pub fn machine_views() -> Vec<(String, String)> {
 
 #[cfg(feature = "mobile")]
 fn machine_label(m: &crate::api::companion::Machine) -> String {
-    let role = if m.is_main { state::tr("main server") } else { state::tr("client") };
+    let role = if m.is_main { state::tr("main server") } else { state::tr("peer") };
     format!("{} ({role})", m.name)
 }
 
@@ -246,7 +246,7 @@ pub fn SyncSheet() -> Element {
             div { class: "bp-sheet",
                 if server.is_empty() {
                     div { class: "card",
-                        p { {state::tr("No server set up yet. The app works on its own until then; add the server or client to sync from when you want to.")} }
+                        p { {state::tr("No server set up yet. The app works on its own until then; add the server or a peer to sync from when you want to.")} }
                         button { class: "bp-choice primary", onclick: move |_| { crate::ui::close_modal(); crate::ui::open_modal(|| rsx! { ServerSheet {} }); }, {state::tr("Set up the server")} }
                     }
                 } else {
@@ -332,7 +332,7 @@ pub fn PhoneSettings() -> Element {
         rsx! {
             h4 { {state::tr("Server")} }
             if server.is_empty() {
-                p { class: "muted", {state::tr("None yet. Everything below works without one; add the server or client to sync from when you want to.")} }
+                p { class: "muted", {state::tr("None yet. Everything below works without one; add the server or a peer to sync from when you want to.")} }
                 button { class: "bp-choice primary", onclick: move |_| crate::ui::open_modal(|| rsx! { ServerSheet {} }), {state::tr("Set up the server")} }
             } else {
                 p { class: "muted",
@@ -421,7 +421,7 @@ pub fn PhoneSettings() -> Element {
                     }
                 }
             }
-            p { class: "muted", {state::tr("Metadata and art downloads run on the server or client. Start one from a title's or release's menu (long press or Y); the phone never starts one by itself.")} }
+            p { class: "muted", {state::tr("Metadata and art downloads run on the server or a peer. Start one from a title's or release's menu (long press or Y); the phone never starts one by itself.")} }
         }
     }
     #[cfg(not(feature = "mobile"))]

@@ -22,6 +22,7 @@ pub const PLAYER_JS: &str = include_str!("player.js");
 pub mod auth;
 pub mod backup;
 pub mod copy;
+pub mod discovery;
 pub mod integrity;
 pub mod jobs;
 pub mod mobile;

@@ -327,6 +327,33 @@ pub fn source_dialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) 
     ui::open_modal(move || rsx! { SourceDialog { existing: existing.clone(), on_done } });
 }
 
+/// Servers and shares that answered a search of the local network (asked by the server this
+/// app talks to, so the web app gets the same list). Picking one fills in the form: a server
+/// becomes the main server, a share a peer; signing in is still the fields below.
+#[component]
+fn NetworkSources(on_pick: EventHandler<romexplorer_types::discovery::Found>) -> Element {
+    let mut found = use_resource(|| async { api::get_as::<Vec<romexplorer_types::discovery::Found>>("/api/v1/sources/discover").await });
+    let list = found.read().as_ref().map(|r| r.as_ref().map(|l| l.clone()).unwrap_or_default());
+    rsx! {
+        div { class: "muted", style: "margin-bottom:6px", {state::tr("On this network")} }
+        div { class: "toolbar", style: "flex-wrap:wrap;margin-bottom:10px",
+            match list {
+                None => rsx! { span { class: "muted", {state::tr("searching…")} } },
+                Some(l) if l.is_empty() => rsx! { span { class: "muted", {state::tr("Nothing answered. Type the address below.")} } },
+                Some(l) => rsx! {
+                    for f in l {
+                        button { key: "{f.base()}", class: "btn", r#type: "button", onclick: { let f = f.clone(); move |_| on_pick.call(f.clone()) },
+                            b { "{f.announce.name}" } " "
+                            span { class: "muted", "{f.ip}:{f.announce.port} · " {if f.announce.kind == "server" { state::tr("main server") } else { state::tr("peer") }} }
+                        }
+                    }
+                },
+            }
+            button { class: "btn", r#type: "button", onclick: move |_| found.restart(), {state::tr("search again")} }
+        }
+    }
+}
+
 #[component]
 fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> Element {
     let (id, has_token) = existing.as_ref().map(|s| (Some(s.id), s.has_token)).unwrap_or((None, false));
@@ -389,6 +416,13 @@ fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> El
     };
     rsx! {
         h3 { if id.is_some() { {state::tr("Edit source")} } else { {state::tr("Add source")} } }
+        if id.is_none() {
+            NetworkSources { on_pick: move |f: romexplorer_types::discovery::Found| {
+                name.set(f.announce.name.clone());
+                base_url.set(f.base());
+                role.set(if f.announce.kind == "server" { "main".into() } else { "peer".into() });
+            } }
+        }
         form { class: "kv", style: "grid-template-columns:110px 1fr", onsubmit: move |e| { e.prevent_default(); submit(()); },
             div { {state::tr("name")} } div { input { value: "{name}", required: true, style: "width:100%", oninput: move |e| name.set(e.value()) } }
             div { {state::tr("address")} } div {

@@ -2389,7 +2389,7 @@
   "not held here, nothing to start": "여기에 보유하지 않아 시작할 수 없음",
   "nothing here": "항목 없음",
   "on the main server only": "메인 서버에만 있음",
-  "shared clients": "공유 클라이언트",
+  "shared peers": "공유 피어",
   "supported": "지원됨",
   "{n} items": "항목 {n}개",
   "{n} more…": "{n}개 더…",
@@ -2975,5 +2975,9 @@
   "Big Picture mode: how the icons on its tab buttons are drawn.": "Big Picture 모드의 탭 버튼 아이콘 표시 방식입니다.",
   "colour: each icon in its own colour (default)": "컬러: 아이콘마다 고유한 색 (기본)",
   "outline: thin lines in the text colour": "윤곽선: 글자색의 가는 선",
-  "Language": "언어"
+  "Language": "언어",
+  "On this network": "이 네트워크",
+  "search again": "다시 검색",
+  "No server answered. Type its address below.": "응답한 서버가 없습니다. 아래에 주소를 입력하세요.",
+  "Nothing answered. Type the address below.": "응답이 없습니다. 아래에 주소를 입력하세요."
 }

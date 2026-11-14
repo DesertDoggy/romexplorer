@@ -2736,7 +2736,7 @@ function machineFilter() {
   return { key: 'machine', label: tr('Machine'), type: 'select', options: () => {
     const ms = vocabMachines();
     const self = ms[0] && ms[0].name ? trf('this machine ({name})', { name: ms[0].name }) : tr('this machine');
-    const o = ms.length <= 1 ? [['', self]] : [['', tr('any machine')], ['local', self]].concat(ms.slice(1).map(m => [m.id, `${m.name} (${m.role === 'main' ? tr('main server') : tr('client')})`]));
+    const o = ms.length <= 1 ? [['', self]] : [['', tr('any machine')], ['local', self]].concat(ms.slice(1).map(m => [m.id, `${m.name} (${m.role === 'main' ? tr('main server') : tr('peer')})`]));
     return o.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
   } };
 }
@@ -6666,7 +6666,7 @@ async function mountDialog(sourceId, sourceName, done) {
 }
 
 function sourceDialog(s, done) {
-  const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3><form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
+  const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3>${s.id ? '' : `<div class="muted" style="margin-bottom:6px">${tr('On this network')}</div><div class="toolbar" id="src-found" style="flex-wrap:wrap;margin-bottom:10px"></div>`}<form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
     <div>${tr('name')}</div><div><input name="name" value="${esc(s.name)}" required style="width:100%"></div>
     <div>${tr('address')}</div><div><input name="base_url" value="${esc(s.base_url)}" required style="width:100%" placeholder="http://192.168.1.10:7337"><div class="muted">${tr("host and port only, no /api/v1 — a main server's main port, a peer's share port")}</div></div>
     <div>${tr('sign in as')}</div><div><input name="username" style="width:48%" autocomplete="off" placeholder="${tr('username on that machine')}"> <input name="password" type="password" style="width:48%" autocomplete="off" placeholder="${tr('password')}">
@@ -6678,6 +6678,25 @@ function sourceDialog(s, done) {
   box.querySelector('#src-cancel').onclick = closeModal;
   const f = box.querySelector('#src-form');
   const send = body => api(s.id ? '/api/v1/sources/' + s.id : '/api/v1/sources', { method: s.id ? 'PUT' : 'POST', body });
+  // Servers and shares that answered a search of the local network. Picking one fills in
+  // the form: a server becomes the main server, a share a peer; signing in is still below.
+  const found = box.querySelector('#src-found');
+  const search = async () => {
+    found.innerHTML = `<span class="muted">${tr('searching…')}</span>`;
+    let list = [];
+    try { list = await api('/api/v1/sources/discover'); } catch (e) { /* shown as nothing found */ }
+    const base = x => `${x.tls ? 'https' : 'http'}://${x.ip.includes(':') ? '[' + x.ip + ']' : x.ip}:${x.port}`;
+    found.innerHTML = (list.length ? list.map((x, i) => `<button class="btn" type="button" data-found="${i}"><b>${esc(x.name)}</b> <span class="muted">${esc(x.ip)}:${x.port} · ${x.kind === 'server' ? tr('main server') : tr('peer')}</span></button>`).join('')
+      : `<span class="muted">${tr('Nothing answered. Type the address below.')}</span>`) + ` <button class="btn" type="button" id="src-search">${tr('search again')}</button>`;
+    for (const b of found.querySelectorAll('[data-found]')) b.onclick = () => {
+      const x = list[+b.dataset.found];
+      f.name.value = x.name; f.base_url.value = base(x);
+      f.querySelector(`input[name=role][value=${x.kind === 'server' ? 'main' : 'peer'}]`).checked = true;
+      f.username.focus();
+    };
+    found.querySelector('#src-search').onclick = search;
+  };
+  if (found) search();
   f.onsubmit = async ev => {
     ev.preventDefault();
     const body = { name: f.name.value.trim(), base_url: f.base_url.value.trim(), role: f.role.value, enabled: f.enabled.checked };

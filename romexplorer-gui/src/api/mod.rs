@@ -11,6 +11,8 @@
 #[cfg(feature = "local")]
 pub mod assets;
 pub mod backend;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod discovery;
 #[cfg(feature = "mobile")]
 pub mod companion;
 #[cfg(feature = "local")]
