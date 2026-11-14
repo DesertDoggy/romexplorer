@@ -30,6 +30,8 @@ const MIN_SHARE: f64 = 0.5;
 /// A track's length when the `.spc` has no tag.
 const DEFAULT_LENGTH_MS: u32 = 150_000;
 const DEFAULT_FADE_MS: u32 = 8_000;
+/// Bytes most tracks agree on go in the shared part only in stretches at least this long.
+const MIN_SHARED_STRETCH: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
@@ -102,7 +104,16 @@ impl Map {
     /// order), or None when none of its tracks is enough in this ROM. Files that are not an
     /// `.spc`, or too little of whose memory is in the ROM, are left out.
     pub fn build(spcs: &[&[u8]], rom: &[u8]) -> Option<Map> {
+        // Two ways of sharing a game's bytes between its tracks; neither wins everywhere
+        // (measured on the 20 biggest maps: byte by byte took one to a third, and another to
+        // four times, of run by run), so each game keeps the smaller.
         let placed = spc_map::tracks(spcs, rom);
+        let by_run = Self::build_with(spcs, rom, placed.clone(), false)?;
+        let by_byte = Self::build_with(spcs, rom, placed, true)?;
+        Some(if by_byte.encode().len() < by_run.encode().len() { by_byte } else { by_run })
+    }
+
+    fn build_with(spcs: &[&[u8]], rom: &[u8], placed: Vec<Option<spc_map::Track>>, by_byte: bool) -> Option<Map> {
         // Per track: its ROM copies, the image it needs and where it needs it.
         struct Wanted {
             copies: Vec<Run>,
@@ -135,6 +146,17 @@ impl Map {
         }
         if wanted.is_empty() {
             return None;
+        }
+        if !by_byte {
+            return Some(Self::shared_by_run(wanted.into_iter().map(|w| {
+                let mut runs = w.copies;
+                let mut laid = vec![0u8; IMAGE];
+                for r in &runs {
+                    r.apply(&mut laid, rom);
+                }
+                runs.extend(gba_map::diff(&w.image, &w.spans, &laid));
+                Track { runs, pc: w.pc, regs: w.regs, dsp: w.dsp, length_ms: w.length_ms, fade_ms: w.fade_ms }
+            }).collect(), rom.len()));
         }
         // Copies every track has are kept once.
         use std::collections::HashSet;
@@ -177,10 +199,27 @@ impl Map {
                     }
                 }
                 let (value, &count) = counts.iter().enumerate().max_by_key(|(v, &c)| (c, std::cmp::Reverse(*v))).expect("256 values");
-                if count >= 2 || (count == 1 && wanted.len() == 1) {
+                // Most of the tracks that need the byte agree on it.
+                let needing = need.iter().filter(|n| n[i]).count();
+                if count as usize * 2 > needing && (count >= 2 || wanted.len() == 1) {
                     common_image[i] = value as u8;
                     common_need[i] = true;
                 }
+            }
+        }
+        // Short agreeing stretches cost more as their own runs than they save.
+        let mut i = 0;
+        while i < IMAGE {
+            if !common_need[i] {
+                i += 1;
+                continue;
+            }
+            let a = i;
+            while i < IMAGE && common_need[i] {
+                i += 1;
+            }
+            if i - a < MIN_SHARED_STRETCH {
+                common_need[a..i].iter_mut().for_each(|x| *x = false);
             }
         }
         let mut common_spans = Vec::new();
@@ -206,6 +245,19 @@ impl Map {
             tracks.push(Track { runs, pc: w.pc, regs: w.regs, dsp: w.dsp, length_ms: w.length_ms, fade_ms: w.fade_ms });
         }
         Some(Map { rom_len: rom.len() as u32, common, tracks })
+    }
+
+    /// Runs every track has, kept once.
+    fn shared_by_run(mut tracks: Vec<Track>, rom_len: usize) -> Map {
+        use std::collections::HashSet;
+        let others: Vec<HashSet<&Run>> = tracks[1..].iter().map(|t| t.runs.iter().collect()).collect();
+        let common: Vec<Run> = tracks[0].runs.iter().filter(|r| others.iter().all(|o| o.contains(r))).cloned().collect();
+        drop(others);
+        let shared: HashSet<Run> = common.iter().cloned().collect();
+        for t in &mut tracks {
+            t.runs.retain(|r| !shared.contains(r));
+        }
+        Map { rom_len: rom_len as u32, common, tracks }
     }
 
     /// Track `t`'s `.spc`, rebuilt from the ROM.
