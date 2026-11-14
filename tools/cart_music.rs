@@ -1646,7 +1646,8 @@ fn main() {
     }
     args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
     // `--pack-maps <dir> <out folder>`: the maps kept under <dir>, one bundle per kind
-    // (music_maps_<kind>.zst), as the app and rommusic ship them in assets/.
+    // (music_maps_<kind>.zst, or music_maps_<kind>_0..f.zst for a big kind), as the app and
+    // rommusic ship them in assets/.
     if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
         let (Some(dir), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
             eprintln!("usage: cart_music --pack-maps <maps folder> <output folder>");
@@ -1658,8 +1659,8 @@ fn main() {
                     eprintln!("{out}: {e}");
                     std::process::exit(1);
                 }
-                for (kind, packed, n) in bundles {
-                    let file = Path::new(out).join(rom_songs::bundle_file(&kind));
+                for (name, packed, n) in bundles {
+                    let file = Path::new(out).join(name);
                     if let Err(e) = std::fs::write(&file, &packed) {
                         eprintln!("{}: {e}", file.display());
                         std::process::exit(1);
