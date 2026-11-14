@@ -53,6 +53,8 @@ const GBA_MAP: &str = "gbamap";
 const SNES_MAP: &str = "snesmap";
 /// An N64 song played from the ROM by its music map ([`super::n64_map`]).
 const N64_MAP: &str = "n64map";
+/// How long each track of a new N64 map is played to find one with sound.
+const N64_AUDIBLE_SECONDS: u32 = 10;
 /// `gb@<recipe>@<body ms>@<fade ms>`: the same, for the Game Boy and Game Boy Color.
 const GB: &str = "gb";
 /// The same, for the Master System and the Game Gear.
@@ -1163,6 +1165,12 @@ fn n64_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
             return Ok(true);
         }
         let Some(mut m) = builder.finish() else { continue };
+        // A set every track of which plays silent here makes no map: it would list songs
+        // that play nothing.
+        let audible = |t: usize| m.section(&native, t).and_then(|s| super::n64_map::render(&s, m.compare, m.fifo_full, N64_AUDIBLE_SECONDS)).is_ok_and(|o| o.iter().any(|&x| x != 0));
+        if !(0..m.tracks.len()).any(audible) {
+            continue;
+        }
         super::n64_map::slim(&mut m, &native)?;
         let file = MAPS_DIR.get().ok_or("no folder for music maps")?.join("n64").join(format!("{key}.n64map"));
         if let Some(dir) = file.parent() {
