@@ -2966,5 +2966,13 @@
   "Local titles": "ローカルのタイトル",
   "Local + catalogue titles": "ローカル＋カタログのタイトル",
   "Don't sync": "同期しない",
-  "Choose what to sync from each machine first (⟳ Sync now).": "先にマシンごとの同期内容を選んでください（⟳ 今すぐ同期）。"
+  "Choose what to sync from each machine first (⟳ Sync now).": "先にマシンごとの同期内容を選んでください（⟳ 今すぐ同期）。",
+  "View": "ビュー",
+  "Def.": "決定版",
+  "Cross.": "マルチ",
+  "Icons": "アイコン",
+  "Also under Config › Settings › View.": "設定 › 設定 › ビューでも変更できます。",
+  "Big Picture mode: how the icons on its tab buttons are drawn.": "Big Picture モードのタブボタンのアイコンの表示です。",
+  "colour: each icon in its own colour (default)": "カラー：アイコンごとに色分け（既定）",
+  "outline: thin lines in the text colour": "線画：文字色の細い線"
 }

@@ -2966,5 +2966,13 @@
   "Local titles": "Tytuły lokalne",
   "Local + catalogue titles": "Tytuły lokalne + z katalogu",
   "Don't sync": "Nie synchronizuj",
-  "Choose what to sync from each machine first (⟳ Sync now).": "Najpierw wybierz, co synchronizować z każdej maszyny (⟳ Synchronizuj teraz)."
+  "Choose what to sync from each machine first (⟳ Sync now).": "Najpierw wybierz, co synchronizować z każdej maszyny (⟳ Synchronizuj teraz).",
+  "View": "Widok",
+  "Def.": "Def.",
+  "Cross.": "Multi",
+  "Icons": "Ikony",
+  "Also under Config › Settings › View.": "Także w Konfiguracja › Ustawienia › Widok.",
+  "Big Picture mode: how the icons on its tab buttons are drawn.": "Tryb Big Picture: jak rysowane są ikony przycisków kart.",
+  "colour: each icon in its own colour (default)": "kolor: każda ikona we własnym kolorze (domyślnie)",
+  "outline: thin lines in the text colour": "kontur: cienkie linie w kolorze tekstu"
 }
