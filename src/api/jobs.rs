@@ -214,7 +214,14 @@ pub async fn validate(app: &App, request: &JobRequest) -> Result<()> {
             None => super::media_sync::main_source(app).await?.map(|_| ()).ok_or_else(|| Error::invalid("media_sync: there is no main server to fetch art from -- add one under Config > Share, or name a source_id")),
         },
         JobRequest::RestoreBackup(r) => super::backup::file(app, &r.name).await.map(|_| ()),
-        JobRequest::SqliteExport(r) => super::sqlite::tables_for(&r.kind).map(|_| ()),
+        JobRequest::SqliteExport(r) => {
+            super::sqlite::tables_for(&r.kind)?;
+            match &r.mobile {
+                Some(o) if r.kind == super::sqlite::MOBILE_KIND => super::mobile::validate(o),
+                Some(_) => Err(Error::invalid("mobile options go with kind mobile only")),
+                None => Ok(()),
+            }
+        }
         JobRequest::SqliteImport(r) => {
             if !r.name.ends_with(".sqlite") {
                 return Err(Error::invalid("that is not a .sqlite cache"));

@@ -21,6 +21,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tower = { version = "0.5", features = ["util"], optional = true }
 axum = { version = "0.8", optional = true }
 
+# `mobile` only: the synced copy the phone reads (`api::offline`). Bundled, so Android and
+# iOS build their own SQLite; the same libsqlite3-sys the backend's sqlx already pins.
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }
+
 # Native REST builds (mobile) pin the server's self-signed certificate. The web build leaves
 # TLS to the browser and never compiles rustls.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -33,10 +37,11 @@ web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
 default = ["desktop"]
 web = ["dioxus/web"]
 desktop = ["dioxus/desktop", "local"]
-# Non-wasm, but MariaDB doesn't run on a phone (docs/plan/gui.md), so mobile stays a REST
-# client like the web build -- which is why `local` is its own feature rather than a
-# `cfg(not(target_arch = "wasm32"))`.
-mobile = ["dioxus/mobile"]
+# Non-wasm, but MariaDB doesn't run on a phone (docs/plan/gui.md), so mobile is a REST
+# client like the web build, reading a synced SQLite copy when the server is away
+# (romcompanion, docs/plan/handheld.md) -- which is why `local` is its own feature rather
+# than a `cfg(not(target_arch = "wasm32"))`.
+mobile = ["dioxus/mobile", "dep:rusqlite"]
 # This machine's own database, reached in-process instead of over a socket. Pulls in the
 # whole backend crate, so it is desktop-only: `romexplorer` needs sqlx/MariaDB/libloading
 # and a C build.rs, and builds for neither wasm32 nor Android/iOS.
