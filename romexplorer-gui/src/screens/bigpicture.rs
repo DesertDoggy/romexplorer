@@ -798,12 +798,25 @@ pub fn BigPictureShell() -> Element {
     }
 }
 
+/// A sheet's title with its close button at the top right, where a thumb finds it and the
+/// phone's navigation bar can't cover it. Stays in view while the sheet scrolls. B / Back
+/// closes the sheet too.
+#[component]
+pub fn SheetHead(title: String) -> Element {
+    rsx! {
+        div { class: "bp-sheet-head",
+            h3 { "{title}" }
+            button { class: "bp-btn bp-close", title: state::tr("close (B)"), onclick: move |_| ui::close_modal(), "✕" }
+        }
+    }
+}
+
 #[component]
 fn Settings() -> Element {
     let mut start = use_signal(|| false);
     use_future(move || async move { start.set(starts_in_big_picture().await) });
     rsx! {
-        h3 { {state::tr("Big Picture settings")} }
+        SheetHead { title: if CAN_START { state::tr("Big Picture settings") } else { state::tr("Settings") } }
         div { class: "bp-sheet",
             p { class: "muted", {state::tr("Saved on this device only.")} }
             h4 { {state::tr("Covers")} }
@@ -822,7 +835,6 @@ fn Settings() -> Element {
             } else {
                 super::companion::PhoneSettings {}
             }
-            div { style: "margin-top:12px", button { class: "bp-choice", onclick: move |_| ui::close_modal(), {state::tr("close")} } }
         }
     }
 }
@@ -942,7 +954,7 @@ fn FilterSheet(tab: String) -> Element {
     let views: Vec<(String, String)> = super::companion::held_views();
     let apply_tab = tab.clone();
     rsx! {
-        h3 { {state::tr("Filter")} }
+        SheetHead { title: state::tr("Filter") }
         div { class: "bp-sheet",
             match open() {
                 None => rsx! {

@@ -82,6 +82,10 @@
 .bp-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; max-height: 50vh; overflow: auto; }
 .bp-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
 #modal, #submodal { z-index: 30; }
+/* A sheet's title and its close button, top right and always in view. */
+.bp-sheet-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 6px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+.bp-sheet-head h3 { flex: 1; margin: 0; }
+.bp-close { min-width: 44px; min-height: 44px; font-size: 18px; }
 #ctxmenu { z-index: 40; font-size: 16px; }
 .bp ~ #ctxmenu div, .bp #ctxmenu div { padding: 10px 14px; }
 
