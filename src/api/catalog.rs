@@ -107,6 +107,17 @@ pub struct ListQuery {
     pub directory_id: Option<u64>,
     /// See [`VIEWS`].
     pub view: Option<String>,
+    /// The Held filter, apart from the Machine filter: `held` (held on `machine`), `not_held`
+    /// (not held there: the catalogue's titles not owned yet), `missing_on_main` (held here or
+    /// on a client but not on the main server: the backlog still to copy up). See
+    /// [`held_having`].
+    pub held: Option<String>,
+    /// The Machine filter: whose holdings `held` is about. `local` (this machine), a remote
+    /// source's id (the main server, a client), or empty for any of them -- which outside
+    /// client mode is this machine alone, as a server or a standalone machine has no other
+    /// machine to choose. Alone it means held on that machine. `phone` is the companion's own
+    /// choice and holds nothing here.
+    pub machine: Option<String>,
     /// Definitive tab: which version leads a row, `definitive` (default) or `base`.
     pub lead: Option<String>,
     /// Definitive tab and a set's releases: only games with a version note of this rank or
@@ -868,6 +879,45 @@ fn view_parts(view: Option<&str>) -> Result<(&'static str, bool)> {
         "local_ra_ra_first" => Ok(("", false)),
         other => Err(Error::invalid(format!("view {other:?} must be one of {}", VIEWS.join("|")))),
     }
+}
+
+/// The Held and Machine filters as a HAVING condition on the list's per-row counts, the same
+/// counts the `local` / `server` views go by. `None` when neither narrows anything.
+async fn held_having(app: &App, q: &ListQuery) -> Result<Option<String>> {
+    let held = q.held.as_deref().map(str::trim).unwrap_or("");
+    let mut machine = q.machine.as_deref().map(str::trim).unwrap_or("").to_string();
+    if held.is_empty() && machine.is_empty() {
+        return Ok(None);
+    }
+    if held == "missing_on_main" {
+        return Ok(Some("remote_games = 0 AND (local_games > 0 OR peer_games > 0)".to_string()));
+    }
+    if machine.is_empty() && crate::database::settings::instance_mode(&app.pool).await? != crate::database::settings::InstanceMode::Client {
+        machine = romexplorer_types::mobile::THIS_MACHINE.to_string();
+    }
+    let count = match machine.as_str() {
+        "" => "(COUNT(DISTINCT lg.id) + COUNT(DISTINCT IF(rsrc.id IS NOT NULL, rg.id, NULL)))".to_string(),
+        m if m == romexplorer_types::mobile::THIS_MACHINE => "COUNT(DISTINCT lg.id)".to_string(),
+        "phone" => "0".to_string(),
+        m => {
+            let id: u16 = m.parse().map_err(|_| Error::invalid(format!("machine {m:?} must be local, phone or a source id")))?;
+            format!("COUNT(DISTINCT IF(rsrc.id = {id}, rg.id, NULL))")
+        }
+    };
+    match held {
+        "" | "held" => Ok(Some(format!("{count} > 0"))),
+        "not_held" => Ok(Some(format!("{count} = 0"))),
+        other => Err(Error::invalid(format!("held {other:?} must be held, not_held or missing_on_main"))),
+    }
+}
+
+/// `view_parts`' HAVING with the Held / Machine condition added.
+async fn having_with_held(app: &App, q: &ListQuery, view_having: &str) -> Result<String> {
+    Ok(match held_having(app, q).await? {
+        None => view_having.to_string(),
+        Some(c) if view_having.is_empty() => format!(" HAVING {c}"),
+        Some(c) => format!("{view_having} AND {c}"),
+    })
 }
 
 /// "RetroAchievements supports this release": it is linked to an RA game, or RA's own hash
@@ -2098,7 +2148,7 @@ async fn title_list_body(app: &App, q: &ListQuery, binds: &mut Vec<Bind>) -> Res
     // demo is listed twice.
     body.push_str(&format!(" GROUP BY t.id, {}", release_buckets::row_key_sql("r", unlicensed_is_retail)));
     let (having, local_first) = view_parts(q.view.as_deref())?;
-    body.push_str(having);
+    body.push_str(&having_with_held(app, q, having).await?);
     Ok(TitleListBody { body, preferred, local_first, ra_first })
 }
 
@@ -2665,7 +2715,7 @@ pub async fn releases(app: &App, q: &ListQuery) -> Result<Page<ReleaseRow>> {
     }
     body.push_str(RELEASE_GROUP);
     let (having, local_first) = view_parts(q.view.as_deref())?;
-    body.push_str(having);
+    body.push_str(&having_with_held(app, q, having).await?);
     // Within a title (and on request anywhere) releases come in rank order: RA-compatible,
     // then region priority, then language priority.
     let ranking = ReleaseRank::load(app).await?;

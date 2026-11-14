@@ -372,6 +372,16 @@ async fn views(app: &App) {
     assert_eq!(api::catalog::releases(app, &api::catalog::ListQuery { view: Some("local".into()), ..Default::default() }).await.unwrap().total, 0);
     assert_eq!(api::catalog::releases(app, &api::catalog::ListQuery { view: Some("server".into()), ..Default::default() }).await.unwrap().total, 0);
     assert!(api::catalog::releases(app, &api::catalog::ListQuery { view: Some("collection".into()), ..Default::default() }).await.unwrap().total >= 2);
+    // Held and Machine apart from the view: nothing is held, so "held" is empty and "not held"
+    // is everything; a standalone machine's any-machine is this machine.
+    let held = |held: &str, machine: &str| api::catalog::ListQuery { held: Some(held.into()), machine: Some(machine.into()), ..Default::default() };
+    for (h, m) in [("held", ""), ("not_held", ""), ("held", "local"), ("not_held", "1"), ("", "1"), ("missing_on_main", "")] {
+        api::catalog::titles(app, &held(h, m)).await.unwrap();
+    }
+    assert_eq!(api::catalog::releases(app, &held("held", "")).await.unwrap().total, 0);
+    assert!(api::catalog::releases(app, &held("not_held", "local")).await.unwrap().total >= 2);
+    assert!(matches!(api::catalog::releases(app, &held("mine", "")).await, Err(e) if e.kind == ErrorKind::Invalid));
+    assert!(matches!(api::catalog::releases(app, &held("held", "nas")).await, Err(e) if e.kind == ErrorKind::Invalid));
     assert!(api::catalog::titles(app, &api::catalog::ListQuery { provider: Some("igdb".into()), ..Default::default() }).await.unwrap().items.is_empty());
     assert!(matches!(api::catalog::media_file(app, 1).await, Err(e) if e.kind == ErrorKind::NotFound));
 }

@@ -1,44 +1,35 @@
 //! romcompanion's own screens, inside Big Picture's frame: the Sync sheet (sync now, RA
 //! progress now, how the last one went), the phone's settings (what to sync, and when), the
-//! sync status line, and the Held filter's choices by machine.
+//! sync status line, and the Held and Machine filters' choices.
 //!
-//! Everything here is the phone build's (`mobile`); the other builds get the plain Held
-//! choices and nothing else, so Big Picture can name these without a cfg at every use.
+//! Everything here is the phone build's (`mobile`); the other builds get the catalogue's own
+//! Held and Machine choices and nothing else, so Big Picture can name these without a cfg at
+//! every use.
 
 use dioxus::prelude::*;
 
 use crate::state;
 
-/// The Held filter's choices: the catalogue's own views, or on the phone, each machine its
-/// copy was synced with.
+/// The Held filter's choices (`held=`, as `api::catalog::held_having` reads it): held or not
+/// on the machine the Machine filter picks. Off the phone, the catalogue's own list, with the
+/// backlog not yet on the main server on a client.
 pub fn held_views() -> Vec<(String, String)> {
     #[cfg(feature = "mobile")]
     {
-        [
-            ("", "anywhere"),
-            ("held", "held"),
-            ("catalog", "not held (catalogue only)"),
-        ]
-        .into_iter()
-        .map(|(v, l)| (v.to_string(), state::tr(l)))
-        .collect()
+        [("", "anywhere"), ("held", "held"), ("not_held", "not held (catalogue only)")]
+            .into_iter()
+            .map(|(v, l)| (v.to_string(), state::tr(l)))
+            .collect()
     }
     #[cfg(not(feature = "mobile"))]
     {
-        [
-            ("", "anywhere"),
-            ("local", "held here"),
-            ("server", "on the main server only"),
-            ("missing_on_server", "not on the main server"),
-        ]
-        .into_iter()
-        .map(|(v, l)| (v.to_string(), state::tr(l)))
-        .collect()
+        super::common::held_options()
     }
 }
 
-/// The Machine filter's choices, apart from Held: any machine, this phone, and each machine
-/// the copy was synced with, by name. Empty outside the phone build.
+/// The Machine filter's choices (`machine=`), apart from Held. On the phone: any machine,
+/// this phone, and each machine the copy was synced with, by name. Elsewhere the catalogue's
+/// own list: on a server or a standalone machine only "this machine".
 pub fn machine_views() -> Vec<(String, String)> {
     #[cfg(feature = "mobile")]
     {
@@ -62,7 +53,7 @@ pub fn machine_views() -> Vec<(String, String)> {
     }
     #[cfg(not(feature = "mobile"))]
     {
-        Vec::new()
+        super::common::machine_options()
     }
 }
 

@@ -665,6 +665,12 @@ async fn vocabulary(State(s): State<Shared>) -> ApiResult<Value> {
     let platforms = api::catalog::platforms(&s.app).await?;
     let languages: Vec<Value> = Language::ALL.iter().map(|l| json!({ "code": l.code(), "english": l.english_name(), "native": l.native_name() })).collect();
     let regions: Vec<Value> = Region::ALL.iter().map(|r| json!({ "code": r.code(), "name": r.display_name() })).collect();
+    // The Machine filter's choices: this machine, and in client mode the main server and each
+    // other client this one follows. A server or a standalone machine has only itself.
+    let mut machines = api::mobile::machines(&s.app).await?;
+    if crate::database::settings::instance_mode(&s.app.pool).await.map_err(api::Error::from)? != crate::database::settings::InstanceMode::Client {
+        machines.truncate(1);
+    }
     Ok(Json(json!({
         "jobs": jobs,
         "dir_types": api::directories::DIR_TYPES,
@@ -673,6 +679,7 @@ async fn vocabulary(State(s): State<Shared>) -> ApiResult<Value> {
         "media": api::media::options(),
         "ui_color_kinds": api::settings::UI_COLOR_KINDS,
         "views": api::catalog::VIEWS,
+        "machines": machines,
         "platforms": platforms,
         // Platforms a list's platform filter shows and matches as one system.
         "platform_priority_default": crate::database::settings::default_platform_priority(),

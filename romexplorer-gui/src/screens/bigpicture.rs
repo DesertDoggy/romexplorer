@@ -126,16 +126,15 @@ struct ListQuery {
     search: String,
     /// Platform ids, comma-separated.
     platforms: String,
-    /// The catalogue's `view`: where the item is held.
-    view: String,
-    /// The phone's Machine filter (`machine=`): held on that machine. Apart from `view`, so
-    /// Held (held / not held) and Machine combine.
+    /// The Held filter (`held=`): held, not held, ... on the Machine filter's machine.
+    held: String,
+    /// The Machine filter (`machine=`): whose holdings Held is about; alone, held there.
     machine: String,
 }
 
 impl ListQuery {
     fn count(&self) -> usize {
-        usize::from(!self.platforms.is_empty()) + usize::from(!self.view.is_empty()) + usize::from(!self.machine.is_empty())
+        usize::from(!self.platforms.is_empty()) + usize::from(!self.held.is_empty()) + usize::from(!self.machine.is_empty())
     }
 }
 
@@ -409,11 +408,12 @@ async fn fetch_list(tab: &str, q: &ListQuery, offset: u64) -> api::ApiResult<(Ve
         api::qs(&p)
     };
     // The phone filters every list by Held and Machine; its copy answers them all.
-    let held = || if cfg!(feature = "mobile") { vec![("view", q.view.clone()), ("machine", q.machine.clone())] } else { vec![] };
+    let held_of = || vec![("held", q.held.clone()), ("machine", q.machine.clone())];
+    let held = || if cfg!(feature = "mobile") { held_of() } else { vec![] };
     let (path, map): (String, fn(&Value) -> Item) = match tab {
         "crossplatform" => (format!("/api/v1/catalog/crossplatform{}", base(held())), cross_item),
-        "titles" => (format!("/api/v1/catalog/titles{}", base(vec![("view", q.view.clone()), ("machine", q.machine.clone())])), title_item),
-        "releases" => (format!("/api/v1/catalog/releases{}", base(vec![("view", q.view.clone()), ("machine", q.machine.clone())])), release_item),
+        "titles" => (format!("/api/v1/catalog/titles{}", base(held_of())), title_item),
+        "releases" => (format!("/api/v1/catalog/releases{}", base(held_of())), release_item),
         "definitive" => (format!("/api/v1/catalog/definitive{}", base(held())), definitive_item),
         "contents" => (format!("/api/v1/catalog/contents{}", base(vec![])), content_item),
         "games" => (format!("/api/v1/catalog/games{}", base(vec![])), game_item),
@@ -956,7 +956,8 @@ fn FilterSheet(tab: String) -> Element {
     let mut open = use_signal(|| None::<&'static str>);
     let has_view = matches!(tab.as_str(), "titles" | "releases") || (cfg!(feature = "mobile") && (matches!(tab.as_str(), "crossplatform" | "definitive") || tab.starts_with("ra-")));
     let machines: Vec<(String, String)> = if has_view { super::companion::machine_views() } else { Vec::new() };
-    let has_machine = !machines.is_empty();
+    // A server or a standalone machine has only itself: no choice to offer.
+    let has_machine = machines.len() > 1;
     let picked: std::collections::BTreeSet<String> = draft().platforms.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect();
     let platforms: Vec<(String, String)> = state::platforms().iter().filter(|p| u(p, "id") > 0).map(|p| (u(p, "id").to_string(), state::platform_label(&s(p, "name")))).collect();
     let views: Vec<(String, String)> = super::companion::held_views();
@@ -971,7 +972,7 @@ fn FilterSheet(tab: String) -> Element {
                     }
                     if has_view {
                         button { class: "bp-choice", onclick: move |_| open.set(Some("view")),
-                            {state::tr("Held")} if !draft().view.is_empty() { " ✓" }
+                            {state::tr("Held")} if !draft().held.is_empty() { " ✓" }
                         }
                     }
                     if has_machine {
@@ -1009,7 +1010,7 @@ fn FilterSheet(tab: String) -> Element {
                 Some(_) => rsx! {
                     button { class: "bp-choice", onclick: move |_| open.set(None), "◀ " {state::tr("Held")} }
                     for (v, l) in views {
-                        button { key: "{v}", class: if draft().view == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().view = v.clone(), "{l}" }
+                        button { key: "{v}", class: if draft().held == v { "bp-choice active" } else { "bp-choice" }, onclick: move |_| draft.write().held = v.clone(), "{l}" }
                     }
                 },
             }

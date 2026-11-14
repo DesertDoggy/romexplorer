@@ -252,8 +252,9 @@ fn decode(s: &str) -> String {
 /// Query keys the list answer understands. With any other key the answer would be wrong
 /// rather than merely incomplete, so the caller asks the server instead (and only falls back
 /// to this, ignoring those keys, when the server can't be reached: see [`answer`]).
-const LIST_KEYS: [&str; 11] = [
+const LIST_KEYS: [&str; 12] = [
     "search",
+    "held",
     "machine",
     "platform",
     "platforms",
@@ -414,30 +415,18 @@ fn list(conn: &Connection, tab: &str, q: &HashMap<String, String>) -> Result<Str
             wh.push("held LIKE ?".into());
             args.push(format!("%,{THIS_MACHINE},%"));
         }
-        "held" => wh.push("held <> ''".into()),
-        // Not held on any synced machine: the catalogue's titles not owned yet.
-        "catalog" => wh.push("held = ''".into()),
         "server" | "missing_on_server" => {
-            let mains = main_ids(conn);
-            let cond = if mains.is_empty() {
-                "0".to_string()
-            } else {
-                format!("({})", vec!["held LIKE ?"; mains.len()].join(" OR "))
-            };
+            let (cond, mains) = on_main(conn);
             if view == "server" {
                 wh.push(cond);
             } else {
                 wh.push(format!("held <> '' AND NOT {cond}"));
             }
-            args.extend(mains.iter().map(|m| format!("%,{m},%")));
-        }
-        v if v.starts_with("on:") => {
-            wh.push("held LIKE ?".into());
-            args.push(format!("%,{},%", &v[3..]));
+            args.extend(mains);
         }
         _ => {}
     }
-    machine_filter(q, &mut wh, &mut args);
+    held_filter(conn, q, &mut wh, &mut args);
     // A page's own list of a title's releases is in the order the server gave, held or not.
     if q.contains_key("title_id") || q.contains_key("igdb") {
         held_first = false;
@@ -470,17 +459,42 @@ fn list(conn: &Connection, tab: &str, q: &HashMap<String, String>) -> Result<Str
     ))
 }
 
-/// The Machine filter (`machine=`): held on that synced machine, or on this phone, which
-/// holds nothing yet.
-fn machine_filter(q: &HashMap<String, String>, wh: &mut Vec<String>, args: &mut Vec<String>) {
-    match q.get("machine").map(String::as_str) {
-        None | Some("") => {}
-        Some("phone") => wh.push("0".into()),
-        Some(m) => {
-            wh.push("held LIKE ?".into());
-            args.push(format!("%,{m},%"));
-        }
+/// "Held on the main server" over the `held` column, with its binds.
+fn on_main(conn: &Connection) -> (String, Vec<String>) {
+    let mains = main_ids(conn);
+    let cond = if mains.is_empty() {
+        "0".to_string()
+    } else {
+        format!("({})", vec!["held LIKE ?"; mains.len()].join(" OR "))
+    };
+    (cond, mains.iter().map(|m| format!("%,{m},%")).collect())
+}
+
+/// The Held and Machine filters, as the server reads them (`api::catalog::held_having`):
+/// `held` is held / not_held / missing_on_main, on the machine `machine` names (a synced
+/// machine's id, `phone` for this phone, which holds nothing yet, or any of them). A machine
+/// alone is held on it.
+fn held_filter(conn: &Connection, q: &HashMap<String, String>, wh: &mut Vec<String>, args: &mut Vec<String>) {
+    let held = q.get("held").map(String::as_str).unwrap_or("");
+    let machine = q.get("machine").map(String::as_str).unwrap_or("");
+    if held.is_empty() && machine.is_empty() {
+        return;
     }
+    if held == "missing_on_main" {
+        let (cond, mains) = on_main(conn);
+        wh.push(format!("held <> '' AND NOT {cond}"));
+        args.extend(mains);
+        return;
+    }
+    let cond = match machine {
+        "" => "held <> ''".to_string(),
+        "phone" => "0".to_string(),
+        m => {
+            args.push(format!("%,{m},%"));
+            "held LIKE ?".to_string()
+        }
+    };
+    wh.push(if held == "not_held" { format!("NOT ({cond})") } else { cond });
 }
 
 /// The RetroAchievements lists, with the server's own conditions (`api::ra::list_condition`).
@@ -530,12 +544,7 @@ fn ra(conn: &Connection, q: &HashMap<String, String>) -> Result<String, String> 
     if local_only {
         wh.push("local = 1".into());
     }
-    match q.get("view").map(String::as_str) {
-        Some("held") => wh.push("held <> ''".into()),
-        Some("catalog") => wh.push("held = ''".into()),
-        _ => {}
-    }
-    machine_filter(q, &mut wh, &mut args);
+    held_filter(conn, q, &mut wh, &mut args);
     let base = if wh.is_empty() {
         "1".to_string()
     } else {
@@ -681,9 +690,9 @@ mod tests {
             .unwrap();
         assert_eq!(ids(&main), vec![12]);
         // Held and Machine are separate filters, and combine.
-        let not_held = answer(&c, "/api/v1/catalog/titles?view=catalog", true).unwrap().unwrap();
+        let not_held = answer(&c, "/api/v1/catalog/titles?held=not_held", true).unwrap().unwrap();
         assert_eq!(ids(&not_held), vec![11]);
-        let on_main = answer(&c, "/api/v1/catalog/titles?view=held&machine=3", true).unwrap().unwrap();
+        let on_main = answer(&c, "/api/v1/catalog/titles?held=held&machine=3", true).unwrap().unwrap();
         assert_eq!(ids(&on_main), vec![12]);
         let on_phone = answer(&c, "/api/v1/catalog/titles?machine=phone", true).unwrap().unwrap();
         assert!(ids(&on_phone).is_empty(), "the phone holds nothing yet");

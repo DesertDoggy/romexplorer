@@ -849,7 +849,7 @@ fn SetPage(id: u64) -> Element {
         cols.extend(release_columns());
         // The Releases tab's filters, so part of a set can be picked out (and removed at
         // once). No kinds default: a set holds what was put in it, hacks included.
-        let mut filters = vec![common::platform_filter(), common::view_filter(), common::kinds_filter()];
+        let mut filters = vec![common::platform_filter(), common::view_filter(), common::held_filter(), common::machine_filter(), common::kinds_filter()];
         filters.extend(common::facet_filters());
         // The grid's D/C/T/R badge sits on the cover, so it is shown on request.
         filters.push(Filter::Check { key: "type_badges", label: state::tr("entry type on covers"), off: String::new() });

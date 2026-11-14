@@ -188,12 +188,70 @@ pub fn platform_filter() -> Filter {
     Filter::Combo { key: "platform", label: state::tr("platform"), multi: true, logic_key: None, options: Rc::new(platform_filter_options) }
 }
 
+/// How a list is ordered and whether RetroAchievements narrows it. Where the rows are held is
+/// the Held and Machine filters' ([`held_filter`], [`machine_filter`]); the API still reads
+/// the old `local` / `server` / `missing_on_server` views.
 pub fn view_filter() -> Filter {
     Filter::Select {
         key: "view",
         label: state::tr("view"),
-        options: Rc::new(|| vec![("collection_local_first".into(), state::tr("collection (local first)")), ("collection".into(), state::tr("collection")), ("local".into(), state::tr("local only")), ("local_ra_local_first".into(), state::tr("local + RetroAchievements (local first)")), ("local_ra_ra_first".into(), state::tr("local + RetroAchievements (RA first)")), ("ra_only".into(), state::tr("RetroAchievements only")), ("server".into(), state::tr("server only")), ("missing_on_server".into(), state::tr("not on the main server"))]),
+        options: Rc::new(|| vec![("collection_local_first".into(), state::tr("collection (local first)")), ("collection".into(), state::tr("collection")), ("local_ra_local_first".into(), state::tr("local + RetroAchievements (local first)")), ("local_ra_ra_first".into(), state::tr("local + RetroAchievements (RA first)")), ("ra_only".into(), state::tr("RetroAchievements only"))]),
     }
+}
+
+/// The machines the Machine filter offers (the vocabulary's `machines`): this machine first,
+/// then in client mode the main server and the other clients.
+fn vocab_machines() -> Vec<Value> {
+    api::arr(&state::vocab(), "machines").to_vec()
+}
+
+/// Held or not, on the machine the Machine filter picks. On a client, also the backlog still
+/// to copy up to the main server.
+pub fn held_filter() -> Filter {
+    Filter::Select {
+        key: "held",
+        label: state::tr("Held"),
+        options: Rc::new(held_options),
+    }
+}
+
+/// [`held_filter`]'s choices, also Big Picture's.
+pub fn held_options() -> Vec<(String, String)> {
+    let mut o: Vec<(String, String)> = [("", "anywhere"), ("held", "held"), ("not_held", "not held (catalogue only)")].iter().map(|(v, l)| (v.to_string(), state::tr(l))).collect();
+    if vocab_machines().iter().any(|m| s(m, "role") == "main") {
+        o.push(("missing_on_main".into(), state::tr("not on the main server")));
+    }
+    o
+}
+
+/// Whose holdings count: this machine, or on a client also the main server and each other
+/// client. A server and a standalone machine have only themselves, so the one choice is
+/// "this machine".
+pub fn machine_filter() -> Filter {
+    Filter::Select {
+        key: "machine",
+        label: state::tr("Machine"),
+        options: Rc::new(machine_options),
+    }
+}
+
+/// [`machine_filter`]'s choices, also Big Picture's.
+pub fn machine_options() -> Vec<(String, String)> {
+    let machines = vocab_machines();
+    let this = machines.first().map(|m| s(m, "name")).filter(|n| !n.is_empty());
+    let this_label = match this {
+        Some(n) => state::trf("this machine ({name})", &[("name", &n)]),
+        None => state::tr("this machine"),
+    };
+    if machines.len() <= 1 {
+        return vec![(String::new(), this_label)];
+    }
+    let mut o = vec![(String::new(), state::tr("any machine")), (romexplorer_types::mobile::THIS_MACHINE.to_string(), this_label)];
+    for m in machines.iter().skip(1) {
+        let role = if s(m, "role") == "main" { state::tr("main server") } else { state::tr("client") };
+        o.push((s(m, "id"), format!("{} ({role})", s(m, "name"))));
+    }
+    o
 }
 
 /// What the releases are: games and other software unless asked for the music, films and

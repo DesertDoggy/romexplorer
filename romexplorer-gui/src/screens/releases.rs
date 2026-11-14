@@ -18,6 +18,8 @@ fn releases_spec() -> GridSpec {
     let mut filters = vec![
         common::platform_filter(),
         common::view_filter(),
+        common::held_filter(),
+        common::machine_filter(),
         common::kinds_filter(),
         common::material_filter(),
         Filter::Select {
@@ -98,7 +100,7 @@ fn material_spec(kind: &'static str) -> GridSpec {
             }),
         });
     }
-    filters.push(common::view_filter());
+    filters.extend([common::view_filter(), common::held_filter(), common::machine_filter()]);
     let key = match kind {
         "multimedia" => "material_multimedia",
         "document" => "material_document",

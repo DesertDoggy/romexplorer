@@ -2716,8 +2716,29 @@ async function showStatus() {
 // ---------------------------------------------------------------------------
 // collection: titles / releases / games / files / sets
 // ---------------------------------------------------------------------------
+// How a list is ordered and whether RetroAchievements narrows it. Where the rows are held is
+// the Held and Machine filters'; the API still reads the old local / server /
+// missing_on_server views.
 function viewFilter() {
-  return { key: 'view', label: tr('view'), type: 'select', options: () => `<option value="collection_local_first">${tr('collection (local first)')}</option><option value="collection">${tr('collection')}</option><option value="local">${tr('local only')}</option><option value="local_ra_local_first">${tr('local + RetroAchievements (local first)')}</option><option value="local_ra_ra_first">${tr('local + RetroAchievements (RA first)')}</option><option value="ra_only">${tr('RetroAchievements only')}</option><option value="server">${tr('server only')}</option><option value="missing_on_server">${tr('not on the main server')}</option>` };
+  return { key: 'view', label: tr('view'), type: 'select', options: () => `<option value="collection_local_first">${tr('collection (local first)')}</option><option value="collection">${tr('collection')}</option><option value="local_ra_local_first">${tr('local + RetroAchievements (local first)')}</option><option value="local_ra_ra_first">${tr('local + RetroAchievements (RA first)')}</option><option value="ra_only">${tr('RetroAchievements only')}</option>` };
+}
+// The Machine filter's machines (the vocabulary's): this machine first, then in client mode
+// the main server and the other clients.
+const vocabMachines = () => (vocab && vocab.machines) || [];
+// Held or not, on the machine the Machine filter picks. On a client, also the backlog still
+// to copy up to the main server.
+function heldFilter() {
+  return { key: 'held', label: tr('Held'), type: 'select', options: () => [['', tr('anywhere')], ['held', tr('held')], ['not_held', tr('not held (catalogue only)')]].concat(vocabMachines().some(m => m.role === 'main') ? [['missing_on_main', tr('not on the main server')]] : []).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('') };
+}
+// Whose holdings count: this machine, or on a client also the main server and each other
+// client. A server and a standalone machine have only themselves.
+function machineFilter() {
+  return { key: 'machine', label: tr('Machine'), type: 'select', options: () => {
+    const ms = vocabMachines();
+    const self = ms[0] && ms[0].name ? trf('this machine ({name})', { name: ms[0].name }) : tr('this machine');
+    const o = ms.length <= 1 ? [['', self]] : [['', tr('any machine')], ['local', self]].concat(ms.slice(1).map(m => [m.id, `${m.name} (${m.role === 'main' ? tr('main server') : tr('client')})`]));
+    return o.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  } };
 }
 // Which releases the Titles / Releases lists include (default from Config > Settings).
 // A title page's sections below its releases, in this order.
@@ -3003,7 +3024,7 @@ async function showTitles() {
       ...displayColumns(),
       { key: 'id', label: tr('id'), sort: 'id', cls: 'num' },
     ],
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
       { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }, { key: 'one_per_group', label: tr('one of each version group'), type: 'check' }].concat(facetFilters()),
     fetch: st => api('/api/v1/catalog/titles' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, igdb: st.filters.igdb, basegame: st.filters.basegame, view: st.filters.view, provider: st.filters.provider, hide_minor: st.filters.hide_minor === 'true' || null, one_per_group: st.filters.one_per_group === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/titles/' + r.id,
@@ -3156,7 +3177,7 @@ async function reviewFilters(extra) {
   let sets = [];
   try { const v = await api('/api/v1/sets'); sets = Array.isArray(v) ? v : (v.items || []); } catch (e) {}
   const setFilter = { key: 'set_id', label: trc('sets', 'set'), type: 'select', options: () => `<option value="">${tr('any set')}</option>` + sets.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('') };
-  return [setFilter, platformFilter(), viewFilter(), kindsFilter(), materialFilter()].concat(extra || [], facetFilters());
+  return [setFilter, platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter()].concat(extra || [], facetFilters());
 }
 // The filters' query pairs (no paging). The release kinds only when picked: the list's default
 // kinds would narrow every review to the Titles list's rows for nothing.
@@ -3584,7 +3605,7 @@ async function showReleases() {
   const grid = makeGrid(document.getElementById('grid'), {
     gridKey: 'releases', explain: ['explain.collection.releases', 'explain.list.ownership'],
     columns: releaseColumns(),
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
     fetch: st => api('/api/v1/catalog/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, view: st.filters.view, source: st.filters.source, hide_minor: st.filters.hide_minor === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
@@ -4134,7 +4155,7 @@ async function showMaterial(kind) {
     gridKey: 'material_' + kind, explain: kind === 'etc' ? ['explain.collection.etc', 'explain.list.ownership'] : undefined,
     columns,
     filters: (discs ? [{ key: 'material', label: tr('kind'), type: 'select', options: () => `<option value="">${kind === 'etc' ? tr('all kinds') : tr('all discs')}</option>` + Object.entries(kinds).filter(([v]) => v !== 'dlc').map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('') }] : [])
-      .concat([viewFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }]),
+      .concat([viewFilter(), heldFilter(), machineFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }]),
     fetch: st => api('/api/v1/catalog/releases' + qs({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, material: (discs && st.filters.material) || kind, view: st.filters.view, source: st.filters.source })),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
@@ -4469,7 +4490,7 @@ async function showSet(id) {
     gridKey: 'set_' + id, columns: cols, pageSize: 500,
     // The Releases tab's filters, so part of a set can be picked out (and removed at once).
     // No kinds default: a set holds what was put in it, hacks included.
-    filters: [platformFilter(), viewFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
       // The grid's D/C/T/R badge sits on the cover, so it is shown on request.
       { key: 'type_badges', label: tr('entry type on covers'), type: 'check' }]).concat(rankFilters()),
     fetch: st => (showTypes = !!st.filters.type_badges && st.filters.type_badges !== 'false', api('/api/v1/sets/' + id + '/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds, view: st.filters.view, source: st.filters.source }, rankFilterParams(st), facetParams(st)))).then(page => { for (const r of page.items || []) rowsById.set(r.id, r); return page; })),
