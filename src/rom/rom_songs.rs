@@ -634,6 +634,18 @@ pub fn bundle_file(kind: &str) -> String {
     format!("music_maps_{kind}.zst")
 }
 
+/// The bundle file of one sixteenth of a kind's maps, those whose key starts with `digit`:
+/// `music_maps_snes_a.zst`. A kind too big for one file ([`SPLIT_ABOVE`]) ships this way.
+pub fn shard_file(kind: &str, digit: char) -> String {
+    format!("music_maps_{kind}_{digit}.zst")
+}
+
+/// A kind's bundle larger than this packed is split by the first hex digit of the key into
+/// 16 files: GitHub warns on files over 50 MB and refuses them over 100 MB, and a game opens
+/// only its own sixteenth. The SNES maps come to about 430 MB of text, near 50 MB packed.
+const SPLIT_ABOVE: usize = 40 << 20;
+const HEX_DIGITS: &str = "0123456789abcdef";
+
 type Bundle = std::collections::HashMap<String, String>;
 
 /// The bundle in `<app root>/assets/<file>`, read once; empty when there is none.
@@ -678,15 +690,30 @@ pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, St
 }
 
 /// Packs the maps of each kind kept under `dir` (as [`set_maps_dir`] lays them out) into its
-/// own bundle ([`bundle_file`]). Returns each kind with maps: its bundle and how many maps went
-/// in.
+/// own bundle ([`bundle_file`]), or, past [`SPLIT_ABOVE`], into 16 ([`shard_file`]). Returns
+/// each file to write: its name, its bytes and how many maps went in.
 pub fn pack_bundles(dir: &Path) -> Result<Vec<(String, Vec<u8>, usize)>, String> {
+    pack_bundles_split(dir, SPLIT_ABOVE)
+}
+
+fn pack_bundles_split(dir: &Path, split_above: usize) -> Result<Vec<(String, Vec<u8>, usize)>, String> {
     let mut out = Vec::new();
     for (kind, _) in MAP_KINDS {
-        let (packed, counts) = pack_bundle(dir, &[kind])?;
+        let (packed, counts) = pack_maps(dir, &[kind], None)?;
         let n = counts.iter().map(|(_, n)| n).sum::<usize>();
-        if n > 0 {
-            out.push((kind.to_string(), packed, n));
+        if n == 0 {
+            continue;
+        }
+        if packed.len() <= split_above {
+            out.push((bundle_file(kind), packed, n));
+            continue;
+        }
+        for digit in HEX_DIGITS.chars() {
+            let (packed, counts) = pack_maps(dir, &[kind], Some(digit))?;
+            let n = counts.iter().map(|(_, n)| n).sum::<usize>();
+            if n > 0 {
+                out.push((shard_file(kind, digit), packed, n));
+            }
         }
     }
     Ok(out)
@@ -695,11 +722,17 @@ pub fn pack_bundles(dir: &Path) -> Result<Vec<(String, Vec<u8>, usize)>, String>
 /// Packs every map of `kinds` kept under `dir` into one bundle. Returns how many maps of each
 /// kind went in.
 pub fn pack_bundle(dir: &Path, kinds: &[&str]) -> Result<(Vec<u8>, Vec<(String, usize)>), String> {
+    pack_maps(dir, kinds, None)
+}
+
+/// [`pack_bundle`], of only the maps whose key starts with `shard` when given.
+fn pack_maps(dir: &Path, kinds: &[&str], shard: Option<char>) -> Result<(Vec<u8>, Vec<(String, usize)>), String> {
     let mut text = format!("{BUNDLE_MAGIC}\n");
     let mut counts = Vec::new();
     for (kind, ext) in MAP_KINDS.iter().filter(|(k, _)| kinds.contains(k)) {
         let Ok(entries) = std::fs::read_dir(dir.join(kind)) else { continue };
-        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext)).collect();
+        let in_shard = |p: &Path| shard.is_none_or(|d| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.chars().next()).is_some_and(|c| c.to_ascii_lowercase() == d));
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext) && in_shard(p)).collect();
         // Sorted, so the same maps always pack to the same bytes.
         files.sort();
         for f in &files {
@@ -728,10 +761,18 @@ fn kept_map(kind: &str, key: &str) -> Option<String> {
         }
     }
     let name = format!("{kind}/{key}");
+    let root = super::native_lib::exe_root();
+    // A kind shipped in sixteenths: only the key's own one is opened.
+    if let Some(digit) = key.chars().next().map(|c| c.to_ascii_lowercase()) {
+        let shard = shard_file(kind, digit);
+        if root.as_ref().is_some_and(|root| root.join("assets").join(&shard).is_file()) {
+            return bundled(&shard).get(&name).cloned();
+        }
+    }
     let own = bundle_file(kind);
     // The old all-kinds bundle (105 MB as text, held for the run) only stands in for a kind
     // with no bundle of its own: a miss in a kind's own bundle is a miss.
-    if super::native_lib::exe_root().is_some_and(|root| root.join("assets").join(&own).is_file()) {
+    if root.is_some_and(|root| root.join("assets").join(&own).is_file()) {
         return bundled(&own).get(&name).cloned();
     }
     bundled(BUNDLE_FILE).get(&name).cloned()
@@ -1902,7 +1943,25 @@ mod bundle_tests {
         assert_eq!(maps["nes/aa"], "nesmap 1\nline two\n");
         assert_eq!(maps["hes/bb"], "hesmap 1\n");
         // One bundle per kind, each holding only its own.
-        assert_eq!(split.iter().map(|(k, _, n)| (k.as_str(), *n)).collect::<Vec<_>>(), vec![("nes", 1), ("hes", 1)]);
+        assert_eq!(split.iter().map(|(k, _, n)| (k.as_str(), *n)).collect::<Vec<_>>(), vec![("music_maps_nes.zst", 1), ("music_maps_hes.zst", 1)]);
         assert_eq!(read_bundle(&split[1].1).unwrap().keys().collect::<Vec<_>>(), vec!["hes/bb"]);
+    }
+
+    #[test]
+    fn a_kind_too_big_for_one_file_is_split_by_the_keys_first_digit() {
+        let dir = std::env::temp_dir().join(format!("music_map_shards_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("snes")).unwrap();
+        for key in ["0a", "0b", "a1", "F2"] {
+            std::fs::write(dir.join("snes").join(format!("{key}.snesmap")), format!("snesmap {key}\n")).unwrap();
+        }
+        let split = pack_bundles_split(&dir, 0).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            split.iter().map(|(f, _, n)| (f.as_str(), *n)).collect::<Vec<_>>(),
+            vec![("music_maps_snes_0.zst", 2), ("music_maps_snes_a.zst", 1), ("music_maps_snes_f.zst", 1)]
+        );
+        let mut keys: Vec<String> = read_bundle(&split[0].1).unwrap().into_keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["snes/0a", "snes/0b"]);
     }
 }

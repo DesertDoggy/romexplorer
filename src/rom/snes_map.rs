@@ -103,22 +103,29 @@ impl Map {
     /// `.spc`, or too little of whose memory is in the ROM, are left out.
     pub fn build(spcs: &[&[u8]], rom: &[u8]) -> Option<Map> {
         let placed = spc_map::tracks(spcs, rom);
-        let mut tracks = Vec::new();
+        // Per track: its ROM copies, the image it needs and where it needs it.
+        struct Wanted {
+            copies: Vec<Run>,
+            image: Vec<u8>,
+            spans: Vec<(usize, usize)>,
+            pc: u16,
+            regs: [u8; 5],
+            dsp: [u8; 128],
+            length_ms: u32,
+            fade_ms: u32,
+        }
+        let mut wanted = Vec::new();
         for (spc, t) in spcs.iter().zip(placed) {
             let Some(t) = t else { continue };
             let (got, total) = spc_map::coverage(spc, &t.runs);
             if (got as f64) < total as f64 * MIN_SHARE {
                 continue;
             }
-            let mut runs: Vec<Run> = t.runs.iter().map(|r| Run::Copy(r.data as u32, r.len as u32, r.rom as u32)).collect();
-            let mut laid = vec![0u8; IMAGE];
-            for r in &runs {
-                r.apply(&mut laid, rom);
-            }
-            runs.extend(gba_map::diff(&image_of(spc), &spans(spc), &laid));
             let (length, fade) = tag_times(spc);
-            tracks.push(Track {
-                runs,
+            wanted.push(Wanted {
+                copies: t.runs.iter().map(|r| Run::Copy(r.data as u32, r.len as u32, r.rom as u32)).collect(),
+                image: image_of(spc),
+                spans: spans(spc),
                 pc: t.pc,
                 regs: t.regs,
                 dsp: t.dsp,
@@ -126,17 +133,77 @@ impl Map {
                 fade_ms: fade.unwrap_or(if length.is_some() { 0 } else { DEFAULT_FADE_MS }),
             });
         }
-        if tracks.is_empty() {
+        if wanted.is_empty() {
             return None;
         }
-        // Runs every track has are kept once.
+        // Copies every track has are kept once.
         use std::collections::HashSet;
-        let others: Vec<HashSet<&Run>> = tracks[1..].iter().map(|t| t.runs.iter().collect()).collect();
-        let common: Vec<Run> = tracks[0].runs.iter().filter(|r| others.iter().all(|o| o.contains(r))).cloned().collect();
+        let others: Vec<HashSet<&Run>> = wanted[1..].iter().map(|w| w.copies.iter().collect()).collect();
+        let shared_copies: Vec<Run> = wanted[0].copies.iter().filter(|r| others.iter().all(|o| o.contains(r))).cloned().collect();
         drop(others);
-        let shared: HashSet<Run> = common.iter().cloned().collect();
-        for t in &mut tracks {
-            t.runs.retain(|r| !shared.contains(r));
+        let shared: HashSet<Run> = shared_copies.iter().cloned().collect();
+        let lay = |runs: &[Run]| {
+            let mut image = vec![0u8; IMAGE];
+            for phase in 0..3 {
+                for r in runs.iter().filter(|r| r.phase() == phase) {
+                    r.apply(&mut image, rom);
+                }
+            }
+            image.truncate(IMAGE);
+            image
+        };
+        // Bytes shared byte by byte, not run by run: tracks of one game hold the same driver
+        // and samples, with a few live variables apart, and a run that differs in one byte
+        // was kept whole by every track. Each byte the most tracks agree on (two at least,
+        // or the only track's) goes in once; each track keeps where it differs.
+        let base = lay(&shared_copies);
+        let mut common_image = base.clone();
+        let mut common_need = vec![false; IMAGE];
+        {
+            let mut need: Vec<Vec<bool>> = Vec::with_capacity(wanted.len());
+            for w in &wanted {
+                let mut n = vec![false; IMAGE];
+                for &(a, b) in &w.spans {
+                    n[a..b.min(IMAGE)].iter_mut().for_each(|x| *x = true);
+                }
+                need.push(n);
+            }
+            let mut counts = [0u16; 256];
+            for i in 0..IMAGE {
+                counts.iter_mut().for_each(|c| *c = 0);
+                for (w, n) in wanted.iter().zip(&need) {
+                    if n[i] {
+                        counts[w.image[i] as usize] += 1;
+                    }
+                }
+                let (value, &count) = counts.iter().enumerate().max_by_key(|(v, &c)| (c, std::cmp::Reverse(*v))).expect("256 values");
+                if count >= 2 || (count == 1 && wanted.len() == 1) {
+                    common_image[i] = value as u8;
+                    common_need[i] = true;
+                }
+            }
+        }
+        let mut common_spans = Vec::new();
+        let mut i = 0;
+        while i < IMAGE {
+            if !common_need[i] {
+                i += 1;
+                continue;
+            }
+            let a = i;
+            while i < IMAGE && common_need[i] {
+                i += 1;
+            }
+            common_spans.push((a, i));
+        }
+        let mut common = shared_copies;
+        common.extend(gba_map::diff(&common_image, &common_spans, &base));
+        let mut tracks = Vec::new();
+        for w in wanted {
+            let mut runs: Vec<Run> = w.copies.into_iter().filter(|r| !shared.contains(r)).collect();
+            let laid = lay(&common.iter().chain(&runs).cloned().collect::<Vec<_>>());
+            runs.extend(gba_map::diff(&w.image, &w.spans, &laid));
+            tracks.push(Track { runs, pc: w.pc, regs: w.regs, dsp: w.dsp, length_ms: w.length_ms, fade_ms: w.fade_ms });
         }
         Some(Map { rom_len: rom.len() as u32, common, tracks })
     }
@@ -306,6 +373,28 @@ mod tests {
         assert_eq!(&rebuilt[ARAM..ARAM + 0x10000], aram);
         assert_eq!(&rebuilt[0x25..0x27], &spc[0x25..0x27]);
         assert!(m.file_bytes() < 0x1100, "{}", m.file_bytes());
+    }
+
+    #[test]
+    fn bytes_the_tracks_share_are_kept_once() {
+        let a = spc();
+        let mut b = a.clone();
+        let mut c = a.clone();
+        // Each track has its own live variables in the middle of the data the ROM lacks.
+        b[ARAM + 0x0100] ^= 0x5A;
+        c[ARAM + 0x0180] ^= 0xA5;
+        let aram = &a[ARAM..ARAM + 0x10000];
+        let mut rom = vec![0xFFu8; 0x40000];
+        rom[0x1000..0x9000].copy_from_slice(&aram[0x0200..0x8200]);
+        rom[0x20000..0x27000].copy_from_slice(&aram[0x9000..0x10000]);
+        let m = Map::build(&[&a, &b, &c], &rom).unwrap();
+        let back = Map::decode(&m.encode()).unwrap();
+        for (t, want) in [&a, &b, &c].iter().enumerate() {
+            let rebuilt = back.spc(&rom, t).unwrap();
+            assert_eq!(&rebuilt[ARAM..ARAM + 0x10000], &want[ARAM..ARAM + 0x10000], "track {t}");
+        }
+        // About one track's missing bytes in all, not three.
+        assert!(m.file_bytes() < 0x1200, "{}", m.file_bytes());
     }
 
     #[test]
