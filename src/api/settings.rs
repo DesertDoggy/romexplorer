@@ -281,12 +281,12 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                     return Err(Error::invalid(format!("scan_hashes: {algorithm} must be true or false")));
                 }
             }
-            // Content is identified by hash. With none of these on, every file collapses
-            // onto the same empty fingerprint and nothing can be matched to a DAT.
-            let any = map.iter().any(|(k, v)| *k != "ra_hash" && v.as_bool() == Some(true));
-            let all_absent = SCAN_HASH_ALGORITHMS.iter().filter(|k| **k != "ra_hash").all(|k| map.contains_key(*k));
-            if all_absent && !any {
-                return Err(Error::invalid("scan_hashes: at least one of crc32, xxh3_128, md5, sha1, sha256 must stay on -- content is identified by hash"));
+            // Content is matched to DATs by crc32, md5 or sha1, so one of those stays on;
+            // xxh3_128, sha256 and ra_hash are extras, never enough alone. Keys left out keep
+            // their defaults (`db_settings::scan_hashes`).
+            let on = |k: &str| map.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+            if !(on("crc32") || on("md5") || on("sha1")) {
+                return Err(Error::invalid("scan_hashes: at least one of crc32, md5, sha1 must stay on -- those are the hashes DATs are matched by"));
             }
         }
         db_settings::KEY_SCAN_HEURISTICS => {
@@ -749,6 +749,18 @@ mod tests {
         assert!(validate("instance_mode", &json!("standalone")).is_err(), "even the harmless value goes through /mode");
         assert!(guard_identity("backup_dir").is_ok(), "ordinary keys are unaffected");
         assert!(validate("instance_mode", &json!("client")).unwrap_err().to_string().contains("/api/v1/mode"));
+    }
+
+    #[test]
+    fn scan_hashes_keeps_one_dat_hash() {
+        let only_xxh3 = json!({"crc32": false, "xxh3_128": true, "md5": false, "sha1": false, "sha256": false, "ra_hash": true});
+        assert!(validate("scan_hashes", &only_xxh3).is_err(), "xxh3_128 matches no DAT");
+        let extras = json!({"crc32": false, "xxh3_128": true, "md5": false, "sha1": false, "sha256": true, "ra_hash": true});
+        assert!(validate("scan_hashes", &extras).is_err(), "xxh3_128, sha256 and ra_hash together are still not enough");
+        assert!(validate("scan_hashes", &json!({"crc32": false, "md5": false, "sha1": false})).is_err());
+        assert!(validate("scan_hashes", &json!({"crc32": true, "xxh3_128": false, "md5": false, "sha1": false, "sha256": false})).is_ok());
+        assert!(validate("scan_hashes", &json!({"xxh3_128": false, "sha256": false, "ra_hash": false})).is_ok(), "the extras can all be off");
+        assert!(validate("scan_hashes", &json!({"crc32": false, "md5": false})).is_ok(), "sha1 left out stays on");
     }
 
     #[test]

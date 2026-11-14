@@ -368,10 +368,16 @@ fn remove_directory(d: Value, done: impl Fn() + Clone + 'static) {
         let id = u(&d, "id");
         let what = if api::b(&d, "is_collection_root") { state::tr("collection root") } else { state::tr("directory") };
         let title = state::trf("Remove {what} and its subdirectories?", &[("what", &what)]);
-        let below = if n == 1 { state::tr(" subdirectory below it:") } else { state::tr(" subdirectories below it:") };
+        // One sentence each, as the console has them, so a translation can order it freely.
+        let path = html::esc(&s(&d, "path"));
+        let removing = if n == 1 {
+            state::trf("Removing <span class=\"mono\">{path}</span> also removes the configuration of <b>1</b> subdirectory below it:", &[("path", &path)])
+        } else {
+            state::trf("Removing <span class=\"mono\">{path}</span> also removes the configuration of <b>{n}</b> subdirectories below it:", &[("path", &path), ("n", &n.to_string())])
+        };
         rsx! {
             h2 { "{title}" }
-            p { {state::tr("Removing ")} span { class: "mono", "{s(&d, \"path\")}" } {state::tr(" also removes the configuration of ")} b { "{n}" } "{below}" }
+            p { Html { html: removing } }
             ul { class: "mono", style: "max-height:40vh; overflow:auto; margin:6px 0 10px", for p in list { li { "{p}" } } }
             p { class: "muted", {state::tr(DISK_NOTE)} }
             div { class: "fsfoot",
@@ -1245,7 +1251,7 @@ fn DatabaseCacheForm(c: Value, on_saved: EventHandler<()>) -> Element {
     };
     let (_, next) = chosen();
     let calc = state::trf("next start: {size} of {ram}", &[("size", &html::fmt_size(Some(next.min(ram * 0.9) as u64))), ("ram", &html::fmt_size(Some(ram as u64)))])
-        + if next > ram * 0.9 { " (capped at 90% of memory)" } else { "" };
+        + &if next > ram * 0.9 { format!(" {}", state::tr("(capped at 90% of memory)")) } else { String::new() };
     let w = &c["warm"];
     let warm_text = match s(w, "state").as_str() {
         "idle" => state::tr("not run in this process"),
@@ -1348,6 +1354,7 @@ fn DatabaseCacheForm(c: Value, on_saved: EventHandler<()>) -> Element {
                 }
                 div { {state::tr("reload at start")} } div { {c["load_status"].as_str().unwrap_or("—").to_string()} }
                 div { {state::tr("warm-up")} } div { "{warm_text}" }
+                div { {state::tr("writing now")} } div { "{writing_now}" }
             }
         }
     }

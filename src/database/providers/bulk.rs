@@ -493,6 +493,7 @@ pub async fn sync_igdb_platform(clients: &ProviderClients, pool: &MySqlPool, sto
     // Best effort. A game on both regional platforms counts twice here; close enough.
     let mut platform_total: Option<u64> = Some(0);
     let mut to_fetch: Option<u64> = Some(0);
+    progress.force(0, None, &format!("{platform:?}: counting IGDB's games ({} platform(s))", igdb_platforms.len())).await;
     for id in &igdb_platforms {
         let total = client.count_games(Some(*id as i32), None).await.ok().map(|n| n.max(0) as u64);
         let fetch = match since {
@@ -505,11 +506,11 @@ pub async fn sync_igdb_platform(clients: &ProviderClients, pool: &MySqlPool, sto
     if let Ok(all) = client.count_games(None, None).await {
         super::sync_state::record_total(pool, Provider::Igdb, all.max(0) as u64).await?;
     }
-    if since.is_some() {
-        progress.force(0, to_fetch, &format!("{platform:?}: diff since the last full sync -- {} changed game(s) to fetch", to_fetch.map_or("?".to_string(), |n| n.to_string()))).await;
-    }
-    let index = ExactNameIndex::load(pool, platform).await?;
+    let what = if since.is_some() { "diff since the last full sync -- " } else { "full sync -- " };
+    progress.force(0, to_fetch, &format!("{platform:?}: {what}{} game(s) to fetch; loading the title names to link by", to_fetch.map_or("?".to_string(), |n| n.to_string()))).await;
     const PAGE: usize = 500;
+    let index = ExactNameIndex::load(pool, platform).await?;
+    let pages_total: Option<u64> = to_fetch.map(|n| n.div_ceil(PAGE as u64).max(1));
     let mut complete = to_fetch == Some(0);
     // A game filed under both regional platforms comes back on each: linked once.
     let mut seen: HashSet<i32> = HashSet::new();
@@ -520,10 +521,15 @@ pub async fn sync_igdb_platform(clients: &ProviderClients, pool: &MySqlPool, sto
             if max_pages.map(|m| summary.pages >= m).unwrap_or(false) {
                 break 'platforms;
             }
+            progress
+                .force(summary.games, to_fetch, &format!("{platform:?}: fetching page {}{} ({}, {} linked)", summary.pages + 1, pages_total.map_or(String::new(), |n| format!(" of {n}")), games_of(summary.games, to_fetch, false), summary.linked))
+                .await;
             let games = client.get_games_by_platform(igdb_platform as i32, since, PAGE, offset).await?;
             summary.pages += 1;
             let mut linked: Vec<(u64, &playmatch_deredis::providers::igdb::model::Game)> = Vec::new();
-            for game in games.iter().filter(|g| seen.insert(g.id)) {
+            let on_page = games.len() as u64;
+            for (i, game) in games.iter().enumerate().filter(|(_, g)| seen.insert(g.id)) {
+                progress.report(summary.games, to_fetch, &format!("{platform:?}: page {}: game {} of {on_page}, {} linked", summary.pages, i + 1, summary.linked)).await;
                 let raw = serde_json::to_value(game)?;
                 cache::upsert_game(pool, store, Provider::Igdb, &game.id.to_string(), Some(&game.name), &raw).await?;
                 sqlx::query("UPDATE igdb_games SET updated_at = FROM_UNIXTIME(?) WHERE provider_id = ?").bind(game.updated_at.timestamp()).bind(game.id).execute(pool).await?;
@@ -545,6 +551,7 @@ pub async fn sync_igdb_platform(clients: &ProviderClients, pool: &MySqlPool, sto
             // covers the same way (`get_covers_by_id`, 100 per request), each linked to the
             // title's releases.
             if !linked.is_empty() {
+                progress.force(summary.games, to_fetch, &format!("{platform:?}: page {}: metadata{} for {} linked title(s)", summary.pages, if media.is_some() { " and art" } else { "" }, linked.len())).await;
                 let mut names = super::metadata::IgdbNames::new();
                 let page_games: Vec<playmatch_deredis::providers::igdb::model::Game> = linked.iter().map(|(_, g)| (*g).clone()).collect();
                 names.resolve(clients, &page_games).await?;

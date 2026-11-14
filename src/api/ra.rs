@@ -745,6 +745,12 @@ async fn cached_media(app: &App, path: &str) -> Result<PathBuf> {
 
 /// icon | title | ingame | boxart for one game.
 pub async fn image(app: &App, game_id: u32, kind: &str) -> Result<PathBuf> {
+    image_with(app, game_id, kind, true).await
+}
+
+/// [`image`]; `ask_ra` false (a regular account) serves only what is cached, so a game id this
+/// server has never seen is a 404 rather than a call to RetroAchievements.
+pub async fn image_with(app: &App, game_id: u32, kind: &str, ask_ra: bool) -> Result<PathBuf> {
     let column = match kind {
         "icon" => "image_icon",
         "title" => "image_title",
@@ -762,7 +768,7 @@ pub async fn image(app: &App, game_id: u32, kind: &str) -> Result<PathBuf> {
         sqlx::query_scalar::<_, Option<String>>(sqlx::AssertSqlSafe(sql)).bind(game_id).bind(user.clone()).fetch_one(&app.pool).await
     };
     let mut path = lookup().await?;
-    if path.is_none() {
+    if path.is_none() && ask_ra {
         ensure_game_detail(app, game_id, true).await?;
         path = lookup().await?;
     }

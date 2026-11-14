@@ -231,7 +231,10 @@ fn sweep_parts(root: &Path, depth: u32) {
 /// `xxh3_128` and `crc32`, because over SMB this reads the whole file and the point is to
 /// make a re-run cheap, not thorough. No hash row at all falls back to size alone, and the
 /// summary says so.
-async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64) -> (bool, bool) {
+///
+/// The read checks `cancel` between chunks: over SMB it can take minutes, and a cancelled
+/// check answers "not there" (the caller stops on the flag next).
+async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64, cancel: &Cancel) -> (bool, bool) {
     let Ok(meta) = std::fs::metadata(dst) else { return (false, false) };
     if meta.len() != size {
         return (false, false);
@@ -248,10 +251,28 @@ async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64) -> (bo
         _ => HashFlags::SHA256,
     };
     let path = dst.to_path_buf();
-    let got = tokio::task::spawn_blocking(move || crate::rom::hash::hash(&path, &crate::rom::hash::HashOptions { flags: flag, ..Default::default() }, |_| {}))
-        .await
-        .ok()
-        .and_then(|r| r.ok());
+    let cancel = cancel.clone();
+    let got = tokio::task::spawn_blocking(move || -> std::io::Result<Option<crate::rom::hash::HashReport>> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path)?;
+        let digest = crate::rom::hash::HashDigest::new(flag);
+        let mut buf = vec![0u8; BUF];
+        loop {
+            if cancel.is_set() {
+                return Ok(None);
+            }
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            digest.update(&buf[..n]).map_err(std::io::Error::other)?;
+        }
+        Ok(Some(digest.finish()))
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .flatten();
     let matches = got
         .and_then(|r| match algo.as_str() {
             "xxh3_128" => r.xxh3_128,
@@ -438,7 +459,7 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         // so hashing it against the source's own hash would read the whole file to learn
         // nothing.
         let (same, size_only) = if file.format == OutputFormat::Same || file.source.member.is_some() {
-            already_there(app, &file.destination, file.source.content_id, file.source.size).await
+            already_there(app, &file.destination, file.source.content_id, file.source.size, &cancel).await
         } else {
             // A converted output's bytes are not the source's, so there is nothing of its own
             // recorded to compare against on a first run. An existing non-empty file is taken
@@ -479,8 +500,9 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
                 continue;
             }
             let answer = req.conflict_choices.iter().find(|(k, _)| Path::new(k) == file.destination).map(|(_, c)| *c);
+            // Overwriting leaves the old file in place until the new one is whole: every write
+            // lands on a part file renamed over it, so a failed or cancelled copy keeps it.
             if answer == Some(romexplorer_types::copy::ConflictChoice::Overwrite) {
-                let _ = std::fs::remove_file(&file.destination);
                 work.push(file);
                 continue;
             }
@@ -501,15 +523,11 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
                     fatal = Some(Error::conflict(format!("{} already exists and differs", file.destination.display())));
                     break;
                 }
-                ConflictPolicy::Overwrite => {
-                    let _ = std::fs::remove_file(&file.destination);
-                }
+                ConflictPolicy::Overwrite => {}
                 // `Rename` picked a free name at plan time, against this job's writes and the
                 // disk. A file there now is one of the same size that turned out different,
                 // or one written since the preview: it stays, and the summary says so.
-                ConflictPolicy::Rename if req.conflict_choices.iter().any(|(k, c)| *c == romexplorer_types::copy::ConflictChoice::Overwrite && Path::new(k) == file.destination) => {
-                    let _ = std::fs::remove_file(&file.destination);
-                }
+                ConflictPolicy::Rename if req.conflict_choices.iter().any(|(k, c)| *c == romexplorer_types::copy::ConflictChoice::Overwrite && Path::new(k) == file.destination) => {}
                 ConflictPolicy::Rename => {
                     summary.blocked_existing.push(file.destination.display().to_string());
                     failed_items.insert(file.item);
@@ -686,10 +704,15 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         return Err(e);
     }
 
-    // Playlists last: their lines can only be rewritten once the discs have names.
-    for (index, file) in planned.files.iter().enumerate() {
-        let _ = index;
-        if !file.is_playlist || file.skip.is_some() {
+    // Playlists last: their lines can only be rewritten once the discs have names. Only a
+    // playlist this run wrote (or found already there with the source's bytes): one the
+    // conflict decisions kept, blocked or skipped is left as it is, and a cancelled run
+    // rewrites none.
+    for file in planned.files.iter() {
+        if summary.cancelled || cancel.is_set() {
+            break;
+        }
+        if !file.is_playlist || file.skip.is_some() || !copied.iter().any(|(f, _)| std::ptr::eq(*f, file)) {
             continue;
         }
         if let Ok(text) = std::fs::read_to_string(&file.source.path) {
@@ -1712,11 +1735,12 @@ async fn register(
         let (game_id, _) = crate::api::scan::ensure_game(&app.pool, rom_id, &item.game_name).await?;
         // The release the copy came from, carried straight over: a copied game shows as held
         // immediately, with no hash match to wait for. That link is the one thing a
-        // `file_scan` could not have reconstructed without re-matching it.
-        if let Some(release_id) = item.release_id {
+        // `file_scan` could not have reconstructed without re-matching it. Only for a whole
+        // copy: one missing files is not that release, and a hash match will say what it is.
+        let whole = !incomplete.contains(&index) && landed.get(&index).copied().unwrap_or(0) == wanted.get(&index).copied().unwrap_or(usize::MAX);
+        if let Some(release_id) = item.release_id.filter(|_| whole) {
             sqlx::query("INSERT IGNORE INTO local_release_games (release_id, game_id) VALUES (?, ?)").bind(release_id).bind(game_id).execute(&app.pool).await?;
         }
-        let whole = !incomplete.contains(&index) && landed.get(&index).copied().unwrap_or(0) == wanted.get(&index).copied().unwrap_or(usize::MAX);
         ra_carried += carry_ra_hashes(app, item, rom_id, !whole).await?;
     }
     Ok((registered, ra_carried))

@@ -78,7 +78,7 @@ beside this program, or in its assets folder.
 Options:
   -o, --output <dir>          write here instead of next to each input
   -f, --force                 replace outputs that already exist
-  -np, --threads <n>          threads in total (default: auto, every core)
+  -np, --threads <n>          threads in total (default: auto, the physical cores but 4)
   -jf, --concurrent-files <n> files converted at once (default: auto, a quarter of the
                               threads, at most 4)
   --preset pc|mobile          fast preset to use for create
@@ -158,7 +158,12 @@ fn parse(args: &[String], default: DefaultMode, mut settings: Settings) -> Resul
         let mut value = |flag: &str| iter.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
         let number = |flag: &str, text: String| text.parse::<u32>().map_err(|_| format!("{flag}: '{text}' is not a number"));
         match arg.as_str() {
-            "-o" | "--output" => settings.output.dir = value(arg)?,
+            // From the working folder, as a shell user means it (a relative folder in the
+            // settings file is taken from each input's own instead).
+            "-o" | "--output" => {
+                let dir = PathBuf::from(value(arg)?);
+                settings.output.dir = std::path::absolute(&dir).unwrap_or(dir).to_string_lossy().into_owned();
+            }
             "-f" | "--force" => settings.output.force = true,
             "-np" | "-j" | "--threads" | "--numprocessors" => settings.jobs.threads = number(arg, value(arg)?)?,
             "-jf" | "--concurrent-files" => settings.jobs.concurrent_files = number(arg, value(arg)?)?,
@@ -333,7 +338,9 @@ pub fn main(default: DefaultMode) -> i32 {
 
     let total = inputs.len();
     let label = |index: usize| inputs[index].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let batch = Batch { mode: parsed.mode, inputs: inputs.clone(), settings: parsed.settings, always_workers: false };
+    // Workers even one at a time: Ctrl-C can then stop a CHD creation part-way and put back a
+    // file it was replacing, rather than wait for it or leave half of it.
+    let batch = Batch { mode: parsed.mode, inputs: inputs.clone(), settings: parsed.settings, always_workers: true, ctrl_c_cancels: true };
     // Per-file percent, for one status line under whatever has been printed so far.
     let percents: Mutex<Vec<f32>> = Mutex::new(vec![0.0; total]);
     let quiet = parsed.mode == Mode::Read;

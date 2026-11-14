@@ -44,6 +44,35 @@ pub const TITLE_LEVEL_TYPES: [&str; 3] = ["screenshot", "video", "fanart"];
 /// `media.sub_category`'s ENUM values (migrations/0001_schema.sql).
 pub const SUB_CATEGORIES: [&str; 7] = ["front", "back", "top", "bottom", "left", "right", "spine"];
 
+/// Largest media file this server takes in: a video or a music track.
+pub const MAX_MEDIA_BYTES: usize = 512 * 1024 * 1024;
+/// Largest image: far above any cover, screenshot or fan art a provider serves.
+pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Reads `response`'s body, giving up as soon as it passes `limit` bytes: a declared
+/// `Content-Length` over it is refused before any of the body is read, and a body that never
+/// declared one is cut off at the limit rather than held whole.
+pub async fn read_capped(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, DatabaseError> {
+    let what = response_url_text(&response);
+    let too_big = || DatabaseError::Fetch(format!("{what} is larger than {} MiB", limit >> 20));
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        return Err(too_big());
+    }
+    let mut body = Vec::with_capacity(response.content_length().map_or(0, |n| n as usize));
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > limit {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn response_url_text(response: &reqwest::Response) -> String {
+    let url = response.url();
+    format!("{}{}", url.host_str().unwrap_or_default(), url.path())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootRole {
     App,
@@ -73,6 +102,14 @@ impl RootRole {
     }
 
     /// The configured-dir role a media type is written under.
+    /// The most bytes one file of this role may hold ([`MAX_MEDIA_BYTES`], [`MAX_IMAGE_BYTES`]).
+    pub fn max_bytes(self) -> usize {
+        match self {
+            Self::Image => MAX_IMAGE_BYTES,
+            Self::App | Self::Video | Self::Audio => MAX_MEDIA_BYTES,
+        }
+    }
+
     pub fn for_media_type(media_type: &str) -> Self {
         match media_type {
             "video" => Self::Video,
@@ -338,17 +375,30 @@ fn original_stem(name: &str) -> Option<String> {
     (!stem.trim().is_empty()).then(|| sanitize_component(stem))
 }
 
-/// A free relative path for `placement` under `root`: not on disk and not in `media`.
+/// A free relative path for `placement` under `root`: not on disk and not in `media`. The
+/// name is reserved by creating the file, empty, with `create_new` -- an atomic claim, so two
+/// downloads (or two workers) picking a name at once get two names instead of one file and two
+/// rows. The caller writes or moves its file over it, and removes it if that fails.
 pub async fn free_path(pool: &MySqlPool, root: &Path, root_role: RootRole, placement: &Placement, ext: &str) -> Result<String, DatabaseError> {
     for n in 1..10_000u32 {
         let rel = format!("{}/{}", placement.folder, candidate_name(&placement.stem, ext, n, placement.keep_name));
         let rel = rel.trim_start_matches('/').to_string();
-        if join_rel(root, &rel).exists() {
+        let path = join_rel(root, &rel);
+        if path.exists() {
             continue;
         }
         let taken = sqlx::query("SELECT 1 FROM media WHERE root_role = ? AND path = ? LIMIT 1").bind(root_role.name()).bind(&rel).fetch_optional(pool).await?.is_some();
-        if !taken {
-            return Ok(rel);
+        if taken {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&path).await {
+            Ok(_) => return Ok(rel),
+            // Taken between the check and now.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
         }
     }
     Err(DatabaseError::Config(format!("no free file name in {}", placement.folder)))
@@ -435,8 +485,25 @@ pub struct NewMedia<'a> {
 
 /// Stores `bytes` under `placement` (or reuses a row with the same bytes and type) and
 /// returns the row. Nothing is linked here.
+///
+/// One store of given bytes at a time (a named lock on their sha1, held on a connection of its
+/// own): two downloads of the same image at once both found no row and stored it twice.
 pub async fn store_bytes(pool: &MySqlPool, roots: &Roots, placement: &Placement, meta: &NewMedia<'_>, bytes: &[u8]) -> Result<Stored, DatabaseError> {
     let sha1 = sha1_bytes(bytes);
+    let lock = format!("romexplorer_media:{sha1}");
+    let mut conn = pool.acquire().await?;
+    let got: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, 60)").bind(&lock).fetch_one(&mut *conn).await?;
+    if got != Some(1) {
+        return Err(DatabaseError::Config(format!("media {sha1}: another store of the same file did not finish")));
+    }
+    let stored = store_bytes_locked(pool, roots, placement, meta, bytes, &sha1).await;
+    // Freed with the connection anyway if this fails.
+    let _ = sqlx::query("SELECT RELEASE_LOCK(?)").bind(&lock).execute(&mut *conn).await;
+    stored
+}
+
+async fn store_bytes_locked(pool: &MySqlPool, roots: &Roots, placement: &Placement, meta: &NewMedia<'_>, bytes: &[u8], sha1: &str) -> Result<Stored, DatabaseError> {
+    let sha1 = sha1.to_string();
     if let Some(row) = sqlx::query("SELECT id, path, root_role FROM media WHERE content_sha1 = ? AND media_type = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(&sha1).bind(meta.media_type).fetch_optional(pool).await? {
         let media_id: u64 = row.try_get("id")?;
         let root_role: Option<String> = row.try_get("root_role")?;
@@ -477,7 +544,13 @@ pub async fn store_bytes(pool: &MySqlPool, roots: &Roots, placement: &Placement,
     };
     let rel = if overwrite { plain } else { free_path(pool, root, root_role, placement, meta.ext).await? };
     let path = join_rel(root, &rel);
-    write_file(&path, bytes).await?;
+    if let Err(e) = write_file(&path, bytes).await {
+        if !overwrite {
+            // The empty file reserving the name.
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        return Err(e);
+    }
     if overwrite {
         let live: Vec<u64> = sqlx::query_scalar("SELECT id FROM media WHERE root_role = ? AND path = ? AND deleted = FALSE").bind(root_role.name()).bind(&rel).fetch_all(pool).await?;
         for id in live {

@@ -1477,7 +1477,9 @@ impl MapSong {
                     let s = unsafe { &*(data as *const LayoutSong) };
                     s.peek(addr as u16) as std::ffi::c_int
                 }
-                apu.set_reader(Some(read), &*s as *const LayoutSong as *mut std::ffi::c_void);
+                // SAFETY: `s` outlives the writes and the end of frame below, and the reader is
+                // cleared before it is next touched.
+                unsafe { apu.set_reader(Some(read), &*s as *const LayoutSong as *mut std::ffi::c_void) };
                 for x in &w {
                     let (t, addr) = match x.port {
                         0x4040..=0x40FF => (super::nes_apu::Target::Fds, x.port as u16),
@@ -1488,7 +1490,8 @@ impl MapSong {
                     apu.write(x.at.min(*cycles), t, addr, x.value as u8);
                 }
                 apu.end_frame(*cycles, out);
-                apu.set_reader(None, std::ptr::null_mut());
+                // SAFETY: no reader, so the null data is never read.
+                unsafe { apu.set_reader(None, std::ptr::null_mut()) };
                 Some(w)
             }
         }

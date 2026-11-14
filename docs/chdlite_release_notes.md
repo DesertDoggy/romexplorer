@@ -22,10 +22,23 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 - **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
   RetroAchievements has achievements for it, with the game's name. The list it checks is
   bundled; its date is shown in Settings and by `--version`.
+- **Threads.** Auto now leaves 4 physical cores free, also for a single file. Files at once
+  never use more threads than the total set.
 
 ## Bug fixes
 
 - The Android app had the standard Android icon instead of chdlite's.
+- A replace that failed or was cancelled deleted the file it was replacing. A cancelled or
+  killed conversion could also leave that file hidden; it is now put back.
+- Ctrl-C in the console tools left a half-written file under the output's name.
+- Two inputs of the same name written to one folder overwrote each other. The second now
+  gets " (2)" added, or fails with a message when its file names come from the disc.
+- A lone .bin or .img could not be converted from a read-only folder, even with an output
+  folder set.
+- A relative output folder was taken from wherever chdlite was started. It is now taken from
+  each input's own folder.
+- Folders left behind by a killed conversion are cleaned up.
+- The release build could not read .pbp files.
 
 # chdlite 0.3.2
 

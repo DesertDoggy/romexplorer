@@ -500,6 +500,14 @@ fn Shell() -> Element {
             ui::sleep(5000).await;
         }
     });
+    // Which database this is, as the console's header says it: once, from the status route.
+    let mut db_line = use_signal(String::new);
+    use_future(move || async move {
+        if let Ok(v) = api::get("/api/v1/status").await {
+            let d = &v["database"];
+            db_line.set(format!("{}@{}:{}/{} · MariaDB {}", api::s(d, "user"), api::s(d, "host"), api::u(d, "port"), api::s(d, "database"), api::s(d, "server_version")));
+        }
+    });
     let db = state::vocab();
     let _ = db;
     // The header and tabs again once the settings are reloaded (the UI language).
@@ -523,6 +531,7 @@ fn Shell() -> Element {
                 HeaderExplain {}
                 // A full-screen launcher view for handhelds and TVs (app only; CLAUDE.md).
                 button { class: "btn small", title: state::tr("full screen, for a controller or touch"), onclick: move |_| { navigator().push(Route::BigPicture { tab: "titles".into() }); }, {state::tr("Big Picture")} }
+                span { class: "meta", "{db_line}" }
                 span { class: "spacer" }
                 span { class: "meta", "{counts}" }
                 if let Some(who) = signed_in {
