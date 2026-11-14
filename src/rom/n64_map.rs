@@ -5,8 +5,8 @@
 //! memory) and the parts of the ROM the song reads after it. The ROM parts are the ROM's own
 //! bytes, so a map keeps only where they are. Main memory is mostly code and data the game
 //! loaded from the ROM: where it is in the ROM as is, a map keeps where; the rest -- the
-//! registers, the game's live variables, anything it unpacked -- is kept as bytes, slimmed
-//! like a GBA map's ([`super::gba_map::slim_common`]). Played, the rebuilt state and ROM parts
+//! registers, the game's live variables, anything it unpacked -- is kept as bytes
+//! (not slimmed: see [`slim`]). Played, the rebuilt state and ROM parts
 //! are the track's own, on the same lazyusf2 core.
 //!
 //! lazyusf2 keeps the ROM and memory as little-endian words (bytes of each 32-bit word
@@ -33,9 +33,6 @@ const SAME_SHARE: f64 = 0.9;
 pub const RATE: u32 = 44_100;
 const DEFAULT_LENGTH_MS: u32 = 150_000;
 const DEFAULT_FADE_MS: u32 = 8_000;
-/// How long [`slim`] keeps halving groups: the N64 player runs far slower than a GBA's, and an
-/// unbounded slim of a big set took past half an hour. Groups not reached stay in the map.
-const SLIM_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
@@ -399,20 +396,15 @@ pub fn render(section: &[u8], compare: bool, fifo_full: bool, seconds: u32) -> R
     Ok(out)
 }
 
-/// Leaves out the shared byte and fill runs the music does not need. Returns how many of the
-/// kept bytes it left out.
+/// Slimming an N64 map is not done: measured on a 10-game sample it took 54-88% of each
+/// game's build (6 minutes for Quake II) to save a few hundred bytes (269 of 22,518), and a
+/// trial with runs left out could send the player into a loop that never returned. Checks
+/// that the map's ROM is the right one and leaves the map as built.
 pub fn slim(map: &mut Map, rom: &[u8]) -> Result<usize, String> {
     if rom.len() != map.rom_len as usize {
         return Err("this ROM is not the one the music map was made for".into());
     }
-    let play = |common: &[Run], t: usize, seconds: u32| -> Option<Vec<i16>> {
-        let s = map.section_with(rom, common, &map.tracks[t]).ok()?;
-        render(&s, map.compare, map.fifo_full, seconds).ok().filter(|s| s.iter().any(|&x| x != 0))
-    };
-    let dropped = gba_map::slim_common_until(&map.common, map.tracks.len(), &play, Some(std::time::Instant::now() + SLIM_BUDGET));
-    let before = map.file_bytes();
-    map.common = map.common.iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, r)| r.clone()).collect();
-    Ok(before - map.file_bytes())
+    Ok(0)
 }
 
 /// Plays a track from the ROM (in lazyusf2's order) by its map.
