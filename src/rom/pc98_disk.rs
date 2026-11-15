@@ -6,6 +6,8 @@
 //! - **D88** (`.d88`, `.88d`, `.d98`, `.98d`): a 0x2B0-byte header with each track's offset,
 //!   then per sector a 16-byte header (C, H, R, N, sector count, ..., data size) and its data.
 //!   Sectors are laid out track by track, each track's in sector-number order.
+//! - **FDD** (Virtual98 `.fdd`, `VFD1.00`): a table of every sector's ID and data offset, a
+//!   filled sector standing for its fill byte.
 //! - **FDI** (Anex86 `.fdi`): a header giving its own size and the sector size, then the raw
 //!   sectors.
 //! - Raw images (`.hdm`, `.xdf`, `.dup`, `.tfd`, `.2hd`, `.img`): the sectors as they are.
@@ -33,7 +35,7 @@ pub struct Disk {
 }
 
 /// The extensions this reader opens.
-pub const EXTENSIONS: &[&str] = &["d88", "88d", "d98", "98d", "fdi", "hdm", "xdf", "dup", "tfd", "2hd"];
+pub const EXTENSIONS: &[&str] = &["d88", "88d", "d98", "98d", "fdi", "fdd", "hdm", "xdf", "dup", "tfd", "2hd"];
 
 /// PMD's and FMP's song file extensions.
 const MUSIC_EXTENSIONS: &[&str] = &["M", "M2", "MZ", "MP", "MS", "OPI", "OVI", "OZI"];
@@ -71,10 +73,45 @@ fn d88_sectors(b: &[u8]) -> Option<Vec<u8>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// The sectors of a Virtual98 (`VFD1.00`) image, in order: a 0xDC-byte header, then for 160
+/// tracks of 26 sector slots each a 12-byte entry (C, H, R, N, fill byte, 3 unknown, data
+/// offset). A slot whose C is 0xFF is unused; a sector whose offset is 0xFFFFFFFF is its fill
+/// byte throughout. Laid out the way MAME's `fdd_dsk` reads it.
+fn vfd_sectors(b: &[u8]) -> Option<Vec<u8>> {
+    if !b.starts_with(b"VFD1.0") {
+        return None;
+    }
+    let mut out = Vec::new();
+    for track in 0..160 {
+        let mut sectors: Vec<(u8, Vec<u8>)> = Vec::new();
+        for slot in 0..26 {
+            let e = b.get(0xDC + (track * 26 + slot) * 12..0xDC + (track * 26 + slot + 1) * 12)?;
+            if e[0] == 0xFF {
+                continue;
+            }
+            let size = 128usize << (e[3] & 7);
+            let at = u32::from_le_bytes([e[8], e[9], e[10], e[11]]);
+            let data = if at == 0xFFFF_FFFF {
+                vec![e[4]; size]
+            } else {
+                let at = at as usize;
+                let mut d = b.get(at..(at + size).min(b.len()))?.to_vec();
+                d.resize(size, e[4]);
+                d
+            };
+            sectors.push((e[2], data));
+        }
+        sectors.sort_by_key(|s| s.0);
+        sectors.iter().for_each(|s| out.extend_from_slice(&s.1));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// The sectors of an image, by its extension.
 fn sectors(bytes: &[u8], ext: &str) -> Option<Vec<u8>> {
     match ext {
         "d88" | "88d" | "d98" | "98d" => d88_sectors(bytes),
+        "fdd" => vfd_sectors(bytes),
         "fdi" => {
             let header = u32_at(bytes, 8)?;
             let size = u32_at(bytes, 0x0C)?;
@@ -154,8 +191,14 @@ impl Disk {
             if attr & 0x08 != 0 {
                 continue; // a volume label, or a long-name piece
             }
-            let text = |b: &[u8]| String::from_utf8_lossy(b).trim_end().to_string();
-            let (name, ext) = (text(&e[..8]), text(&e[8..11]));
+            // Names are in the disk's code page, Shift-JIS on a PC-98; a first byte 0x05
+            // stands for 0xE5, which marks a deleted entry.
+            let text = |b: &[u8]| encoding_rs::SHIFT_JIS.decode(b).0.trim_end().to_string();
+            let mut base = e[..8].to_vec();
+            if base[0] == 0x05 {
+                base[0] = 0xE5;
+            }
+            let (name, ext) = (text(&base), text(&e[8..11]));
             let name = if ext.is_empty() { name } else { format!("{name}.{ext}") };
             let path = format!("{prefix}{name}");
             let cluster = u16_at(e, 0x1A).unwrap_or(0) as u16;
@@ -198,6 +241,27 @@ impl Disk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_virtual98_image_lays_its_sectors_out_and_fills_the_empty_ones() {
+        // Two tracks of two 128-byte sectors (N = 0), stored out of order; one filled.
+        let mut b = b"VFD1.00\0".to_vec();
+        b.resize(0xDC + 160 * 26 * 12, 0xFF);
+        let data_at = b.len();
+        b.extend(vec![0xAA; 128]); // track 0, sector 2
+        b.extend(vec![0xBB; 128]); // track 0, sector 1
+        let entry = |c: u8, h: u8, r: u8, fill: u8, at: u32| [c, h, r, 0, fill, 0, 0, 0, at as u8, (at >> 8) as u8, (at >> 16) as u8, (at >> 24) as u8];
+        let put = |b: &mut Vec<u8>, track: usize, slot: usize, e: [u8; 12]| b[0xDC + (track * 26 + slot) * 12..][..12].copy_from_slice(&e);
+        put(&mut b, 0, 0, entry(0, 0, 2, 0, data_at as u32));
+        put(&mut b, 0, 1, entry(0, 0, 1, 0, data_at as u32 + 128));
+        put(&mut b, 1, 0, entry(0, 1, 1, 0xE5, 0xFFFF_FFFF));
+        let s = vfd_sectors(&b).unwrap();
+        assert_eq!(s.len(), 3 * 128);
+        assert!(s[..128].iter().all(|&x| x == 0xBB));
+        assert!(s[128..256].iter().all(|&x| x == 0xAA));
+        assert!(s[256..].iter().all(|&x| x == 0xE5));
+        assert!(vfd_sectors(b"VFD0").is_none());
+    }
 
     /// A 2HD disk in PC-98 MS-DOS's layout with `files` in its root and one in a folder.
     fn disk(files: &[(&str, &str, &[u8])]) -> Vec<u8> {
