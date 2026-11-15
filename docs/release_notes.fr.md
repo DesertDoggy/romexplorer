@@ -1,16 +1,6 @@
 *Ceci est une traduction des notes de version 0.2.1, 0.2.0 et 0.1.8. Les versions antérieures se
 trouvent dans [release_notes.md](release_notes.md) (anglais), qui fait foi en cas de divergence.*
 
-# romexplorer 0.2.2 (alpha)
-
-Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
-Faites une sauvegarde avant de remplacer une version.
-
-## Corrections
-
-- L'index de musique des ROM semblait bloqué pendant la lecture d'une ROM longue à lire.
-- L'index de musique des ROM ignorait les ROM identifiées uniquement par une correspondance DAT.
-
 # romexplorer 0.2.1 (alpha)
 
 Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
@@ -32,6 +22,9 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Corrections
 
+- L'index de musique des ROM semblait bloqué pendant la lecture d'une ROM longue à lire.
+- L'index de musique des ROM ignorait les ROM identifiées uniquement par une correspondance DAT.
+- Une analyse laissait sans plateforme les ROM japonaises de Super Famicom dont le titre interne est en katakana.
 - L'indexation de la musique des ROM ne se terminait jamais sur certaines images disque.
 - Lors de la conversion de dumps SNES par une copie, un fichier dont la taille et l'en-tête interne
   se contredisaient sur l'en-tête de copieur était converti quand même.

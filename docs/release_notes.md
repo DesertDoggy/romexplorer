@@ -1,13 +1,3 @@
-# romexplorer 0.2.2 (alpha)
-
-Alpha: the database schema may change between releases with no upgrade path. Back up before
-replacing a build.
-
-## Bug fixes
-
-- The ROM music index looked stuck while one ROM took long to read.
-- The ROM music index skipped ROMs that were identified only by a DAT match.
-
 # romexplorer 0.2.1 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
@@ -28,6 +18,9 @@ replacing a build.
 
 ## Bug fixes
 
+- The ROM music index looked stuck while one ROM took long to read.
+- The ROM music index skipped ROMs that were identified only by a DAT match.
+- A scan left Japanese Super Famicom ROMs whose internal title is in katakana without a platform.
 - ROM music indexing never finished on some disc images.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway.

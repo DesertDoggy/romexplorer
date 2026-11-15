@@ -320,6 +320,27 @@ const ROM_PLATFORM: &str = "CAST(COALESCE(NULLIF(r.app_platform_id, 0), \
      (SELECT rel.app_platform_id FROM local_game_roms gr JOIN local_release_games lrg ON lrg.game_id = gr.game_id \
       JOIN `release` rel ON rel.id = lrg.release_id WHERE gr.rom_id = r.id AND rel.app_platform_id <> 0 ORDER BY rel.id LIMIT 1), 0) AS UNSIGNED) AS app_platform_id";
 
+/// The platform of a row selected with [`ROM_PLATFORM`]; when that is still Unknown, the one
+/// cartridge platform the main file's extension belongs to (`.sfc`, `.z64`, `.gb`). A scan
+/// takes an extension only as a hint its header check has to confirm, but for finding music
+/// a cartridge extension is enough: the player itself checks the ROM it is given.
+fn platform_of(row: &sqlx::mysql::MySqlRow) -> Result<u16> {
+    let platform: u16 = row.try_get("app_platform_id")?;
+    if platform != 0 {
+        return Ok(platform);
+    }
+    Ok(platform_by_extension(&row.try_get::<String, _>("main_path")?).unwrap_or(0))
+}
+
+fn platform_by_extension(main_path: &str) -> Option<u16> {
+    use crate::common::models::Platform;
+    let ext = Path::new(main_path).extension().and_then(|e| e.to_str())?.to_ascii_lowercase();
+    match crate::rom::detect::infer_platforms_from_extension_heuristics(&ext).as_slice() {
+        [only] if rom_songs::is_cartridge(*only as u16) || *only == Platform::FamicomDiskSystem => Some(*only as u16),
+        _ => None,
+    }
+}
+
 /// Where to open a ROM from: its main file when that is a disc image, the folder it is a
 /// dump of when it is made of many files, or nothing (a cartridge, an archive).
 fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
@@ -608,7 +629,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             progress.report(i as u64, Some(checking), &format!("checking which ROMs have music this can read: {i} of {checking}")).await;
         }
         let files: i64 = row.try_get::<Option<i64>, _>("files")?.unwrap_or(0);
-        if readable(app, &library, row.try_get("id")?, &row.try_get::<String, _>("main_path")?, row.try_get("app_platform_id")?, files).await? {
+        if readable(app, &library, row.try_get("id")?, &row.try_get::<String, _>("main_path")?, platform_of(&row)?, files).await? {
             roms.push(row);
         } else {
             summary.skipped_unsupported += 1;
@@ -665,7 +686,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             Some(folder) if rip_sets::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
             _ => None,
         };
-        let platform: u16 = row.try_get("app_platform_id")?;
+        let platform: u16 = platform_of(row)?;
         // The same files as a ROM already indexed (another copy, a duplicate folder): its
         // tracks are this one's too. Not when this ROM's folder has music files of its own,
         // which the other's index would not have. A full run reuses only ROMs it read itself.
@@ -854,7 +875,7 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
     let mut found: Vec<(u64, std::result::Result<Vec<(PathBuf, f32)>, String>)> = Vec::new();
     let covered: Vec<(u64, PathBuf, u16)> = roms
         .iter()
-        .filter_map(|r| Some((r.try_get::<u64, _>("id").ok()?, PathBuf::from(r.try_get::<String, _>("main_path").ok()?), r.try_get::<u16, _>("app_platform_id").ok()?)))
+        .filter_map(|r| Some((r.try_get::<u64, _>("id").ok()?, PathBuf::from(r.try_get::<String, _>("main_path").ok()?), platform_of(r).ok()?)))
         .filter(|(_, path, platform)| library.covers(*platform) && !rip_match::skip_rom(path))
         .collect();
     let total = covered.len() as u64;
@@ -1067,7 +1088,7 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
             let library = page_library(app).await?;
             for row in rows {
                 let id: u64 = row.try_get("id")?;
-                if readable(app, &library, id, &row.try_get::<String, _>("main_path")?, row.try_get("app_platform_id")?, row.try_get("files")?).await? {
+                if readable(app, &library, id, &row.try_get::<String, _>("main_path")?, platform_of(&row)?, row.try_get("files")?).await? {
                     unindexed.push(id);
                 }
             }
