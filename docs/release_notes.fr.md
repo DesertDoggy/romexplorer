@@ -9,212 +9,178 @@ Faites une sauvegarde avant de remplacer une version.
 ## Changements
 
 **3DS**
-- Une copie peut déchiffrer les titres 3DS en .cci, .3ds ou .cxi, ou dans les formats compressés
-  .zcci et .zcxi que lit Azahar. Les mises à jour et DLC restent en .cia (.zcia), les homebrews
-  en .3dsx (.z3dsx).
-- Aucune clé n'est fournie avec romexplorer. Placez votre propre aes_keys.txt (et seeddb.bin si
-  un titre en a besoin) à côté des fichiers, à côté de romexplorer ou dans son dossier assets.
-- Les analyses trouvent les .cci, .cxi et les formats compressés .zcci, .zcia et .zcxi : une copie
-  peut aussi convertir un .zcci en .cci et inversement. La correspondance par numéro de série lit
-  leur code produit et leur ID de titre, avec sa propre case pour les images de cartouche.
+- Les ROM 3DS peuvent être converties vers d'autres formats.
+- Aucune clé n'est fournie. Placez aes_keys.txt (et seeddb.bin si un titre en a besoin) à côté des
+  fichiers, à côté de romexplorer ou dans son dossier assets.
+- Correspondance par numéro de série pour les ROM 3DS.
 
 **Audio des ROM**
-- Ouvrir la page d'un titre indexe d'abord la musique des ROM de ce jeu. En attendant, la page
-  affiche la progression au lieu de jouer la musique d'un autre jeu.
-- Il en va de même pour la page Définitive. Une page ouverte plus tard passe avant une page
-  ouverte plus tôt.
-- L'indexation de la musique des ROM lit d'abord les plus petites. Les ROM dont elle ne peut encore
-  rien lire, comme les images de disquette, sont laissées de côté et reprises une fois prises en charge.
-- Les images disque CloneCD (.ccd) et Alcohol (.mds) sont aussi lues.
-- Les jeux PlayStation dotés du moteur sonore propre à leur éditeur (Square, tri-Ace, etc.) jouent aussi leur musique directement depuis le disque.
-- Une ROM au contenu identique à une ROM déjà indexée reprend ses pistes au lieu d'être relue.
+- L'ouverture de la page d'un titre indexe maintenant en premier la musique des ROM de ce jeu.
+- L'index de musique des ROM lit maintenant les plus petites ROM en premier et ignore les ROM non
+  prises en charge.
+- Les jeux PS1 dotés de leur propre moteur sonore sont pris en charge.
 
 ## Corrections
 
-- L'indexation de la musique des ROM ne se terminait jamais sur certaines images de disque,
-  celles dont un nom de fichier contient un « ; ». Une ROM qui prend plus de 20 minutes est
-  désormais ignorée.
-- En convertissant des dumps SNES lors d'une copie, un fichier était converti même si sa taille
-  et son en-tête interne n'étaient pas d'accord sur l'en-tête de copieur. Il est maintenant
-  signalé comme erreur. Un dump NES absent de la base d'en-têtes est signalé avec son hash.
+- L'indexation de la musique des ROM ne se terminait jamais sur certaines images disque.
+- Lors de la conversion de dumps SNES par une copie, un fichier dont la taille et l'en-tête interne
+  se contredisaient sur l'en-tête de copieur était converti quand même.
 
 **Analyse**
-- Sous Linux, une analyse ne trouvait pas les entrées cue, gdi et m3u écrites avec une autre
-  casse ou des barres obliques inverses, et prenait deux fichiers ne différant que par la
-  casse pour une seule ROM.
-- L'analyse d'un dossier ignorait le type et la plateforme des dossiers qu'il contient. Les
-  dossiers de jeu sous un dossier sans plateforme devenaient un jeu par fichier.
-- Les nouvelles analyses relisaient les jeux en dossier, séparaient les pistes déjà réunies
-  et perdaient les correspondances par numéro de série. Le regroupement des disques était lent
-  sur les grands dossiers.
-- Les fichiers qui ne sont pas des ROM, comme les textes et les images, devenaient des jeux.
-  Ils ne le deviennent plus qu'une fois identifiés.
-- Avec seulement xxh3_128 parmi les hachages d'analyse, les correspondances DAT se perdaient.
-  L'un de crc32, md5 et sha1 reste désormais toujours activé.
+- Sous Linux, une analyse ignorait les entrées cue, gdi et m3u écrites avec une autre casse ou avec
+  « \ » comme séparateur, et prenait deux fichiers ne différant que par la casse pour une seule ROM.
+- L'analyse d'un dossier ignorait le type et la plateforme définis sur ses sous-dossiers.
+- Les réanalyses relisaient les jeux en dossier, séparaient les pistes et perdaient les
+  correspondances par numéro de série. Le regroupement des disques dans les grands dossiers est
+  plus rapide.
+- Les fichiers qui ne sont pas des ROM (texte, images) ne deviennent maintenant des jeux qu'une fois
+  identifiés.
+- L'un de crc32, md5 et sha1 doit maintenant rester actif dans les hashs de l'analyse. Avec
+  xxh3_128 seul, les correspondances DAT étaient perdues.
 
 **Copie**
-- L'écrasement supprimait l'ancien fichier avant d'écrire le nouveau. Une copie pouvait aussi
-  réécrire des playlists à conserver, et écrire en un seul deux fichiers ne différant que par
-  la casse.
+- L'écrasement supprimait l'ancien fichier avant d'écrire le nouveau, une copie réécrivait des
+  listes de lecture à conserver, et deux fichiers ne différant que par la casse étaient écrits en un.
 
 **Fusion des titres**
-- La fusion pouvait réunir deux versions d'un ensemble de versions, ou un titre commercial avec
-  un titre sans licence. Les titres séparés revenaient avec « Tout accepter », et les liens
-  IGDB retirés par l'audit revenaient au rapprochement suivant.
+- La fusion réunissait des versions d'un groupe de versions, ou des titres commerciaux avec des
+  titres sans licence. « Tout accepter » rétablissait des fusions défaites, et des liens IGDB retirés
+  par l'audit revenaient.
 - Une correspondance Hasheous sur l'autre nom d'un jeu fusionné créait un titre en double.
 
 **Serveur et tâches**
-- La récupération d'images pour un client pouvait atteindre le réseau du serveur, sans limite
-  de taille.
-- Tout compte pouvait télécharger les caches SQLite « database » et « all », qui contiennent
-  les comptes et les réglages. Ils demandent désormais un administrateur.
-- Une synchronisation complète interrompue laissait une table à moitié remplie, et annuler une
-  sauvegarde laissait la suivante démarrer pendant l'écriture.
-- Les copies vers un autre disque et les synchronisations depuis un autre serveur attendaient
-  des tâches sans rapport. Après un redémarrage de la base, une tâche pouvait démarrer deux fois.
+- La récupération d'images pour un client pouvait atteindre le réseau interne du serveur. Une
+  limite de taille a aussi été ajoutée.
+- Le téléchargement des caches SQLite « database » et « all » nécessite maintenant un
+  administrateur.
+- Une synchronisation complète interrompue laissait une table à moitié remplie, et après
+  l'annulation d'une sauvegarde la suivante démarrait pendant l'écriture.
+- Les copies vers un autre disque et les synchronisations depuis un autre serveur attendaient des
+  tâches sans rapport, et une tâche pouvait démarrer deux fois après un redémarrage de la base.
 
 **Divers**
-- La musique des ROM pouvait planter sur un ensemble PSF2.
-- Quelques libellés de la console web et phrases de Config › Réglages restaient en anglais.
-- MariaDB avant 10.6 échouait avec des erreurs peu claires. Elle est désormais refusée à la
-  connexion.
+- La musique des ROM plantait sur un set PSF2.
+- Des parties de la console web et de l'écran des paramètres restaient en anglais.
+- MariaDB antérieur à 10.6 affiche maintenant une erreur à la connexion.
 
 # romexplorer 0.2.0 (alpha)
-
-Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
-Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
 **L'IA dans Revue des fusions**
-- « Demander à Google » devient un menu Ask : le mode IA de Google, Claude, ChatGPT et Perplexity
-  s'ouvrent dans le navigateur avec la question déjà saisie.
-- La réponse dans l'application peut venir de Gemini, Claude, OpenAI ou Perplexity, chacun avec sa
-  clé d'API et son modèle.
-- Les réponses sont enregistrées. « Redemander » en obtient une nouvelle ; les réponses épinglées ne
-  sont pas redemandées.
-- Les réponses enregistrées font partie de la sauvegarde de la base de données.
+- « Demander à Google » est maintenant un menu Ask. Il ouvre le mode IA de Google, Claude, ChatGPT
+  ou Perplexity dans le navigateur avec la question déjà saisie.
+- Les réponses dans l'application peuvent venir de Gemini, Claude, OpenAI ou Perplexity, chacun
+  avec sa clé d'API et son modèle.
+- Les réponses sont maintenant enregistrées. « Redemander » en obtient une nouvelle ; les réponses
+  épinglées ne sont jamais redemandées.
+- Les réponses enregistrées sont incluses dans les sauvegardes de la base de données.
 
 **Config › AI**
-- Un nouvel onglet pour les réglages de l'IA.
-- Affiche le nombre de réponses enregistrées et leur coût approximatif ce mois-ci et au total. Les
+- Un onglet de paramètres de l'IA a été ajouté.
+- Il affiche le nombre de réponses enregistrées et le coût estimé du mois et au total. Les
   réponses peuvent être exportées et importées en JSON.
 
 **L'IA dans l'onglet Définitive**
-- La page de chaque jeu peut demander à l'IA quelle version a le plus de contenu et les meilleurs
-  graphismes, son et confort de jeu. La réponse porte un rang, comme les notes relues.
-- Une réponse obtenue par un lien du navigateur peut être collée, ou enregistrée depuis le
-  presse-papiers en un clic.
-- La première question affiche un avertissement sur le coût. Config › AI renvoie vers la page des
-  limites de dépense de chaque fournisseur.
-- « Évaluer en lot avec l'IA » interroge sur plusieurs jeux en une seule tâche : les jeux choisis
-  dans l'onglet Définitive, ou les lignes choisies d'un set ou le set entier. Le nombre de questions
-  et un coût approximatif s'affichent d'abord, les jeux déjà évalués sont sautés, et un set peut être
-  planifié.
-- Un rang donné avant la sortie d'une version plus récente du jeu est marqué « Nouvelle version
-  depuis l'évaluation », et le filtre peut écarter ces rangs.
+- La page de chaque jeu peut demander à une IA en quoi ses versions diffèrent, pour choisir la
+  définitive. Les réponses reçoivent les mêmes rangs que les notes.
+- Un avertissement de coût s'affiche avant la première question. Config › AI renvoie à la page des
+  limites d'utilisation de chaque fournisseur.
+- « Évaluer en lot avec l'IA » interroge sur plusieurs jeux en une seule tâche. Il affiche d'abord
+  le nombre de questions et le coût estimé, et ignore les jeux déjà traités.
+- Les jeux ayant une nouvelle version sortie après leur évaluation sont marqués « Nouvelle version
+  depuis l'évaluation » et peuvent être exclus par le filtre.
 
 **Titres : versions mineures et groupes de versions**
-- « Masquer les versions mineures » masque un jeu quand une édition plus complète existe sur la même
-  plateforme et dans la même région (International, Director's Cut, Final Mix, etc. ; une Easy Type
-  laisse la place au jeu normal). Dans Titres, Sorties et la liste des sorties d'un titre.
-- « Une version de chaque ensemble » n'affiche qu'une version des jeux sortis en plusieurs versions
-  (Pokémon, Yo-kai Watch, etc.) : celle que vous possédez, sinon votre choix, sinon une au hasard,
-  avec 🎲 pour en voir une autre. Les versions d'un même groupe ne forment plus une seule famille
-  dans l'onglet Définitive.
-- La nouvelle carte Versions de la page d'un titre montre les deux et permet de les corriger.
+- « Masquer les versions mineures » a été ajouté.
+- « Une version de chaque ensemble » a été ajouté.
+- Une carte « Versions » a été ajoutée aux pages de titre.
 
 **Config › Avancé**
-- Un nouvel onglet pour les opérations qui peuvent endommager la base de données ou faire perdre
-  des fichiers. L'optimisation de la DB y a été déplacée depuis Tâches et données › DB.
+- Un onglet regroupe les actions pouvant endommager la base de données ou faire perdre des
+  fichiers. L'optimisation de la DB y a été déplacée depuis Tâches et données › DB.
 
 **Audio des ROM**
-- Les pages de titre peuvent jouer la musique contenue dans vos ROM (pistes audio CD des jeux sur disque, et archives sonores Nintendo DS et 3DS).
-- Les réglages permettent de choisir quelles pistes sont jouées.
-- Le lecteur des pages de titre a un bouton « ne pas jouer cette piste ». Les pistes masquées sont
-  listées sous la liste de lecture : un clic en joue une, Restaurer la remet.
+- Les pages de titre peuvent lire la musique contenue dans les ROM (pistes audio CD des jeux sur
+  disque et archives sonores Nintendo DS et 3DS).
+- Les critères des pistes lues se règlent dans les paramètres.
+- Un bouton « ne pas jouer cette piste » a été ajouté au lecteur de la page de titre.
 - La musique des ROM décodée pour la lecture est mise en cache en mémoire (Paramètres › Audio,
-  256 Mio par défaut). Au-delà, les pistes passent dans le cache audio sur disque, qui utilise le
-  dossier du cache de niveau 1 s'il est défini.
+  256 Mio par défaut).
 - La normalisation du lecteur a été ajustée.
-- Le lecteur peut faire un fondu enchaîné (2000 ms par défaut, 0 pour le désactiver).
-- Le silence à la fin d'une piste est coupé : les pistes des ROM sont raccourcies, et pour les
-  fichiers audio, le scan audio mesure où le son s'arrête (relancez-le pour les fichiers déjà
-  scannés).
-- La musique des pages de titre est activée par défaut, et le premier démarrage demande si vous la
-  voulez, juste après la langue. Un titre sans audio propre joue des pistes au hasard par défaut.
+- Le lecteur peut faire un fondu enchaîné (2000 ms par défaut, 0 le désactive).
+- Le silence en fin de piste est maintenant coupé.
+- La musique des pages de titre est maintenant activée par défaut. Au premier lancement, après la
+  langue, l'application demande s'il faut jouer de la musique. Les titres sans audio propre jouent
+  une piste au hasard par défaut.
 
 **Revue des fusions et Titres fusionnés**
-- Les sorties d'une carte peuvent être glissées vers le titre auquel elles appartiennent, ou sur
-  « + » pour un nouveau titre nommé d'après la première. Toucher une sortie puis un titre fonctionne
-  aussi.
-- Les cartes déjà acceptées ou refusées peuvent être réaffichées avec le nouveau filtre d'état.
-  Elles sont masquées par défaut.
-- Les séparations sont désormais listées dans Édition › Titres fusionnés et peuvent y être
-  annulées. Celles faites depuis Revue des fusions avant cette mise à jour sont ajoutées à la liste.
+- Une sortie d'une carte peut être glissée sur le bon titre. La déposer sur « + » crée un nouveau
+  titre.
+- Les cartes acceptées et rejetées peuvent être affichées avec le filtre d'état. Elles sont masquées
+  par défaut.
+- Les séparations sont aussi consignées dans Modifier › Titres fusionnés et peuvent y être
+  annulées. Celles faites dans la Revue des fusions avant cette mise à jour y figurent aussi.
 
 **Sorties regroupées**
-- Les disques d’un même jeu listés séparément (ceux d’un pack, un disque bonus) peuvent être réunis avec « Regrouper en une seule sortie ». Une seule sortie est listée pour tous, et la copier copie tous les disques. La page de la sortie permet d’en séparer un.
+- Les disques d'un même jeu enregistrés comme sorties séparées peuvent être sélectionnés et réunis
+  avec « Regrouper en une seule sortie ».
 
 **Analyse**
-- La page d'un fichier propose « Réanalyser ce fichier ». Le fichier est relu avec le reste de sa ROM
-  et son jeu est aussitôt associé à une sortie.
-- La page d'un fichier affiche la sortie et le titre auxquels il est lié.
+- « Réanalyser ce fichier » a été ajouté aux pages de fichier. Il relit le fichier avec les autres
+  fichiers de la ROM et associe aussitôt le jeu à sa sortie.
+- Les pages de fichier affichent maintenant la sortie et le titre liés.
 
 ## Corrections
 
-- Certains jeux ne trouvaient pas de correspondance IGDB : un nom avec un trait d’union au milieu d’un mot ne correspondait pas à l’orthographe d’IGDB, et la synchronisation IGDB de la SNES et de la NES omettait les jeux sortis uniquement au Japon.
-- Un titre gardait les titres alternatifs d’IGDB après le retrait de son lien IGDB, sans pouvoir les supprimer. Ils partent désormais avec le lien, et chaque titre alternatif peut être retiré avec ✕.
-- « Mettre à jour les métadonnées » reliait de nouveau à IGDB un titre dont le lien avait été retiré à la main. Il reste désormais sans lien jusqu’à ce que vous le reliiez vous-même.
-- Les subsets RetroAchievements (défi, speedrun, etc.) allaient dans le titre de leur jeu et pouvaient réunir deux versions d'un jeu en un titre. Chaque subset est désormais un titre à part ; l'audit des fusions sépare ceux déjà présents.
-- Annuler une fusion acceptée dans la revue des fusions ne remettait pas la suggestion. Elle est de nouveau à examiner.
-- Une suggestion de fusion restait dans la revue des fusions après la fusion manuelle de ses titres.
-- Des jeux pirates et sans licence étaient fusionnés dans les titres de jeux commerciaux.
-- La carte « un autre jeu à l'intérieur » laissait dans le titre des jeux pirates et sans licence
-  d'autres régions.
-- La carte « un autre jeu à l'intérieur » prenait une sortie avec un numéro devant son nom
-  (« 0743 - ... ») pour un autre jeu.
-- Des tâches comme l'audit des fusions montraient peu de leur progression. Elles la montrent
-  maintenant en détail.
-- Un fichier listé par un DAT pouvait rester sans sortie ni titre, quand le DAT était ajouté après
-  l'analyse ou qu'un sous-dossier était analysé après le dossier au-dessus.
+- Les noms avec un trait d'union au milieu d'un mot ne correspondaient pas à l'orthographe d'IGDB,
+  si bien que certains jeux ne trouvaient pas de correspondance IGDB.
+- Les synchronisations IGDB SNES et NES omettaient les jeux sortis uniquement au Japon.
+- Délier IGDB laissait les noms alternatifs d'IGDB sur le titre, sans moyen de les supprimer. Ils
+  partent maintenant avec le lien, et chacun peut être supprimé avec ✕.
+- Les liens IGDB retirés à la main étaient refaits par « Mettre à jour les métadonnées ». Ils restent
+  maintenant déliés jusqu'à un nouveau lien manuel.
+- Les sous-ensembles RetroAchievements (défis, speedruns, etc.) entraient dans le titre du jeu et
+  pouvaient réunir des versions différentes en un titre.
+- Annuler une fusion faite dans la Revue des fusions ne faisait pas revenir la suggestion.
+- Les suggestions de titres déjà fusionnés à la main restaient dans la Revue des fusions.
+- Les jeux pirates et sans licence étaient fusionnés avec des titres commerciaux.
+- Les cartes « un autre jeu à l'intérieur » laissaient dans le titre des jeux pirates et sans
+  licence d'autres régions.
+- Les cartes « un autre jeu à l'intérieur » prenaient pour des jeux différents les sorties ayant un
+  numéro devant le nom (« 0743 - ... »).
+- Les tâches comme l'audit des fusions affichent maintenant une progression détaillée.
+- Sous Windows arm64 et Linux arm64, les images Wii U, Xbox et Xbox 360 ne pouvaient pas être
+  converties, les fichiers PBP lus, ni la musique des ROM jouée.
+- Des fichiers listés dans un DAT restaient liés à aucune sortie ni aucun titre.
 
 # romexplorer 0.1.8 (alpha)
-
-Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
-Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
 **Médias**
-- Après un nouveau départ avec une nouvelle base de données, les visuels déjà présents dans le
-  dossier des médias sont réutilisés au lieu d'être téléchargés à nouveau.
+- Repartir avec une nouvelle base de données réutilise maintenant les images déjà présentes dans le
+  dossier des médias.
 
 **Tâches**
-- Les colonnes de détail de la liste des tâches ont été ajustées.
-- Une tâche en attente a un bouton « Exécuter ensuite », aussi pour une sélection : elle démarre dès que la
-  tâche en cours dans sa file est terminée. Les autres files ne sont pas touchées.
+- Les détails de la liste des tâches ont été ajustés.
+- Un bouton « Exécuter ensuite » a été ajouté aux tâches en attente.
 
 **Correspondance par hash**
-- Une correspondance par hash avec seulement Hasheous activé récupère aussi les données IGDB et les
-  visuels de ce qu'elle a trouvé, comme avec PlayMatch.
-- Le réglage serial_match choisit par plateforme si le numéro de série dans le nom de fichier
-  compte. Une plateforme laissée telle quelle suit la case du nom de fichier.
+- La correspondance par hash avec Hasheous seul récupère maintenant aussi les données et images
+  IGDB.
+- serial_match peut maintenant choisir par plateforme d'utiliser ou non les numéros de série des
+  noms de fichier.
 
 **Revue des fusions**
-- La réponse de Gemini et « Demander à Google » arrivent dans la langue de l'interface.
-- Quand la requête échoue, le message dit pourquoi : un certificat ou un délai dépassé, le modèle,
-  et le quota épuisé. Une clé sans quota gratuit pour le modèle le signale.
-- Si la liste des modèles ne peut pas être lue, Gemini est quand même interrogé ; en cas d'erreur
-  de quota, le modèle Flash suivant est essayé une fois.
+- Les réponses de Gemini et « Demander à Google » utilisent maintenant la langue de l'interface.
+- Une requête échouée affiche maintenant la raison.
+- Gemini est maintenant interrogé même si sa liste de modèles ne peut pas être lue.
 
 **Définitive et Crossplat**
-- Seuls les titres avec un identifiant IGDB sont listés. Les titres Wii U nommés par leur
-  identifiant de titre n'apparaissent plus dans Définitive.
+- Seuls les titres ayant un ID IGDB sont maintenant affichés.
 
 ## Corrections
 
 **Collection**
-- La recherche de l'onglet Définitive ne trouvait que le nom du titre de tête. Elle trouve
-  maintenant une famille par le nom de n'importe quelle version, noms localisés et alternatifs
-  compris.
+- La recherche dans l'onglet Définitive ne trouvait que le nom du titre principal.

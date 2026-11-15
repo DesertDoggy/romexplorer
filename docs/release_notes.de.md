@@ -9,212 +9,175 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 ## Änderungen
 
 **3DS**
-- Eine Kopie kann 3DS-Titel zu .cci, .3ds oder .cxi entschlüsseln, oder zu den komprimierten
-  .zcci und .zcxi, die Azahar liest. Updates und DLC bleiben .cia (.zcia), Homebrew .3dsx (.z3dsx).
-- Schlüssel liegen romexplorer nicht bei. Lege deine eigene aes_keys.txt (und seeddb.bin, wenn ein
-  Titel sie braucht) neben die Dateien, neben romexplorer oder in dessen assets-Ordner.
-- Scans finden .cci, .cxi und die komprimierten .zcci, .zcia und .zcxi, sodass eine Kopie auch
-  .zcci in .cci umwandeln kann und zurück. Der Serien-Abgleich liest Produktcode und Titel-ID und
-  hat für Cartridge-Images ein eigenes Kästchen.
+- 3DS-ROMs lassen sich in andere Formate umwandeln.
+- Schlüssel liegen nicht bei. Legen Sie aes_keys.txt (und seeddb.bin, wenn ein Titel sie braucht)
+  neben die Dateien, neben romexplorer oder in dessen assets-Ordner.
+- Serienabgleich für 3DS-ROMs.
 
 **ROM-Audio**
-- Beim Öffnen einer Titelseite wird zuerst die ROM-Musik dieses Spiels indiziert. Bis dahin zeigt
-  die Seite den Fortschritt, statt Musik eines anderen Spiels abzuspielen.
-- Das gilt auch für die Seite „Definitiv“. Eine später geöffnete Seite kommt vor einer früher
-  geöffneten an die Reihe.
-- Die Indizierung der ROM-Musik liest die kleinsten ROMs zuerst. ROMs, aus denen sie noch nichts
-  lesen kann, etwa Diskettenabbilder, werden ausgelassen und übernommen, sobald sie unterstützt werden.
-- Auch CloneCD- (.ccd) und Alcohol-Abbilder (.mds) werden gelesen.
-- Auch PlayStation-Spiele mit eigener Sound-Engine des Herstellers (Square, tri-Ace u. a.) spielen ihre Musik direkt von der Disc.
-- Ein ROM mit demselben Inhalt wie ein bereits indiziertes übernimmt dessen Titel, statt erneut
-  gelesen zu werden.
+- Beim Öffnen einer Titelseite wird die ROM-Musik dieses Spiels jetzt zuerst indexiert.
+- Der ROM-Musikindex liest jetzt die kleinsten ROMs zuerst und überspringt nicht unterstützte ROMs.
+- PS1-Spiele mit eigener Sound-Engine werden unterstützt.
 
 ## Fehlerbehebungen
 
-- Die Indizierung der ROM-Musik wurde bei einigen Disc-Images nie fertig, und zwar bei solchen
-  mit einem „;“ mitten im Dateinamen. Ein ROM, das länger als 20 Minuten braucht, wird jetzt
-  übersprungen.
-- Beim Konvertieren von SNES-Dumps in einer Kopie wurde eine Datei trotzdem konvertiert, wenn
-  Größe und interner Header beim Kopierer-Header nicht übereinstimmten. Sie wird jetzt als
-  Fehler gemeldet. Ein NES-Dump, der nicht in der Header-Datenbank steht, wird mit seinem Hash
-  gemeldet.
+- Die Indexierung der ROM-Musik wurde bei manchen Disc-Images nie fertig.
+- Beim Umwandeln von SNES-Dumps wurde eine Datei, deren Größe und interner Header sich beim
+  Copier-Header widersprachen, trotzdem umgewandelt.
 
 **Scan**
-- Unter Linux fand ein Scan cue-, gdi- und m3u-Einträge in anderer Schreibweise oder mit
-  Backslashes nicht und hielt zwei Dateien, die sich nur in Groß-/Kleinschreibung
-  unterscheiden, für ein ROM.
-- Beim Scannen eines Ordners wurden Typ und Plattform der Ordner darin ignoriert. Spielordner
-  direkt unter einem Ordner ohne Plattform wurden zu einem Spiel pro Datei.
-- Erneute Scans lasen Ordnerspiele erneut, trennten zusammengeführte Tracks und verloren
-  Serien-Treffer. Das Gruppieren von Discs war bei großen Ordnern langsam.
-- Dateien, die keine ROMs sind, etwa Texte und Bilder, wurden zu Spielen. Jetzt erst, wenn
-  sie erkannt sind.
-- Mit nur xxh3_128 bei den Scan-Hashes gingen DAT-Treffer verloren. Einer von crc32, md5 und
-  sha1 bleibt jetzt immer an.
+- Unter Linux übersah ein Scan cue-, gdi- und m3u-Einträge mit anderer Groß-/Kleinschreibung oder
+  „\“ als Trenner und hielt zwei Dateien, die sich nur in der Schreibung unterscheiden, für ein ROM.
+- Ein Scan des übergeordneten Ordners ignorierte Typ und Plattform der Ordner darin.
+- Neuscans lasen Ordnerspiele neu ein, trennten Tracks und lösten Serienabgleiche. Das Gruppieren
+  von Discs in großen Ordnern ist schneller.
+- Dateien, die keine ROMs sind (Text, Bilder), werden jetzt erst nach einem Abgleich zu Spielen.
+- Einer von crc32, md5 und sha1 muss jetzt bei den Scan-Hashes aktiv bleiben. Mit nur xxh3_128
+  gingen DAT-Abgleiche verloren.
 
 **Kopie**
-- Beim Überschreiben wurde die alte Datei gelöscht, bevor die neue geschrieben war. Eine Kopie
-  konnte auch Playlists ändern, die bleiben sollten, und zwei Dateien, die sich nur in
-  Groß-/Kleinschreibung unterscheiden, in eine schreiben.
+- Beim Überschreiben wurde die alte Datei vor der neuen gelöscht, eine Kopie schrieb Playlists um,
+  die erhalten bleiben sollten, und zwei Dateien, die sich nur in der Schreibung unterscheiden,
+  wurden in eine geschrieben.
 
 **Titel zusammenführen**
-- Zwei Versionen eines Versionssatzes oder ein Retail- mit einem unlizenzierten Titel konnten
-  zusammengeführt werden. Getrennte Titel kamen mit „Alle annehmen“ zurück, und vom Audit
-  entfernte IGDB-Links kamen beim nächsten Hash-Abgleich zurück.
-- Ein Hasheous-Treffer über den anderen Namen eines zusammengeführten Spiels erzeugte einen
-  doppelten Titel.
+- Zusammenführen verband Versionen einer Versionsgruppe oder lizenzierte mit nicht lizenzierten
+  Titeln. „Alle annehmen“ stellte aufgelöste Zusammenführungen wieder her, und vom Audit entfernte
+  IGDB-Links kamen zurück.
+- Ein Hasheous-Abgleich über den Zweitnamen eines zusammengeführten Spiels erzeugte einen doppelten
+  Titel.
 
 **Server und Jobs**
-- Das Abrufen von Bildern für einen Client konnte Adressen im Netz des Servers erreichen, ohne
-  Größenlimit.
-- Jedes Konto konnte die SQLite-Caches „database“ und „all“ mit Konten und Einstellungen
-  herunterladen. Jetzt nur Admins.
-- Eine abgebrochene volle Synchronisierung ließ eine Tabelle halb gefüllt, und ein
-  abgebrochenes Backup ließ das nächste starten, während es noch schrieb.
+- Das Abrufen von Bildern für einen Client konnte das interne Netzwerk des Servers erreichen. Eine
+  Größengrenze kam ebenfalls hinzu.
+- Das Herunterladen der SQLite-Caches „database“ und „all“ erfordert jetzt einen Administrator.
+- Eine abgebrochene vollständige Synchronisierung ließ eine Tabelle halb gefüllt, und nach dem
+  Abbrechen eines Backups startete das nächste, während noch geschrieben wurde.
 - Kopien auf ein anderes Laufwerk und Synchronisierungen von einem anderen Server warteten auf
-  fremde Jobs. Nach einem Datenbank-Neustart konnte ein Job doppelt starten.
+  fremde Jobs, und nach einem Datenbank-Neustart konnte ein Job doppelt starten.
 
 **Sonstiges**
-- ROM-Musik konnte bei einem PSF2-Satz abstürzen.
-- Einige Beschriftungen der Web-Konsole und Sätze unter Konfiguration › Einstellungen blieben
-  auf Englisch.
-- MariaDB vor 10.6 scheiterte mit unklaren Fehlern. Sie wird jetzt beim Verbinden abgelehnt.
+- ROM-Musik stürzte bei einem PSF2-Set ab.
+- Teile der Webkonsole und des Einstellungsbildschirms blieben englisch.
+- MariaDB älter als 10.6 zeigt jetzt beim Verbinden einen Fehler.
 
 # romexplorer 0.2.0 (alpha)
-
-Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
-Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
 **KI in „Zusammenführungen prüfen“**
-- „Google fragen“ ist jetzt ein Ask-Menü: Googles KI-Modus, Claude, ChatGPT und Perplexity öffnen
-  sich im Browser mit bereits eingetragener Frage.
-- Die Antwort in der App kann von Gemini, Claude, OpenAI oder Perplexity kommen, jeweils mit
+- „Google fragen“ ist jetzt ein Ask-Menü. Es öffnet Googles KI-Modus, Claude, ChatGPT oder
+  Perplexity im Browser mit eingetragener Frage.
+- Antworten in der App können von Gemini, Claude, OpenAI oder Perplexity kommen, jeweils mit
   eigenem API-Schlüssel und Modell.
-- Antworten werden gespeichert. „Erneut fragen“ holt eine neue; angeheftete Antworten werden nicht
-  neu abgefragt.
+- Antworten werden jetzt gespeichert. „Erneut fragen“ holt eine neue; angeheftete Antworten werden
+  nie neu abgefragt.
 - Gespeicherte Antworten sind im Datenbank-Backup enthalten.
 
 **Config › AI**
-- Ein neuer Tab für die KI-Einstellungen.
-- Zeigt, wie viele Antworten gespeichert sind und was sie diesen Monat und insgesamt ungefähr
-  gekostet haben. Antworten lassen sich als JSON exportieren und importieren.
+- Ein Tab für die KI-Einstellungen wurde hinzugefügt.
+- Er zeigt die Zahl der gespeicherten Antworten und die geschätzten Kosten für diesen Monat und
+  insgesamt. Antworten lassen sich als JSON exportieren und importieren.
 
 **KI im Definitiv-Tab**
-- Auf der Seite jedes Spiels lässt sich die KI fragen, welche Version den meisten Inhalt und die
-  beste Grafik, den besten Sound und den meisten Komfort hat. Die Antwort trägt einen Rang wie die
-  geprüften Notizen.
-- Eine Antwort aus einem Browser-Link kann eingefügt oder mit einem Klick aus der Zwischenablage
-  gespeichert werden.
-- Vor der ersten Frage erscheint ein Kostenhinweis. Config › AI verlinkt die Ausgabenlimits jedes
-  Anbieters.
-- „Mit KI gesammelt bewerten“ fragt mehrere Spiele in einem Job ab: die im Definitiv-Tab
-  gewählten Spiele oder die gewählten Zeilen eines Sets oder das ganze Set. Vorher werden die Zahl
-  der Fragen und die ungefähren Kosten angezeigt, schon beantwortete Spiele werden übersprungen, und
-  für ein Set lässt es sich planen.
-- Ein Rang, der vor dem Erscheinen einer neueren Version des Spiels vergeben wurde, ist mit „Neue
-  Version seit der Bewertung“ markiert, und der Filter kann solche Ränge auslassen.
+- Auf der Seite jedes Spiels kann man eine KI fragen, wie sich seine Versionen unterscheiden, um die
+  definitive zu wählen. Antworten erhalten dieselben Ränge wie die Hinweise.
+- Vor der ersten Frage erscheint ein Kostenhinweis. Config › AI verlinkt die Seite mit den
+  Nutzungsgrenzen jedes Anbieters.
+- „Mit KI gesammelt bewerten“ fragt zu mehreren Spielen in einem Job. Vorher werden Zahl der Fragen
+  und geschätzte Kosten gezeigt; bereits beantwortete Spiele werden übersprungen.
+- Spiele, für die nach der Bewertung eine neue Version erschien, sind als „Neue Version seit
+  Bewertung“ markiert und lassen sich herausfiltern.
 
 **Titel: Nebenversionen und Versionsgruppen**
-- „Nebenversionen ausblenden“ blendet ein Spiel aus, wenn es auf derselben Plattform und in derselben
-  Region eine vollständigere Ausgabe gibt (International, Director's Cut, Final Mix und ähnliche;
-  eine Easy Type weicht dem normalen Spiel). In Titel, Releases und der Release-Liste eines Titels.
-- „Eine je Versionsset“ zeigt nur eine Version von Spielen, die in mehreren Versionen
-  erschienen sind (Pokémon, Yo-kai Watch und andere): die, die Sie besitzen, sonst Ihre Wahl, sonst
-  eine zufällige, mit 🎲 für eine andere. Versionen derselben Gruppe bilden im Definitiv-Tab keine
-  gemeinsame Familie mehr.
-- Die neue Karte „Versionen“ auf der Seite eines Titels zeigt beides und lässt es korrigieren.
+- „Nebenversionen ausblenden“ wurde hinzugefügt.
+- „Eine je Versionsset“ wurde hinzugefügt.
+- Titelseiten haben eine Karte „Versionen“.
 
 **Config › Erweitert**
-- Ein neuer Tab für Vorgänge, die die Datenbank beschädigen oder Dateien verlieren können. „DB
-  optimieren“ ist von Jobs und Daten › DB hierher umgezogen.
+- Ein Tab sammelt Aktionen, die die Datenbank beschädigen oder Dateien verlieren können. Die
+  Datenbankoptimierung ist von Jobs und Daten › DB hierher umgezogen.
 
 **ROM-Audio**
-- Titelseiten können die Musik in Ihren ROMs abspielen (CD-Audiotracks von Disc-Spielen sowie Soundarchive von Nintendo DS und 3DS).
-- In den Einstellungen wird festgelegt, welche Tracks spielen.
-- Der Player auf Titelseiten hat eine Schaltfläche „diesen Track nicht spielen“. Ausgeblendete
-  Tracks stehen unter der Playlist: Ein Klick spielt einen ab, „Wiederherstellen“ holt ihn zurück.
-- Zum Abspielen dekodierte ROM-Musik wird im Arbeitsspeicher zwischengespeichert (Einstellungen ›
-  Audio, standardmäßig 256 MiB). Ist er voll, wandern Tracks in den Audio-Cache auf der Festplatte,
-  der den Ordner des Tier-1-Caches nutzt, wenn einer eingestellt ist.
-- Die Normalisierung im Player wurde angepasst.
-- Der Player kann überblenden (standardmäßig 2000 ms, 0 schaltet es aus).
-- Stille am Ende eines Tracks wird abgeschnitten: ROM-Tracks werden gekürzt, und bei Audiodateien
-  misst der Audio-Scan, wo der Ton endet (für früher gescannte Dateien erneut ausführen).
-- Musik auf Titelseiten ist standardmäßig an, und der erste Start fragt direkt nach der Sprache, ob
-  Sie sie möchten. Ein Titel ohne eigenes Audio spielt standardmäßig zufällige Tracks.
+- Titelseiten können die Musik in ROMs abspielen (CD-Audiotracks von Disc-Spielen sowie
+  Soundarchive von Nintendo DS und 3DS).
+- Die Kriterien, welche Tracks spielen, lassen sich in den Einstellungen anpassen.
+- Der Player der Titelseite hat eine Schaltfläche „diesen Track nicht spielen“.
+- Für die Wiedergabe dekodierte ROM-Musik wird im Speicher zwischengespeichert (Einstellungen ›
+  Audio, standardmäßig 256 MiB).
+- Die Normalisierung des Players wurde abgestimmt.
+- Der Player kann überblenden (standardmäßig 2000 ms, 0 schaltet ab).
+- Stille am Ende von Tracks wird jetzt abgeschnitten.
+- Musik auf Titelseiten ist jetzt standardmäßig an. Beim ersten Start fragt die App nach der Sprache,
+  ob Musik spielen soll. Titel ohne eigenes Audio spielen standardmäßig einen zufälligen Track.
 
 **Zusammenführungen prüfen und zusammengeführte Titel**
-- Releases auf einer Karte lassen sich auf den Titel ziehen, zu dem sie gehören, oder auf „+“ für
-  einen neuen Titel mit dem Namen des ersten. Ein Release antippen und dann einen Titel geht auch.
-- Bereits übernommene oder abgelehnte Karten lassen sich mit dem neuen Statusfilter wieder
-  anzeigen. Standardmäßig sind sie ausgeblendet.
-- Trennungen stehen jetzt unter Bearbeiten › Zusammengeführte Titel und lassen sich dort rückgängig
-  machen. Trennungen aus „Zusammenführungen prüfen“ vor diesem Update werden der Liste hinzugefügt.
+- Eine Veröffentlichung auf einer Karte lässt sich auf den richtigen Titel ziehen. Auf „+“
+  abgelegt entsteht ein neuer Titel.
+- Angenommene und abgelehnte Karten lassen sich mit dem Statusfilter zeigen. Standardmäßig sind
+  sie ausgeblendet.
+- Trennungen werden auch in Bearbeiten › Zusammengeführte Titel erfasst und lassen sich dort
+  rückgängig machen. Trennungen aus „Zusammenführungen prüfen“ vor diesem Update sind ebenfalls
+  aufgeführt.
 
 **Zusammengefasste Veröffentlichungen**
-- Getrennt gelistete Discs eines Spiels (die Discs eines Bundles, eine Bonus-Disc) lassen sich mit „Zu einer Veröffentlichung zusammenfassen“ zusammenlegen. Gelistet wird eine Veröffentlichung für alle, und beim Kopieren werden alle Discs kopiert. Auf der Seite der Veröffentlichung lässt sich eine wieder abtrennen.
+- Discs eines Spiels, die als getrennte Veröffentlichungen geführt sind, lassen sich auswählen und
+  mit „Zu einer Veröffentlichung zusammenfassen“ verbinden.
 
 **Scan**
-- Die Seite einer Datei hat „Diese Datei neu scannen“. Die Datei wird mit dem Rest ihres ROMs neu
-  gelesen und ihr Spiel sofort einem Release zugeordnet.
-- Die Seite einer Datei zeigt das Release und den Titel, mit denen die Datei verknüpft ist.
+- Dateiseiten haben „Diese Datei neu scannen“. Die Datei wird zusammen mit den übrigen Dateien des
+  ROMs neu gelesen und das Spiel sofort seiner Veröffentlichung zugeordnet.
+- Dateiseiten zeigen jetzt die verknüpfte Veröffentlichung und den Titel.
 
 ## Fehlerbehebungen
 
-- Manche Spiele fanden keinen IGDB-Treffer: Ein Name mit Bindestrich innerhalb eines Wortes passte nicht zur Schreibweise bei IGDB, und die IGDB-Synchronisierung für SNES und NES ließ Spiele aus, die nur in Japan erschienen.
-- Ein Titel behielt die alternativen Titel von IGDB, nachdem seine IGDB-Verknüpfung entfernt wurde, und sie ließen sich nicht löschen. Sie werden jetzt mit der Verknüpfung entfernt, und jeder alternative Titel lässt sich mit ✕ löschen.
-- „Metadaten aktualisieren“ verknüpfte einen Titel wieder mit IGDB, obwohl die Verknüpfung von Hand entfernt worden war. Sie bleibt jetzt entfernt, bis Sie selbst verknüpfen.
-- RetroAchievements-Subsets (Challenge, Speedrun usw.) landeten im Titel ihres Spiels und konnten zwei Versionen eines Spiels in einem Titel vereinen. Jedes Subset ist jetzt ein eigener Titel; die Zusammenführungsprüfung trennt die vorhandenen ab.
-- Wurde eine Zusammenführung aus der Zusammenführungsprüfung rückgängig gemacht, kam der Vorschlag nicht zurück. Er steht jetzt wieder zur Prüfung an.
-- Ein Zusammenführungsvorschlag blieb in der Zusammenführungsprüfung, nachdem seine Titel von Hand zusammengeführt wurden.
-- Raubkopien und unlizenzierte Spiele wurden mit den Titeln kommerzieller Spiele zusammengeführt.
-- Die Karte „ein anderes Spiel darin“ ließ Raubkopien und unlizenzierte Spiele anderer Regionen im
-  Titel.
-- Die Karte „ein anderes Spiel darin“ hielt ein Release mit einer Nummer vor dem Namen
-  („0743 - ...“) für ein anderes Spiel.
-- Jobs wie die Zusammenführungsprüfung zeigten wenig von ihrem Fortschritt. Jetzt zeigen sie ihn
-  im Detail.
-- Eine Datei, die ein DAT listet, konnte ohne Release und Titel bleiben, wenn das DAT nach dem Scan
-  hinzukam oder ein Unterordner nach dem Ordner darüber gescannt wurde.
+- Namen mit einem Bindestrich im Wort passten nicht zur IGDB-Schreibweise, sodass manche Spiele
+  keinen IGDB-Treffer fanden.
+- Die IGDB-Synchronisierung für SNES und NES ließ Spiele aus, die nur in Japan erschienen.
+- Das Lösen eines IGDB-Links ließ die IGDB-Alternativnamen am Titel, ohne Möglichkeit zum Löschen.
+  Sie verschwinden jetzt mit dem Link, und jeder lässt sich mit ✕ löschen.
+- Von Hand gelöste IGDB-Links wurden durch „Metadaten aktualisieren“ wieder verknüpft. Sie bleiben
+  jetzt gelöst, bis sie von Hand neu verknüpft werden.
+- RetroAchievements-Subsets (Challenges, Speedruns usw.) landeten im Titel des Spiels und konnten
+  verschiedene Versionen zu einem Titel zusammenziehen.
+- Das Rückgängigmachen einer Zusammenführung aus „Zusammenführungen prüfen“ brachte den Vorschlag
+  nicht zurück.
+- Vorschläge für bereits von Hand zusammengeführte Titel blieben in „Zusammenführungen prüfen“.
+- Raubkopien und nicht lizenzierte Spiele wurden mit Titeln aus dem Handel zusammengeführt.
+- Karten „ein anderes Spiel darin“ ließen Raubkopien und nicht lizenzierte Spiele anderer Regionen
+  im Titel.
+- Karten „ein anderes Spiel darin“ hielten Veröffentlichungen mit einer Nummer vor dem Namen
+  („0743 - ...“) für andere Spiele.
+- Jobs wie das Zusammenführungs-Audit zeigen jetzt einen detaillierten Fortschritt.
+- Unter Windows arm64 und Linux arm64 ließen sich Wii-U-, Xbox- und Xbox-360-Images nicht
+  umwandeln, PBP-Dateien nicht lesen und ROM-Musik nicht abspielen.
+- In einem DAT aufgeführte Dateien blieben mit keiner Veröffentlichung und keinem Titel verknüpft.
 
 # romexplorer 0.1.8 (alpha)
-
-Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
-Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
 **Medien**
-- Nach einem Neustart mit einer neuen Datenbank werden die Bilder, die schon im Medienordner
-  liegen, verwendet statt neu heruntergeladen.
+- Ein Neustart mit einer neuen Datenbank verwendet jetzt die Bilder, die schon im Medienordner
+  liegen.
 
 **Jobs**
-- Die Detailspalten der Jobliste wurden angepasst.
-- Ein wartender Job hat eine Schaltfläche „Als Nächstes ausführen“, auch für eine Auswahl: Er startet, sobald der
-  laufende Job in seiner Spur fertig ist. Andere Spuren sind nicht betroffen.
+- Die Details der Jobliste wurden angepasst.
+- Wartende Jobs haben eine Schaltfläche „Als Nächstes ausführen“.
 
 **Hash-Abgleich**
-- Ein Hash-Abgleich, bei dem nur Hasheous aktiv ist, holt für die Treffer auch IGDB-Daten und
-  Bilder, wie mit PlayMatch.
-- Die Einstellung serial_match legt pro Plattform fest, ob eine Seriennummer im Dateinamen zählt.
-  Eine unveränderte Plattform folgt dem Kästchen für den Dateinamen.
+- Ein Hash-Abgleich nur mit Hasheous holt jetzt auch IGDB-Daten und Bilder.
+- serial_match kann jetzt je Plattform wählen, ob Seriennummern aus Dateinamen genutzt werden.
 
 **Zusammenführungen prüfen**
-- Die Gemini-Antwort und „Google fragen“ kommen in der Sprache der Oberfläche.
-- Schlägt die Anfrage fehl, sagt die Meldung warum: ein Zertifikat oder eine Zeitüberschreitung, das
-  Modell und das aufgebrauchte Kontingent. Ein Schlüssel ohne Gratiskontingent für das Modell sagt
-  das.
-- Lässt sich die Modellliste nicht lesen, wird Gemini trotzdem gefragt; bei einem
-  Kontingentfehler wird das nächste Flash-Modell einmal versucht.
+- Antworten von Gemini und „Google fragen“ verwenden jetzt die UI-Sprache.
+- Eine fehlgeschlagene Anfrage zeigt jetzt den Grund.
+- Gemini wird jetzt auch gefragt, wenn die Modellliste nicht gelesen werden kann.
 
 **Definitiv und Crossplat**
-- Nur Titel mit einer IGDB-ID werden aufgeführt. Wii-U-Titel, die nach ihrer Titel-ID benannt
-  sind, erscheinen nicht mehr in Definitiv.
+- Es werden jetzt nur Titel mit IGDB-ID gezeigt.
 
 ## Fehlerbehebungen
 
 **Sammlung**
-- Die Suche im Definitiv-Tab fand nur den Namen des führenden Titels. Jetzt findet sie eine
-  Familie über den Namen jeder Version, auch über lokalisierte und alternative Namen.
+- Die Suche im Definitiv-Tab fand nur den Namen des führenden Titels.

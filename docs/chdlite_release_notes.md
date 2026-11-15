@@ -4,41 +4,13 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 
 ## Changes
 
-- **3DS.** Lite and Comp decrypt a dropped .cia, .3ds, .cci or .cxi into the format picked in
-  Settings: .cci, .3ds, .cxi, or the compressed .zcci and .zcxi that Azahar reads. Updates and
-  DLC stay .cia (.zcia). Extract unpacks the compressed ones. No keys come with chdlite: put
-  your own aes_keys.txt (and seeddb.bin when a title needs it) beside the files, beside
-  chdlite, or in its assets folder. The console tools take `--3ds`.
-- **NES, N64 and SNES dumps.** Lite and Comp write a dropped cartridge dump in the layout
-  picked in Settings: NES headered (.nes), headerless (.nes) or headerless (.unh); N64 .z64,
-  .v64 or .n64; SNES .sfc or .smc. The main window shows the current choice. A dump already in
-  that layout is skipped. Read shows the layout a dump is in. The console tools take `--nes`,
-  `--n64` and `--snes`.
-- Whether a NES dump has a header is looked up in the NES header database. A dump that is not
-  in it is reported with its hash.
-- **A Mac app and a Linux AppImage.** chdlite now comes as `chdlite.app` for macOS and as a
-  single-file AppImage for Linux. Both open the window; the console tools are inside too
-  (`chdlite.AppImage chdcomp ...`).
-- **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
-  RetroAchievements has achievements for it, with the game's name. The list it checks is
-  bundled; its date is shown in Settings and by `--version`.
-- **Threads.** Auto now leaves 4 physical cores free, also for a single file. Files at once
-  never use more threads than the total set.
-
-## Bug fixes
-
-- The Android app had the standard Android icon instead of chdlite's.
-- A replace that failed or was cancelled deleted the file it was replacing. A cancelled or
-  killed conversion could also leave that file hidden; it is now put back.
-- Ctrl-C in the console tools left a half-written file under the output's name.
-- Two inputs of the same name written to one folder overwrote each other. The second now
-  gets " (2)" added, or fails with a message when its file names come from the disc.
-- A lone .bin or .img could not be converted from a read-only folder, even with an output
-  folder set.
-- A relative output folder was taken from wherever chdlite was started. It is now taken from
-  each input's own folder.
-- Folders left behind by a killed conversion are cleaned up.
-- The release build could not read .pbp files.
+- **3DS.** .cci, .3ds, .cxi, .zcci and .zcxi output.
+- **NES, N64 and SNES dumps.** Output as NES headered (.nes), headerless (.nes) or .unh,
+  N64 .z64, .v64 or .n64, and SNES .sfc or .smc.
+- NES header conversion works only for supported games, as it matches hashes against a
+  database.
+- **A Mac app and a Linux AppImage were added.**
+- **RetroAchievements.** Hash supports RA hashes.
 
 # chdlite 0.3.2
 
@@ -46,58 +18,39 @@ Android only.
 
 ## Bug fixes
 
-- In the Android app, allowing file access failed with "Java exception was thrown" instead of
-  opening the system's access screen.
+- The Android app could not be allowed file access.
 
 # chdlite 0.3.1
 
 ## Bug fixes
 
-- The Windows arm64 and Linux arm64 builds could not convert Wii U, Xbox and Xbox 360 images
-  or read PBP files.
+- On Windows arm64 and Linux arm64, Wii U, Xbox and Xbox 360 images could not be converted and
+  PBP files could not be read.
 
 # chdlite 0.3.0
 
 ## Changes
 
-- **Completely rewritten in Rust, built on the romexplorer core library.** It replaces the
-  C++ command-line tool and the Flutter GUI of 0.2.x; chdman and Dolphin's disc code are the
-  same native libraries romexplorer itself ships.
-- **RVZ.** GameCube and Wii images are converted to RVZ, and an RVZ extracts back to ISO.
-- **Wii U and Xbox.** A .wud or .wux and its key become Cemu's .wua, an Xbox 360 image
-  Xenia's .zar, an Xbox image an XISO for xemu. These three keep the game's files but not the
-  disc, so chdlite asks first; "Don't ask again" and Settings turn the question off.
-- **CSO and PBP.** A .cso extracts to its ISO and a PS1 EBOOT.PBP to cue and bin; Lite and
-  Comp make CHDs of them, and Hash hashes what is inside.
-- **Lossless inputs only.** A .wua, .zar or XISO is not taken: the disc is already gone.
-- **The container is chosen for you.** CD and GD-ROM images become a CD CHD, DVD images a
-  DVD CHD, GameCube / Wii images an RVZ, decided from the image itself rather than its name.
-- **One window, four modes.** Lite (fast), Comp (smallest), Read and Hash: pick one and drop
-  files or folders anywhere in the window. CHD and RVZ settings are in Settings; the output
-  folder is in the main window.
-- **Four console tools**, one per mode, so a file dropped onto the executable does the right
-  thing: `chdlite`, `chdcomp`, `chdread`, `chdhash`. Every option is also a flag (`--help`).
-- Several files are converted at once, as before, each in its own worker process, and
-  Cancel in the window now stops a CHD creation part-way.
-- **Android.** The same four modes as an Android app (arm64), for touch or a controller: tap
-  a mode, then choose files or a folder. A run keeps going in the background and shows its
-  progress in a notification. A command-line `chdlite` for Android (arm64) is a separate
-  download, for a terminal app or `adb shell`.
-- Builds for Windows x64 / arm64, Linux x64 / arm64, macOS arm64 and Android arm64. On
-  Windows the GUI is a single file.
+- **Now based on Rust.**
+- **RVZ support.**
+- **Wii U and Xbox.** WUA, XISO and ZAR output.
+- **Lossless inputs only.**
+- **The output format is picked automatically.** CHD and RVZ are output as ISO, and an ISO
+  becomes a CHD, RVZ, XISO or ZAR to suit its platform.
+- **One window, four modes.** The UI is now Lite (fast), Comp (smallest), Read (reads
+  metadata) and Hash, switched with a toggle, with drag and drop.
+- **Android support.**
+- Windows and Linux ARM64 support.
 
 ## Bug fixes
 
 - A conversion cut off by Ctrl-C, a crash or closing the window left a broken file that the
-  next run skipped as done. Closing the window now stops the conversions too.
+  next run took as done.
 - A PS2 or PSP ISO of a certain size was taken for an audio CD.
-- Cancel could be ignored while short jobs were running, and jobs it stopped were not
-  counted.
-- A settings file that didn't parse was replaced with the defaults. It is now kept as
+- Cancel did not work while short jobs kept running.
+- A settings file that could not be read was overwritten with the defaults. It is now kept as
   `chdlite.toml.bak`.
-- Answering No to the lossy question dropped the whole drop; Skip these now converts the
-  rest. A big folder no longer freezes the window while it is read.
-- `-hs` set the same hunk size for CDs and DVDs; it now goes to whichever it fits.
+- `-hs` set the same hunk size for CDs and DVDs.
 
 ## Not in this release
 
