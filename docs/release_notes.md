@@ -18,6 +18,10 @@ replacing a build.
 
 ## Bug fixes
 
+- The ROM music index looked stuck while one ROM took long to read.
+- The ROM music index skipped ROMs that were identified only by a DAT match.
+- A scan left Japanese Super Famicom ROMs whose internal title is in katakana without a platform.
+- A title page listed the same music once for every copy of the game it found.
 - ROM music indexing never finished on some disc images.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway.

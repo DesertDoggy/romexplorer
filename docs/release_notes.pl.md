@@ -21,6 +21,10 @@ zapasową przed podmianą wersji.
 
 ## Poprawki błędów
 
+- Indeks muzyki ROM wyglądał na zatrzymany, gdy odczyt jednej ROM trwał długo.
+- Indeks muzyki ROM pomijał ROM-y rozpoznane tylko przez dopasowanie do DAT.
+- Skanowanie nie przypisywało platformy japońskim ROM-om Super Famicom z wewnętrznym tytułem w katakanie.
+- Strona tytułu powtarzała tę samą muzykę dla każdej znalezionej kopii gry.
 - Indeksowanie muzyki z ROM-ów nigdy się nie kończyło na niektórych obrazach płyt.
 - Przy konwersji zrzutów SNES w kopii plik, którego rozmiar i wewnętrzny nagłówek nie zgadzały się
   co do nagłówka kopiarki, był mimo to konwertowany.

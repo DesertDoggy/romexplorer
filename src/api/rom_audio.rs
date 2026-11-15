@@ -312,6 +312,35 @@ pub async fn validate(_app: &App, _request: &RomAudioIndexRequest) -> Result<()>
     Ok(())
 }
 
+/// A ROM's platform as a select column (`app_platform_id`, of `local_rom r`): its own, or when
+/// the scan left it Unknown (a zip in a folder with no platform set, say), that of the release
+/// a hash match linked it to. Without the fallback such a ROM had no music player and was left
+/// out of every index run, though the app shows it under its platform.
+const ROM_PLATFORM: &str = "CAST(COALESCE(NULLIF(r.app_platform_id, 0), \
+     (SELECT rel.app_platform_id FROM local_game_roms gr JOIN local_release_games lrg ON lrg.game_id = gr.game_id \
+      JOIN `release` rel ON rel.id = lrg.release_id WHERE gr.rom_id = r.id AND rel.app_platform_id <> 0 ORDER BY rel.id LIMIT 1), 0) AS UNSIGNED) AS app_platform_id";
+
+/// The platform of a row selected with [`ROM_PLATFORM`]; when that is still Unknown, the one
+/// cartridge platform the main file's extension belongs to (`.sfc`, `.z64`, `.gb`). A scan
+/// takes an extension only as a hint its header check has to confirm, but for finding music
+/// a cartridge extension is enough: the player itself checks the ROM it is given.
+fn platform_of(row: &sqlx::mysql::MySqlRow) -> Result<u16> {
+    let platform: u16 = row.try_get("app_platform_id")?;
+    if platform != 0 {
+        return Ok(platform);
+    }
+    Ok(platform_by_extension(&row.try_get::<String, _>("main_path")?).unwrap_or(0))
+}
+
+fn platform_by_extension(main_path: &str) -> Option<u16> {
+    use crate::common::models::Platform;
+    let ext = Path::new(main_path).extension().and_then(|e| e.to_str())?.to_ascii_lowercase();
+    match crate::rom::detect::infer_platforms_from_extension_heuristics(&ext).as_slice() {
+        [only] if rom_songs::is_cartridge(*only as u16) || *only == Platform::FamicomDiskSystem => Some(*only as u16),
+        _ => None,
+    }
+}
+
 /// Where to open a ROM from: its main file when that is a disc image, the folder it is a
 /// dump of when it is made of many files, or nothing (a cartridge, an archive).
 fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
@@ -585,7 +614,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     // images, which take longest to read, come last. A ROM with no file sizes recorded goes
     // last too, not first.
     let all = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT r.id, r.main_path, r.app_platform_id, s.files, s.bytes FROM local_rom r \
+        "SELECT r.id, r.main_path, {ROM_PLATFORM}, s.files, s.bytes FROM local_rom r \
          LEFT JOIN (SELECT rf.rom_id, COUNT(*) AS files, CAST(SUM(f.size) AS UNSIGNED) AS bytes FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE GROUP BY rf.rom_id) s ON s.rom_id = r.id \
          WHERE r.deleted = FALSE{scope}{skip} ORDER BY s.bytes IS NULL, s.bytes, r.main_path"
     )))
@@ -600,7 +629,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             progress.report(i as u64, Some(checking), &format!("checking which ROMs have music this can read: {i} of {checking}")).await;
         }
         let files: i64 = row.try_get::<Option<i64>, _>("files")?.unwrap_or(0);
-        if readable(app, &library, row.try_get("id")?, &row.try_get::<String, _>("main_path")?, row.try_get("app_platform_id")?, files).await? {
+        if readable(app, &library, row.try_get("id")?, &row.try_get::<String, _>("main_path")?, platform_of(&row)?, files).await? {
             roms.push(row);
         } else {
             summary.skipped_unsupported += 1;
@@ -657,7 +686,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             Some(folder) if rip_sets::available() && owns_rip_sets(app, rom_id, &folder).await? => Some(folder),
             _ => None,
         };
-        let platform: u16 = row.try_get("app_platform_id")?;
+        let platform: u16 = platform_of(row)?;
         // The same files as a ROM already indexed (another copy, a duplicate folder): its
         // tracks are this one's too. Not when this ROM's folder has music files of its own,
         // which the other's index would not have. A full run reuses only ROMs it read itself.
@@ -743,8 +772,11 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                         }
                         break None;
                     }
+                    // How long first, then the file name, then what is being read: the jobs list
+                    // shows the first 90 characters, and a full path in front pushed the time
+                    // past them, so a ROM that takes long read like a run that had stopped.
                     if secs >= 4 {
-                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {main_path}: {what} ({secs} s)", i + 1)).await;
+                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}, {secs} s on {label}: {what}", i + 1)).await;
                     }
                 }
             }
@@ -843,7 +875,7 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
     let mut found: Vec<(u64, std::result::Result<Vec<(PathBuf, f32)>, String>)> = Vec::new();
     let covered: Vec<(u64, PathBuf, u16)> = roms
         .iter()
-        .filter_map(|r| Some((r.try_get::<u64, _>("id").ok()?, PathBuf::from(r.try_get::<String, _>("main_path").ok()?), r.try_get::<u16, _>("app_platform_id").ok()?)))
+        .filter_map(|r| Some((r.try_get::<u64, _>("id").ok()?, PathBuf::from(r.try_get::<String, _>("main_path").ok()?), platform_of(r).ok()?)))
         .filter(|(_, path, platform)| library.covers(*platform) && !rip_match::skip_rom(path))
         .collect();
     let total = covered.len() as u64;
@@ -955,7 +987,7 @@ async fn same_content_indexed(app: &App, rom_id: u64, platform: u16, among: Opti
     let mine = content_of(app, rom_id).await?;
     let Some(&first) = mine.first() else { return Ok(None) };
     let candidates: Vec<u64> = sqlx::query_scalar(
-        "SELECT DISTINCT rf.rom_id FROM local_files f JOIN local_rom_files rf ON rf.file_id = f.id JOIN local_rom r ON r.id = rf.rom_id AND r.deleted = FALSE AND r.app_platform_id = ? \
+        "SELECT DISTINCT rf.rom_id FROM local_files f JOIN local_rom_files rf ON rf.file_id = f.id JOIN local_rom r ON r.id = rf.rom_id AND r.deleted = FALSE AND r.app_platform_id IN (?, 0) \
          JOIN rom_audio_index i ON i.rom_id = rf.rom_id AND i.error IS NULL WHERE f.content_id = ? AND f.deleted = FALSE AND rf.rom_id <> ? LIMIT 50",
     )
     .bind(platform)
@@ -1043,7 +1075,7 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
     let mut queued = None;
     for &title in titles.iter().take(4) {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT r.id, r.main_path, r.app_platform_id, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
+            "SELECT r.id, r.main_path, {ROM_PLATFORM}, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
              FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
             roms_of(&[title])
         )))
@@ -1056,7 +1088,7 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
             let library = page_library(app).await?;
             for row in rows {
                 let id: u64 = row.try_get("id")?;
-                if readable(app, &library, id, &row.try_get::<String, _>("main_path")?, row.try_get("app_platform_id")?, row.try_get("files")?).await? {
+                if readable(app, &library, id, &row.try_get::<String, _>("main_path")?, platform_of(&row)?, row.try_get("files")?).await? {
                     unindexed.push(id);
                 }
             }
@@ -1393,12 +1425,34 @@ pub async fn title_tracks(app: &App, titles: &[u64], s: &Settings) -> Result<Vec
     if titles.is_empty() {
         return Ok(Vec::new());
     }
+    let rank = super::catalog::ReleaseRank::load(app).await?;
     let mut groups = Vec::new();
     for &title in titles {
+        let Some(roms) = title_music_roms(app, title, &rank).await? else { continue };
         let videos = videos_for(app, title, s).await?;
-        groups.push(format!("(t.rom_id IN ({}){})", roms_of(&[title]), if videos { "" } else { " AND t.video = FALSE" }));
+        groups.push(format!("(t.rom_id IN ({roms}){})", if videos { "" } else { " AND t.video = FALSE" }));
+    }
+    if groups.is_empty() {
+        return Ok(Vec::new());
     }
     tracks_where(app, &format!("({})", groups.join(" OR ")), "r.main_path, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong", s, MAX_TRACKS).await
+}
+
+/// The ROMs whose music a title page plays: those of one game -- the copy of the title's
+/// best-ranked release (region / language / edition priority) that has tracks indexed -- as an
+/// SQL list. One game, not every ROM: a title held as several dumps or patched copies listed
+/// the same soundtrack once per copy. A game's discs all play. `None` when no copy has tracks.
+async fn title_music_roms(app: &App, title: u64, rank: &super::catalog::ReleaseRank) -> Result<Option<String>> {
+    let sql = format!(
+        "SELECT lrg.game_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE \
+         JOIN local_release_games lrg ON lrg.release_id = r.id \
+         WHERE tr.title_id = ? AND EXISTS (SELECT 1 FROM local_game_roms gr JOIN local_rom lr ON lr.id = gr.rom_id AND lr.deleted = FALSE \
+           JOIN rom_audio_tracks t ON t.rom_id = gr.rom_id WHERE gr.game_id = lrg.game_id) \
+         ORDER BY {}, lrg.game_id LIMIT 1",
+        rank.sql("r")
+    );
+    let Some(game) = sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(sql)).bind(title).fetch_optional(&app.pool).await? else { return Ok(None) };
+    Ok(Some(format!("SELECT gr.rom_id FROM local_game_roms gr WHERE gr.game_id = {game}")))
 }
 
 /// A title's own choice on video sound, when it has one.

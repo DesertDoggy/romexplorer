@@ -21,6 +21,10 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Fehlerbehebungen
 
+- Der ROM-Musikindex schien stehen zu bleiben, während eine ROM lange gelesen wurde.
+- Der ROM-Musikindex übersprang ROMs, die nur über einen DAT-Abgleich erkannt wurden.
+- Ein Scan erkannte japanische Super-Famicom-ROMs mit einem internen Titel in Katakana keiner Plattform zu.
+- Eine Titelseite listete dieselbe Musik für jede gefundene Kopie des Spiels erneut auf.
 - Die Indexierung der ROM-Musik wurde bei manchen Disc-Images nie fertig.
 - Beim Umwandeln von SNES-Dumps wurde eine Datei, deren Größe und interner Header sich beim
   Copier-Header widersprachen, trotzdem umgewandelt.

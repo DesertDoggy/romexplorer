@@ -672,6 +672,24 @@ pub fn parse_tmd_title_id_from_bytes(bytes: &[u8]) -> Option<String> {
 /// offsets, and copier dumps prepend a 512-byte header. This scores every candidate offset
 /// on how well its fields cohere (checksum complement, map mode, country code) and keeps the
 /// best. Ported verbatim from `reference/old_archiver.rs`'s `read_snes_rom_metadata` (line 5786).
+/// A SNES header's title: JIS X 0201, so ASCII plus half-width katakana (0xA1-0xDF), which
+/// Japanese cartridges often use. Read as ASCII alone, a title that starts in katakana came out
+/// empty and the whole header was rejected, so the scan never confirmed those ROMs.
+fn snes_title(bytes: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    for &byte in bytes {
+        match byte {
+            0 => break,
+            b' ' => out.push(' '),
+            b if b.is_ascii_graphic() => out.push(b as char),
+            0xA1..=0xDF => out.push(char::from_u32(0xFF61 + u32::from(byte - 0xA1))?),
+            _ => break,
+        }
+    }
+    let text = out.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 pub fn read_snes_rom_metadata(path: &Path) -> Option<NonDiscHeaderMetadata> {
     let file_size = fs::metadata(path).ok()?.len() as usize;
     let copier_biases: &[usize] = &[0, 0x200];
@@ -687,7 +705,7 @@ pub fn read_snes_rom_metadata(path: &Path) -> Option<NonDiscHeaderMetadata> {
             }
 
             let Ok(header) = read_exact_at(path, offset as u64, 0x40) else { continue };
-            let title = read_ascii_field(header.get(0..21)?).and_then(|value| sanitize_title_opt(Some(value)));
+            let title = snes_title(header.get(0..21)?).and_then(|value| sanitize_title_opt(Some(value)));
             let map_mode = header.get(0x15).copied().unwrap_or(0);
             let country = header.get(0x19).copied().unwrap_or(0xFF);
             let checksum = read_u16_le(&header, 0x1E).unwrap_or(0) as u32;
@@ -838,4 +856,36 @@ pub fn parse_gc_wii_boot_header(bytes: &[u8]) -> LeafMetadata {
     }
 
     Some((title, serial, None))
+}
+
+#[cfg(test)]
+mod snes_header_tests {
+    use super::*;
+
+    /// A LoROM image whose header title is half-width katakana only.
+    fn lorom_with_title(title: &[u8]) -> Vec<u8> {
+        let mut rom = vec![0u8; 0x8000];
+        let header = &mut rom[0x7FC0..0x8000];
+        header[..21].fill(b' ');
+        header[..title.len()].copy_from_slice(title);
+        header[0x15] = 0x20; // LoROM
+        header[0x19] = 0x00; // Japan
+        header[0x1C..0x1E].copy_from_slice(&0x1234u16.to_le_bytes());
+        header[0x1E..0x20].copy_from_slice(&(0xFFFFu16 - 0x1234).to_le_bytes());
+        rom
+    }
+
+    #[test]
+    fn a_katakana_title_is_read_and_the_header_accepted() {
+        assert_eq!(snes_title(&[0xB1, 0xB2, b' ', b'2']).as_deref(), Some("\u{FF71}\u{FF72} 2"));
+        let dir = std::env::temp_dir().join(format!("snes-kana-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kana.sfc");
+        std::fs::write(&path, lorom_with_title(&[0xB1, 0xB2, 0xB3])).unwrap();
+        let meta = read_snes_rom_metadata(&path);
+        std::fs::remove_dir_all(&dir).ok();
+        let meta = meta.expect("header accepted");
+        assert_eq!(meta.title.as_deref(), Some("\u{FF71}\u{FF72}\u{FF73}"));
+        assert_eq!(meta.header_offset, Some(0x7FC0));
+    }
 }

@@ -1091,6 +1091,10 @@ fn load_snes_map(key: &str) -> Option<super::snes_map::Map> {
 fn snes_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
     let image = super::snes_sound::rom_image(rom);
     let key = gb_key(image);
+    // A kept map first, before every SPC of the set is read (see the N64 one).
+    if kept_map("snes", &key).is_some() {
+        return Ok(true);
+    }
     let mut any = false;
     for set in sets {
         let spcs = super::rip_sets::all_with_magic(set, b"SNES-SPC700");
@@ -1098,9 +1102,6 @@ fn snes_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
             continue;
         }
         any = true;
-        if kept_map("snes", &key).is_some() {
-            return Ok(true);
-        }
         let refs: Vec<&[u8]> = spcs.iter().map(Vec::as_slice).collect();
         let Some(mut m) = super::snes_map::Map::build(&refs, image) else { continue };
         super::snes_map::slim(&mut m, image)?;
@@ -1207,6 +1208,11 @@ fn load_n64_map(key: &str) -> Option<super::n64_map::Map> {
 fn n64_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
     let Some(native) = super::n64_map::native(rom) else { return Ok(false) };
     let key = gb_key(&native);
+    // A map shipped or built before is this ROM's already: checked before every USF of the set
+    // is read and matched, which is slow on a big set and was thrown away when a map was kept.
+    if kept_map("n64", &key).is_some() {
+        return Ok(true);
+    }
     let mut any = false;
     for set in sets {
         let mut builder = super::n64_map::Builder::new(&native);
@@ -1219,9 +1225,6 @@ fn n64_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
             continue;
         }
         any = true;
-        if kept_map("n64", &key).is_some() {
-            return Ok(true);
-        }
         let Some(mut m) = builder.finish() else { continue };
         // A set every track of which plays silent here makes no map: it would list songs
         // that play nothing.
@@ -1338,6 +1341,10 @@ fn load_gba_map(key: &str) -> Option<super::gba_map::Map> {
 fn gba_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
     let key = gb_key(rom);
     let file = gba_map_path(&key).ok_or("no folder for music maps")?;
+    // A kept map first, before every GSF of the set is read and placed (see the N64 one).
+    if kept_map("gba", &key).is_some() {
+        return Ok(true);
+    }
     let mut any = false;
     for set in sets {
         let mut tracks = Vec::new();
@@ -1357,9 +1364,6 @@ fn gba_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
             continue;
         }
         any = true;
-        if kept_map("gba", &key).is_some() {
-            return Ok(true);
-        }
         if !theirs {
             continue;
         }
