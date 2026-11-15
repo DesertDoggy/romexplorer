@@ -1408,10 +1408,9 @@ impl<M: Machine> Song<M> {
 /// Frames of a song [`sound_print`] listens to: 10 seconds at 60 Hz.
 pub const PRINT_FRAMES: usize = 600;
 
-/// A song's sound fingerprint over its first [`PRINT_FRAMES`] frames: the runs of four sound
-/// writes in a row (port and value), on any console. Two song numbers that start the same
-/// piece share nearly all of theirs; two pieces share few. Compared with [`alike`].
-pub fn sound_print<M: Machine>(rom: &[u8], recipe: &Recipe, v: u8) -> Result<HashSet<u64>, String> {
+/// A song's first [`PRINT_FRAMES`] frames of sound writes, for [`writes_print`] and a
+/// console's melody fingerprint.
+pub fn first_writes<M: Machine>(rom: &[u8], recipe: &Recipe, v: u8) -> Result<Vec<Vec<Write>>, String> {
     let mut song = Song::<M>::open(rom, recipe, v, 8000)?;
     let mut samples = Vec::new();
     let mut frames = Vec::with_capacity(PRINT_FRAMES);
@@ -1419,10 +1418,12 @@ pub fn sound_print<M: Machine>(rom: &[u8], recipe: &Recipe, v: u8) -> Result<Has
         frames.push(song.frame(&mut samples)?);
         samples.clear();
     }
-    Ok(writes_print(&frames))
+    Ok(frames)
 }
 
-/// [`sound_print`] of writes already played.
+/// A song's sound fingerprint: the runs of four sound writes in a row (port and value), on
+/// any console. Two song numbers that start the same piece share nearly all of theirs; two
+/// pieces share few, unless they share their drums, bass and tempo. Compared with [`alike`].
 pub fn writes_print(frames: &[Vec<Write>]) -> HashSet<u64> {
     let all: Vec<(u32, u16)> = frames.iter().flatten().map(|w| (w.port, w.value)).collect();
     all.windows(4)

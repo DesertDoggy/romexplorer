@@ -358,7 +358,7 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
                 return Ok((found, None));
             }
         }
-        return index_machine::<super::gb_music::GameBoy>(path, t, GB, "Game Boy");
+        return index_machine_with::<super::gb_music::GameBoy>(path, t, GB, "Game Boy", Some(super::gb_gbs::melody));
     }
     {
         use crate::common::models::Platform as P;
@@ -680,7 +680,7 @@ fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<Str
             return Ok((found, None));
         }
     }
-    index_machine::<super::nes_music::Nes>(path, t, NES, "NES")
+    index_machine_with::<super::nes_music::Nes>(path, t, NES, "NES", Some(super::nes_nsf::melody))
 }
 
 // --- Music maps: where a game's music is in its ROM, as numbers (super::nes_nsf::Map) -----
@@ -1814,12 +1814,30 @@ fn open_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     Ok(Box::new(MapPcm { song: AnyMapSong::Nes(song), channels: 1, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
-/// Share of a song's [`music_search::sound_print`] found in an earlier one's for the two to be
-/// one piece. At 0.9, songs that share their drums, bass and tempo were taken for one piece;
-/// numbers that start one piece again share nearly all of their writes.
-const SAME_PIECE: f64 = 0.98;
+/// When two found songs are one piece. With a console's melody fingerprint (the notes its tone
+/// channels play), both the writes and the notes must agree; songs that share their drums,
+/// bass and tempo share most writes but not their notes. Without one (or with too few notes
+/// to tell), the writes alone must agree nearly throughout.
+const SAME_PIECE_WRITES: f64 = 0.9;
+const SAME_PIECE_NOTES: f64 = 0.9;
+const SAME_PIECE_WRITES_ALONE: f64 = 0.98;
+
+type Melody = fn(&[Vec<music_search::Write>]) -> std::collections::HashSet<u64>;
+
+/// Whether `a` and `b` (writes print, notes print) are one piece ([`SAME_PIECE_WRITES`]).
+fn same_piece(a: &(std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>), b: &(std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>)) -> bool {
+    let writes = music_search::alike(&a.0, &b.0);
+    match (&a.1, &b.1) {
+        (Some(x), Some(y)) if x.len().min(y.len()) >= music_search::MIN_MELODY => writes >= SAME_PIECE_WRITES && music_search::alike(x, y) >= SAME_PIECE_NOTES,
+        _ => writes >= SAME_PIECE_WRITES_ALONE,
+    }
+}
 
 fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
+    index_machine_with::<M>(path, t, engine, codec, None)
+}
+
+fn index_machine_with<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str, melody: Option<Melody>) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
     let found = music_search::search::<M>(&rom)?;
     if found.songs.is_empty() {
@@ -1830,7 +1848,7 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
     let recipe = found.recipe.encode();
     let mut out = Vec::with_capacity(found.songs.len());
     let mut failed = None;
-    let mut prints: Vec<std::collections::HashSet<u64>> = Vec::new();
+    let mut prints: Vec<(std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>)> = Vec::new();
     for &v in &found.songs {
         // A song that breaks off is left out, not the game.
         let timing = match music_search::measure::<M>(&rom, &found.recipe, v) {
@@ -1842,8 +1860,9 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
         };
         // A song number that starts a piece already listed (the game's song variable read
         // only once, so every number plays the same) is that piece again: left out.
-        if let Ok(print) = music_search::sound_print::<M>(&rom, &found.recipe, v) {
-            if prints.iter().any(|p| music_search::alike(p, &print) >= SAME_PIECE) {
+        if let Ok(frames) = music_search::first_writes::<M>(&rom, &found.recipe, v) {
+            let print = (music_search::writes_print(&frames), melody.map(|f| f(&frames)));
+            if prints.iter().any(|p| same_piece(p, &print)) {
                 continue;
             }
             prints.push(print);
