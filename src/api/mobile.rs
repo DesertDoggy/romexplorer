@@ -811,6 +811,70 @@ pub async fn export(
         }
     }
 
+    // Collection sets: the list as `/api/v1/sets` gives it, and each set's releases as its
+    // own list (`set:{id}`), which `releases?set_id=` is answered from. A set's releases are
+    // carried whole, held anywhere or not, in the set's own order -- it is a list someone
+    // made, not a slice of the catalogue.
+    if tabs.sets {
+        let sets = super::sets::list(app).await?;
+        sqlx::query("INSERT OR REPLACE INTO _mobile_fixed (path, body) VALUES (?, ?)")
+            .bind("/api/v1/sets")
+            .bind(serde_json::to_string(&sets).map_err(|e| Error::internal(e.to_string()))?)
+            .execute(&out.db)
+            .await?;
+        for (i, set) in sets.iter().enumerate() {
+            if progress.cancelled().await {
+                return Err(Error::invalid("cancelled"));
+            }
+            progress
+                .force(
+                    1,
+                    Some(STEPS),
+                    &format!("sets: {} of {} read (step 2 of 7)", i + 1, sets.len()),
+                )
+                .await;
+            sqlx::query("INSERT OR REPLACE INTO _mobile_fixed (path, body) VALUES (?, ?)")
+                .bind(format!("/api/v1/sets/{}", set.id))
+                .bind(serde_json::to_string(set).map_err(|e| Error::internal(e.to_string()))?)
+                .execute(&out.db)
+                .await?;
+            let tab = format!("set:{}", set.id);
+            let mut ord = 0;
+            let mut offset = 0;
+            loop {
+                let q = ListQuery {
+                    set_id: Some(set.id),
+                    limit: Some(PAGE),
+                    offset: Some(offset),
+                    ..Default::default()
+                };
+                let page = catalog::releases(app, &q).await?;
+                let n = page.items.len() as u32;
+                let mut rows = Vec::new();
+                for r in &page.items {
+                    let body = to_value(r)?;
+                    covers_in(&body, &mut covers);
+                    let plat: BTreeSet<u16> = [r.platform_id].into_iter().collect();
+                    rows.push(RowIn {
+                        key: r.id.to_string(),
+                        id: Some(r.id),
+                        title_id: r.title_id,
+                        igdb: None,
+                        platforms: set_text(Some(&plat)),
+                        name: format!("{} {}", r.name, r.display_name),
+                        held: Scope::held_text(s.held.get(&r.id)),
+                        body,
+                    });
+                }
+                insert_rows(&mut out, &tab, &mut ord, rows).await?;
+                offset += n;
+                if n < PAGE || offset as u64 >= page.total {
+                    break;
+                }
+            }
+        }
+    }
+
     // Games, ROM files, contents: this machine's own, so only when it is one of the chosen.
     let local = o.machines.iter().any(|m| m == THIS_MACHINE);
     if local && (tabs.games || tabs.files || tabs.contents) {

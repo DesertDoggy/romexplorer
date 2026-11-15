@@ -134,7 +134,7 @@
   .bp-tab .bp-ic svg { width: 22px; height: 22px; }
   .bp-group { min-height: 40px; }
 }
-.bp { --c-blue:#6aa8ff; --c-gold:#f2c14e; --c-teal:#4fd1c5; --c-grey:#aab2c0; --c-violet:#b48cff; --c-diamond:#eef7ff; --c-orange:#ff9f5a; --c-green:#6fd08c; --c-slate:#9fb3c8; --c-amber:#d9a066; --c-silver:#c5ced9; --c-red:#f0735f; --c-cyan:#5ac8fa; --c-pad:#c9ced6; --c-padd:#4a505a; --c-tv:#0b0c0f; }
+.bp { --c-blue:#6aa8ff; --c-gold:#f2c14e; --c-teal:#4fd1c5; --c-grey:#aab2c0; --c-violet:#b48cff; --c-diamond:#eef7ff; --c-orange:#ff9f5a; --c-green:#6fd08c; --c-slate:#9fb3c8; --c-amber:#d9a066; --c-pink:#f78fb3; --c-silver:#c5ced9; --c-red:#f0735f; --c-cyan:#5ac8fa; --c-pad:#c9ced6; --c-padd:#4a505a; --c-tv:#0b0c0f; }
 .bp-ic svg path { stroke-linecap: round; stroke-linejoin: round; }
 .bp.icons-outline .bp-ic .f, .bp.icons-outline .bp-ic .s, .bp.icons-outline .bp-ic .d { fill: none; stroke: currentColor; stroke-width: 1.7; }
 .bp.icons-color .bp-ic .f { fill: color-mix(in srgb, var(--ic) 30%, transparent); stroke: var(--ic); stroke-width: 1.7; }
