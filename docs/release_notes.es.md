@@ -9,209 +9,174 @@ Haz una copia de seguridad antes de sustituir una versión.
 ## Cambios
 
 **3DS**
-- Una copia puede descifrar títulos de 3DS a .cci, .3ds o .cxi, o a los comprimidos .zcci y
-  .zcxi que lee Azahar. Las actualizaciones y los DLC siguen siendo .cia (.zcia), y el homebrew
-  .3dsx (.z3dsx).
-- romexplorer no incluye claves. Pon tu propio aes_keys.txt (y seeddb.bin si un título lo
-  necesita) junto a los archivos, junto a romexplorer o en su carpeta assets.
-- Los escaneos encuentran .cci, .cxi y los comprimidos .zcci, .zcia y .zcxi, así que una copia
-  también puede pasar un .zcci a .cci y al revés. La coincidencia por serie lee su código de
-  producto y su ID de título, y tiene su propia casilla para las imágenes de cartucho.
+- Las ROM de 3DS se pueden convertir a otros formatos.
+- No se incluyen claves. Pon aes_keys.txt (y seeddb.bin si un título lo necesita) junto a los
+  archivos, junto a romexplorer o en su carpeta assets.
+- Coincidencia por número de serie para las ROM de 3DS.
 
 **Audio de las ROM**
-- Al abrir la página de un título se indexa primero la música de las ROM de ese juego. Mientras
-  tanto, la página muestra el progreso en lugar de reproducir música de otro juego.
-- Lo mismo ocurre en la página Definitiva. Una página abierta después pasa por delante de una
-  abierta antes.
-- La indexación de la música de las ROM lee primero las más pequeñas. Las ROM de las que aún no
-  puede leer nada, como las imágenes de disquete, se omiten y se leerán cuando haya soporte.
-- También se leen las imágenes de disco de CloneCD (.ccd) y Alcohol (.mds).
-- Los juegos de PlayStation con un motor de sonido propio del fabricante (Square, tri-Ace y otros) también reproducen su música directamente desde el disco.
-- Una ROM con el mismo contenido que otra ya indexada toma sus pistas en lugar de leerse de
-  nuevo.
+- Al abrir la página de un título, ahora se indexa primero la música de las ROM de ese juego.
+- El índice de música de las ROM ahora lee primero las ROM más pequeñas y omite las no compatibles.
+- Se admiten los juegos de PS1 con motor de sonido propio.
 
 ## Correcciones
 
-- La indexación de la música de las ROM no terminaba nunca con algunas imágenes de disco, las
-  que tienen un «;» dentro de un nombre de archivo. Ahora se omite una ROM que tarda más de 20
-  minutos.
-- Al convertir volcados de SNES en una copia, se convertía un archivo aunque su tamaño y su
-  cabecera interna no coincidieran sobre la cabecera de copiadora. Ahora se informa como error.
-  Un volcado de NES que no está en la base de datos de cabeceras se informa con su hash.
+- La indexación de la música de las ROM no terminaba nunca en algunas imágenes de disco.
+- Al convertir volcados de SNES en una copia, se convertía igualmente un archivo cuyo tamaño y
+  cabecera interna no coincidían sobre la cabecera de copiadora.
 
 **Escaneo**
-- En Linux, un escaneo no encontraba entradas cue, gdi y m3u escritas con otras mayúsculas o
-  con barras invertidas, y tomaba por una sola ROM dos archivos que solo difieren en
-  mayúsculas.
-- Escanear una carpeta ignoraba el tipo y la plataforma de las carpetas que contiene. Las
-  carpetas de juego bajo una carpeta sin plataforma se convertían en un juego por archivo.
-- Los reescaneos volvían a leer los juegos en carpeta, separaban pistas ya unidas y perdían
-  las coincidencias por serie. Agrupar discos era lento en carpetas grandes.
-- Los archivos que no son ROM, como textos e imágenes, se convertían en juegos. Ahora solo
-  cuando se identifican.
-- Con solo xxh3_128 en los hashes de escaneo se perdían las coincidencias DAT. Ahora siempre
-  queda activo uno de crc32, md5 y sha1.
+- En Linux, un escaneo pasaba por alto entradas de cue, gdi y m3u con otras mayúsculas o con «\»
+  como separador, y tomaba dos archivos que solo difieren en mayúsculas por una sola ROM.
+- Al escanear una carpeta se ignoraban el tipo y la plataforma de sus subcarpetas.
+- Los reescaneos volvían a leer los juegos en carpeta, separaban pistas y perdían coincidencias por
+  número de serie. Agrupar discos en carpetas grandes es más rápido.
+- Los archivos que no son ROM (texto, imágenes) ahora solo se convierten en juegos al identificarse.
+- Ahora uno de crc32, md5 y sha1 debe seguir activo en los hashes del escaneo. Con solo xxh3_128 se
+  perdían las coincidencias con el DAT.
 
 **Copia**
-- Al sobrescribir se borraba el archivo antiguo antes de escribir el nuevo. Una copia también
-  podía reescribir listas que debían conservarse y escribir en uno dos archivos que solo
-  difieren en mayúsculas.
+- Al sobrescribir se borraba el archivo antiguo antes de escribir el nuevo, una copia reescribía
+  listas de reproducción que debían conservarse y dos archivos que solo difieren en mayúsculas se
+  escribían en uno.
 
 **Unión de títulos**
-- Se podían unir dos versiones de un conjunto de versiones, o un título comercial con uno sin
-  licencia. Los títulos separados volvían con «Aceptar todo», y los enlaces de IGDB quitados
-  por la auditoría volvían en la siguiente coincidencia de hash.
+- La unión juntaba versiones de un conjunto de versiones, o títulos comerciales con no
+  licenciados. «Aceptar todo» devolvía uniones deshechas y volvían enlaces de IGDB quitados por la
+  auditoría.
 - Una coincidencia de Hasheous por el otro nombre de un juego unido creaba un título duplicado.
 
 **Servidor y tareas**
-- Obtener imágenes para un cliente podía alcanzar la red del propio servidor, sin límite de
-  tamaño.
-- Cualquier cuenta podía descargar las cachés SQLite «database» y «all», con cuentas y
-  ajustes. Ahora requieren un administrador.
-- Una sincronización completa interrumpida dejaba una tabla a medias, y cancelar una copia de
-  seguridad dejaba empezar la siguiente mientras aún escribía.
-- Las copias a otra unidad y las sincronizaciones desde otro servidor esperaban a tareas
-  ajenas. Tras reiniciar la base de datos, una tarea podía empezar dos veces.
+- Obtener arte para un cliente podía llegar a la red interna del servidor. También se añadió un
+  límite de tamaño.
+- Descargar las cachés SQLite «database» y «all» ahora requiere un administrador.
+- Una sincronización completa interrumpida dejaba una tabla a medias, y tras cancelar una copia de
+  seguridad la siguiente empezaba mientras aún se escribía.
+- Las copias a otra unidad y las sincronizaciones desde otro servidor esperaban a tareas ajenas, y
+  tras reiniciar la base de datos una tarea podía empezar dos veces.
 
 **Otros**
-- La música de ROM podía fallar con un conjunto PSF2.
-- Algunas etiquetas de la consola web y frases de Config › Ajustes seguían en inglés.
-- MariaDB anterior a 10.6 fallaba con errores poco claros. Ahora se rechaza al conectar.
+- La música de las ROM fallaba con un set PSF2.
+- Partes de la consola web y de la pantalla de ajustes seguían en inglés.
+- MariaDB anterior a 10.6 ahora muestra un error al conectar.
 
 # romexplorer 0.2.0 (alpha)
-
-Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
-Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
 **IA en Revisión de fusiones**
-- «Preguntar a Google» es ahora un menú Ask: el modo IA de Google, Claude, ChatGPT y Perplexity se
-  abren en el navegador con la pregunta ya escrita.
-- La respuesta dentro de la aplicación puede venir de Gemini, Claude, OpenAI o Perplexity, cada uno
-  con su clave de API y su modelo.
-- Las respuestas se guardan. «Volver a preguntar» obtiene una nueva; las respuestas fijadas no se
+- «Preguntar a Google» es ahora un menú Ask. Abre el modo IA de Google, Claude, ChatGPT o
+  Perplexity en el navegador con la pregunta ya escrita.
+- Las respuestas en la app pueden venir de Gemini, Claude, OpenAI o Perplexity, cada uno con su
+  clave de API y modelo.
+- Las respuestas ahora se guardan. «Volver a preguntar» obtiene una nueva; las fijadas nunca se
   vuelven a pedir.
-- Las respuestas guardadas forman parte de la copia de seguridad de la base de datos.
+- Las respuestas guardadas se incluyen en las copias de seguridad de la base de datos.
 
 **Config › AI**
-- Una pestaña nueva para los ajustes de la IA.
-- Muestra cuántas respuestas hay guardadas y su coste aproximado este mes y en total. Las
+- Se añadió una pestaña de ajustes de IA.
+- Muestra el número de respuestas guardadas y el coste estimado de este mes y en total. Las
   respuestas se pueden exportar e importar en JSON.
 
 **IA en la pestaña Definitiva**
-- La página de cada juego puede preguntar a la IA qué versión tiene más contenido y mejores
-  gráficos, sonido y comodidad de juego. La respuesta trae un rango, como las notas revisadas.
-- Una respuesta obtenida con un enlace del navegador se puede pegar, o guardar desde el
-  portapapeles con un clic.
-- La primera pregunta muestra un aviso de coste. Config › AI enlaza a la página de límites de gasto
-  de cada proveedor.
-- «Valorar en lote con IA» pregunta por varios juegos en una sola tarea: los juegos elegidos en la
-  pestaña Definitiva, o las filas elegidas de un set o el set entero. Primero muestra el número de
-  preguntas y un coste aproximado, salta los juegos ya respondidos y se puede programar para un set.
-- Un rango dado antes de que saliera una versión más nueva del juego se marca «Nueva versión desde
-  la valoración», y el filtro puede descartar esos rangos.
+- La página de cada juego puede preguntar a una IA en qué se diferencian sus versiones, para elegir
+  la definitiva. Las respuestas reciben los mismos rangos que las notas.
+- Antes de la primera pregunta se muestra un aviso de coste. Config › AI enlaza la página de límites
+  de uso de cada proveedor.
+- «Valorar en lote con IA» pregunta por varios juegos en una sola tarea. Antes muestra el número de
+  preguntas y el coste estimado, y omite los juegos ya respondidos.
+- Los juegos con una versión nueva tras su valoración se marcan como «Versión nueva desde la
+  valoración» y se pueden excluir con el filtro.
 
 **Títulos: versiones menores y grupos de versiones**
-- «Ocultar versiones menores» oculta un juego cuando hay una edición más completa en la misma plataforma
-  y región (International, Director's Cut, Final Mix, etc.; una Easy Type cede ante el juego
-  normal). En Títulos, Lanzamientos y la lista de lanzamientos de un título.
-- «Una de cada conjunto de versiones» muestra una sola versión de los juegos que salieron en varias
-  versiones (Pokémon, Yo-kai Watch, etc.): la que tienes, si no la que elegiste, si no una al azar,
-  con 🎲 para ver otra. Las versiones de un mismo grupo ya no forman una sola familia en la pestaña
-  Definitiva.
-- La nueva tarjeta Versiones de la página de un título muestra ambos y permite corregirlos.
+- Se añadió «Ocultar versiones menores».
+- Se añadió «Una de cada conjunto de versiones».
+- Se añadió una tarjeta «Versiones» a las páginas de título.
 
 **Config › Avanzado**
-- Una pestaña nueva para las operaciones que pueden dañar la base de datos o hacer perder
-  archivos. Optimizar DB se ha movido aquí desde Tareas y datos › DB.
+- Se añadió una pestaña que reúne las acciones que pueden dañar la base de datos o perder archivos.
+  Optimizar la base de datos se trasladó aquí desde Tareas y datos › DB.
 
 **Audio de las ROM**
-- Las páginas de título pueden reproducir la música que hay dentro de tus ROM (pistas de audio CD de los juegos en disco y archivos de sonido de Nintendo DS y 3DS).
-- En los ajustes se elige qué pistas se reproducen.
-- El reproductor de las páginas de título tiene un botón «no reproducir esta pista». Las pistas
-  ocultas aparecen bajo la lista de reproducción: un clic reproduce una y Restaurar la recupera.
+- Las páginas de título pueden reproducir la música de las ROM (pistas de audio CD de juegos en
+  disco y archivos de sonido de Nintendo DS y 3DS).
+- Los criterios de qué pistas se reproducen se pueden ajustar en los ajustes.
+- Se añadió un botón «no reproducir esta pista» al reproductor de la página de título.
 - La música de las ROM decodificada para reproducir se guarda en caché en memoria (Ajustes › Audio,
-  256 MiB por defecto). Cuando se llena, las pistas pasan a la caché de audio en disco, que usa la
-  carpeta de la caché de nivel 1 si está configurada.
-- Se ha ajustado la normalización del reproductor.
-- El reproductor puede hacer fundido cruzado (2000 ms por defecto, 0 para desactivarlo).
-- Se corta el silencio al final de una pista: las pistas de las ROM se recortan, y en los archivos
-  de audio el escaneo de audio mide dónde termina el sonido (vuelve a ejecutarlo para los archivos
-  escaneados antes).
-- La música de las páginas de título está activada por defecto, y el primer inicio pregunta si la
-  quieres, justo después del idioma. Un título sin audio propio reproduce pistas al azar por
-  defecto.
+  256 MiB por defecto).
+- Se ajustó la normalización del reproductor.
+- El reproductor puede hacer fundido cruzado (2000 ms por defecto, 0 lo desactiva).
+- Ahora se recorta el silencio al final de las pistas.
+- La música de las páginas de título ahora está activada por defecto. En el primer inicio, tras el
+  idioma, la app pregunta si reproducir música. Los títulos sin audio propio reproducen una pista al
+  azar por defecto.
 
 **Revisión de fusiones y Títulos combinados**
-- Los lanzamientos de una tarjeta se pueden arrastrar al título al que pertenecen, o a «+» para un
-  título nuevo con el nombre del primero. También funciona tocar un lanzamiento y luego un título.
-- Las tarjetas ya aceptadas o rechazadas se pueden volver a mostrar con el nuevo filtro de estado.
-  Están ocultas por defecto.
-- Las separaciones aparecen ahora en Editar › Títulos combinados y se pueden deshacer allí. Las
-  hechas desde Revisión de fusiones antes de esta actualización se añaden a la lista.
+- Un lanzamiento de una tarjeta se puede arrastrar al título correcto. Soltarlo en «+» crea un
+  título nuevo.
+- Las tarjetas aceptadas y rechazadas se pueden mostrar con el filtro de estado. Por defecto están
+  ocultas.
+- Las separaciones también se registran en Editar › Títulos combinados y se pueden deshacer allí.
+  También aparecen las hechas en Revisión de fusiones antes de esta actualización.
 
 **Lanzamientos combinados**
-- Los discos de un mismo juego listados por separado (los de un pack, un disco extra) se pueden unir con «Combinar en un solo lanzamiento». Se lista un lanzamiento para todos y al copiarlo se copian todos los discos. Desde la página del lanzamiento se puede separar uno.
+- Los discos de un juego registrados como lanzamientos separados se pueden seleccionar y unir con
+  «Combinar en un solo lanzamiento».
 
 **Escaneo**
-- La página de un archivo tiene «Volver a escanear este archivo». Lo lee de nuevo con el resto de su
-  ROM y empareja su juego con un lanzamiento al momento.
-- La página de un archivo muestra el lanzamiento y el título a los que está vinculado.
+- Se añadió «Volver a escanear este archivo» a las páginas de archivo. Vuelve a leer el archivo junto
+  con los demás archivos de la ROM y asocia el juego a su lanzamiento al momento.
+- Las páginas de archivo ahora muestran el lanzamiento y el título enlazados.
 
 ## Correcciones
 
-- Algunos juegos no encontraban coincidencia en IGDB: un nombre con un guion dentro de una palabra no coincidía con la grafía de IGDB, y la sincronización de IGDB para SNES y NES omitía los juegos lanzados solo en Japón.
-- Un título conservaba los títulos alternativos de IGDB tras quitar su vínculo con IGDB, y no se podían borrar. Ahora se quitan con el vínculo, y cualquier título alternativo se puede quitar con ✕.
-- «Actualizar metadatos» volvía a vincular con IGDB un título cuyo vínculo se había quitado a mano. Ahora sigue sin vincular hasta que lo vincules tú.
-- Los subsets de RetroAchievements (desafío, speedrun y similares) entraban en el título de su juego y podían unir dos versiones de un juego en un título. Cada subset es ahora un título propio; la auditoría de fusiones separa los que ya estaban.
-- Al deshacer una fusión aceptada en la revisión de fusiones, la sugerencia no volvía. Ahora vuelve a quedar pendiente.
-- Una sugerencia de fusión seguía en la revisión de fusiones después de fusionar sus títulos a mano.
-- Juegos piratas y sin licencia se fusionaban en los títulos de juegos comerciales.
-- La tarjeta «otro juego dentro» dejaba en el título juegos piratas y sin licencia de otras
+- Los nombres con un guion dentro de una palabra no coincidían con la grafía de IGDB, así que
+  algunos juegos no encontraban coincidencia en IGDB.
+- Las sincronizaciones de IGDB de SNES y NES omitían juegos lanzados solo en Japón.
+- Desenlazar IGDB dejaba en el título los nombres alternativos de IGDB, sin forma de borrarlos.
+  Ahora se van con el enlace y cada uno se puede borrar con ✕.
+- Los enlaces de IGDB quitados a mano se volvían a enlazar con «Actualizar metadatos». Ahora siguen
+  desenlazados hasta enlazarlos de nuevo a mano.
+- Los subconjuntos de RetroAchievements (desafíos, speedruns, etc.) entraban en el título del juego
+  y podían juntar versiones distintas en un título.
+- Deshacer una fusión hecha en Revisión de fusiones no devolvía la sugerencia.
+- Las sugerencias de títulos ya fusionados a mano seguían en Revisión de fusiones.
+- Los juegos piratas y no licenciados se fusionaban con títulos comerciales.
+- Las tarjetas «otro juego dentro» dejaban en el título juegos piratas y no licenciados de otras
   regiones.
-- La tarjeta «otro juego dentro» tomaba por otro juego un lanzamiento con un número delante del
-  nombre («0743 - ...»).
-- Tareas como la auditoría de fusiones mostraban poco de su progreso. Ahora lo muestran en detalle.
-- Un archivo que lista un DAT podía quedarse sin lanzamiento ni título, si el DAT se añadía después
-  del escaneo o una subcarpeta se escaneaba después de la carpeta superior.
+- Las tarjetas «otro juego dentro» tomaban por juegos distintos los lanzamientos con un número
+  delante del nombre («0743 - ...»).
+- Tareas como la auditoría de fusiones ahora muestran un progreso detallado.
+- En Windows arm64 y Linux arm64 no se podían convertir imágenes de Wii U, Xbox y Xbox 360, leer
+  archivos PBP ni reproducir la música de las ROM.
+- Los archivos que figuran en un DAT quedaban sin enlazar a ningún lanzamiento ni título.
 
 # romexplorer 0.1.8 (alpha)
-
-Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
-Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
 **Medios**
-- Al empezar de nuevo con una base de datos nueva, se usan las imágenes que ya están en la carpeta
-  de medios en lugar de descargarlas otra vez.
+- Empezar de nuevo con una base de datos nueva ahora reutiliza el arte que ya está en la carpeta de
+  medios.
 
 **Tareas**
-- Se han ajustado las columnas de detalle de la lista de tareas.
-- Una tarea en espera tiene un botón «Ejecutar a continuación», también para una selección: empieza en cuanto
-  termina la tarea en curso de su cola. Las demás colas no se ven afectadas.
+- Se ajustaron los detalles de la lista de tareas.
+- Se añadió un botón «Ejecutar a continuación» a las tareas en espera.
 
 **Coincidencia de hash**
-- Una coincidencia de hash con solo Hasheous activado también obtiene los datos de IGDB y las
-  imágenes de lo que encontró, como con PlayMatch.
-- El ajuste serial_match decide por plataforma si cuenta el número de serie del nombre de archivo.
-  Una plataforma que se deja como está sigue la casilla del nombre de archivo.
+- La coincidencia de hash solo con Hasheous ahora también obtiene datos y arte de IGDB.
+- serial_match ahora puede elegir por plataforma si usar los números de serie de los nombres de
+  archivo.
 
 **Revisión de fusiones**
-- La respuesta de Gemini y «Preguntar a Google» llegan en el idioma de la interfaz.
-- Cuando la consulta falla, el mensaje dice por qué: un certificado o un tiempo de espera, el
-  modelo y la cuota agotada. Una clave sin cuota gratuita para el modelo lo indica.
-- Si no se puede leer la lista de modelos, se pregunta a Gemini de todos modos; ante un error de
-  cuota, se prueba una vez el siguiente modelo Flash.
+- Las respuestas de Gemini y «Preguntar a Google» ahora usan el idioma de la interfaz.
+- Una consulta fallida ahora muestra el motivo.
+- Ahora se pregunta a Gemini aunque no se pueda leer su lista de modelos.
 
 **Definitiva y Crossplat**
-- Solo se listan los títulos con un ID de IGDB. Los títulos de Wii U nombrados por su ID de título
-  ya no aparecen en Definitiva.
+- Ahora solo se muestran los títulos con ID de IGDB.
 
 ## Correcciones
 
 **Colección**
-- La búsqueda de la pestaña Definitiva solo encontraba el nombre del título principal. Ahora
-  encuentra una familia por el nombre de cualquier versión, incluidos los nombres localizados y
-  alternativos.
+- La búsqueda en la pestaña Definitiva solo encontraba el nombre del título principal.
