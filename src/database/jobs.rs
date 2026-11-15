@@ -840,7 +840,7 @@ struct Waiting {
 
 /// Every pending job with its lane, each payload read once.
 async fn waiting(pool: &MySqlPool) -> Result<Vec<Waiting>, DatabaseError> {
-    let rows = sqlx::query("SELECT id, job_type, payload, priority, in_turn, COALESCE(queue_order, id) AS q FROM jobs WHERE status = 'pending'").fetch_all(pool).await?;
+    let rows = sqlx::query("SELECT id, job_type, payload, priority, in_turn, CAST(COALESCE(queue_order, id) AS SIGNED) AS q FROM jobs WHERE status = 'pending'").fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let type_name: String = r.try_get("job_type")?;

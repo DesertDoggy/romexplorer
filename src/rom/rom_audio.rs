@@ -245,7 +245,7 @@ fn extension(path: &Path) -> String {
 /// ROM files [`open_rom`] can find audio in: disc images and their sheets, and the DS / 3DS
 /// cartridges, which carry a filesystem. Other cartridges hold sequenced music only, and
 /// archives are not read yet.
-pub const DISC_EXTENSIONS: [&str; 21] = ["chd", "cue", "gdi", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "wua", "wud", "wux", "cso", "zso", "nds", "dsi", "3ds", "cci"];
+pub const DISC_EXTENSIONS: [&str; 24] = ["chd", "cue", "gdi", "ccd", "mds", "mdf", "iso", "bin", "img", "gcm", "xiso", "rvz", "wia", "gcz", "wbfs", "wua", "wud", "wux", "cso", "zso", "nds", "dsi", "3ds", "cci"];
 
 /// Whether [`index_rom`] is worth running on `path`: a folder dump or a disc image.
 pub fn may_hold_audio(path: &Path) -> bool {
@@ -264,6 +264,9 @@ pub fn open_rom(path: &Path) -> Result<OpenedRom, String> {
     match extension(path).as_str() {
         "chd" => open_chd(path),
         "cue" | "gdi" => open_sheet(path),
+        "ccd" | "mds" | "mdf" => open_raw_image(path),
+        // A CloneCD image reached by its .img (the scan lists the image, not the .ccd).
+        "img" if beside(path, "ccd").is_file() => open_raw_image(&beside(path, "ccd")),
         "rvz" | "wia" | "gcz" | "wbfs" => {
             let mut reader = super::dolphin_wrapper::DiscReader::open(path, None).map_err(|e| e.to_string())?;
             let mut magic = [0u8; 4];
@@ -456,6 +459,93 @@ fn open_sheet(path: &Path) -> Result<OpenedRom, String> {
         }
     }
     out.data.extend(gd_area(high_density));
+    Ok(out)
+}
+
+/// A raw sector with its 96 bytes of subchannel stored after it.
+const RAW_WITH_SUB: u32 = 2448;
+
+/// The file beside `path` with its name and extension `ext`, matched without regard to case
+/// (`GAME.IMG` beside `Game.ccd` on a case-sensitive disk); the plain name when none is.
+fn beside(path: &Path, ext: &str) -> PathBuf {
+    let plain = path.with_extension(ext);
+    if plain.is_file() {
+        return plain;
+    }
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else { return plain };
+    std::fs::read_dir(dir)
+        .ok()
+        .and_then(|entries| {
+            entries.flatten().map(|e| e.path()).find(|p| {
+                p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case(stem))
+                    && p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(ext))
+            })
+        })
+        .unwrap_or(plain)
+}
+
+/// A track of 2448-byte sectors read as 2352-byte ones.
+struct WithoutSubchannel {
+    file: std::fs::File,
+    start: u64,
+}
+
+impl ReadAt for WithoutSubchannel {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let at = offset + done as u64;
+            let (sector, within) = (at / 2352, (at % 2352) as usize);
+            let take = (2352 - within).min(buf.len() - done);
+            self.file.read_at(self.start + sector * u64::from(RAW_WITH_SUB) + within as u64, &mut buf[done..done + take])?;
+            done += take;
+        }
+        Ok(())
+    }
+}
+
+/// A CloneCD (`.ccd` + `.img`) or Alcohol (`.mds` + `.mdf`) image: the track list from
+/// its descriptor, the sectors from the image beside it (same name).
+fn open_raw_image(path: &Path) -> Result<OpenedRom, String> {
+    let (tracks, image) = match extension(path).as_str() {
+        "ccd" => {
+            let text = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            (super::cd_images::ccd(&String::from_utf8_lossy(&text)), beside(path, "img"))
+        }
+        _ => {
+            let mds = beside(path, "mds");
+            let bytes = std::fs::read(&mds).map_err(|e| format!("{}: {e}", mds.display()))?;
+            (super::cd_images::mds(&bytes)?, beside(path, "mdf"))
+        }
+    };
+    if tracks.is_empty() {
+        return Err(format!("{}: no tracks", path.display()));
+    }
+    let file = whole_file(&image)?;
+    let mut out = OpenedRom { data: Vec::new(), cdda: Vec::new(), folder: None, title: None };
+    for (i, track) in tracks.iter().enumerate() {
+        if !matches!(track.sector, 2048 | 2352 | RAW_WITH_SUB) {
+            continue;
+        }
+        let end = tracks.get(i + 1).map(|t| t.start).unwrap_or(file.size()).min(file.size());
+        if end <= track.start {
+            continue;
+        }
+        let view = if track.sector == RAW_WITH_SUB {
+            // Each sector's 96 subchannel bytes are stepped over: what is read is the same
+            // 2352-byte sectors a plain image holds.
+            let sectors = (end - track.start) / u64::from(RAW_WITH_SUB);
+            let image = std::fs::File::open(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+            DiscView::new(Box::new(WithoutSubchannel { file: image, start: track.start }), sectors * 2352)
+        } else {
+            file.slice(track.start, end - track.start)
+        };
+        if track.audio {
+            out.cdda.push((track.number, view));
+        } else {
+            out.data.push(view);
+        }
+    }
     Ok(out)
 }
 
@@ -746,6 +836,39 @@ const NAMED_SUBSONGS: u32 = 512;
 /// Every sound in one file, one per subsong. `open(alone)` gives a fresh reader of the
 /// file; `alone` leaves out its companion files.
 fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
+    let before = out.len();
+    index_file_inner(open, path, size, view, t, out);
+    // A PlayStation .STR of XA audio only is music, not a film's sound.
+    if out.len() > before && is_video(path) && is_audio_only_str(open(true).as_mut()) {
+        out[before..].iter_mut().for_each(|t| t.video = false);
+    }
+}
+
+/// Whether a PlayStation stream file (raw 2352-byte CD-XA sectors) holds audio sectors and
+/// no video frames, judged by its first sectors.
+fn is_audio_only_str(file: &mut dyn VgmSource) -> bool {
+    const RAW: usize = 2352;
+    const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
+    let mut sector = [0u8; RAW];
+    let mut audio = 0;
+    for i in 0..256u64 {
+        if file.read_at(i * RAW as u64, &mut sector) < 0x20 || sector[..12] != SYNC {
+            break;
+        }
+        // The subheader's submode: 0x04 audio, 0x02 video, 0x08 data. A film's frames are
+        // data sectors that open with the 0x0160 frame magic.
+        let submode = sector[0x12];
+        if submode & 0x02 != 0 || (submode & 0x04 == 0 && sector[0x18..0x1A] == [0x60, 0x01]) {
+            return false;
+        }
+        if submode & 0x04 != 0 {
+            audio += 1;
+        }
+    }
+    audio > 0
+}
+
+fn index_file_inner(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, view: u32, t: &Thresholds, out: &mut Vec<FoundTrack>) {
     let Some(first) = Stream::open(open(false), path, 0, PlayConfig::AS_STORED) else { return };
     let count = first.info().subsong_count;
     let file_name = vgmstream::file_name_of(path).to_string();
@@ -757,6 +880,17 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
         return;
     }
     drop(first);
+    // Each subsong is opened on its own, and some formats (CD-XA's channels) scan the whole
+    // file to find theirs: a file not too big is read once and held for all of them. A 59 MB
+    // XA file of 256 channels: about 200 s from a CHD, 6 s held.
+    let held = (size <= HOLD_MAX_BYTES).then(|| Held::read(open(false), path)).flatten();
+    let held_open = |alone: bool| -> Box<dyn VgmSource> {
+        match &held {
+            Some(h) => Box::new(Held { bytes: h.bytes.clone(), name: h.name.clone(), base: open(alone) }),
+            None => open(alone),
+        }
+    };
+    let open: &dyn Fn(bool) -> Box<dyn VgmSource> = &held_open;
     let alone = count > NAMED_SUBSONGS;
     // Banks sometimes point two entries at the same sound: subsongs alike in length, loop
     // and format are compared by their first samples, and a repeat is left out.
@@ -788,6 +922,104 @@ fn index_file(open: &dyn Fn(bool) -> Box<dyn VgmSource>, path: &str, size: u64, 
         let words = format!("{path}/{}", info.stream_name);
         let name = if info.stream_name.is_empty() { format!("{file_name} #{subsong}") } else { info.stream_name.clone() };
         out.push(found(TrackLocation::File { view, path: path.to_string(), subsong }, name, &info, size, &words, t));
+    }
+}
+
+/// A file of many subsongs up to this size is read once and held while they are indexed.
+const HOLD_MAX_BYTES: u64 = 128 << 20;
+
+/// A file's bytes, read once, with its companions still opened through `base`.
+struct Held {
+    bytes: Arc<Vec<u8>>,
+    name: String,
+    base: Box<dyn VgmSource>,
+}
+
+impl Held {
+    fn read(mut file: Box<dyn VgmSource>, name: &str) -> Option<Self> {
+        let mut bytes = vec![0u8; usize::try_from(file.size()).ok()?];
+        let mut done = 0;
+        while done < bytes.len() {
+            let n = file.read_at(done as u64, &mut bytes[done..]);
+            if n == 0 {
+                break;
+            }
+            done += n;
+        }
+        bytes.truncate(done);
+        Some(Self { bytes: Arc::new(bytes), name: name.to_string(), base: file })
+    }
+}
+
+impl VgmSource for Held {
+    fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> usize {
+        let Some(src) = usize::try_from(offset).ok().and_then(|o| self.bytes.get(o..)) else { return 0 };
+        let n = src.len().min(dst.len());
+        dst[..n].copy_from_slice(&src[..n]);
+        n
+    }
+
+    fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self, name: &str) -> Option<Box<dyn VgmSource>> {
+        if vgmstream::file_name_of(name).eq_ignore_ascii_case(vgmstream::file_name_of(&self.name)) {
+            let base = self.base.open(name)?;
+            return Some(Box::new(Held { bytes: self.bytes.clone(), name: self.name.clone(), base }));
+        }
+        self.base.open(name)
+    }
+}
+
+#[cfg(test)]
+mod raw_image_tests {
+    use super::*;
+
+    #[test]
+    fn sectors_with_subchannel_read_as_plain_ones_and_names_match_without_case() {
+        let dir = std::env::temp_dir().join(format!("raw_image_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = Vec::new();
+        for n in 0..3u8 {
+            image.extend(std::iter::repeat_n(n, 2352));
+            image.extend(std::iter::repeat_n(0xEE, 96));
+        }
+        std::fs::write(dir.join("GAME.MDF"), &image).unwrap();
+        let found = beside(&dir.join("Game.mds"), "mdf");
+        let mut r = WithoutSubchannel { file: std::fs::File::open(&found).unwrap(), start: 0 };
+        let mut buf = vec![0u8; 2352 * 3];
+        r.read_at(0, &mut buf).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(buf.iter().enumerate().all(|(i, &b)| b == (i / 2352) as u8));
+    }
+}
+
+#[cfg(test)]
+mod str_tests {
+    use super::*;
+
+    fn sectors(kinds: &[(u8, [u8; 2])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &(submode, start) in kinds {
+            let mut s = vec![0u8; 2352];
+            s[..12].copy_from_slice(&[0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0]);
+            s[0x12] = submode;
+            s[0x16] = submode;
+            s[0x18..0x1A].copy_from_slice(&start);
+            out.extend(s);
+        }
+        out
+    }
+
+    #[test]
+    fn a_stream_of_xa_audio_only_is_not_a_film() {
+        let mut music = vgmstream::MemorySource::new("MUSIC.STR", sectors(&[(0x64, [1, 2]); 8]));
+        assert!(is_audio_only_str(&mut music));
+        let mut film = vgmstream::MemorySource::new("MOVIE.STR", sectors(&[(0x48, [0x60, 0x01]), (0x64, [1, 2]), (0x48, [0x60, 0x01])]));
+        assert!(!is_audio_only_str(&mut film));
+        let mut other = vgmstream::MemorySource::new("OTHER.STR", vec![1u8; 4096]);
+        assert!(!is_audio_only_str(&mut other));
     }
 }
 
@@ -881,6 +1113,7 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
                 continue;
             }
         };
+        super::disc_seq::index(view, &listing, n as u32, t, &mut progress, &mut out);
         let cache = Companions::default();
         for file in listing.iter() {
             if file.size < MIN_FILE_BYTES {

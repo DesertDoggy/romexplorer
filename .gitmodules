@@ -120,3 +120,6 @@
 [submodule "external/beetle-wswan-libretro"]
 	path = external/beetle-wswan-libretro
 	url = https://github.com/libretro/beetle-wswan-libretro
+[submodule "external/98fmplayer"]
+	path = external/98fmplayer
+	url = https://github.com/myon98/98fmplayer

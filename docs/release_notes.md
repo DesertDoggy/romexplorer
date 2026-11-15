@@ -17,6 +17,13 @@ replacing a build.
 **ROM audio**
 - Opening a title page indexes that game's ROM music first. Until it is done, the page shows
   the progress instead of playing another game's music.
+- The same goes for the Definitive page. A page opened later goes ahead of one opened
+  earlier.
+- The ROM music index reads the smallest ROMs first. ROMs with nothing it can read yet, such as
+  floppy images, are left out and picked up once they are supported.
+- CloneCD (.ccd) and Alcohol (.mds) disc images are read too.
+- PlayStation games with their maker's own sound engine (Square, tri-Ace and others) play their
+  music straight from the disc too.
 - A ROM with the same content as one already indexed takes its tracks instead of being read
   again.
 

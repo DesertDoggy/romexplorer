@@ -469,18 +469,22 @@ if [[ -d "$DEST_LIB/openssl" ]]; then
 fi
 
 # --- assets ---------------------------------------------------------------------------------
-# The music maps bundle (cart_music --write-maps, then --pack-maps): where each matched game's
-# music is in its ROM, numbers only. rom_songs reads <app root>/assets/music_maps.zst; without
-# it, cartridge music falls back to the boot search.
+# The music map bundles (cart_music --write-maps, then --pack-maps): where each matched game's
+# music is in its ROM, numbers only, one file per kind (music_maps_<kind>.zst). rom_songs reads
+# them from <app root>/assets/; without them, cartridge music falls back to the boot search.
 ship_music_maps() {
-    local maps="$ROOT_DIR/app_root_ex/assets/music_maps.zst"
-    if [[ -f "$maps" ]]; then
+    local found=0 maps
+    for maps in "$ROOT_DIR"/app_root_ex/assets/music_maps*.zst; do
+        [[ -f "$maps" ]] || continue
         mkdir -p "$APP/assets"
-        cp -f "$maps" "$APP/assets/music_maps.zst" && note "assets/music_maps.zst"
-    else
-        note "no app_root_ex/assets/music_maps.zst -- cartridge music uses the boot search only"
+        cp -f "$maps" "$APP/assets/" && note "assets/$(basename "$maps")"
+        found=1
+    done
+    if [[ $found -eq 0 ]]; then
+        note "no app_root_ex/assets/music_maps*.zst -- cartridge music uses the boot search only"
     fi
 }
+
 # The chdlite tools read nothing from assets/: their images and stylesheet are compiled in.
 if [[ "$KIND" == "chdlite" ]]; then
     for doc in chdlite_release_notes.md chdlite_release_notes.ja.md; do

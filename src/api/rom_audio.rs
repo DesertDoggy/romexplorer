@@ -247,6 +247,13 @@ pub struct IndexSummary {
     pub skipped_existing: u64,
     /// Not a disc image or a folder: cartridges, archives.
     pub skipped_not_disc: u64,
+    /// Left out before the run: nothing here reads their platform or media yet (a floppy or
+    /// cartridge with no sound player and no music files beside it). Not marked as indexed,
+    /// so a later run takes them once something does.
+    pub skipped_unsupported: u64,
+    /// Cartridges whose sound engine, music map or matched sets gave no music: recorded as
+    /// looked at, with no tracks.
+    pub no_music: u64,
     pub tracks: u64,
     /// Of `tracks`, those from rip sets (in game folders or the rip library).
     pub rip_tracks: u64,
@@ -269,13 +276,13 @@ pub struct IndexSummary {
 pub fn one_liner(s: &IndexSummary) -> String {
     let mut parts = vec![format!("{} ROM(s) read, {} track(s) found", s.roms_read, s.tracks)];
     if s.rip_tracks > 0 {
-        parts.push(format!("{} from rip sets", s.rip_tracks));
+        parts.push(format!("{} from original audio format sets", s.rip_tracks));
     }
     if s.rom_songs > 0 {
         parts.push(format!("{} song(s) read from cartridge sound engines", s.rom_songs));
     }
     if s.library_sets > 0 {
-        parts.push(format!("{} ROM(s) matched to the rip library's {} set(s)", s.library_matches, s.library_sets));
+        parts.push(format!("{} ROM(s) matched to {} original audio format set(s)", s.library_matches, s.library_sets));
     }
     if s.same_content > 0 {
         parts.push(format!("{} copied from an indexed ROM with the same content", s.same_content));
@@ -285,6 +292,12 @@ pub fn one_liner(s: &IndexSummary) -> String {
     }
     if s.skipped_not_disc > 0 {
         parts.push(format!("{} not a disc", s.skipped_not_disc));
+    }
+    if s.no_music > 0 {
+        parts.push(format!("{} with no music found", s.no_music));
+    }
+    if s.skipped_unsupported > 0 {
+        parts.push(format!("{} on a platform or media not supported yet", s.skipped_unsupported));
     }
     if !s.errors.is_empty() {
         parts.push(format!("{} could not be read", s.errors.len()));
@@ -306,7 +319,7 @@ fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
     let ext = main.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     // A sheet names its own tracks; an archive's members are not files on disk.
     // A Wii U image counts its key file among its files, and is still one image.
-    if matches!(ext.as_str(), "cue" | "gdi" | "wua" | "wud" | "wux") || main.is_dir() {
+    if matches!(ext.as_str(), "cue" | "gdi" | "ccd" | "mds" | "mdf" | "wua" | "wud" | "wux") || main.is_dir() {
         return Some(main);
     }
     if matches!(ext.as_str(), "zip" | "7z" | "rar") {
@@ -333,6 +346,53 @@ fn game_folder(main_path: &str) -> Option<PathBuf> {
         return Some(main.to_path_buf());
     }
     main.parent().filter(|p| p.components().count() > 1 && p.is_dir()).map(Path::to_path_buf)
+}
+
+/// Whether a ROM may be a disc image or a dumped folder ([`rom_path`]'s cases), from its
+/// main path and how many files it has, before its file list is read.
+fn disc_like(main_path: &str, files: i64) -> bool {
+    let main = Path::new(main_path);
+    let ext = main.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if matches!(ext.as_str(), "zip" | "7z" | "rar") {
+        return false;
+    }
+    matches!(ext.as_str(), "cue" | "gdi") || rom_audio::DISC_EXTENSIONS.contains(&ext.as_str()) || files >= 2 || main.is_dir()
+}
+
+/// Whether `folder` holds music files of its own (a rip set beside the game), a level or
+/// two down.
+fn folder_has_music(folder: &Path) -> bool {
+    let mut stack = vec![(folder.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            match entry.file_type() {
+                Ok(k) if k.is_dir() && depth < 2 => stack.push((entry.path(), depth + 1)),
+                Ok(k) if k.is_file() && rip_sets::is_rip_member(&name) => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Whether anything here can read music from this ROM: a disc or folder, a cartridge
+/// platform with a sound player or rip-library sets, or music files in its own game folder.
+/// Partly is enough (a disc whose CD audio plays though its sequences don't yet); a ROM
+/// with nothing at all is left out of an index run instead of read for nothing.
+async fn readable(app: &App, library: &rip_match::Library, rom_id: u64, main_path: &str, platform: u16, files: i64) -> Result<bool> {
+    if rom_songs::covers(platform) || library.covers(platform) || (vgmstream::available() && disc_like(main_path, files)) {
+        return Ok(true);
+    }
+    if !rip_sets::available() {
+        return Ok(false);
+    }
+    let Some(folder) = game_folder(main_path) else { return Ok(false) };
+    if !owns_rip_sets(app, rom_id, &folder).await? {
+        return Ok(false);
+    }
+    Ok(tokio::task::spawn_blocking(move || folder_has_music(&folder)).await.unwrap_or(false))
 }
 
 /// Whether `rom_id` is the ROM whose tracks a rip set in `folder` is listed under: the
@@ -370,11 +430,45 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
 /// The rip library from `audio_rip_folders`, fingerprinted; empty when there is none or the
 /// player is not built. Fingerprints are cached beside the media.
 async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    progress.report(0, None, "reading the original audio format sets").await;
     let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
     if folders.is_empty() || !rip_sets::available() {
         return Ok(rip_match::Library::build(&[], None, |_, _| {}));
     }
-    progress.report(0, None, "reading the rip library").await;
+    let cache = app.paths.media_dir().join("_rip_library.json");
+    // Sets new since the last run are read whole: the job shows how far it is, and a cancel
+    // ends the run here (the reading finishes on its own and is cached for next time).
+    let counts = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+    let seen = counts.clone();
+    let mut task = tokio::task::spawn_blocking(move || {
+        rip_match::Library::build(&folders, Some(&cache), |done, total| {
+            seen.0.store(done, Relaxed);
+            seen.1.store(total, Relaxed);
+        })
+    });
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            built = &mut task => return built.map_err(|e| Error::internal(format!("ROM audio task: {e}"))),
+            _ = tick.tick() => {
+                if progress.cancelled().await {
+                    return Ok(rip_match::Library::build(&[], None, |_, _| {}));
+                }
+                let (done, total) = (counts.0.load(Relaxed) as u64, counts.1.load(Relaxed) as u64);
+                if total > 0 {
+                    progress.report(done, Some(total), &format!("reading the original audio format sets: {done} of {total}")).await;
+                }
+            }
+        }
+    }
+}
+
+async fn library_quiet(app: &App) -> Result<rip_match::Library> {
+    let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
+    if folders.is_empty() || !rip_sets::available() {
+        return Ok(rip_match::Library::build(&[], None, |_, _| {}));
+    }
     let cache = app.paths.media_dir().join("_rip_library.json");
     tokio::task::spawn_blocking(move || rip_match::Library::build(&folders, Some(&cache), |_, _| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))
 }
@@ -450,6 +544,26 @@ fn read_member(archive: &Path, member: &str) -> Option<Vec<u8>> {
     (0..opened.entry_count()).find(|&i| opened.entry(i).is_ok_and(|e| !e.is_dir && norm(&e.path) == want)).and_then(|i| opened.read_entry(i).ok())
 }
 
+/// The ROMs index runs are reading, across the runs going on at once.
+static READING: std::sync::LazyLock<std::sync::Mutex<HashSet<u64>>> = std::sync::LazyLock::new(Default::default);
+
+/// One run's claim on a ROM while it reads it; dropped, the claim ends.
+struct Reading(u64);
+
+impl Reading {
+    /// The claim, or `None` when another run holds it.
+    fn start(rom_id: u64) -> Option<Self> {
+        let fresh = READING.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id);
+        fresh.then(|| Self(rom_id))
+    }
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        READING.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.0);
+    }
+}
+
 /// How long one ROM may take before the index gives up on it. The longest honest reads (a
 /// cartridge's sound-engine search) stop by themselves well inside this.
 const ROM_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
@@ -467,9 +581,31 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         None => String::new(),
     };
     let skip = if quick { " AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)" } else { "" };
-    let roms = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT r.id, r.main_path, r.app_platform_id FROM local_rom r WHERE r.deleted = FALSE{scope}{skip} ORDER BY r.main_path")))
-        .fetch_all(&app.pool)
-        .await?;
+    // Smallest first: cartridges and small discs are playable within minutes, and big disc
+    // images, which take longest to read, come last. A ROM with no file sizes recorded goes
+    // last too, not first.
+    let all = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT r.id, r.main_path, r.app_platform_id, s.files, s.bytes FROM local_rom r \
+         LEFT JOIN (SELECT rf.rom_id, COUNT(*) AS files, CAST(SUM(f.size) AS UNSIGNED) AS bytes FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE GROUP BY rf.rom_id) s ON s.rom_id = r.id \
+         WHERE r.deleted = FALSE{scope}{skip} ORDER BY s.bytes IS NULL, s.bytes, r.main_path"
+    )))
+    .fetch_all(&app.pool)
+    .await?;
+    let library = Arc::new(rip_library(app, progress).await?);
+    summary.library_sets = library.len() as u64;
+    let mut roms = Vec::with_capacity(all.len());
+    let checking = all.len() as u64;
+    for (i, row) in all.into_iter().enumerate() {
+        if i % 500 == 0 {
+            progress.report(i as u64, Some(checking), &format!("checking which ROMs have music this can read: {i} of {checking}")).await;
+        }
+        let files: i64 = row.try_get::<Option<i64>, _>("files")?.unwrap_or(0);
+        if readable(app, &library, row.try_get("id")?, &row.try_get::<String, _>("main_path")?, row.try_get("app_platform_id")?, files).await? {
+            roms.push(row);
+        } else {
+            summary.skipped_unsupported += 1;
+        }
+    }
     if quick {
         summary.skipped_existing = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM local_rom r WHERE r.deleted = FALSE{scope} AND EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)")))
             .fetch_one(&app.pool)
@@ -481,8 +617,6 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     if request.title_id.is_some() {
         summary.rom_ids = roms.iter().filter_map(|r| r.try_get("id").ok()).collect();
     }
-    let library = Arc::new(rip_library(app, progress).await?);
-    summary.library_sets = library.len() as u64;
     let mut chosen = choose_library_sets(app, progress, &library, &roms).await?;
     // A library set's tracks, read once per run however many ROMs (regions) it matches.
     let mut set_tracks: HashMap<PathBuf, Vec<FoundTrack>> = HashMap::new();
@@ -494,6 +628,21 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         }
         let rom_id: u64 = row.try_get("id")?;
         let main_path: String = row.try_get("main_path")?;
+        // A ROM another run is reading right now (a title page's, beside this one) is that
+        // run's: the same disc is not read twice at once.
+        // A title page's run waits for it instead: the page is waiting for this ROM's music,
+        // and passing it by would show stand-in music and count it as looked at.
+        let mut reading = Reading::start(rom_id);
+        while reading.is_none() && request.title_id.is_some() && !progress.cancelled().await {
+            progress.report(i as u64, Some(total), &format!("ROM {} of {total}: waiting for another index run reading it", i + 1)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            reading = Reading::start(rom_id);
+        }
+        let Some(reading) = reading else {
+            summary.skipped_existing += 1;
+            summary.rom_ids.retain(|&id| id != rom_id);
+            continue;
+        };
         // A title page opened while this run goes on indexes its own ROMs first, beside it:
         // a quick run does not read them a second time when it gets there.
         if quick && sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rom_audio_index WHERE rom_id = ?").bind(rom_id).fetch_one(&app.pool).await? > 0 {
@@ -524,7 +673,8 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                 }
             }
         }
-        let disc = rom_path(&main_path, &files).filter(|_| vgmstream::available());
+        // A cartridge's .bin or .img is its ROM, not a disc image to read tracks from.
+        let disc = rom_path(&main_path, &files).filter(|p| vgmstream::available() && !(rom_songs::is_cartridge(platform) && p.is_file()));
         let in_library = library.covers(platform);
         let songs = rom_songs::covers(platform);
         if disc.is_none() && folder.is_none() && !in_library && !songs {
@@ -535,6 +685,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label}", i + 1)).await;
         let open = disc.clone();
         let matched = chosen.remove(&rom_id).unwrap_or(Ok(Vec::new()));
+        let had_sets = matches!(&matched, Ok(sets) if !sets.is_empty());
         let rom_file = PathBuf::from(&main_path);
         // A NES ROM matched to a set with an NSF: its music map, built once, so the songs play
         // straight from the ROM with no boot.
@@ -546,9 +697,12 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let step = Arc::new(std::sync::Mutex::new(String::new()));
         let at = step.clone();
         let mut task = tokio::task::spawn_blocking(move || {
+            // The claim lives as long as the reader: a ROM given up on after the time limit
+            // goes on reading in the background, and no other run starts it meanwhile.
+            let _reading = reading;
             let note = |what: &str| *at.lock().unwrap_or_else(|p| p.into_inner()) = what.to_string();
             note("music map");
-            let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets(&rom_file, &map_sets)).and_then(|r| r.err());
+            let map_error = (!map_sets.is_empty() && rom_file.is_file()).then(|| rom_songs::map_from_sets_for(&rom_file, &map_sets, Some(platform))).and_then(|r| r.err());
             note("music files in the game's folder");
             let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |p| note(p))).unwrap_or_default();
             note("disc");
@@ -561,7 +715,20 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
         let found = loop {
             tokio::select! {
-                done = &mut task => break Some(done.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?),
+                done = &mut task => match done {
+                    Ok(found) => break Some(found),
+                    // A reader that panics on one ROM (a bad map, a broken file) costs that ROM
+                    // only: it is noted as an error and the run goes on with the next.
+                    Err(e) if e.is_panic() => {
+                        let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        let error = format!("reader failed while reading {what}: {}", panic_text(e.into_panic()));
+                        log::warn!("rom audio index: {main_path}: {error}");
+                        summary.errors.push(format!("{main_path}: {error}"));
+                        record_error(app, rom_id, &error).await?;
+                        break None;
+                    }
+                    Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
+                },
                 _ = tick.tick() => {
                     let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
                     let secs = started.elapsed().as_secs();
@@ -588,13 +755,17 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             summary.errors.push(format!("{main_path}: music map: {e}"));
         }
         let mut song_count = 0;
+        let mut song_error = None;
         match songs_found {
             Ok(songs) => {
                 song_count = songs.len();
                 summary.rom_songs += song_count as u64;
                 rips.extend(songs);
             }
-            Err(e) => summary.errors.push(format!("{main_path}: ROM music: {e}")),
+            Err(e) => {
+                summary.errors.push(format!("{main_path}: ROM music: {e}"));
+                song_error = Some(format!("ROM music: {e}"));
+            }
         }
         match matched {
             Ok(sets) => {
@@ -604,13 +775,21 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                 for set in sets {
                     if !set_tracks.contains_key(&set) {
                         let (path, t) = (set.clone(), thresholds);
-                        let tracks = tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await.map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+                        let tracks = match tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await {
+                            Ok(tracks) => tracks,
+                            // A set that panics its reader is left out; the rest still count.
+                            Err(e) if e.is_panic() => {
+                                summary.errors.push(format!("{}: reader failed: {}", set.display(), panic_text(e.into_panic())));
+                                Vec::new()
+                            }
+                            Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
+                        };
                         set_tracks.insert(set.clone(), tracks);
                     }
                     rips.extend(set_tracks[&set].iter().cloned());
                 }
             }
-            Err(e) => summary.errors.push(format!("{main_path}: rip library: {e}")),
+            Err(e) => summary.errors.push(format!("{main_path}: original audio format sets: {e}")),
         }
         let (disc_tracks, error) = match disc_found {
             Some(Ok(tracks)) => (tracks, None),
@@ -625,7 +804,14 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             continue;
         }
         if disc.is_none() && rips.is_empty() {
-            summary.skipped_not_disc += 1;
+            // A cartridge whose sound engine or map was searched and gave nothing is recorded
+            // as looked at, so a "new only" run does not search it again.
+            if songs || had_sets {
+                summary.no_music += 1;
+                store(app, rom_id, &[], song_error.as_deref()).await?;
+            } else {
+                summary.skipped_not_disc += 1;
+            }
             continue;
         }
         summary.rip_tracks += (rips.len() - song_count) as u64;
@@ -636,6 +822,11 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         if error.is_none() {
             read_this_run.insert(rom_id);
         }
+    }
+    // A run stopped before its end did not look at all of its ROMs: a title page asks for
+    // them again.
+    if progress.cancelled().await {
+        summary.rom_ids.clear();
     }
     progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
     Ok(summary)
@@ -661,11 +852,14 @@ async fn choose_library_sets(app: &App, progress: &Progress, library: &Arc<rip_m
             break;
         }
         let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        progress.report(i as u64, Some(total), &format!("matching ROM {} of {total} to the rip library: {label}", i + 1)).await;
+        progress.report(i as u64, Some(total), &format!("matching ROM {} of {total} to the original audio format sets: {label}", i + 1)).await;
         let lib = library.clone();
-        let matched = tokio::task::spawn_blocking(move || if path.is_file() { lib.match_rom(&path, platform) } else { Ok(Vec::new()) })
-            .await
-            .map_err(|e| Error::internal(format!("ROM audio task: {e}")))?;
+        let matched = match tokio::task::spawn_blocking(move || if path.is_file() { lib.match_rom(&path, platform) } else { Ok(Vec::new()) }).await {
+            Ok(m) => m,
+            // A ROM whose matching panics is that ROM's error, not the run's.
+            Err(e) if e.is_panic() => Err(format!("matching failed: {}", panic_text(e.into_panic()))),
+            Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
+        };
         found.push((rom_id, matched));
     }
     // Who holds each set strongly: the same game in another region, revision or beta is not
@@ -792,10 +986,23 @@ async fn copy_index(app: &App, source: u64, rom_id: u64, keep_own: bool) -> Resu
         }
     }
     sqlx::query("DELETE FROM rom_audio_tracks WHERE rom_id = ?").bind(rom_id).execute(&mut *tx).await?;
-    let copied = sqlx::query(
+    // Music files from the other ROM's own folder are stored relative to that folder: they
+    // are its, not this one's, and would point into the wrong folder here.
+    let folder_rows: Vec<(u64, Option<String>)> = sqlx::query_as("SELECT id, inner_path FROM rom_audio_tracks WHERE rom_id = ? AND data_track = ?")
+        .bind(source)
+        .bind(rip_sets::RIP_VIEW)
+        .fetch_all(&mut *tx)
+        .await?;
+    let left_out: Vec<String> = folder_rows
+        .into_iter()
+        .filter(|(_, p)| p.as_deref().is_none_or(|p| !Path::new(p.split('|').next().unwrap_or(p)).is_absolute()))
+        .map(|(id, _)| id.to_string())
+        .collect();
+    let not_these = if left_out.is_empty() { String::new() } else { format!(" AND id NOT IN ({})", left_out.join(",")) };
+    let copied = sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO rom_audio_tracks (rom_id, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video) \
-         SELECT ?, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video FROM rom_audio_tracks WHERE rom_id = ? ORDER BY id",
-    )
+         SELECT ?, location, cd_track, data_track, inner_path, subsong, name, kind_manual, sample_rate, channels, duration_ms, looping, loop_start, loop_end, codec, format, bytes, video FROM rom_audio_tracks WHERE rom_id = ?{not_these} ORDER BY id",
+    )))
     .bind(rom_id)
     .bind(source)
     .execute(&mut *tx)
@@ -835,12 +1042,25 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
     }
     let mut queued = None;
     for &title in titles.iter().take(4) {
-        let unindexed: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT r.id FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT r.id, r.main_path, r.app_platform_id, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
+             FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
             roms_of(&[title])
         )))
         .fetch_all(&app.pool)
         .await?;
+        // Only ROMs something here can read: a page of a platform with no support yet
+        // queues nothing and shows no "indexing" that would never end.
+        let mut unindexed: Vec<u64> = Vec::new();
+        if !rows.is_empty() {
+            let library = page_library(app).await?;
+            for row in rows {
+                let id: u64 = row.try_get("id")?;
+                if readable(app, &library, id, &row.try_get::<String, _>("main_path")?, row.try_get("app_platform_id")?, row.try_get("files")?).await? {
+                    unindexed.push(id);
+                }
+            }
+        }
         if unindexed.is_empty() {
             continue;
         }
@@ -854,6 +1074,10 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
         if let Some(job) = &jobs {
             let status: String = job.try_get("status")?;
             if status == "pending" || status == "in_progress" {
+                // The page open now goes before pages opened earlier and left.
+                if status == "pending" {
+                    crate::database::jobs::run_next(&app.pool, &[job.try_get("id")?]).await?;
+                }
                 let indexing = Indexing {
                     job_id: job.try_get("id")?,
                     roms: unindexed.len() as u64,
@@ -879,6 +1103,7 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
         }
         let request = super::jobs::JobRequest::RomAudioIndex(RomAudioIndexRequest { mode: FileScanMode::NewOnly, title_id: Some(title) });
         let id = super::jobs::enqueue_with_priority(app, &request, super::jobs::PRIORITY_INTERACTIVE).await?;
+        crate::database::jobs::run_next(&app.pool, &[id]).await?;
         log::info!("rom audio: title {title}'s page opened with {} ROM(s) not indexed; job {id} indexes them first", unindexed.len());
         queued.get_or_insert(Indexing { job_id: id, roms: unindexed.len() as u64, status: "pending".to_string(), ..Default::default() });
     }
@@ -897,6 +1122,16 @@ fn place(location: &TrackLocation) -> (&'static str, Option<u16>, u16, Option<&s
     }
 }
 
+/// How a track's place is matched to the kind a user set on it: a song record's measured
+/// timing is left out, so a re-index that measures it differently keeps the kind.
+fn manual_key(data_track: u16, inner: &str) -> String {
+    if u32::from(data_track) == rom_songs::ROM_SONG_VIEW {
+        rom_songs::without_timing(inner)
+    } else {
+        inner.to_string()
+    }
+}
+
 /// Replaces `rom_id`'s tracks with `tracks`, keeping the kinds a user set on the ones that
 /// are still there.
 async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str>) -> Result<()> {
@@ -907,7 +1142,8 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
         .await?
         .iter()
         .filter_map(|r| {
-            let key = (r.try_get("location").ok()?, r.try_get("cd_track").ok()?, r.try_get("data_track").ok()?, r.try_get::<Option<String>, _>("inner_path").ok()?.unwrap_or_default(), r.try_get("subsong").ok()?);
+            let data_track: u16 = r.try_get("data_track").ok()?;
+            let key = (r.try_get("location").ok()?, r.try_get("cd_track").ok()?, data_track, manual_key(data_track, &r.try_get::<Option<String>, _>("inner_path").ok()?.unwrap_or_default()), r.try_get("subsong").ok()?);
             Some((key, r.try_get("kind_manual").ok()?))
         })
         .collect();
@@ -918,12 +1154,12 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
         );
         q.push_values(chunk, |mut b, t| {
             let (location, cd_track, data_track, inner, subsong) = place(&t.location);
-            let key: PlaceKey = (location.to_string(), cd_track, data_track, inner.unwrap_or_default().to_string(), subsong);
+            let key: PlaceKey = (location.to_string(), cd_track, data_track, manual_key(data_track, inner.unwrap_or_default()), subsong);
             b.push_bind(rom_id)
                 .push_bind(location)
                 .push_bind(cd_track)
                 .push_bind(data_track)
-                .push_bind(inner.map(|p| p.chars().take(1024).collect::<String>()))
+                .push_bind(inner)
                 .push_bind(subsong)
                 .push_bind(t.name.chars().take(512).collect::<String>())
                 .push_bind(manual.get(&key).cloned())
@@ -957,6 +1193,22 @@ async fn store(app: &App, rom_id: u64, tracks: &[FoundTrack], error: Option<&str
 const TRACK_SELECT: &str = "t.id, t.rom_id, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong, t.name, t.kind_manual, t.sample_rate, t.channels, t.duration_ms, t.looping, t.codec, t.bytes, r.main_path";
 
 /// The ROMs of `titles`, as SQL.
+/// The rip library as a title page sees it, built again at most every ten minutes: a page
+/// asks on every visit, and only to know which of its ROMs any set could belong to.
+async fn page_library(app: &App) -> Result<Arc<rip_match::Library>> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHED: Mutex<Option<(Instant, Arc<rip_match::Library>)>> = Mutex::new(None);
+    if let Some((at, lib)) = CACHED.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < Duration::from_secs(600) {
+            return Ok(lib.clone());
+        }
+    }
+    let lib = Arc::new(library_quiet(app).await?);
+    *CACHED.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), lib.clone()));
+    Ok(lib)
+}
+
 fn roms_of(titles: &[u64]) -> String {
     let ids = titles.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     format!(
@@ -1103,7 +1355,17 @@ const RANDOM_TRACKS: usize = 50;
 
 async fn tracks_where(app: &App, condition: &str, order: &str, s: &Settings, take: usize) -> Result<Vec<AudioRow>> {
     let filter = length_filter(s);
-    let sql = format!("SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY {order} LIMIT 20000");
+    let sql = if order == "RAND()" {
+        // A random pick shuffles ids only, a few times what is wanted (some rows are left out
+        // below), not every whole row of every track.
+        format!(
+            "SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE \
+             JOIN (SELECT t.id FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY RAND() LIMIT {}) pick ON pick.id = t.id ORDER BY RAND()",
+            take.saturating_mul(20).max(200)
+        )
+    } else {
+        format!("SELECT {TRACK_SELECT} FROM rom_audio_tracks t JOIN local_rom r ON r.id = t.rom_id AND r.deleted = FALSE WHERE {condition}{filter} ORDER BY {order} LIMIT 20000")
+    };
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&app.pool).await?;
     let mut out = Vec::new();
     // A rip library set matched to several ROMs of a title (its regions) is listed once.
@@ -1216,14 +1478,18 @@ pub async fn stand_in(app: &App, titles: &[u64], s: &Settings) -> Result<(Vec<Au
 
 /// Where a cached decode of track `id` goes: `rom<id>-<what>-<index time>.<ext>`. A ROM
 /// indexed again gets new names; the old ones are left for the size cap.
-fn cache_name(id: u64, target: Target, stamp: i64, level: bool, limit: bool) -> String {
+fn cache_name(id: u64, target: Target, stamp: i64, level: bool, limit: bool, looped: bool) -> String {
     // `-ts`: the silent end is trimmed ([`TailTrim`]); earlier cache files without it are
-    // left for the size cap. `-lm`: through the peak limiter ([`Limiter`]).
+    // left for the size cap. `-lm`: through the peak limiter ([`Limiter`]). `-lp`: its loop
+    // played twice and faded. `-v…`: the version that decoded it, so an upgrade's players
+    // and fixes are heard instead of the old decode.
     format!(
-        "rom{id}-{}-{stamp}{}{}-ts.{}",
+        "rom{id}-{}-{stamp}{}{}{}-v{}-ts.{}",
         target.tag(),
         if level { "-lv" } else { "" },
         if limit { "-lm" } else { "" },
+        if looped { "-lp" } else { "" },
+        env!("CARGO_PKG_VERSION").replace('.', "_"),
         target.ext()
     )
 }
@@ -1287,7 +1553,7 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     // loud where code is read wrong; the limiter holds such bursts down.
     let chip = matches!(location, TrackLocation::RomSong { .. } | TrackLocation::Rip { .. });
     let limit = chip && db_settings::get::<bool>(&app.pool, db_settings::KEY_AUDIO_ROM_LIMITER).await?.unwrap_or(true);
-    let name = cache_name(id, target, stamp, level, limit);
+    let name = cache_name(id, target, stamp, level, limit, !config.ignore_loop);
     let cached = dir.join(&name);
     let served = |body: Option<super::audio_ram::Bytes>| Served { mime: crate::database::media_store::mime_for(&cached), ext: target.ext().to_string(), path: cached.clone(), converted: true, note: None, body };
     if let Some(bytes) = super::audio_ram::get(&name) {
@@ -1305,8 +1571,21 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     }
     let ram_cap = db_settings::get::<u64>(&app.pool, db_settings::KEY_AUDIO_RAM_CACHE_MB).await?.unwrap_or(super::audio_ram::DEFAULT_MB).saturating_mul(1 << 20);
     let (out, keep_dir) = (cached.clone(), dir.clone());
+    // A request the browser drops (a skipped track) stops its decode: the guard is dropped
+    // with the request and raises the flag the decode checks between chunks.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    struct StopOnDrop(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _stop_on_drop = StopOnDrop(stop.clone());
     let made = tokio::task::spawn_blocking(move || -> std::result::Result<Option<super::audio_ram::Bytes>, String> {
-        decode_to(&path, &location, &out, target, config, level, limit)?;
+        // The turn is held until the decode ends, not until the request does, so the next
+        // decode never starts beside one still winding down.
+        let _turn = _turn;
+        decode_to(&path, &location, &out, target, config, level, limit, &stop)?;
         if ram_cap == 0 {
             super::audio_convert::evict(&keep_dir, disk_cap, &out);
             return Ok(None);
@@ -1351,7 +1630,8 @@ fn near_aac_rate(rate: u32) -> Option<u32> {
     xaac::SAMPLE_RATES.iter().copied().find(|&r| (i64::from(rate) - i64::from(r)).unsigned_abs() * 200 <= u64::from(r))
 }
 
-pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool, limit: bool) -> std::result::Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Target, config: vgmstream::PlayConfig, level: bool, limit: bool, stop: &std::sync::atomic::AtomicBool) -> std::result::Result<(), String> {
     let dir = out.parent().ok_or("no cache directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let partial = out.with_extension(format!("{}.part", target.ext()));
@@ -1359,9 +1639,14 @@ pub fn decode_to(rom: &Path, location: &TrackLocation, out: &Path, target: Targe
     let made = super::audio_convert::encode_with(&partial, target, |write| {
         let mut trim = TailTrim::default();
         let mut limiter = limit.then(Limiter::default);
-        let mut sink = |pcm: &[i16], rate: u32, channels: u16| match limiter.as_mut() {
-            Some(l) => trim.push(&l.apply(pcm, rate, channels), rate, channels, &mut *write),
-            None => trim.push(pcm, rate, channels, &mut *write),
+        let mut sink = |pcm: &[i16], rate: u32, channels: u16| {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("stopped: nobody is waiting for this track any more".to_string());
+            }
+            match limiter.as_mut() {
+                Some(l) => trim.push(&l.apply(pcm, rate, channels), rate, channels, &mut *write),
+                None => trim.push(pcm, rate, channels, &mut *write),
+            }
         };
         let made = (|| {
         let mut stream = rom_audio::open_track(rom, location, config)?;
@@ -1678,5 +1963,13 @@ mod tests {
         assert_eq!(rom_path("/x/game.chd", &[]), Some(PathBuf::from("/x/game.chd")));
         assert_eq!(rom_path("/x/game.sfc", &["/x/game.sfc".to_string()]), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The message a panic carried, for the job's error list.
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_else(|| "unknown panic".into()),
     }
 }

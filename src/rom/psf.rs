@@ -288,6 +288,42 @@ fn gsf_image(sections: &[PsfFile]) -> Result<Vec<u8>, String> {
     Ok(image)
 }
 
+/// The cartridge bytes a GSF file carries itself (its program area past the entry point,
+/// offset and size), for matching it to ROMs. `None` for anything else.
+pub fn gsf_cart_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    let file = parse(data).ok()?;
+    if System::of(file.version) != Some(System::Gba) {
+        return None;
+    }
+    let size = u32_at(&file.program, 8)? as usize;
+    let bytes = file.program.get(12..)?;
+    Some(bytes[..size.min(bytes.len())].to_vec())
+}
+
+/// The ROM bytes a USF file carries in its reserved area (lazyusf2's little-endian word
+/// order), for matching it to ROMs. `None` for anything else.
+pub fn usf_rom_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 16 || &data[..4] != b"PSF\x21" {
+        return None;
+    }
+    let len = u32_at(data, 4)? as usize;
+    let reserved = data.get(16..16 + len)?;
+    if u32_at(reserved, 0)? != 0x3436_5253 {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut at = 4;
+    loop {
+        let n = u32_at(reserved, at)? as usize;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(reserved.get(at + 8..at + 8 + n)?);
+        at += 8 + n;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// A file and the libraries it builds on, in load order, with the top file's tags.
 #[derive(Debug, Clone)]
 pub struct Loaded {
@@ -335,6 +371,39 @@ pub fn load(data: &[u8], read_lib: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> R
 }
 
 impl Loaded {
+    /// A GBA file's sections in load order: each one's offset into the cartridge and its
+    /// bytes. Empty for other consoles.
+    /// An N64 file's reserved sections in load order (the deepest library first); empty for
+    /// other consoles.
+    pub fn usf_sections(&self) -> Vec<&[u8]> {
+        if self.system != System::N64 {
+            return Vec::new();
+        }
+        self.sections.iter().map(|s| s.reserved.as_slice()).filter(|r| !r.is_empty()).collect()
+    }
+
+    /// An N64 file's `_enablecompare` and `_enablefifofull` settings.
+    pub fn usf_flags(&self) -> (bool, bool) {
+        (self.flag("_enablecompare"), self.flag("_enablefifofull"))
+    }
+
+    pub fn gba_sections(&self) -> Vec<(usize, &[u8])> {
+        if self.system != System::Gba {
+            return Vec::new();
+        }
+        self.sections
+            .iter()
+            .filter_map(|s| {
+                let p = &s.program;
+                let offset = (u32_at(p, 4)? & 0x01FF_FFFF) as usize;
+                let size = u32_at(p, 8)? as usize;
+                let data = p.get(12..)?;
+                Some((offset, &data[..size.min(data.len())]))
+            })
+            .filter(|(o, d)| !d.is_empty() && o + d.len() <= 0x0200_0000)
+            .collect()
+    }
+
     fn flag(&self, name: &str) -> bool {
         self.flags.iter().any(|(k, v)| k.eq_ignore_ascii_case(name) && v.trim() != "0")
     }
@@ -498,6 +567,106 @@ fn gsf_api() -> Option<&'static GsfApi> {
     .as_ref()
 }
 
+/// A GBA cartridge image played as it is (a ROM with a music map's bytes laid over it), by
+/// the same mGBA core the GSF files play on, at 44,100 Hz stereo.
+pub struct GbaImage {
+    state: *mut c_void,
+}
+
+// The state is only used through `&mut self`.
+unsafe impl Send for GbaImage {}
+
+impl GbaImage {
+    pub const RATE: u32 = 44_100;
+
+    pub fn open(image: &[u8]) -> Result<Self, String> {
+        let api = gsf_api().ok_or("the GBA music player (rommusic) is not installed")?;
+        let state = unsafe { (api.new)(image.as_ptr(), image.len()) };
+        if state.is_null() {
+            return Err("the GBA player would not start this cartridge".into());
+        }
+        Ok(GbaImage { state })
+    }
+
+    /// Fills `out` (interleaved stereo). An error when a minute passed with no sound.
+    pub fn render(&mut self, out: &mut [i16]) -> Result<(), String> {
+        let api = gsf_api().ok_or("the GBA music player (rommusic) is not installed")?;
+        if unsafe { (api.render)(self.state, out.as_mut_ptr(), out.len() / 2) } < 0 {
+            return Err("the music stopped making sound".into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for GbaImage {
+    fn drop(&mut self) {
+        if let Some(api) = gsf_api() {
+            unsafe { (api.free)(self.state) };
+        }
+    }
+}
+
+/// An N64 song from reserved sections built elsewhere (a music map's rebuilt ROM parts and
+/// save state), played on the same lazyusf2 core as a USF.
+pub struct UsfImage {
+    state: *mut c_void,
+}
+
+// The state is only used through `&mut self`.
+unsafe impl Send for UsfImage {}
+
+impl UsfImage {
+    pub fn open(sections: &[&[u8]], compare: bool, fifo_full: bool) -> Result<Self, String> {
+        let api = usf_api().ok_or("the N64 music player (rommusic) is not installed")?;
+        let state = unsafe { (api.new)() };
+        if state.is_null() {
+            return Err("out of memory".into());
+        }
+        let me = UsfImage { state };
+        for s in sections {
+            if unsafe { (api.upload)(state, s.as_ptr(), s.len()) } < 0 {
+                return Err("the N64 song's data is damaged".into());
+            }
+        }
+        unsafe { (api.flags)(state, i32::from(compare), i32::from(fifo_full), 1) };
+        Ok(me)
+    }
+
+    /// Fills `out` (interleaved stereo at `rate`).
+    pub fn render(&mut self, out: &mut [i16], rate: u32) -> Result<(), String> {
+        let api = usf_api().ok_or("the N64 music player (rommusic) is not installed")?;
+        let mut err = [0 as c_char; 256];
+        let r = unsafe { (api.render)(self.state, out.as_mut_ptr(), out.len() / 2, rate as i32, err.as_mut_ptr(), err.len()) };
+        if r != 0 {
+            return Err(unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for UsfImage {
+    fn drop(&mut self) {
+        if let Some(api) = usf_api() {
+            unsafe { (api.free)(self.state) };
+        }
+    }
+}
+
+/// Whether the N64 player is installed.
+pub fn usf_available() -> bool {
+    usf_api().is_some()
+}
+
+/// Whether the GBA player is installed.
+pub fn gba_available() -> bool {
+    gsf_api().is_some()
+}
+
+/// Held while a player core sets up its process-wide state (the PS1/PS2 kernel, the
+/// Saturn/Dreamcast tables), which the C side does with a plain flag: two threads at once
+/// would both do it.
+static NATIVE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The size of a PS2 BIOS image, the only kind the PS1/PS2 player can build its kernel from.
 pub const PS2_BIOS_BYTES: usize = 0x40_0000;
 
@@ -508,6 +677,8 @@ pub fn set_ps2_bios(image: &[u8]) -> Result<bool, String> {
     if image.len() != PS2_BIOS_BYTES {
         return Err("a PS2 BIOS image is 4 MB".into());
     }
+    // The kernel is built once into C globals, checked without a lock there.
+    let _once = NATIVE_INIT.lock().unwrap_or_else(|p| p.into_inner());
     match unsafe { (api.set_bios)(image.as_ptr(), image.len()) } {
         0 => Ok(true),
         _ => Err("this PS2 BIOS image could not be used".into()),
@@ -612,7 +783,11 @@ impl Player {
             }
             System::Saturn | System::Dreamcast => {
                 let api = sega_api().ok_or("the Saturn/Dreamcast music player (rommusic) is not installed")?;
-                let state = unsafe { (api.new)(if self.loaded.system == System::Saturn { 1 } else { 2 }) };
+                // The first console made sets the core's tables up, checked without a lock in C.
+                let state = {
+                    let _once = NATIVE_INIT.lock().unwrap_or_else(|p| p.into_inner());
+                    unsafe { (api.new)(if self.loaded.system == System::Saturn { 1 } else { 2 }) }
+                };
                 if state.is_null() {
                     return Err("out of memory".into());
                 }

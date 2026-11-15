@@ -1,0 +1,291 @@
+//! Lists the sequenced music found on disc images, the way a title page indexes it, and
+//! optionally renders the start of each song to WAV for listening.
+//!
+//! ```text
+//! disc_music <disc or folder>... [--wav <out dir>] [--seconds N] [--songs N]
+//! ```
+//!
+//! `--probe <formats> [--magic A,B,...]` instead scans, per disc, the files holding any of
+//! the magic strings (every file up to 64 MB without `--magic`) in the given VGMTrans
+//! formats, all together and each alone, and lists what is found: for working out how a
+//! custom engine's files sit on a disc.
+//!
+//! `--with A,B` also takes files whose path contains one of these (instrument files with no
+//! magic), `--max-mb N` raises the 64 MB size limit, and `--raw` scans each whole data
+//! track's user data (sector headers left out) as one file instead, for music outside the
+//! file tree or inside packed archives.
+//! `--split MAGIC[:BACK]` cuts what is scanned into one piece per hit of MAGIC, each starting
+//! BACK bytes before its hit: for an engine whose scanner expects one song (and its bank)
+//! per file, such as tri-Ace's (`--split SLZ:4`).
+//!
+//! A folder is walked for `.chd`, `.cue`, `.ccd`, `.mds`, `.iso` and `.bin` images (a `.bin` with a `.cue`
+//! beside it is left to the sheet).
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use romexplorer::rom::{disc_files, disc_seq, rom_audio, vgmtrans};
+
+fn images(path: &Path, out: &mut Vec<PathBuf>) {
+    if path.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else { return };
+        let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for e in entries {
+            images(&e, out);
+        }
+        return;
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let keep = match ext.as_str() {
+        "chd" | "cue" | "iso" | "ccd" | "mds" => true,
+        "bin" => !path.with_extension("cue").exists(),
+        _ => false,
+    };
+    if keep {
+        out.push(path.to_path_buf());
+    }
+}
+
+fn main() {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let raw = args.iter().any(|a| a == "--raw");
+    args.retain(|a| a != "--raw");
+    let mut take = |flag: &str| -> Option<String> {
+        let i = args.iter().position(|a| a == flag)?;
+        let v = args.get(i + 1).cloned();
+        args.drain(i..(i + 2).min(args.len()));
+        v
+    };
+    let wav = take("--wav").map(PathBuf::from);
+    if let Some(dir) = &wav {
+        std::fs::create_dir_all(dir).expect("create the --wav folder");
+    }
+    let seconds: u64 = take("--seconds").and_then(|s| s.parse().ok()).unwrap_or(30);
+    let probe = take("--probe");
+    let magic: Vec<Vec<u8>> = take("--magic").map(|m| m.split(',').map(|x| x.as_bytes().to_vec()).collect()).unwrap_or_default();
+    let with: Vec<String> = take("--with").map(|m| m.split(',').map(str::to_string).collect()).unwrap_or_default();
+    let max_bytes: u64 = take("--max-mb").and_then(|s| s.parse::<u64>().ok()).unwrap_or(64) << 20;
+    let split: Option<(Vec<u8>, usize)> = take("--split").map(|v| match v.rsplit_once(':') {
+        Some((m, b)) if b.parse::<usize>().is_ok() => (m.as_bytes().to_vec(), b.parse().unwrap()),
+        _ => (v.as_bytes().to_vec(), 0),
+    });
+    let max_songs: usize = take("--songs").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    if args.is_empty() {
+        eprintln!("usage: disc_music <disc or folder>... [--wav <out dir>] [--seconds N] [--songs N]");
+        std::process::exit(2);
+    }
+    let mut discs = Vec::new();
+    for a in &args {
+        images(Path::new(a), &mut discs);
+    }
+    if let Some(formats) = probe {
+        for disc in &discs {
+            probe_disc(disc, &formats, &magic, &with, max_bytes, raw, split.as_ref(), wav.as_deref(), seconds, max_songs);
+        }
+        return;
+    }
+    let t = rom_audio::Thresholds::default();
+    let (mut total_discs, mut with_songs, mut total_songs) = (0, 0, 0);
+    for disc in &discs {
+        total_discs += 1;
+        let started = Instant::now();
+        let found = match disc_seq::index_disc(disc, &t, &mut |_| {}) {
+            Ok(f) => f,
+            Err(e) => {
+                println!("{}: error: {e}", disc.display());
+                continue;
+            }
+        };
+        println!("{}: {} songs in {:.1}s", disc.display(), found.len(), started.elapsed().as_secs_f64());
+        if !found.is_empty() {
+            with_songs += 1;
+            total_songs += found.len();
+        }
+        for (i, track) in found.iter().enumerate() {
+            let rom_audio::TrackLocation::RomSong { engine, song } = &track.location else { continue };
+            println!(
+                "  {:3} {} [{}] {:.1}s{} {}",
+                i,
+                track.name,
+                track.kind.name(),
+                track.duration_ms as f64 / 1000.0,
+                if track.looping { " loops" } else { "" },
+                engine.rsplit('@').next().unwrap_or("")
+            );
+            let Some(dir) = &wav else { continue };
+            if i >= max_songs {
+                continue;
+            }
+            let stem = disc.file_stem().and_then(|s| s.to_str()).unwrap_or("disc");
+            let out = dir.join(format!("{stem} - {i:03}.wav"));
+            match romexplorer::rom::rom_songs::open(disc, engine, *song) {
+                Ok(mut pcm) => {
+                    let rate = pcm.sample_rate();
+                    let mut samples: Vec<i16> = Vec::new();
+                    let cap = seconds * u64::from(rate) * 2;
+                    while (samples.len() as u64) < cap {
+                        match pcm.next_chunk() {
+                            Ok(Some(c)) => samples.extend_from_slice(&c),
+                            _ => break,
+                        }
+                    }
+                    samples.truncate(cap as usize);
+                    let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+                    let mut f = std::fs::File::create(&out).expect("create wav");
+                    f.write_all(&rom_audio::wav_header(rate, 2, samples.len() as u64 / 2)).unwrap();
+                    let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    f.write_all(&bytes).unwrap();
+                    println!("      -> {} (peak {peak})", out.display());
+                }
+                Err(e) => println!("      play error: {e}"),
+            }
+        }
+    }
+    println!("{total_discs} discs, {with_songs} with sequenced music, {total_songs} songs");
+}
+
+/// A data track's 2048-byte user data, sector after sector: a raw image keeps a sync and
+/// header before each sector's data and error codes after it, which would cut any
+/// structure longer than a sector apart. The layout is taken from where the file system
+/// says its files' sectors start.
+fn user_data(view: &disc_files::DiscView) -> Option<Vec<u8>> {
+    let layout = disc_files::list(view).ok().and_then(|l| {
+        l.files.iter().find_map(|f| match f.extent {
+            disc_files::Extent::Sectors { first, stride } => Some((first % stride, stride)),
+            _ => None,
+        })
+    });
+    let size = view.size();
+    match layout {
+        Some((head, stride)) => {
+            let sectors = size / stride;
+            let mut out = vec![0u8; (sectors * 2048) as usize];
+            for (i, chunk) in out.chunks_mut(2048).enumerate() {
+                view.read(i as u64 * stride + head, chunk).ok()?;
+            }
+            Some(out)
+        }
+        None => {
+            let mut out = vec![0u8; size as usize];
+            view.read(0, &mut out).ok()?;
+            Some(out)
+        }
+    }
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// One piece per hit of `magic`, from `back` bytes before it to the next piece (at most `max`).
+fn pieces_at<'a>(bytes: &'a [u8], magic: &[u8], back: usize, max: usize) -> Vec<(usize, &'a [u8])> {
+    if magic.is_empty() {
+        return Vec::new();
+    }
+    let starts: Vec<usize> = bytes.windows(magic.len()).enumerate().filter(|(_, w)| *w == magic).map(|(i, _)| i.saturating_sub(back)).collect();
+    let mut out = Vec::new();
+    for (k, &start) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).copied().unwrap_or(bytes.len()).min(start.saturating_add(max)).max(start);
+        out.push((start, &bytes[start..end]));
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn probe_disc(disc: &Path, formats: &str, magic: &[Vec<u8>], with: &[String], max_bytes: u64, raw: bool, split: Option<&(Vec<u8>, usize)>, wav: Option<&Path>, seconds: u64, max_songs: usize) {
+    let started = Instant::now();
+    let rom = match rom_audio::open_rom(disc) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("{}: error: {e}", disc.display());
+            return;
+        }
+    };
+    println!("{}", disc.display());
+    for (n, view) in rom.data.iter().enumerate() {
+        let mut picked: Vec<(String, Vec<u8>)> = Vec::new();
+        if raw {
+            let Some(bytes) = user_data(view) else {
+                println!("  view {n}: unreadable");
+                continue;
+            };
+            let hits: Vec<String> = magic.iter().filter_map(|m| find(&bytes, m).map(|at| format!("{}@{at:#x}", String::from_utf8_lossy(m)))).collect();
+            println!("  view {n} whole track ({} bytes) {}", bytes.len(), hits.join(" "));
+            picked.push((format!("track{n}.bin"), bytes));
+        }
+        let listing = if raw { Vec::new() } else { disc_files::list(view).map(|l| l.files).unwrap_or_default() };
+        for file in &listing {
+            if file.size < 16 || file.size > max_bytes || rom_audio::is_video(file.name()) {
+                continue;
+            }
+            let Ok(bytes) = disc_seq::read_whole(view, file) else { continue };
+            let hits: Vec<String> = magic.iter().filter_map(|m| find(&bytes, m).map(|at| format!("{}@{at:#x}", String::from_utf8_lossy(m)))).collect();
+            let wanted = with.iter().any(|w| file.path.contains(w.as_str()));
+            if !magic.is_empty() && hits.is_empty() && !wanted {
+                continue;
+            }
+            println!("  view {n} file {} ({} bytes) {}", file.path, bytes.len(), hits.join(" "));
+            picked.push((file.path.clone(), bytes));
+        }
+        if picked.is_empty() {
+            continue;
+        }
+        if let Some((m, back)) = split {
+            let mut pieces = Vec::new();
+            for (path, bytes) in &picked {
+                for (at, piece) in pieces_at(bytes, m, *back, max_bytes as usize) {
+                    pieces.push((format!("{path}@{at:#x}"), piece.to_vec()));
+                }
+            }
+            println!("  split into {} pieces at {:?}", pieces.len(), String::from_utf8_lossy(m));
+            picked = pieces;
+        }
+        let files: Vec<(&str, &[u8])> = picked.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+        for (i, f) in files.iter().enumerate() {
+            if split.is_some() {
+                break;
+            }
+            let alone = vgmtrans::songs_in(&files[i..=i], formats, 0).map(|s| s.len()).unwrap_or(0);
+            if alone > 0 {
+                println!("    alone: {} -> {alone} songs", f.0);
+            }
+        }
+        let t0 = Instant::now();
+        let songs = match vgmtrans::songs_in(&files, formats, 0) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("  scan error: {e}");
+                continue;
+            }
+        };
+        println!("  together: {} songs from {} files in {:.1}s", songs.len(), files.len(), t0.elapsed().as_secs_f64());
+        for (i, song) in songs.iter().enumerate() {
+            println!("    {i:3} {} [{}] {} @{:#x} {:.1}s{}", song.name, song.format, files[song.file as usize].0, song.offset, song.length_ms as f64 / 1000.0, if song.looping { " loops" } else { "" });
+            let Some(dir) = wav else { continue };
+            if i >= max_songs {
+                continue;
+            }
+            match vgmtrans::Player::open_in(&files, formats, 2, i as u32, 48_000) {
+                Ok(mut p) => {
+                    let total = (seconds * 48_000 * 2) as usize;
+                    let mut samples = vec![0i16; total];
+                    for chunk in samples.chunks_mut(8192) {
+                        p.render(chunk);
+                    }
+                    let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+                    let stem = disc.file_stem().and_then(|s| s.to_str()).unwrap_or("disc");
+                    let out = dir.join(format!("{stem} - probe {i:03}.wav"));
+                    let mut f = std::fs::File::create(&out).expect("create wav");
+                    f.write_all(&rom_audio::wav_header(48_000, 2, samples.len() as u64 / 2)).unwrap();
+                    let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    f.write_all(&bytes).unwrap();
+                    println!("        -> {} (peak {peak})", out.display());
+                }
+                Err(e) => println!("        play error: {e}"),
+            }
+        }
+    }
+    println!("  ({:.1}s)", started.elapsed().as_secs_f64());
+}

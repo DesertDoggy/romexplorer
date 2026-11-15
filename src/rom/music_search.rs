@@ -429,6 +429,9 @@ const SOUND_SKIP_FRAMES: usize = 8;
 const MEASURE_FRAMES: usize = 60 * 300;
 /// Silence this long ends a song.
 const SILENT_END_FRAMES: usize = 180;
+/// Silence this long before any sound: the song is silent. A song may wait several seconds
+/// before its first note, longer than [`SILENT_END_FRAMES`].
+const SILENT_START_FRAMES: usize = 60 * 15;
 /// A loop must repeat this many frames to count.
 const LOOP_WINDOW: usize = 240;
 /// Shortest loop taken.
@@ -1422,6 +1425,7 @@ pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Re
     let max_frames = (MEASURE_FRAMES as f64 * frame_rate / 60.0) as usize;
     let mut hashes: Vec<u64> = Vec::new();
     let mut last_loud = 0usize;
+    let mut heard = false;
     let mut samples = Vec::new();
     let mut windows: HashMap<u64, usize> = HashMap::new();
     for f in 0..max_frames {
@@ -1430,8 +1434,9 @@ pub fn measure_frames(frame_rate: f64, mut next: impl FnMut(&mut Vec<i16>) -> Re
         hashes.push(frame_hash(&writes));
         if samples.iter().any(|s| s.unsigned_abs() > AUDIBLE) {
             last_loud = f;
+            heard = true;
         }
-        if f > last_loud + SILENT_END_FRAMES {
+        if f > last_loud + if heard { SILENT_END_FRAMES } else { SILENT_START_FRAMES } {
             return Ok(Timing {
                 frames: last_loud + 1,
                 looping: None,
@@ -1485,6 +1490,7 @@ pub fn measure_frames_by_writes(
 ) -> Result<Timing, String> {
     let max_frames = (MEASURE_FRAMES as f64 * frame_rate / 60.0) as usize;
     let mut last_loud = 0usize;
+    let mut heard = false;
     let mut samples = Vec::new();
     let (mut notes, mut all) = (WriteLoops::default(), WriteLoops::default());
     for f in 0..max_frames {
@@ -1492,8 +1498,9 @@ pub fn measure_frames_by_writes(
         let writes = next(&mut samples)?;
         if samples.iter().any(|s| s.unsigned_abs() > AUDIBLE) {
             last_loud = f;
+            heard = true;
         }
-        if f > last_loud + SILENT_END_FRAMES {
+        if f > last_loud + if heard { SILENT_END_FRAMES } else { SILENT_START_FRAMES } {
             return Ok(Timing { frames: last_loud + 1, looping: None });
         }
         let mut found = None;

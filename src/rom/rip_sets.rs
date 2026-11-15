@@ -311,7 +311,10 @@ fn collect_set(set: &Path) -> Vec<RipFile> {
 /// ROM bytes (VGM logs and the like).
 pub fn set_fingerprint(set: &Path) -> Option<super::rip_match::Fingerprint> {
     let files = collect_set(set);
-    super::rip_match::fingerprint(files.iter().map(|f| f.data.as_slice()))
+    // A minigsf carries no cartridge bytes; its set's libraries do.
+    let libs = files.first().map(|f| f.libs.clone());
+    let lib_data = libs.iter().flat_map(|l| l.iter().map(|(_, d)| d.as_slice()));
+    super::rip_match::fingerprint(files.iter().map(|f| f.data.as_slice()).chain(lib_data))
 }
 
 /// A set's first file starting with `magic` (an NSF's "NESM\x1a", a GBS's "GBS"), read whole:
@@ -337,6 +340,37 @@ pub fn wsrs_with_songs(set: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
             (f.data, songs)
         })
         .collect()
+}
+
+/// Each GBA track file of the set, loaded with the libraries it names, in the set's order.
+/// One at a time: a loaded file holds its whole cartridge image.
+pub fn for_each_gsf(set: &Path, mut f: impl FnMut(&psf::Loaded)) {
+    for file in collect_set(set) {
+        if !psf::is_track_file(&file.rel) || !file.data.starts_with(b"PSF\x22") {
+            continue;
+        }
+        let libs = file.libs.clone();
+        let mut read_lib = |name: &str| libs.iter().find(|(k, _)| *k == lib_key(name)).map(|(_, d)| d.clone());
+        match psf::load(&file.data, &mut read_lib) {
+            Ok(loaded) => f(&loaded),
+            Err(e) => log::debug!("{}: {e}", file.rel),
+        }
+    }
+}
+
+/// Each N64 track file of the set, loaded with the libraries it names, in the set's order.
+pub fn for_each_usf(set: &Path, mut f: impl FnMut(&psf::Loaded)) {
+    for file in collect_set(set) {
+        if !psf::is_track_file(&file.rel) || !file.data.starts_with(b"PSF\x21") {
+            continue;
+        }
+        let libs = file.libs.clone();
+        let mut read_lib = |name: &str| libs.iter().find(|(k, _)| *k == lib_key(name)).map(|(_, d)| d.clone());
+        match psf::load(&file.data, &mut read_lib) {
+            Ok(loaded) => f(&loaded),
+            Err(e) => log::debug!("{}: {e}", file.rel),
+        }
+    }
 }
 
 /// Every file of the set `keep` accepts (a WonderSwan set's `.wsr`, known by the `WSRF` 32

@@ -4,7 +4,7 @@
 //! taken from its rips; a ROM is scanned once against the fingerprints of every set for its
 //! system, and a set whose runs are mostly found there belongs to it.
 //!
-//! Only rips that carry ROM bytes can be matched: NSF, NSFE, GBS, SPC, HES, KSS, SGC and WSR. VGM,
+//! Only rips that carry ROM bytes can be matched: NSF, NSFE, GBS, SPC, HES, KSS, SGC, WSR and GSF. VGM,
 //! GYM, AY and SAP are logs or other machines' memory and are never matched.
 
 use std::collections::HashMap;
@@ -37,6 +37,8 @@ pub enum RipSystem {
     GameGear,
     ColecoVision,
     WonderSwan,
+    Gba,
+    N64,
 }
 
 impl RipSystem {
@@ -54,6 +56,8 @@ impl RipSystem {
             Self::MasterSystem | Self::GameGear => &[P::SegaMasterSystem as u16, P::SegaGameGear as u16, P::Sg1000 as u16],
             Self::ColecoVision => &[P::ColecoVision as u16],
             Self::WonderSwan => &[P::WonderSwan as u16, P::WonderSwanColor as u16],
+            Self::Gba => &[P::GameBoyAdvance as u16],
+            Self::N64 => &[P::Nintendo64 as u16],
         }
     }
 }
@@ -127,7 +131,15 @@ pub fn fingerprint<'a>(files: impl IntoIterator<Item = &'a [u8]>) -> Option<Fing
     let mut candidates: Vec<[u8; RUN]> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for data in files {
-        let Some((sys, image)) = rom_image(data) else { continue };
+        // A GSF's cartridge bytes are packed; they are unpacked to be matched.
+        // A USF's ROM parts are in its reserved area, as little-endian words; ROMs are
+        // turned to that order to be matched.
+        let gsf = super::psf::gsf_cart_bytes(data).map(|b| (RipSystem::Gba, b)).or_else(|| super::psf::usf_rom_bytes(data).map(|b| (RipSystem::N64, b)));
+        let found = match &gsf {
+            Some((sys, bytes)) => Some((*sys, bytes.as_slice())),
+            None => rom_image(data),
+        };
+        let Some((sys, image)) = found else { continue };
         match system {
             None => system = Some(sys),
             Some(s) if s != sys => continue,
@@ -291,6 +303,43 @@ pub fn choose(matches: &[(PathBuf, f32)], claimed: impl Fn(&Path) -> bool, sibli
 /// The largest ROM file scanned whole; bigger is not a cartridge these sets are from.
 const MAX_ROM_BYTES: u64 = 64 << 20;
 
+/// Turns an N64 ROM read in pieces to little-endian words, from whichever of the three usual
+/// byte orders its first word shows.
+#[derive(Default)]
+struct N64Order {
+    /// 0 big-endian (.z64), 1 byte pairs swapped (.v64), 2 little-endian (.n64); None until
+    /// the first word.
+    kind: Option<u8>,
+    carry: Vec<u8>,
+}
+
+impl N64Order {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.carry.extend_from_slice(bytes);
+        let whole = self.carry.len() / 4 * 4;
+        if whole == 0 {
+            return Vec::new();
+        }
+        let kind = *self.kind.get_or_insert(match self.carry[..4] {
+            [0x37, 0x80, 0x40, 0x12] => 1,
+            [0x40, 0x12, 0x37, 0x80] => 2,
+            _ => 0,
+        });
+        let mut out: Vec<u8> = self.carry.drain(..whole).collect();
+        for w in out.chunks_exact_mut(4) {
+            match kind {
+                0 => w.reverse(),
+                1 => {
+                    let [a, b, c, d] = [w[0], w[1], w[2], w[3]];
+                    w.copy_from_slice(&[c, d, a, b]);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
 /// One set of a rip library.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CachedSet {
@@ -298,6 +347,26 @@ struct CachedSet {
     size: u64,
     modified: u64,
     fingerprint: Option<Fingerprint>,
+}
+
+/// The fingerprint cache's format. Raise it whenever [`fingerprint`] or [`CachedSet`]
+/// changes, so caches written before are read again from the sets instead of matching nothing.
+const CACHE_FORMAT: u32 = 3;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheFile {
+    format: u32,
+    sets: Vec<CachedSet>,
+}
+
+/// Writes the cache beside itself and renames it into place, so a reader at the same moment
+/// (another job, another process) sees the old file or the new one, never half of one.
+fn write_cache(path: &Path, cache: &CacheFile) {
+    let Ok(json) = serde_json::to_vec(cache) else { return };
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 fn stamp(path: &Path) -> (u64, u64) {
@@ -318,28 +387,33 @@ impl Library {
     /// Reads the sets under `folders`. Fingerprints are kept in `cache` (a JSON file) by path,
     /// size and time, so only new or changed sets are read again.
     pub fn build(folders: &[PathBuf], cache: Option<&Path>, mut progress: impl FnMut(usize, usize)) -> Self {
+        // A cache of another format, or one that doesn't read, is read again from the sets.
         let old: HashMap<PathBuf, CachedSet> = cache
             .and_then(|c| std::fs::read(c).ok())
-            .and_then(|b| serde_json::from_slice::<Vec<CachedSet>>(&b).ok())
+            .and_then(|b| serde_json::from_slice::<CacheFile>(&b).ok())
+            .filter(|f| f.format == CACHE_FORMAT)
+            .map(|f| f.sets)
             .unwrap_or_default()
             .into_iter()
             .map(|c| (c.path.clone(), c))
             .collect();
         let paths: Vec<PathBuf> = folders.iter().flat_map(|f| super::rip_sets::sets_in(f)).collect();
         let mut fresh = Vec::with_capacity(paths.len());
+        let mut changed = old.len() != paths.len();
         for (i, path) in paths.iter().enumerate() {
             progress(i, paths.len());
             let (size, modified) = stamp(path);
             let entry = match old.get(path) {
                 Some(c) if c.size == size && c.modified == modified => c.clone(),
-                _ => CachedSet { path: path.clone(), size, modified, fingerprint: super::rip_sets::set_fingerprint(path) },
+                _ => {
+                    changed = true;
+                    CachedSet { path: path.clone(), size, modified, fingerprint: super::rip_sets::set_fingerprint(path) }
+                }
             };
             fresh.push(entry);
         }
-        if let Some(c) = cache {
-            if let Ok(json) = serde_json::to_vec(&fresh) {
-                let _ = std::fs::write(c, json);
-            }
+        if let Some(c) = cache.filter(|_| changed) {
+            write_cache(c, &CacheFile { format: CACHE_FORMAT, sets: fresh.clone() });
         }
         let mut sets = Vec::new();
         let mut grouped: HashMap<RipSystem, (Vec<Fingerprint>, Vec<usize>)> = HashMap::new();
@@ -391,7 +465,17 @@ impl Library {
         if scanners.is_empty() {
             return Ok(Vec::new());
         }
-        let mut feed = |bytes: &[u8]| scanners.iter_mut().for_each(|(_, s)| s.feed(bytes));
+        // N64 sets are matched in lazyusf2's byte order: the ROM is turned to it as it is read.
+        let n64 = systems.contains(&RipSystem::N64);
+        let order = std::cell::RefCell::new(N64Order::default());
+        let mut feed = |bytes: &[u8]| {
+            if n64 {
+                let words = order.borrow_mut().feed(bytes);
+                scanners.iter_mut().for_each(|(_, s)| s.feed(&words));
+            } else {
+                scanners.iter_mut().for_each(|(_, s)| s.feed(bytes));
+            }
+        };
         let name = rom.to_string_lossy().to_ascii_lowercase();
         let format = if name.ends_with(".zip") {
             Some(super::sevenzip_wrapper::ArchiveFormat::Zip)
@@ -408,6 +492,7 @@ impl Library {
                     if entry.is_dir || entry.size > MAX_ROM_BYTES {
                         continue;
                     }
+                    *order.borrow_mut() = N64Order::default();
                     archive.extract_stream(i, None, |_, _, chunk| {
                         feed(chunk);
                         true
@@ -445,6 +530,23 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cache_of_another_format_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("rip_match_cache_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cache.json");
+        let set = CachedSet { path: dir.join("set"), size: 1, modified: 2, fingerprint: None };
+        // The old format: a bare list.
+        std::fs::write(&cache, serde_json::to_vec(&vec![set.clone()]).unwrap()).unwrap();
+        assert!(serde_json::from_slice::<CacheFile>(&std::fs::read(&cache).unwrap()).is_err());
+        write_cache(&cache, &CacheFile { format: CACHE_FORMAT, sets: vec![set] });
+        let back: CacheFile = serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        assert_eq!((back.format, back.sets.len()), (CACHE_FORMAT, 1));
+        // Nothing left beside it.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Bytes that look like code: many different values, never the same run twice.
     fn noise(seed: u32, len: usize) -> Vec<u8> {

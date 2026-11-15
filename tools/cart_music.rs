@@ -27,7 +27,7 @@ use romexplorer::rom::ngp_music::NeoGeoPocket;
 use romexplorer::rom::vb_music::VirtualBoy;
 use romexplorer::rom::wswan_music::WonderSwan;
 use romexplorer::common::models::Platform;
-use romexplorer::rom::{gb_gbs, gb_map, hes_map, sgc_map, snes_sound, spc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
+use romexplorer::rom::{gb_gbs, gb_map, gba_map, hes_map, sgc_map, snes_sound, spc_map, music_map, nes_cart, nes_nsf, rip_match, rip_sets, rom_songs};
 
 fn wav(path: &Path, pcm: &[i16], rate: u32, channels: u16) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -90,6 +90,9 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
                 | "gba"
                 | "sfc"
                 | "smc"
+                | "z64"
+                | "n64"
+                | "v64"
                 | "ngp"
                 | "ngc"
                 | "npc"
@@ -106,6 +109,9 @@ fn console(rom: &[u8], path: &Path) -> Option<&'static str> {
     let lower = path.to_string_lossy().to_ascii_lowercase();
     if lower.ends_with(".gba") || lower.contains("game boy advance") {
         return Some("GBA");
+    }
+    if lower.ends_with(".z64") || lower.ends_with(".n64") || lower.ends_with(".v64") || romexplorer::rom::n64_map::native(rom).is_some() {
+        return Some("N64");
     }
     if nes_cart::parse(rom).is_ok() {
         return Some("NES");
@@ -506,9 +512,15 @@ fn print_ws_mapcheck(path: &Path, rom: &[u8], set: &Path, trace: Option<u8>, pla
     let long = ws_map::map_check(&wsr, &m, rom, ws_map::RECORD_FRAMES * 2, ws_map::Fill::Bridged).iter().filter(|s| s.1 >= MAP_RIGHT).count();
     let entries: usize = m.songs.iter().map(|s| s.1.at.len()).max().unwrap_or(0);
     let ops: usize = m.scripts.iter().map(|s| s.ops.len()).sum();
+    // The map as the app keeps it: the songs it plays right, written down and read back,
+    // played with the gaps bridged.
+    let saved = ws_map::keep_right(&wsr, m.clone(), rom).and_then(|k| ws_map::Map::decode(&k.encode())).map_or(0, |back| {
+        ws_map::map_check(&wsr, &back, rom, CHECK_FRAMES, ws_map::Fill::Bridged).iter().filter(|s| s.1 >= MAP_RIGHT).count()
+    });
+    t.saved += saved;
     let wrong: Vec<String> = zeros.iter().filter(|s| s.1 < MAP_RIGHT).take(10).map(|s| format!("{}:{:.2}", s.0, s.1)).collect();
     println!(
-        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read; map text {} KB){}",
+        "{name}: map, {built:.1} s to build, {:.1} s in all: {right_zeros} of {} songs right from the ROM (bridged: {bridged}; file's own gaps: {oracle}; {} frames bridged: {long}; saved map: {saved}) ({} songs tried{}; {} scripts, {ops} writes; up to {entries} entry points; {} bytes of the file's read; map text {} KB){}",
         started.elapsed().as_secs_f32(),
         m.songs.len(),
         ws_map::RECORD_FRAMES * 2,
@@ -739,6 +751,202 @@ fn print_sgc_mapcheck(path: &Path, rom: &[u8], sgc: &[u8], t: &mut Tally) {
     *t.reasons.entry(bucket.into()).or_default() += 1;
 }
 
+/// How long each GBA track is played both ways in `--mapcheck`.
+const GBA_CHECK_SECONDS: u32 = 15;
+
+/// `--mapcheck` for a GBA ROM and its matched GSF set: each track played from the set's own
+/// image and from the ROM with the map laid over it; right when the sound is the same.
+fn print_gba_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let mut tracks = Vec::new();
+    let mut set_images = Vec::new();
+    let mut theirs = true;
+    let mut placer = gba_map::Placer::default();
+    rip_sets::for_each_gsf(set, |loaded| {
+        if !theirs {
+            return;
+        }
+        let info = loaded.info();
+        match placer.track_runs(loaded, rom) {
+            Some(runs) => {
+                tracks.push((runs, info.length_ms, info.fade_ms));
+                set_images.push(gba_map::set_image(loaded));
+            }
+            None => theirs = false,
+        }
+    });
+    if !theirs || tracks.is_empty() {
+        let why = if tracks.is_empty() && theirs { "the set holds no GSF track" } else { "too little of the set's image is in this ROM" };
+        println!("{name}: {why}");
+        *t.reasons.entry(why.into()).or_default() += 1;
+        return;
+    }
+    let Some(mut m) = gba_map::Map::from_tracks(rom.len(), tracks) else { return };
+    let full = m.file_bytes();
+    let unslimmed = m.clone();
+    let slim_started = std::time::Instant::now();
+    if let Err(e) = gba_map::slim(&mut m, rom) {
+        println!("{name}: slimming failed: {e}");
+    }
+    let slim_s = slim_started.elapsed().as_secs_f32();
+    let text = m.encode();
+    let Some(back) = gba_map::Map::decode(&text) else {
+        println!("{name}: the map does not read back");
+        *t.reasons.entry("the map does not read back".into()).or_default() += 1;
+        return;
+    };
+    let (mut right, mut silent, mut wrong) = (0usize, 0usize, Vec::new());
+    for (i, set_image) in set_images.iter().enumerate() {
+        let real = gba_map::render(set_image, GBA_CHECK_SECONDS);
+        let mine = back.image(rom, i).and_then(|img| gba_map::render(&img, GBA_CHECK_SECONDS));
+        match (real, mine) {
+            (Err(_), _) => silent += 1,
+            (Ok(a), Ok(b)) if gba_map::alike(&a, &b) >= 0.99 => right += 1,
+            (Ok(a), Ok(b)) => wrong.push(format!("{i}:{:.2}", gba_map::alike(&a, &b))),
+            (Ok(_), Err(e)) => wrong.push(format!("{i}:{e}")),
+        }
+    }
+    // The tracks played wrong, played again by the map before slimming: which of the two
+    // lost them.
+    let right_unslimmed: Vec<String> = wrong
+        .iter()
+        .filter_map(|w| w.split(':').next()?.parse::<usize>().ok())
+        .filter(|&i| {
+            let real = gba_map::render(&set_images[i], GBA_CHECK_SECONDS);
+            let mine = unslimmed.image(rom, i).and_then(|img| gba_map::render(&img, GBA_CHECK_SECONDS));
+            matches!((real, mine), (Ok(a), Ok(b)) if gba_map::alike(&a, &b) >= 0.99)
+        })
+        .map(|i| i.to_string())
+        .collect();
+    let n = set_images.len() - silent;
+    println!(
+        "{name}: map, {:.1} s: {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file of {full} before slimming ({slim_s:.1} s), {} common runs, {} moved; map {:.1} KB){}{}",
+        started.elapsed().as_secs_f32(),
+        back.file_bytes(),
+        back.common.len(),
+        back.common.iter().filter(|r| matches!(r, gba_map::Run::Copy(..) | gba_map::Run::Reloc(..))).count(),
+        text.len() as f64 / 1024.0,
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) },
+        if wrong.is_empty() { String::new() } else { format!("; right before slimming: {}", if right_unslimmed.is_empty() { "none".into() } else { right_unslimmed.join(" ") }) }
+    );
+    t.checked[0] += 1;
+    t.checked[3] += n;
+    t.checked[4] += right;
+    t.saved += right;
+    if n > 0 && right == n {
+        t.with_music += 1;
+    }
+    let bucket = match right as f64 / n.max(1) as f64 {
+        _ if n == 0 => "no track with sound",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
+/// `--mapcheck` for an N64 ROM and its matched USF set: each track played from the set and
+/// from the ROM by the saved map; right when the sound is the same.
+fn print_n64_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
+    use romexplorer::rom::{n64_map, psf};
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    t.games += 1;
+    let started = std::time::Instant::now();
+    let Some(native) = n64_map::native(rom) else {
+        println!("{name}: not an N64 ROM dump");
+        return;
+    };
+    // Progress as it goes: an N64 game can take many minutes, and a run cut short should
+    // still show which step it reached.
+    let step = |what: String| {
+        use std::io::Write;
+        println!("{name}: ... {what} ({:.0} s)", started.elapsed().as_secs_f32());
+        std::io::stdout().flush().ok();
+    };
+    let mut builder = n64_map::Builder::new(&native);
+    let mut real = Vec::new();
+    let mut theirs = true;
+    rip_sets::for_each_usf(set, |loaded| {
+        if !theirs {
+            return;
+        }
+        theirs = builder.add(loaded);
+        if theirs {
+            let mut out = vec![0i16; n64_map::RATE as usize * 2 * GBA_CHECK_SECONDS as usize];
+            real.push(psf::Player::open(loaded.clone(), n64_map::RATE).and_then(|mut p| p.play(&mut out)).ok().map(|_| out).filter(|o| o.iter().any(|&x| x != 0)));
+            step(format!("track {} loaded and played from the set", real.len()));
+        }
+    });
+    let built = started.elapsed().as_secs_f32();
+    step(format!("{} tracks loaded and laid over the ROM", real.len()));
+    let Some(mut m) = builder.finish() else {
+        let why = if real.is_empty() && theirs { "the set holds no USF track" } else { "the set's ROM parts are not this ROM's" };
+        println!("{name}: {why}");
+        *t.reasons.entry(why.into()).or_default() += 1;
+        return;
+    };
+    let full = m.file_bytes();
+    let unslimmed = m.clone();
+    let slim_started = std::time::Instant::now();
+    if let Err(e) = n64_map::slim(&mut m, &native) {
+        println!("{name}: slimming failed: {e}");
+    }
+    let slim_s = slim_started.elapsed().as_secs_f32();
+    step(format!("slimmed in {slim_s:.0} s"));
+    let text = m.encode();
+    let back = n64_map::Map::decode(&text).expect("the map reads back");
+    let play = |m: &n64_map::Map, i: usize| m.section(&native, i).and_then(|s| n64_map::render(&s, m.compare, m.fifo_full, GBA_CHECK_SECONDS));
+    let (mut right, mut silent, mut wrong, mut lost) = (0usize, 0usize, Vec::new(), Vec::new());
+    for (i, want) in real.iter().enumerate() {
+        let Some(want) = want else {
+            silent += 1;
+            continue;
+        };
+        step(format!("checking track {} of {}", i + 1, real.len()));
+        match play(&back, i) {
+            Ok(got) if gba_map::alike(want, &got) >= 0.99 => right += 1,
+            got => {
+                wrong.push(match got {
+                    Ok(g) => format!("{i}:{:.2}", gba_map::alike(want, &g)),
+                    Err(e) => format!("{i}:{e}"),
+                });
+                if play(&unslimmed, i).is_ok_and(|g| gba_map::alike(want, &g) >= 0.99) {
+                    lost.push(i.to_string());
+                }
+            }
+        }
+    }
+    let n = real.len() - silent;
+    println!(
+        "{name}: map, {:.1} s ({built:.1} s to build, {slim_s:.1} s to slim): {right} of {n} tracks played right from the ROM ({silent} silent in the set too; {} bytes from the file of {full} before slimming; map {:.1} KB){}{}",
+        started.elapsed().as_secs_f32(),
+        back.file_bytes(),
+        text.len() as f64 / 1024.0,
+        if wrong.is_empty() { String::new() } else { format!("; off: {}", wrong.iter().take(12).cloned().collect::<Vec<_>>().join(" ")) },
+        if wrong.is_empty() { String::new() } else { format!("; right before slimming: {}", if lost.is_empty() { "none".into() } else { lost.join(" ") }) }
+    );
+    t.checked[0] += 1;
+    t.checked[3] += n;
+    t.checked[4] += right;
+    t.saved += right;
+    if n > 0 && right == n {
+        t.with_music += 1;
+    }
+    let bucket = match right as f64 / n.max(1) as f64 {
+        _ if n == 0 => "no track with sound",
+        s if s >= 1.0 => "all tracks right",
+        s if s >= 0.9 => "90-99% right",
+        s if s >= 0.5 => "50-90% right",
+        s if s > 0.0 => "under 50% right",
+        _ => "none right",
+    };
+    *t.reasons.entry(bucket.into()).or_default() += 1;
+}
+
 /// `--mapcheck` for a SNES ROM and its matched set's `.spc` files: how much of each track's
 /// sound memory is in the ROM as is, and how many tracks play right rebuilt from it.
 fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
@@ -776,12 +984,49 @@ fn print_spc_mapcheck(path: &Path, rom: &[u8], set: &Path, t: &mut Tally) {
         }
     }
     let share = got as f64 * 100.0 / total.max(1) as f64;
-    t.saved += best;
+    // The map as the app keeps it: the bytes the ROM lacks kept, slimmed, written down and
+    // read back, each track played by it against its own .spc.
+    let built = std::time::Instant::now();
+    let (saved, kept, saved_off, size) = match romexplorer::rom::snes_map::Map::build(&refs, rom) {
+        None => (0, 0, Vec::new(), String::from("no map")),
+        Some(mut m) => {
+            let full = m.file_bytes();
+            let _ = romexplorer::rom::snes_map::slim(&mut m, rom);
+            let text = m.encode();
+            let back = romexplorer::rom::snes_map::Map::decode(&text).expect("the map reads back");
+            // Tracks are kept in the set's order, the ones too little in the ROM left out.
+            let mut saved = 0;
+            let mut saved_off = Vec::new();
+            let mut k = 0;
+            for (i, (spc, placed)) in spcs.iter().zip(&maps).enumerate() {
+                let Some(placed) = placed else { continue };
+                let (g, n) = spc_map::coverage(spc, &placed.runs);
+                if (g as f64) < n as f64 * 0.5 {
+                    continue;
+                }
+                let real = spc_map::melody(&spc_map::frames(spc, CHECK_FRAMES).unwrap_or_default());
+                let mine = back.spc(rom, k).ok().and_then(|s| spc_map::frames(&s, CHECK_FRAMES)).map(|f| spc_map::melody(&f)).unwrap_or_default();
+                k += 1;
+                if real.len() < music_search::MIN_MELODY {
+                    continue;
+                }
+                let a = music_search::alike(&real, &mine);
+                if a >= MAP_RIGHT {
+                    saved += 1;
+                } else if saved_off.len() < 12 {
+                    saved_off.push(format!("{i}:{a:.2}"));
+                }
+            }
+            (saved, back.tracks.len(), saved_off, format!("{:.1} KB, {} bytes from the file of {full} before slimming, {:.1} s", text.len() as f64 / 1024.0, back.file_bytes(), built.elapsed().as_secs_f32()))
+        }
+    };
+    t.saved += saved;
     println!(
-        "{name}: map, {:.1} s: {best} of {with_melody} tracks played right from the ROM (as-is: {zeros}; gaps from the ROM: {bridged}; gaps from the file: {oracle}) ({} .spc; {share:.1}% of sound memory in the ROM){}",
+        "{name}: map, {:.1} s: {best} of {with_melody} tracks played right from the ROM (as-is: {zeros}; gaps from the ROM: {bridged}; gaps from the file: {oracle}; saved map: {saved} of {kept} kept, {size}) ({} .spc; {share:.1}% of sound memory in the ROM){}{}",
         started.elapsed().as_secs_f32(),
         spcs.len(),
-        if off.is_empty() { String::new() } else { format!("; off: {}", off.join(" ")) }
+        if off.is_empty() { String::new() } else { format!("; off: {}", off.join(" ")) },
+        if saved_off.is_empty() { String::new() } else { format!("; saved map off: {}", saved_off.join(" ")) }
     );
     t.checked[0] += 1;
     t.checked[1] += bridged;
@@ -1353,6 +1598,9 @@ fn write_map(
         Some("GG") => (Platform::SegaGameGear, "Game Gear"),
         Some("WS") => (Platform::WonderSwan, "WonderSwan"),
         Some("WSC") => (Platform::WonderSwanColor, "WonderSwan Color"),
+        Some("GBA") => (Platform::GameBoyAdvance, "Game Boy Advance"),
+        Some("SNES") => (Platform::Snes, "SNES"),
+        Some("N64") => (Platform::Nintendo64, "Nintendo 64"),
         _ => return,
     };
     let t = tally.entry(what).or_default();
@@ -1363,7 +1611,7 @@ fn write_map(
     };
     rom_songs::set_maps_dir(dir.to_path_buf());
     let before = count_maps(dir);
-    match rom_songs::map_from_sets(path, &[set]) {
+    match rom_songs::map_from_sets_for(path, &[set], Some(platform as u16)) {
         Ok(()) if count_maps(dir) > before => {
             t.with_music += 1;
             println!("{}: map kept", path.display());
@@ -1380,7 +1628,7 @@ fn write_map(
 }
 
 fn count_maps(dir: &Path) -> usize {
-    ["nes", "gb", "hes", "sgc", "ws"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+    ["nes", "gb", "hes", "sgc", "ws", "gba", "snes", "n64"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
 }
 
 fn main() {
@@ -1411,23 +1659,33 @@ fn main() {
         args.drain(i..(i + 2).min(args.len()));
     }
     args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
-    // `--pack-maps <dir> <out>`: every map kept under <dir> into the one bundle the app and
-    // rommusic ship (assets/music_maps.zst).
-    if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
+    // `--pack-maps <dir> <out folder>`: the maps kept under <dir>, one bundle per kind
+    // (music_maps_<kind>.zst, or music_maps_<kind>_<digit>-<digit>.zst parts for a big kind), as the app and
+    // rommusic ship them in assets/.
+    // `--pack-updates <dir> <out folder>`: the same, into each kind's small updates bundle
+    // (music_maps_<kind>_updates.zst), read before the main files: for maps added or fixed
+    // since those were packed.
+    let updates = args.iter().position(|a| a == "--pack-updates");
+    if let Some(i) = args.iter().position(|a| a == "--pack-maps").or(updates) {
         let (Some(dir), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: cart_music --pack-maps <maps folder> <bundle file>");
+            eprintln!("usage: cart_music --pack-maps | --pack-updates <maps folder> <output folder>");
             std::process::exit(2);
         };
-        match rom_songs::pack_bundle(Path::new(dir)) {
-            Ok((packed, counts)) => {
-                if let Err(e) = std::fs::write(out, &packed) {
+        let packed = if updates == Some(i) { rom_songs::pack_updates(Path::new(dir)) } else { rom_songs::pack_bundles(Path::new(dir)) };
+        match packed {
+            Ok(bundles) => {
+                if let Err(e) = std::fs::create_dir_all(out) {
                     eprintln!("{out}: {e}");
                     std::process::exit(1);
                 }
-                for (kind, n) in counts {
-                    println!("{kind}: {n} maps");
+                for (name, packed, n) in bundles {
+                    let file = Path::new(out).join(name);
+                    if let Err(e) = std::fs::write(&file, &packed) {
+                        eprintln!("{}: {e}", file.display());
+                        std::process::exit(1);
+                    }
+                    println!("{}: {n} maps, {} bytes", file.display(), packed.len());
                 }
-                println!("{out}: {} bytes", packed.len());
                 return;
             }
             Err(e) => {
@@ -1460,7 +1718,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps <maps folder> <bundle file>"
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps | --pack-updates <maps folder> <output folder>"
         );
         std::process::exit(2);
     }
@@ -1473,6 +1731,10 @@ fn main() {
     }
     let mut files = Vec::new();
     for a in &args {
+        if !Path::new(a).exists() {
+            eprintln!("no such file or folder: {a:?}");
+            continue;
+        }
         collect(Path::new(a), &mut files);
     }
     let nsf_lib = o.nsf.as_ref().map(|dir| {
@@ -1622,6 +1884,17 @@ fn main() {
                             unknown.iter().map(|a| format!("${a:06X}")).collect();
                         println!("    BIOS calls not handled: {}", list.join(" "));
                     }
+                }
+            }
+            Some("N64") if o.mapcheck => {
+                if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::Nintendo64, o.verbose) {
+                    print_n64_mapcheck(&path, &rom, &set, tally.entry("Nintendo 64").or_default());
+                }
+            }
+            Some("N64") => println!("{}: N64: only --mapcheck and --write-maps", path.display()),
+            Some("GBA") if o.mapcheck => {
+                if let Some(set) = matched_set(nsf_lib.as_ref(), &path, Platform::GameBoyAdvance, o.verbose) {
+                    print_gba_mapcheck(&path, &rom, &set, tally.entry("Game Boy Advance").or_default());
                 }
             }
             Some("GBA") => run::<GameBoyAdvance>(
