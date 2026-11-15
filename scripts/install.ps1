@@ -289,7 +289,7 @@ if ($Upgrade) {
     Copy-Item -LiteralPath (Join-Path $Src 'lib') -Destination $target -Recurse -Force
     Get-ChildItem -LiteralPath $Src -File | Where-Object { $_.Name -like 'romexplorer_*.exe' -or $_.Name -eq 'LICENSE' } |
         ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Prefix $_.Name) -Force }
-    foreach ($shared in @('icons', 'gui_web')) {
+    foreach ($shared in @('icons', 'gui_web', 'i18n')) {
         $s = Join-Path $Src "assets\$shared"
         if (Test-Path -LiteralPath $s) {
             $t = Join-Path $App "assets\$shared"
@@ -297,6 +297,19 @@ if ($Upgrade) {
             New-Item -ItemType Directory -Path (Join-Path $App 'assets') -Force | Out-Null
             Copy-Item -LiteralPath $s -Destination $t -Recurse -Force
         }
+    }
+    # The databases and music map bundles the package ships beside them. The old map files go
+    # first: a kind repacked into parts under new names would otherwise keep its old file,
+    # and an install that never got the maps keeps finding no music for the kinds they cover.
+    $assets = Join-Path $App 'assets'
+    $maps = @(Get-ChildItem -LiteralPath (Join-Path $Src 'assets') -File -Filter 'music_maps*.zst' -ErrorAction SilentlyContinue)
+    if ($maps.Count -gt 0 -and (Test-Path -LiteralPath $assets)) {
+        Get-ChildItem -LiteralPath $assets -File -Filter 'music_maps*.zst' | Remove-Item -Force
+    }
+    $dbs = @('fcdb.bin', 'biosdb.bin') | ForEach-Object { Join-Path $Src "assets\$_" } | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-Item -LiteralPath $_ }
+    foreach ($f in @($maps) + @($dbs)) {
+        New-Item -ItemType Directory -Path $assets -Force | Out-Null
+        Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $assets $f.Name) -Force
     }
     Note 'replaced the executables, lib\ and the shipped assets; kept data\ and everything else in assets\'
 } else {
