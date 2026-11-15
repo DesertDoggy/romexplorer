@@ -1660,14 +1660,19 @@ fn main() {
     }
     args.retain(|a| a != "--spcprobe" && a != "--spcsearch");
     // `--pack-maps <dir> <out folder>`: the maps kept under <dir>, one bundle per kind
-    // (music_maps_<kind>.zst, or music_maps_<kind>_0..f.zst for a big kind), as the app and
+    // (music_maps_<kind>.zst, or music_maps_<kind>_<digit>-<digit>.zst parts for a big kind), as the app and
     // rommusic ship them in assets/.
-    if let Some(i) = args.iter().position(|a| a == "--pack-maps") {
+    // `--pack-updates <dir> <out folder>`: the same, into each kind's small updates bundle
+    // (music_maps_<kind>_updates.zst), read before the main files: for maps added or fixed
+    // since those were packed.
+    let updates = args.iter().position(|a| a == "--pack-updates");
+    if let Some(i) = args.iter().position(|a| a == "--pack-maps").or(updates) {
         let (Some(dir), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: cart_music --pack-maps <maps folder> <output folder>");
+            eprintln!("usage: cart_music --pack-maps | --pack-updates <maps folder> <output folder>");
             std::process::exit(2);
         };
-        match rom_songs::pack_bundles(Path::new(dir)) {
+        let packed = if updates == Some(i) { rom_songs::pack_updates(Path::new(dir)) } else { rom_songs::pack_bundles(Path::new(dir)) };
+        match packed {
             Ok(bundles) => {
                 if let Err(e) = std::fs::create_dir_all(out) {
                     eprintln!("{out}: {e}");
@@ -1713,7 +1718,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps <maps folder> <output folder>"
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps | --pack-updates <maps folder> <output folder>"
         );
         std::process::exit(2);
     }
