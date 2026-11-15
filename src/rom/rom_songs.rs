@@ -1815,9 +1815,9 @@ fn open_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
 }
 
 /// Share of a song's [`music_search::sound_print`] found in an earlier one's for the two to be
-/// one piece: two numbers of one piece measured 0.92-0.97 alike in their pitches, two pieces
-/// far below.
-const SAME_PIECE: f64 = 0.9;
+/// one piece. At 0.9, songs that share their drums, bass and tempo were taken for one piece;
+/// numbers that start one piece again share nearly all of their writes.
+const SAME_PIECE: f64 = 0.98;
 
 fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
