@@ -263,6 +263,10 @@ fn validate(spec: &SourceSpec) -> Result<String> {
         return Err(Error::invalid("role must be main or peer"));
     }
     let url = spec.base_url.trim().trim_end_matches('/');
+    // Typed without a scheme ("192.168.1.10:7337"): every other machine's server and share
+    // speak TLS unless started with --no-tls, so that is https.
+    let typed;
+    let url = if url.contains("://") { url } else { typed = format!("https://{url}"); typed.as_str() };
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(Error::invalid("base_url must start with http:// or https://"));
     }
