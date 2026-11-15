@@ -1,3 +1,12 @@
+# romexplorer 0.2.2 (alpha)
+
+Alpha: the database schema may change between releases with no upgrade path. Back up before
+replacing a build.
+
+## Bug fixes
+
+- The ROM music index looked stuck while one ROM took long to read.
+
 # romexplorer 0.2.1 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before

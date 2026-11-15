@@ -743,8 +743,11 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                         }
                         break None;
                     }
+                    // How long first, then the file name, then what is being read: the jobs list
+                    // shows the first 90 characters, and a full path in front pushed the time
+                    // past them, so a ROM that takes long read like a run that had stopped.
                     if secs >= 4 {
-                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {main_path}: {what} ({secs} s)", i + 1)).await;
+                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}, {secs} s on {label}: {what}", i + 1)).await;
                     }
                 }
             }

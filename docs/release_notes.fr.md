@@ -1,6 +1,15 @@
 *Ceci est une traduction des notes de version 0.2.1, 0.2.0 et 0.1.8. Les versions antérieures se
 trouvent dans [release_notes.md](release_notes.md) (anglais), qui fait foi en cas de divergence.*
 
+# romexplorer 0.2.2 (alpha)
+
+Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
+Faites une sauvegarde avant de remplacer une version.
+
+## Corrections
+
+- L'index de musique des ROM semblait bloqué pendant la lecture d'une ROM longue à lire.
+
 # romexplorer 0.2.1 (alpha)
 
 Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
