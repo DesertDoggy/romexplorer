@@ -1405,6 +1405,35 @@ impl<M: Machine> Song<M> {
     }
 }
 
+/// Frames of a song [`sound_print`] listens to: 10 seconds at 60 Hz.
+pub const PRINT_FRAMES: usize = 600;
+
+/// A song's sound fingerprint over its first [`PRINT_FRAMES`] frames: the runs of four sound
+/// writes in a row (port and value), on any console. Two song numbers that start the same
+/// piece share nearly all of theirs; two pieces share few. Compared with [`alike`].
+pub fn sound_print<M: Machine>(rom: &[u8], recipe: &Recipe, v: u8) -> Result<HashSet<u64>, String> {
+    let mut song = Song::<M>::open(rom, recipe, v, 8000)?;
+    let mut samples = Vec::new();
+    let mut frames = Vec::with_capacity(PRINT_FRAMES);
+    for _ in 0..PRINT_FRAMES {
+        frames.push(song.frame(&mut samples)?);
+        samples.clear();
+    }
+    Ok(writes_print(&frames))
+}
+
+/// [`sound_print`] of writes already played.
+pub fn writes_print(frames: &[Vec<Write>]) -> HashSet<u64> {
+    let all: Vec<(u32, u16)> = frames.iter().flatten().map(|w| (w.port, w.value)).collect();
+    all.windows(4)
+        .map(|run| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            run.hash(&mut h);
+            h.finish()
+        })
+        .collect()
+}
+
 /// How a song plays: its length in frames, and where it loops (start, length) if it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timing {
@@ -1581,6 +1610,19 @@ impl WriteLoops {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn one_piece_twice_prints_alike_and_two_pieces_do_not() {
+        let w = |port: u32, value: u16| Write { at: 0, port, value };
+        let piece = |notes: &[u16]| -> Vec<Vec<Write>> {
+            notes.iter().map(|&n| vec![w(0x4002, n), w(0x4003, n >> 8), w(0x4000, 0xBF)]).collect()
+        };
+        let a: Vec<u16> = (0..200).map(|i| 0x100 + (i * 37 % 300) as u16).collect();
+        let b: Vec<u16> = (0..200).map(|i| 0x200 + (i * 53 % 290) as u16).collect();
+        let (pa, pa2, pb) = (writes_print(&piece(&a)), writes_print(&piece(&a)), writes_print(&piece(&b)));
+        assert!(alike(&pa, &pa2) >= 0.99);
+        assert!(alike(&pa, &pb) < 0.5);
+    }
+
     use super::*;
 
     #[test]

@@ -1744,6 +1744,11 @@ fn open_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     Ok(Box::new(MapPcm { song: AnyMapSong::Nes(song), channels: 1, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
+/// Share of a song's [`music_search::sound_print`] found in an earlier one's for the two to be
+/// one piece: two numbers of one piece measured 0.92-0.97 alike in their pitches, two pieces
+/// far below.
+const SAME_PIECE: f64 = 0.9;
+
 fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
     let found = music_search::search::<M>(&rom)?;
@@ -1755,7 +1760,8 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
     let recipe = found.recipe.encode();
     let mut out = Vec::with_capacity(found.songs.len());
     let mut failed = None;
-    for (i, &v) in found.songs.iter().enumerate() {
+    let mut prints: Vec<std::collections::HashSet<u64>> = Vec::new();
+    for &v in &found.songs {
         // A song that breaks off is left out, not the game.
         let timing = match music_search::measure::<M>(&rom, &found.recipe, v) {
             Ok(t) => t,
@@ -1764,6 +1770,14 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
                 continue;
             }
         };
+        // A song number that starts a piece already listed (the game's song variable read
+        // only once, so every number plays the same) is that piece again: left out.
+        if let Ok(print) = music_search::sound_print::<M>(&rom, &found.recipe, v) {
+            if prints.iter().any(|p| music_search::alike(p, &print) >= SAME_PIECE) {
+                continue;
+            }
+            prints.push(print);
+        }
         let (looping, intro, lp) = match timing.looping {
             Some((start, len)) => (true, ms(start), ms(len)),
             None => (false, ms(timing.frames), 0),
@@ -1771,7 +1785,7 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
         let duration_ms = if looping { intro + lp } else { intro };
         // Played: the intro and the loop twice, then a fade; a song that ends plays to its end.
         let (body, fade) = if looping { (intro + lp * u64::from(PLAY_LOOPS), SONG_FADE_MS) } else { (duration_ms, 0) };
-        let name = format!("Track {}", i + 1);
+        let name = format!("Track {}", out.len() + 1);
         let shape = Shape { looping, duration_ms, channels: M::CHANNELS, cd_track: 0, rip: true };
         let kind = classify(&shape, &name, t);
         let r = u64::from(PLAY_RATE);
