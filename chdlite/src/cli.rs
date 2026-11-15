@@ -41,7 +41,7 @@ impl DefaultMode {
 fn usage(name: &str) -> String {
     format!(
         "{name} {version} -- disc images to CHD / RVZ, and back; Wii U and Xbox discs to WUA / ZAR / XISO;
-NES / N64 / SNES cartridge dumps into the header or byte order you pick
+NES / N64 / SNES cartridge dumps into the header or byte order you pick; 3DS titles decrypted
 
 Usage: {name} [command] <file|dir>... [options]
        drop files or folders onto the executable
@@ -50,7 +50,8 @@ Commands (default for {name}: {default}):
   auto      .chd/.rvz -> extract, anything else -> create (fast preset)
   create    create with the fast preset
   comp      create for the smallest file
-  extract   .chd -> cue+bin / gdi+bin (GD-ROM) / iso, .rvz -> iso, .cso -> iso, .pbp -> cue+bin
+  extract   .chd -> cue+bin / gdi+bin (GD-ROM) / iso, .rvz -> iso, .cso -> iso, .pbp -> cue+bin,
+            .zcci / .zcia / .zcxi / .z3dsx -> .cci / .cia / .cxi / .3dsx
   read      show what a file is
   hash      hash the content inside a .chd/.rvz/.cso/.pbp (or the files themselves)
 
@@ -67,10 +68,17 @@ a NES dump has a header is looked up by its hash in the NES header database; a h
 is not there is an error. An SNES copier header is told by the size (whole KB + 512), and
 the cartridge's own header has to agree.
 
+3DS titles (.cia .3ds .cci .cxi .3dsx and the compressed .zcci .zcia .zcxi .z3dsx) are
+decrypted into the format set with --3ds: a game becomes .cci / .3ds, its main part alone
+.cxi, or either compressed for Azahar (.zcci, .zcxi); updates, DLC, demos and system titles
+stay a decrypted .cia (.zcia when compressed). No keys come with this program: put your
+aes_keys.txt (or boot9.bin) and, for titles with seed crypto, seeddb.bin beside the files,
+beside this program, or in its assets folder.
+
 Options:
   -o, --output <dir>          write here instead of next to each input
   -f, --force                 replace outputs that already exist
-  -np, --threads <n>          threads in total (default: auto, every core)
+  -np, --threads <n>          threads in total (default: auto, the physical cores but 4)
   -jf, --concurrent-files <n> files converted at once (default: auto, a quarter of the
                               threads, at most 4)
   --preset pc|mobile          fast preset to use for create
@@ -83,13 +91,15 @@ Options:
   --rvz-level <n>             zstd 1-22, others 1-9
   --rvz-block <size>          {rvz_blocks}
   --rvz-scrub                 drop junk data (not reversible)
-  --hash <list>               sha1,md5,crc32,sha256,xxh3
+  --hash <list>               sha1,md5,crc32,sha256,xxh3,rahash (default sha1,rahash;
+                              rahash also says whether RetroAchievements has achievements for it)
   --cue-style <style>         {cue_styles}: the extracted cue sheet's dialect
   --gdrom-sheet <kind>        {gdrom_sheets}: an extracted GD-ROM's sheet (default gdi)
   --nes <format>              {nes}: with the iNES header (.nes), without
                               it (.nes), or without it as .unh
   --n64 <format>              {n64}: big-endian, byte-swapped, little-endian
   --snes <format>             {snes}: without or with a 512-byte copier header
+  --3ds <format>              {n3ds}: what a 3DS game becomes
   --version, --help
 
 Defaults come from {settings}",
@@ -107,6 +117,7 @@ Defaults come from {settings}",
         nes = NES_FORMATS.join("|"),
         n64 = N64_FORMATS.join("|"),
         snes = SNES_FORMATS.join("|"),
+        n3ds = crate::n3ds::FORMATS.join("|"),
         settings = Settings::path().display(),
     )
 }
@@ -147,7 +158,12 @@ fn parse(args: &[String], default: DefaultMode, mut settings: Settings) -> Resul
         let mut value = |flag: &str| iter.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
         let number = |flag: &str, text: String| text.parse::<u32>().map_err(|_| format!("{flag}: '{text}' is not a number"));
         match arg.as_str() {
-            "-o" | "--output" => settings.output.dir = value(arg)?,
+            // From the working folder, as a shell user means it (a relative folder in the
+            // settings file is taken from each input's own instead).
+            "-o" | "--output" => {
+                let dir = PathBuf::from(value(arg)?);
+                settings.output.dir = std::path::absolute(&dir).unwrap_or(dir).to_string_lossy().into_owned();
+            }
             "-f" | "--force" => settings.output.force = true,
             "-np" | "-j" | "--threads" | "--numprocessors" => settings.jobs.threads = number(arg, value(arg)?)?,
             "-jf" | "--concurrent-files" => settings.jobs.concurrent_files = number(arg, value(arg)?)?,
@@ -225,6 +241,11 @@ fn parse(args: &[String], default: DefaultMode, mut settings: Settings) -> Resul
                 }
                 *field = format;
             }
+            "--3ds" => {
+                let format = value(arg)?.to_ascii_lowercase();
+                crate::n3ds::target(&format).map_err(|err| format!("{arg}: {err}"))?;
+                settings.n3ds.format = format;
+            }
             "-i" | "--input" => paths.push(PathBuf::from(value(arg)?)),
             flag if flag.starts_with('-') && !Path::new(flag).exists() => return Err(format!("unknown option {flag}")),
             path => paths.push(PathBuf::from(path)),
@@ -282,6 +303,7 @@ pub fn main(default: DefaultMode) -> i32 {
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("{name} {}", crate::VERSION);
+        println!("{}", crate::ra::list_summary());
         return 0;
     }
     if let Err(err) = crate::natives::ensure() {
@@ -304,7 +326,7 @@ pub fn main(default: DefaultMode) -> i32 {
     }
     let inputs = expand(&parsed.paths);
     if inputs.is_empty() {
-        eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso, .pbp or cartridge dumps in what was given");
+        eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso, .pbp, cartridge dumps or 3DS titles in what was given");
         return finish(2);
     }
     if matches!(parsed.mode, Mode::Lite | Mode::Comp) && parsed.settings.output.lossy_warning {
@@ -316,7 +338,9 @@ pub fn main(default: DefaultMode) -> i32 {
 
     let total = inputs.len();
     let label = |index: usize| inputs[index].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let batch = Batch { mode: parsed.mode, inputs: inputs.clone(), settings: parsed.settings, always_workers: false };
+    // Workers even one at a time: Ctrl-C can then stop a CHD creation part-way and put back a
+    // file it was replacing, rather than wait for it or leave half of it.
+    let batch = Batch { mode: parsed.mode, inputs: inputs.clone(), settings: parsed.settings, always_workers: true, ctrl_c_cancels: true };
     // Per-file percent, for one status line under whatever has been printed so far.
     let percents: Mutex<Vec<f32>> = Mutex::new(vec![0.0; total]);
     let quiet = parsed.mode == Mode::Read;

@@ -207,7 +207,7 @@ copy_single_lib() {
     # further down. A missing reader is a reason to say so and carry on, not to abort.
     local soname=""
     case "$SUBMODULE_OS" in
-        win) ;;  # no SONAME concept; the DLL is found by its own filename
+        windows) ;;  # no SONAME concept; the DLL is found by its own filename
         mac)
             if command -v otool >/dev/null 2>&1; then
                 soname="$(otool -D "$lib_path" 2>/dev/null | tail -1 | xargs -r basename || true)"

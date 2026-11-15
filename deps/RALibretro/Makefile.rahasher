@@ -69,6 +69,8 @@ else ifeq ($(TARGET_PLATFORM),android)
   SHARED_LDFLAGS := -shared
   CFLAGS += -fPIC
   CXXFLAGS += -fPIC
+  # libc++ inside the library: the APK carries no libc++_shared.so.
+  LDFLAGS += -static-libstdc++
 else
   $(error unsupported TARGET_PLATFORM=$(TARGET_PLATFORM))
 endif

@@ -7,10 +7,25 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 - **More music straight from the ROM.** NES, Famicom Disk System, Game Boy, PC Engine and
   WonderSwan games whose music map ships with rommusic play their songs from the ROM, with no
   original audio format files needed.
+- **A Mac app and a Linux AppImage.** rommusic now comes as `rommusic.app` for macOS and as a
+  single-file AppImage for Linux. Both open the window; the console tool is inside too
+  (`rommusic.AppImage rommusic ...`).
+- **More options in the window.** The track limit, the bit depth, a sample rate in Hz and
+  several folders of original audio, as the console tool has.
 
 ## Bug fixes
 
 - Writing the music files on some discs never finished: discs with a ";" inside a file name.
+- In the Android app, allowing file access failed with "Java exception was thrown" instead of
+  opening the system's access screen.
+- The Android app had the standard Android icon instead of rommusic's.
+- The Android app did not carry the music maps, so cartridges played only what a search from
+  boot found.
+- The Options note said most cartridges need original audio format files to play.
+- Two inputs of the same name written to one folder mixed their tracks. The second now goes
+  into "<name> (2) (music)".
+- A PSF2 set could crash rommusic.
+- The Android app could not read zipped or 7z ROMs and sets.
 
 # rommusic 0.1.0
 

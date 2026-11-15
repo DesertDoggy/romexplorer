@@ -854,27 +854,52 @@ pub async fn refresh(pool: &MySqlPool, heads: Option<&[u64]>) -> Result<u64, Dat
     };
     let priority = super::settings::platform_priority(pool).await?;
     let max_age = pc_max_age(pool).await?;
-    if full {
-        sqlx::query("DELETE FROM title_families").execute(pool).await?;
-    }
+    // Worked out first, written after: a full refresh replaces the table in one transaction,
+    // so nothing reads it empty (or half filled) while the families are being ranked.
+    let mut rows: Vec<(u64, u64, u16)> = Vec::new();
     let mut stored = 0u64;
     for chunk in heads.chunks(500) {
         let members = members_of(pool, chunk).await?;
-        let mut tx = pool.begin().await?;
-        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
-        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM title_families WHERE root_title_id IN ({list})"))).execute(&mut *tx).await?;
+        let mut part: Vec<(u64, u64, u16)> = Vec::new();
         for head in chunk {
             let Some(m) = members.get(head) else { continue };
             if m.is_empty() {
                 continue;
             }
             let ranked = rank(m.clone(), &priority, max_age);
-            sqlx::query("INSERT INTO title_families (root_title_id, definitive_title_id, members) VALUES (?, ?, ?)").bind(head).bind(ranked[0].title_id).bind(ranked.len().min(u16::MAX as usize) as u16).execute(&mut *tx).await?;
-            stored += 1;
+            part.push((*head, ranked[0].title_id, ranked.len().min(u16::MAX as usize) as u16));
         }
+        stored += part.len() as u64;
+        if full {
+            rows.extend(part);
+            continue;
+        }
+        let mut tx = pool.begin().await?;
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM title_families WHERE root_title_id IN ({list})"))).execute(&mut *tx).await?;
+        insert_families(&mut tx, &part).await?;
+        tx.commit().await?;
+    }
+    if full {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM title_families").execute(&mut *tx).await?;
+        insert_families(&mut tx, &rows).await?;
         tx.commit().await?;
     }
     Ok(stored)
+}
+
+/// Writes `(head, definitive title, members)` rows into `title_families`, 1000 a statement.
+async fn insert_families(tx: &mut sqlx::Transaction<'_, sqlx::MySql>, rows: &[(u64, u64, u16)]) -> Result<(), DatabaseError> {
+    for part in rows.chunks(1000) {
+        let sql = format!("INSERT INTO title_families (root_title_id, definitive_title_id, members) VALUES {}", vec!["(?, ?, ?)"; part.len()].join(", "));
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for (head, definitive, members) in part {
+            query = query.bind(head).bind(definitive).bind(members);
+        }
+        query.execute(&mut **tx).await?;
+    }
+    Ok(())
 }
 
 /// The head of `title_id`'s family.

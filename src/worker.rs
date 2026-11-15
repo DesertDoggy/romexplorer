@@ -224,10 +224,13 @@ static COOPERATIVE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashS
 /// Those cancelled and not yet ended, with when the cancel was seen.
 static WINDING_DOWN: std::sync::LazyLock<std::sync::Mutex<HashMap<u64, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
 
-/// Job types whose run watches for its own cancel and returns: a copy (`copy::run::Cancel`)
-/// and a scan (`rom::multiple::Multiple::cancel`).
+/// Job types whose run watches for its own cancel and returns: a copy (`copy::run::Cancel`),
+/// a scan (`rom::multiple::Multiple::cancel`) and a backup (its table threads ask
+/// `Progress::cancelled` after every page). A backup's threads run outside the job's task, so
+/// aborting the task would free the lane while they still write -- and a second backup could
+/// start beside them.
 fn stops_itself(job_type: JobType) -> bool {
-    matches!(job_type, JobType::CopyFiles | JobType::FileScan)
+    matches!(job_type, JobType::CopyFiles | JobType::FileScan | JobType::BackupDatabase | JobType::BackupCatalog | JobType::BackupDatSeed)
 }
 
 async fn tick(worker: &Arc<Worker>, running: &mut HashMap<String, (u64, tokio::task::JoinHandle<()>)>, ticks: u64) -> Result<usize, DatabaseError> {
@@ -724,6 +727,33 @@ impl Worker {
             JobType::SqliteExport => {
                 let kind = payload_str(job, "kind").unwrap_or("all").to_string();
                 let progress = Progress::new(&self.app.pool, job.id);
+                if kind == api::sqlite::MOBILE_KIND {
+                    // A phone's synced copy (`api::mobile`): its own options, its own summary.
+                    let options: api::mobile::SyncOptions = job
+                        .payload
+                        .get("mobile")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|e| api::Error::invalid(format!("mobile options: {e}")))?
+                        .unwrap_or_default();
+                    let path = api::sqlite::cache_path(&self.app, &kind).await?;
+                    let summary =
+                        api::mobile::export(&self.app, &options, &path, &progress).await?;
+                    progress
+                        .finish(
+                            1,
+                            Some(1),
+                            &format!(
+                                "{} ({} bytes, {} page(s), {} cover(s))",
+                                summary.file, summary.bytes, summary.pages, summary.covers
+                            ),
+                            &summary,
+                        )
+                        .await;
+                    log::info!("sqlite_export job {} (mobile): {}", job.id, summary.file);
+                    return Ok(());
+                }
                 let summary = api::sqlite::export_kind(&self.app, &kind, &progress).await?;
                 progress.finish(1, Some(1), &format!("{} ({} table(s), {} bytes)", summary.file, summary.tables.len(), summary.bytes), &summary).await;
                 log::info!("sqlite_export job {}: {}", job.id, summary.file);

@@ -8,6 +8,15 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
+**3DS**
+- Eine Kopie kann 3DS-Titel zu .cci, .3ds oder .cxi entschlüsseln, oder zu den komprimierten
+  .zcci und .zcxi, die Azahar liest. Updates und DLC bleiben .cia (.zcia), Homebrew .3dsx (.z3dsx).
+- Schlüssel liegen romexplorer nicht bei. Lege deine eigene aes_keys.txt (und seeddb.bin, wenn ein
+  Titel sie braucht) neben die Dateien, neben romexplorer oder in dessen assets-Ordner.
+- Scans finden .cci, .cxi und die komprimierten .zcci, .zcia und .zcxi, sodass eine Kopie auch
+  .zcci in .cci umwandeln kann und zurück. Der Serien-Abgleich liest Produktcode und Titel-ID und
+  hat für Cartridge-Images ein eigenes Kästchen.
+
 **ROM-Audio**
 - Beim Öffnen einer Titelseite wird zuerst die ROM-Musik dieses Spiels indiziert. Bis dahin zeigt
   die Seite den Fortschritt, statt Musik eines anderen Spiels abzuspielen.
@@ -29,6 +38,47 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
   Größe und interner Header beim Kopierer-Header nicht übereinstimmten. Sie wird jetzt als
   Fehler gemeldet. Ein NES-Dump, der nicht in der Header-Datenbank steht, wird mit seinem Hash
   gemeldet.
+
+**Scan**
+- Unter Linux fand ein Scan cue-, gdi- und m3u-Einträge in anderer Schreibweise oder mit
+  Backslashes nicht und hielt zwei Dateien, die sich nur in Groß-/Kleinschreibung
+  unterscheiden, für ein ROM.
+- Beim Scannen eines Ordners wurden Typ und Plattform der Ordner darin ignoriert. Spielordner
+  direkt unter einem Ordner ohne Plattform wurden zu einem Spiel pro Datei.
+- Erneute Scans lasen Ordnerspiele erneut, trennten zusammengeführte Tracks und verloren
+  Serien-Treffer. Das Gruppieren von Discs war bei großen Ordnern langsam.
+- Dateien, die keine ROMs sind, etwa Texte und Bilder, wurden zu Spielen. Jetzt erst, wenn
+  sie erkannt sind.
+- Mit nur xxh3_128 bei den Scan-Hashes gingen DAT-Treffer verloren. Einer von crc32, md5 und
+  sha1 bleibt jetzt immer an.
+
+**Kopie**
+- Beim Überschreiben wurde die alte Datei gelöscht, bevor die neue geschrieben war. Eine Kopie
+  konnte auch Playlists ändern, die bleiben sollten, und zwei Dateien, die sich nur in
+  Groß-/Kleinschreibung unterscheiden, in eine schreiben.
+
+**Titel zusammenführen**
+- Zwei Versionen eines Versionssatzes oder ein Retail- mit einem unlizenzierten Titel konnten
+  zusammengeführt werden. Getrennte Titel kamen mit „Alle annehmen“ zurück, und vom Audit
+  entfernte IGDB-Links kamen beim nächsten Hash-Abgleich zurück.
+- Ein Hasheous-Treffer über den anderen Namen eines zusammengeführten Spiels erzeugte einen
+  doppelten Titel.
+
+**Server und Jobs**
+- Das Abrufen von Bildern für einen Client konnte Adressen im Netz des Servers erreichen, ohne
+  Größenlimit.
+- Jedes Konto konnte die SQLite-Caches „database“ und „all“ mit Konten und Einstellungen
+  herunterladen. Jetzt nur Admins.
+- Eine abgebrochene volle Synchronisierung ließ eine Tabelle halb gefüllt, und ein
+  abgebrochenes Backup ließ das nächste starten, während es noch schrieb.
+- Kopien auf ein anderes Laufwerk und Synchronisierungen von einem anderen Server warteten auf
+  fremde Jobs. Nach einem Datenbank-Neustart konnte ein Job doppelt starten.
+
+**Sonstiges**
+- ROM-Musik konnte bei einem PSF2-Satz abstürzen.
+- Einige Beschriftungen der Web-Konsole und Sätze unter Konfiguration › Einstellungen blieben
+  auf Englisch.
+- MariaDB vor 10.6 scheiterte mit unklaren Fehlern. Sie wird jetzt beim Verbinden abgelehnt.
 
 # romexplorer 0.2.0 (alpha)
 

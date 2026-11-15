@@ -178,7 +178,7 @@ pub async fn apply(app: &App, plan: &Plan) -> Result<Applied> {
         }
         // A rom whose main file this was follows it, or the rom points at nothing.
         let from = m.from.display().to_string();
-        sqlx::query("UPDATE local_rom SET main_path = ? WHERE main_path = ?").bind(&path).bind(&from).execute(&app.pool).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_rom SET main_path = ? WHERE {}", crate::api::scan::MAIN_PATH_EQ))).bind(&path).bind(&from).bind(&from).execute(&app.pool).await?;
         out.renamed += 1;
     }
     Ok(out)

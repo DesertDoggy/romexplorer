@@ -1933,6 +1933,9 @@ function copyOutputForm(host, output, unavailable, onChange, note) {
         <tr class="${off('cso')}"><td>cso ${info(`<p>${tr("A PS2 or PSP ISO in compressed 2 KiB blocks, read by PCSX2 and PPSSPP. Lossless: the ISO comes back byte for byte. Deflate level 9, which the format fixes.")}</p>`)}</td><td class="muted">deflate</td>
           <td class="muted">9</td>
           <td class="muted">${tr('PS2 / PSP .iso only')}</td></tr>
+        <tr><td>cci · 3ds · zcci · cxi · zcxi ${info(`<p>${tr("A 3DS title, decrypted with your own keys: aes_keys.txt (or boot9.bin), and seeddb.bin for a title that needs it, beside the file, beside romexplorer or in its assets folder. A game becomes a .cci or .3ds, or a .cxi: its main part alone, without the manual and download-play parts. zcci and zcxi are the same compressed for Azahar (zstd level 3). An update, DLC or demo stays a .cia (.zcia), homebrew a .3dsx (.z3dsx).")}</p>`)}</td><td class="muted">zstd (z…)</td>
+          <td class="muted">3</td>
+          <td class="muted">${tr('3DS files + your keys only')}</td></tr>
         <tr class="${off('chd')}"><td>chd ${info(`<p>${tr('pc: zstd. A CD gets cdzs (zstd) with cdfl for its audio tracks; a DVD gets zstd. Fast to read, and every current PC emulator reads it.')}</p><p>${tr('mobile: the same, except PlayStation 2, which gets zlib (cdzl + cdfl for a CD, zlib for a DVD): some mobile emulators have trouble with zstd CHDs, and PS2 is where that shows.')}</p><p>${tr('Both presets choose the hunk size: for a CD, 2448 bytes (one sector) for Neo Geo CD, PC Engine CD and Dreamcast, which read in small scattered pieces, and 19584 (chdman\'s own) elsewhere; for a DVD, 4096, or 2048 for PSP.')}</p><p>${tr('chdman default: no codec list or hunk size, chdman decides. custom: your own codecs (up to 4) and hunk size, separately for CDs and DVDs.')}</p>`)}</td><td colspan="2"><select data-k="chd.preset">${[['chdman_default', 'chdman default'], ['pc', 'pc (zstd)'], ['mobile', 'mobile (zstd; PS2 zlib)'], ['custom', 'custom']].map(([v, l]) => `<option value="${v}" ${o.chd.preset === v ? 'selected' : ''}>${tr(l)}</option>`).join('')}</select>
           ${o.chd.preset === 'custom' ? chdLine('cd') + chdLine('dvd') : ''}</td>
           <td><label><input data-k="chd.re_archive" type="checkbox" ${o.chd.re_archive ? 'checked' : ''}> ${tr('re-encode a file that is already a chd')}</label></td></tr>
@@ -2620,7 +2623,7 @@ async function showRa(list) {
     selection: { key: r => r.game_id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ ra_game_ids: ids }, done); } }] },
     context: (r, sel) => [{ label: r.title || trf('RA game {id}', { id: r.game_id }), head: true }, { label: sel ? trf('add {n} games to a set…', { n: sel.length }) : tr('add to set…'), action: () => pickSet({ ra_game_ids: sel || [r.game_id] }) }],
     fetch: s => api('/api/v1/ra/games' + qs({ list, source: s.filters.source, console_id: s.filters.console_id, genre: s.filters.genre, set: s.filters.set, include_beaten: s.filters.include_beaten, q: s.search, sort: s.sort, desc: s.desc ? 'true' : 'false', limit: s.limit, offset: s.offset })),
-    loaded: page => { for (const b of document.querySelectorAll('#subnav button')) { const k = b.dataset.sub, label = (SUBS.ra.find(x => x[0] === k) || [])[1]; if (label && page.tab_counts && k in page.tab_counts) b.textContent = `${label} (${page.tab_counts[k]})`; } },
+    loaded: page => { for (const b of document.querySelectorAll('#subnav button')) { const k = b.dataset.sub, en = (SUBS.ra.find(x => x[0] === k) || [])[1], label = en && t('sub.ra.' + k, en); if (label && page.tab_counts && k in page.tab_counts) b.textContent = `${label} (${page.tab_counts[k]})`; } },
   });
 }
 // One RA game: images, the whole badge mosaic, local releases, and every achievement with a
@@ -2713,8 +2716,29 @@ async function showStatus() {
 // ---------------------------------------------------------------------------
 // collection: titles / releases / games / files / sets
 // ---------------------------------------------------------------------------
+// How a list is ordered and whether RetroAchievements narrows it. Where the rows are held is
+// the Held and Machine filters'; the API still reads the old local / server /
+// missing_on_server views.
 function viewFilter() {
-  return { key: 'view', label: tr('view'), type: 'select', options: () => `<option value="collection_local_first">${tr('collection (local first)')}</option><option value="collection">${tr('collection')}</option><option value="local">${tr('local only')}</option><option value="local_ra_local_first">${tr('local + RetroAchievements (local first)')}</option><option value="local_ra_ra_first">${tr('local + RetroAchievements (RA first)')}</option><option value="ra_only">${tr('RetroAchievements only')}</option><option value="server">${tr('server only')}</option><option value="missing_on_server">${tr('not on the main server')}</option>` };
+  return { key: 'view', label: tr('view'), type: 'select', options: () => `<option value="collection_local_first">${tr('collection (local first)')}</option><option value="collection">${tr('collection')}</option><option value="local_ra_local_first">${tr('local + RetroAchievements (local first)')}</option><option value="local_ra_ra_first">${tr('local + RetroAchievements (RA first)')}</option><option value="ra_only">${tr('RetroAchievements only')}</option>` };
+}
+// The Machine filter's machines (the vocabulary's): this machine first, then in client mode
+// the main server and the other clients.
+const vocabMachines = () => (vocab && vocab.machines) || [];
+// Held or not, on the machine the Machine filter picks. On a client, also the backlog still
+// to copy up to the main server.
+function heldFilter() {
+  return { key: 'held', label: tr('Held'), type: 'select', options: () => [['', tr('anywhere')], ['held', tr('held')], ['not_held', tr('not held (catalogue only)')]].concat(vocabMachines().some(m => m.role === 'main') ? [['missing_on_main', tr('not on the main server')]] : []).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('') };
+}
+// Whose holdings count: this machine, or on a client also the main server and each other
+// client. A server and a standalone machine have only themselves.
+function machineFilter() {
+  return { key: 'machine', label: tr('Machine'), type: 'select', options: () => {
+    const ms = vocabMachines();
+    const self = ms[0] && ms[0].name ? trf('this machine ({name})', { name: ms[0].name }) : tr('this machine');
+    const o = ms.length <= 1 ? [['', self]] : [['', tr('any machine')], ['local', self]].concat(ms.slice(1).map(m => [m.id, `${m.name} (${m.role === 'main' ? tr('main server') : tr('peer')})`]));
+    return o.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  } };
 }
 // Which releases the Titles / Releases lists include (default from Config > Settings).
 // A title page's sections below its releases, in this order.
@@ -3000,7 +3024,7 @@ async function showTitles() {
       ...displayColumns(),
       { key: 'id', label: tr('id'), sort: 'id', cls: 'num' },
     ],
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
       { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }, { key: 'one_per_group', label: tr('one of each version group'), type: 'check' }].concat(facetFilters()),
     fetch: st => api('/api/v1/catalog/titles' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, igdb: st.filters.igdb, basegame: st.filters.basegame, view: st.filters.view, provider: st.filters.provider, hide_minor: st.filters.hide_minor === 'true' || null, one_per_group: st.filters.one_per_group === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/titles/' + r.id,
@@ -3020,7 +3044,7 @@ async function showTitles() {
     selection: { key: r => r.row_id, actions: [copySelAction('titles'), ...artSelActions('titles'), { label: tr('add to set'), run: async (rows, done) => { await pickSet({ title_row_ids: rows }, done); } }, { label: tr('add keyword tag'), run: async (rows, done) => { await addKeywordTag(await titleIdsOfRows(rows), done); } }, { label: tr('remove keyword tag'), run: async (rows, done) => { await removeKeywordTag(await titleIdsOfRows(rows), done); } }, { label: tr('re-apply IGDB metadata'), run: async (rows, done) => { if (await reapplyIgdb(await titleIdsOfRows(rows))) done(); } }, { label: tr('merge selected into one title'), run: async (rows, done) => {
       const ids = await titleIdsOfRows(rows);
       if (ids.length < 2) return toast(tr('select at least two titles'), true);
-      if (!confirm(trf('Merge {n} titles into one? Their releases, metadata and links move to the lowest id, which is renamed by region priority (US > EU > JP by default).', { n: ids.length }))) return;
+      if (!confirm(trf('Merge {n} titles into one? Their releases, metadata and links move to the lowest id, which is renamed by the canonical name priority (Config › Settings).', { n: ids.length }))) return;
       try { const r = await api('/api/v1/catalog/titles/merge', { method: 'POST', body: { title_ids: ids } }); toast(trf('merged into title #{id}', { id: r.title_id })); done(); } catch (e) { toast(e.message, true); }
     } }] },
     toolbar: [baseGameFilter(() => titlesGrid, routeQuery.get('basegame'))].concat(titleMergeTools()),
@@ -3153,7 +3177,7 @@ async function reviewFilters(extra) {
   let sets = [];
   try { const v = await api('/api/v1/sets'); sets = Array.isArray(v) ? v : (v.items || []); } catch (e) {}
   const setFilter = { key: 'set_id', label: trc('sets', 'set'), type: 'select', options: () => `<option value="">${tr('any set')}</option>` + sets.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('') };
-  return [setFilter, platformFilter(), viewFilter(), kindsFilter(), materialFilter()].concat(extra || [], facetFilters());
+  return [setFilter, platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter()].concat(extra || [], facetFilters());
 }
 // The filters' query pairs (no paging). The release kinds only when picked: the list's default
 // kinds would narrow every review to the Titles list's rows for nothing.
@@ -3581,7 +3605,7 @@ async function showReleases() {
   const grid = makeGrid(document.getElementById('grid'), {
     gridKey: 'releases', explain: ['explain.collection.releases', 'explain.list.ownership'],
     columns: releaseColumns(),
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
     fetch: st => api('/api/v1/catalog/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, view: st.filters.view, source: st.filters.source, hide_minor: st.filters.hide_minor === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
@@ -3605,7 +3629,7 @@ async function showTitle(id) {
       <div class="card">${t.cover_media_id ? `<img class="hero" src="${mediaUrl(t.cover_media_id)}" alt="">` : ''}<h2>${esc(t.display_name || t.name)}${t.display_name && t.display_name !== t.name ? ` <span class="localname" style="font-size:15px">${esc(t.name)}</span>` : ''} ${titleKindBadge(t)} ${statusBadges(t)} <button class="btn small" id="match">${tr('manual match…')}</button> <button class="btn small" id="refresh" title="${tr('queue metadata/art fetches for this title at high priority')}">${tr('refresh metadata')}</button> <button class="btn small" id="family" title="${tr('this game, its base game and its ports / remakes / DLC, in the Titles list')}">${tr('base game &amp; ports / remakes')}</button> <button class="btn small" id="t-family" title="${tr("this game's versions in definitive order (Collection › Definitive)")}">${tr('definitive version')}</button> <button class="btn small" id="merges" title="${tr('titles combined into this one (Edit › Combined titles), to split them apart again')}">${tr('combined titles')}</button></h2>
         <div class="kv"><div>${tr('collection id')}</div><div>${t.id} <span class="muted">${tr('(this app’s title id)')}</span></div><div>${tr('IGDB id')}</div><div>${(() => { const l = (t.provider_links || []).find(x => x.provider === 'igdb'); return l ? `${l.url ? `<a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.provider_id)}</a>` : esc(l.provider_id)} ${badge(l.confidence, ['exact', 'hash', 'manual'].includes(l.confidence) ? 'ok' : 'warn')}` : `<span class="muted">${tr('not linked')}</span>`; })()}</div><div>${tr('normalized')}</div><div class="mono">${esc(t.norm_name)}</div><div>${tr('base game')}</div><div>${t.basegame_title_id ? `<span class="link" onclick="go('collection/titles/${t.basegame_title_id}')">${esc(t.basegame_name || t.basegame_title_id)}</span> ${platformBadges(t.basegame_platforms)} ${cbadge('category', t.category)}` : '—'} ${t.basegame_locked ? badge(tr('set by you'), 'warn') + ' ' : ''}<button class="btn small" id="bg-edit" title="${tr('what this title is (port, remaster, remake, edition, …) and of which game')}">${tr('edit base game…')}</button> <button class="btn small" id="bg-add" title="${tr('make another title a port, remake, remaster or edition of this one')}">${tr('add port / remake…')}</button>${t.basegame_locked ? ` <button class="btn small" id="bg-reset" title="${tr('back to the base game and category IGDB gives')}">${tr('reset to IGDB')}</button>` : ''}</div>${(t.siblings || []).length ? `<div>${tr('other versions')}</div><div>${familyRefs(t.siblings)}</div>` : ''}${(t.bundle_games || []).length ? `<div>${tr('games in this collection')}</div><div>${familyRefs(t.bundle_games)}</div>` : ''}${(t.in_bundles || []).length ? `<div>${tr('in collections')}</div><div>${familyRefs(t.in_bundles)}</div>` : ''}${(t.derived || []).length ? `<div>${tr('ports, remakes and add-ons')}</div><div>${t.derived.map(d => `<div><span class="link" onclick="go('collection/titles/${d.id}')">${esc(d.name)}</span> ${cbadge('category', d.category)} ${platformBadges(d.platforms)}</div>`).join('')}</div>` : ''}
         <div>${tr('genres')}</div><div>${tags(t.genres, g => badge(g.name + ' · ' + g.source))}</div><div>${tr('franchises')}</div><div>${tags(t.franchises, g => badge(g.name + ' · ' + g.source))}</div><div>${tr('companies')}</div><div>${tags(t.companies, c => badge(c.name + ' (' + c.role + ') · ' + c.source))}</div>
-        <div>${tr('keywords')}</div><div>${tags(t.keywords || [], k => k.source === 'user' ? `<span class="badge ok">${esc(k.name)} <span class="link" data-unkw="${esc(k.name)}" title="${tr('remove this tag')}">✕</span></span>` : badge(k.name + ' · ' + k.source))} <button class="btn small" id="addkw">${tr('add keyword tag…')}</button> <button class="btn small" id="title-addset" title="${tr("adds the title's top-priority release")}">${tr('add to set…')}</button></div><div>${tr('localized titles')}</div><div>${t.locales.length ? t.locales.map(l => `<div>${cbadge('language', l.language, langLabel(l.language) + (l.region ? '/' + l.region : ''))} ${esc(l.name)} <span class="muted">· ${esc(l.source)}</span></div>`).join('') : '—'}<div>${t.locales_locked ? `${badge(tr('set by you'), 'warn')} ` : ''}<button class="btn small" id="edit-locales">${tr('edit…')}</button>${t.locales_locked ? ` <button class="btn small" id="unlock-locales" title="${tr('drop your names and take IGDB’s again')}">${tr('unlock')}</button>` : ''}</div></div><div>${tr('alternative titles')}</div><div>${(t.alt_names || []).length ? t.alt_names.map(a => `<div>${esc(a.name)} <span class="muted">${a.comment ? '· ' + esc(a.comment) + ' ' : ''}· ${esc(a.source)}</span> <span class="link" data-unalt="${esc(a.name)}" title="${tr('remove this alternative title')}">✕</span></div>`).join('') : '—'}</div></div></div>
+        <div>${tr('keywords')}</div><div>${tags(t.keywords || [], k => k.source === 'user' ? `<span class="badge ok">${esc(k.name)} <span class="link" data-unkw="${esc(k.name)}" title="${tr('remove this tag')}">✕</span></span>` : badge(k.name + ' · ' + k.source))} <button class="btn small" id="addkw">${tr('add keyword tag…')}</button> <button class="btn small" id="title-addset" title="${tr('adds the title: its best release, one you have first, whenever the set is opened or copied')}">${tr('add to set…')}</button></div><div>${tr('localized titles')}</div><div>${t.locales.length ? t.locales.map(l => `<div>${cbadge('language', l.language, langLabel(l.language) + (l.region ? '/' + l.region : ''))} ${esc(l.name)} <span class="muted">· ${esc(l.source)}</span></div>`).join('') : '—'}<div>${t.locales_locked ? `${badge(tr('set by you'), 'warn')} ` : ''}<button class="btn small" id="edit-locales">${tr('edit…')}</button>${t.locales_locked ? ` <button class="btn small" id="unlock-locales" title="${tr('drop your names and take IGDB’s again')}">${tr('unlock')}</button>` : ''}</div></div><div>${tr('alternative titles')}</div><div>${(t.alt_names || []).length ? t.alt_names.map(a => `<div>${esc(a.name)} <span class="muted">${a.comment ? '· ' + esc(a.comment) + ' ' : ''}· ${esc(a.source)}</span> <span class="link" data-unalt="${esc(a.name)}" title="${tr('remove this alternative title')}">✕</span></div>`).join('') : '—'}</div></div></div>
       <div class="card"><h2>${tr('Web pages')}</h2>${t.provider_links.length ? '<table class="grid">' + t.provider_links.map(p => `<tr><td>${providerIcon(p.provider)} ${esc(p.provider)}</td><td>${p.url ? `<a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>` : '<span class="muted">#' + esc(p.provider_id) + '</span>'}</td><td>${badge(p.confidence, 'dim')} ${p.via === 'release' ? badge(trf('via release #{id}', { id: p.release_id }), 'dim') : ''}</td></tr>`).join('') + '</table>' : `<span class="muted">${tr('not matched to any provider yet')}</span>`}
         <h2 style="margin-top:12px">${tr('Media')} <button class="btn small" id="page-art">${tr('download art…')}</button> <button class="btn small" id="page-export">${tr('export art…')}</button></h2><div id="media-slots"></div></div>
     </div>
@@ -3795,7 +3819,7 @@ async function showRelease(id) {
     { const bar = el('<div class="toolbar"></div>'); card.appendChild(bar); sheetButtons(bar, { game_id: game.id }, ['sheet', 'm3u']); }
     if (game.playlist) { const p = el(`<div class="muted">${tr('playlist:')} <span class="mono"></span> <button class="btn small">${tr('▶ open game')}</button></div>`); p.querySelector('span').textContent = game.playlist.path; attachContext(p, async () => [{ label: game.name, head: true }].concat(await openWithItems({ game_id: game.id }))); p.querySelector('button').onclick = e => p.dispatchEvent(new MouseEvent('contextmenu', { clientX: e.clientX, clientY: e.clientY, bubbles: true })); card.appendChild(p); }
     for (const rom of game.roms) {
-      const romLine = el(`<div style="margin:8px 0 4px">${rom.disc_number ? badge(trf('disc {n}', { n: rom.disc_number })) : badge(tr('rom'))} <span class="mono link" title="${tr('open the rom page')}">${esc(rom.main_path)}</span> ${rom.alt ? badge(tr('alt'), 'warn') : ''} ${rom.deleted ? badge(tr('deleted'), 'bad') : ''} ${cbadge('platform', rom.platform)} <button class="btn small" title="${tr('open with an emulator (right-click for the choice)')}">${tr('▶ open')}</button></div>`);
+      const romLine = el(`<div style="margin:8px 0 4px">${rom.disc_number ? badge(trf('disc {n}', { n: rom.disc_number })) : badge(tr('rom'))} <span class="mono link" title="${tr('open the rom page')}">${esc(rom.main_path)}</span> ${rom.alt ? badge(tr('alt'), 'warn') : ''} ${rom.deleted ? badge(tr('deleted'), 'bad') : ''} ${cbadge('platform', rom.platform)} <button class="btn small" title="${tr('open with an emulator')}">${tr('▶ open')}</button></div>`);
       romLine.querySelector('.mono').onclick = () => go('collection/roms/' + rom.id);
       attachContext(romLine, async () => [{ label: rom.main_path.split(/[\\/]/).pop(), head: true }].concat(await openWithItems({ rom_id: rom.id })));
       romLine.querySelector('button').onclick = e => { e.stopPropagation(); romLine.dispatchEvent(new MouseEvent('contextmenu', { clientX: e.clientX, clientY: e.clientY, bubbles: true })); };
@@ -4133,7 +4157,7 @@ async function showMaterial(kind) {
     gridKey: 'material_' + kind, explain: kind === 'etc' ? ['explain.collection.etc', 'explain.list.ownership'] : undefined,
     columns,
     filters: (discs ? [{ key: 'material', label: tr('kind'), type: 'select', options: () => `<option value="">${kind === 'etc' ? tr('all kinds') : tr('all discs')}</option>` + Object.entries(kinds).filter(([v]) => v !== 'dlc').map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('') }] : [])
-      .concat([viewFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }]),
+      .concat([viewFilter(), heldFilter(), machineFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }]),
     fetch: st => api('/api/v1/catalog/releases' + qs({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, material: (discs && st.filters.material) || kind, view: st.filters.view, source: st.filters.source })),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
@@ -4468,7 +4492,7 @@ async function showSet(id) {
     gridKey: 'set_' + id, columns: cols, pageSize: 500,
     // The Releases tab's filters, so part of a set can be picked out (and removed at once).
     // No kinds default: a set holds what was put in it, hacks included.
-    filters: [platformFilter(), viewFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
       // The grid's D/C/T/R badge sits on the cover, so it is shown on request.
       { key: 'type_badges', label: tr('entry type on covers'), type: 'check' }]).concat(rankFilters()),
     fetch: st => (showTypes = !!st.filters.type_badges && st.filters.type_badges !== 'false', api('/api/v1/sets/' + id + '/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds, view: st.filters.view, source: st.filters.source }, rankFilterParams(st), facetParams(st)))).then(page => { for (const r of page.items || []) rowsById.set(r.id, r); return page; })),
@@ -4737,12 +4761,18 @@ const COLOR_VALUES = () => ({
   archive_format: Object.keys(DEFAULT_COLORS.archive_format),
 });
 
-// Keys whose editor is Config › Copy: the settings form only points there, as the app's does.
+// Keys whose editor is another screen (Config › Copy, Config › AI): the settings form only
+// points there, as the app's does. gemini_model is the Gemini row of Config › AI.
 const COPY_SCREEN_KEYS = ['copy_folder_scheme', 'copy_platform_combine', 'copy_output_defaults', 'copy_decide_on_copy', 'copy_header_preference', 'copy_wiiu_preference', 'copy_format_order', 'copy_prefer_decrypted'];
+function screenOfKey(key) {
+  if (COPY_SCREEN_KEYS.includes(key)) return ['config/copy', 'Config › Copy'];
+  if (key === 'gemini_model' || (key.startsWith('ai_') && key !== 'ai_cost_warning_seen')) return ['config/ai', 'Config › AI'];
+  return null;
+}
 
-function copyScreenEditor(value) {
+function screenEditor(value, [route, label]) {
   const shown = value === null || value === undefined ? tr('(unset)') : JSON.stringify(value);
-  const box = el(`<div><span class="mono">${esc(shown)}</span> <span class="muted">${tr('set under ')}<a class="link" onclick="go('config/copy')">${tr('Config › Copy')}</a></span></div>`);
+  const box = el(`<div><span class="mono">${esc(shown)}</span> <span class="muted">${tr('set under ')}<a class="link" onclick="go('${route}')">${tr(label)}</a></span></div>`);
   return { el: box, get: () => value, readonly: true };
 }
 
@@ -4923,7 +4953,6 @@ function settingEditor(key, value) {
       return { el: box, get };
     }
     case 'merge_review_order': current = value || 'regional'; box.appendChild(radios(key, [['regional', tr('regional cases first (default)')], ['english', tr('titles sharing an IGDB game first')]], current, v => { current = v; })); return { el: box, get };
-    case 'gemini_model': { const inp = el(`<input type="text" placeholder="${tr('newest Flash model (default)')}">`); inp.value = value || ''; current = inp.value; inp.oninput = () => { current = inp.value.trim(); }; box.appendChild(inp); return { el: box, get }; }
     case 'raw_response_retention': current = value || 'keep_latest'; box.appendChild(radios(key, [['keep_all', tr('keep all')], ['keep_latest', tr('keep latest')], ['discard', tr('discard')]], current, v => { current = v; })); return { el: box, get };
     case 'cache_ttl_days': { current = value ?? 90; const i = el(`<input type="number" min="1" value="${Number(current)}"> <span class="muted">${tr('days')}</span>`); const inp = el(`<label>`); inp.appendChild(i); box.appendChild(inp); i.oninput = () => { current = Number(i.value) || 1; }; return { el: box, get }; }
     case 'language_display': current = value || 'code'; box.appendChild(radios(key, [['code', tr('code (en, ja)')], ['english', tr('English name (English, Japanese)')], ['native', tr('native name (English, 日本語)')]], current, v => { current = v; })); return { el: box, get };
@@ -4989,6 +5018,7 @@ function settingEditor(key, value) {
       return { el: box, get };
     }
     case 'release_kinds_default': current = value || 'all'; box.appendChild(el(`<div class="muted">${tr('Collection Titles / Releases: which releases are listed by default (changeable on the page). "All" keeps ROM hacks, translations and RetroAchievements subsets visible, so nothing you own seems missing.')}</div>`)); box.appendChild(radios(key, [['all', tr('all releases, incl. patches & subsets (default)')], ['patches', tr('commercial + patches')], ['commercial', tr('commercial only')]], current, v => { current = v; })); return { el: box, get };
+    case 'bigpicture_icon_style': current = value === 'outline' ? 'outline' : 'color'; box.appendChild(el(`<div class="muted">${tr('Big Picture mode: how the icons on its tab buttons are drawn.')}</div>`)); box.appendChild(radios(key, [['color', tr('colour: each icon in its own colour (default)')], ['outline', tr('outline: thin lines in the text colour')]], current, v => { current = v; })); return { el: box, get };
     case 'definitive_two_cover_layout': current = ['diagonal', 'left_right'].includes(value) ? value : 'top_bottom'; box.appendChild(el(`<div class="muted">${tr("Collection › Definitive, two-cover grid: how the definitive version's and the base game's covers share a card. Each cover is cropped to fill its half.")}</div>`)); box.appendChild(radios(key, [['top_bottom', tr('top / bottom (default)')], ['diagonal', tr('diagonal (top left / bottom right)')], ['left_right', tr('left / right')]], current, v => { current = v; })); return { el: box, get };
     case 'release_unlicensed': current = value === 'retail' ? 'retail' : 'separate'; box.appendChild(el(`<div class="muted">${tr("Unlicensed releases (Unl) with no other tag: a kind and Titles row of their own, or listed with the title's retail releases. An unlicensed demo or pirate copy stays a demo or pirate copy.")}</div>`)); box.appendChild(radios(key, [['separate', tr('a kind of their own (default)')], ['retail', tr('with retail')]], current, v => { current = v; })); return { el: box, get };
     case 'ra_base_filter_default': current = value || 'console'; box.appendChild(el(`<div class="muted">${tr('RetroAchievements tab: which base filter the lists start with (switchable on the page).')}</div>`)); box.appendChild(radios(key, [['console', tr('by console (default)')], ['genre', tr('by genre')]], current, v => { current = v; })); return { el: box, get };
@@ -5063,7 +5093,7 @@ function settingEditor(key, value) {
       box.appendChild(reset);
       return { el: box, get: () => ta.value.split('\n').map(l => l.split(/[,\s>]+/).map(x => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)).filter(f => f.length >= 2) };
     }
-    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': case 'audio_rom_limiter': {
+    case 'media_sync_after_pull': case 'media_provider_fallback': case 'backup_catalog': case 'copy_verify_default': case 'copy_lossy_warning': case 'copy_decide_on_copy': case 'search_translations': case 'copy_prefer_decrypted': case 'media_export_prefer_region': case 'scan_pkg_titles': case 'media_reuse_existing': case 'audio_keep_playing': case 'audio_rom_videos': case 'audio_rom_limiter': case 'ai_cost_warning_seen': {
       const spec = {
         copy_prefer_decrypted: [true, tr('decrypted dumps before encrypted ones (default)'), tr('directory priority only')],
         search_translations: [true, tr('searches also try names in the other language from the name dictionary (default)'), tr('search names only as typed')],
@@ -5079,6 +5109,7 @@ function settingEditor(key, value) {
         audio_keep_playing: [true, tr("keep a title's music playing on other screens until another title page opens (default)"), tr('stop the music when the page is left')],
         audio_rom_videos: [false, tr('play the sound of video files in ROMs, such as title movies'), tr('leave video sound out (default)')],
         audio_rom_limiter: [true, tr('soften sudden loud bursts in music played from ROMs (default)'), tr('play it as the sound chip makes it')],
+        ai_cost_warning_seen: [false, tr("the AI cost warning was accepted: don't show it again"), tr('show the AI cost warning before the next paid question (default)')],
       }[key];
       current = typeof value === 'boolean' ? value : spec[0];
       box.appendChild(radios(key, [['true', spec[1]], ['false', spec[2]]], String(current), v => { current = v === 'true'; }));
@@ -5132,15 +5163,23 @@ function settingEditor(key, value) {
         ? [['crc32', 'crc32', true], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', true], ['sha1', 'sha1', true], ['sha256', 'sha256', false], ['ra_hash', 'ra_hash', true]]
         : [['ext', tr('by file extension'), true], ['path', tr('by the directory names above it'), true]];
       current = {}; for (const [k, , d] of items) current[k] = typeof (value || {})[k] === 'boolean' ? value[k] : d;
-      box.appendChild(el(`<div class="muted">${key === 'scan_hashes' ? tr('Which hashes a file scan computes. Content is identified by hash, so at least one of the first five must stay on; ra_hash is skipped where the platform has no RetroAchievements console id.') : tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
+      box.appendChild(el(`<div class="muted">${key === 'scan_hashes' ? tr('Which hashes a file scan computes. DATs are matched by crc32, md5 and sha1, so at least one of those three stays on; ra_hash is skipped where the platform has no RetroAchievements console id.') : tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
       const row = el('<div class="radios"></div>');
-      for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); l.firstElementChild.onchange = e => { current[k] = e.target.checked; }; row.appendChild(l); }
+      // scan_hashes: the last of crc32 / md5 / sha1 that is on can't be turned off -- DATs are
+      // matched by those three (the server refuses a list without one). The app's same rule.
+      const dat = ['crc32', 'md5', 'sha1'];
+      const boxes = {};
+      const lock = () => { if (key !== 'scan_hashes') return; const on = dat.filter(k => current[k]); for (const k of dat) boxes[k].disabled = on.length === 1 && on[0] === k; };
+      for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); boxes[k] = l.firstElementChild; l.firstElementChild.onchange = e => { current[k] = e.target.checked; lock(); }; row.appendChild(l); }
+      if (key === 'scan_hashes' && !dat.some(k => current[k])) current.crc32 = boxes.crc32.checked = true;
+      lock();
       box.appendChild(row);
+      if (key === 'scan_hashes') box.appendChild(el(`<div class="muted">${tr('At least one of crc32, md5 and sha1 stays on: DATs are matched by those.')}</div>`));
       return { el: box, get };
     }
     case 'serial_match': {
       // The same list as the app's SERIAL_MATCH (romexplorer-gui/src/screens/settings.rs).
-      const items = [['cia', '.cia (3DS)', true], ['xiso', '.xiso (Xbox)', true], ['wua', '.wua (Wii U)', true], ['zar', '.zar (Xbox 360)', true], ['vpk', '.vpk (Vita)', true], ['vita_folder', tr('Vita app folders'), true], ['nsp', tr('.nsp / .nsz (Switch; by the ticket or the [title id] in the name)'), true], ['pkg', tr('.pkg (PS3, PSP, Vita; No-Intro hashes these)'), false], ['psv', tr('.psv and game-card images (Vita)'), false], ['ps_disc', tr('PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)'), false], ['manifest', tr('the serial in a manifest this app wrote'), true], ['file_name', tr('a serial in the file name'), false]];
+      const items = [['cia', '.cia / .zcia (3DS)', true], ['3ds', '.3ds / .cci / .cxi / .zcci / .zcxi (3DS)', true], ['xiso', '.xiso (Xbox)', true], ['wua', '.wua (Wii U)', true], ['zar', '.zar (Xbox 360)', true], ['vpk', '.vpk (Vita)', true], ['vita_folder', tr('Vita app folders'), true], ['nsp', tr('.nsp / .nsz (Switch; by the ticket or the [title id] in the name)'), true], ['pkg', tr('.pkg (PS3, PSP, Vita; No-Intro hashes these)'), false], ['psv', tr('.psv and game-card images (Vita)'), false], ['ps_disc', tr('PS1, PS2 and PS3 discs, PS3 game folders (Redump hashes these)'), false], ['manifest', tr('the serial in a manifest this app wrote'), true], ['file_name', tr('a serial in the file name'), false]];
       current = {}; for (const [k, , d] of items) current[k] = typeof (value || {})[k] === 'boolean' ? value[k] : d;
       current.file_name_platforms = Object.assign({}, (value || {}).file_name_platforms || {});
       box.appendChild(el(`<div class="muted">${tr('Files no DAT hash matched, matched by the serial in their header instead. Formats a DAT hashes are off by default.')}</div>`));
@@ -5373,13 +5412,15 @@ async function showSchedules() {
         <label title="${tr('A due run waits until no other job is queued or running.')}"><span>${tr('run only when idle')}</span><input type="checkbox" name="when_idle" checked></label>
         <button class="btn primary">${tr('save')}</button><button class="btn" type="button" id="schreset">${tr('clear')}</button>
       </form>
+      <div data-s="integrity" style="display:none">${info(`<p>${esc(tr('Reads held files back and compares one quick hash. Worth scheduling: it is read-only, and running it often and briefly sweeps the collection oldest-first. Set the size of a run under Jobs.'))}</p>`)}</div>
       <p class="notice" data-s="aibatch">${tr('Each run asks only about games of the set without a saved answer, one paid question each, billed by the provider to your own API key. Use a dedicated project (or workspace) at the provider with a budget or spending limit (Config › AI has the links).')}</p>
       <p class="bad" data-s="dbopt" style="display:none">${tr('Scheduling this is almost never right: it repeatedly destroys the records that let moved and renamed files be recognised, and the &quot;missing, but found elsewhere&quot; hint with them. Prefer running it by hand when the database is actually too large.')}</p></div>
     <div class="card"><h2>${trf('Schedules ({n})', { n: list.length })}</h2><table class="grid"><thead><tr><th>${tr('name')}</th><th>${tr('job')}</th><th>${tr('mode')}</th><th>${tr('trigger')}</th><th>${tr('next fixed')}</th><th>${tr('next check')}</th><th>${tr('last run')}</th><th>${tr('last check')}</th><th></th></tr></thead><tbody>
       ${list.map(x => `<tr><td>${esc(x.name)} ${x.enabled ? '' : badge(tr('disabled'), 'dim')} ${x.when_idle ? badge(tr('when idle'), 'dim') : ''}</td><td>${esc(describe(x.target))}</td><td>${esc(x.mode)}</td><td>${esc(x.trigger)} <span class="muted">${esc([when(x.fixed_every_n, x.fixed_unit), when(x.check_every_n, x.check_unit)].filter(Boolean).join(' / '))}</span></td><td>${fmtDate(x.next_fixed_at)}</td><td>${fmtDate(x.next_check_at)}</td><td>${fmtDate(x.last_run_at)} ${x.last_job_id ? `<span class="muted">#${x.last_job_id}</span>` : ''}</td><td class="muted" style="white-space:normal;max-width:260px">${fmtDate(x.last_check_at)} ${esc(x.last_check_result || '')}</td><td><button class="btn small" data-run="${x.id}">${tr('run now')}</button> <button class="btn small" data-edit="${x.id}">${tr('edit')}</button> <button class="btn small danger" data-del="${x.id}">${tr('delete')}</button></td></tr>`).join('') || `<tr><td colspan="9" class="muted">${tr('none yet')}</td></tr>`}
     </tbody></table></div>`;
   const form = document.getElementById('schform');
-  const show = (key, on) => form.querySelectorAll(`[data-s="${key}"]`).forEach(e => e.style.display = on ? '' : 'none');
+  // The notes under the form carry data-s too, so this looks in the whole view.
+  const show = (key, on) => view.querySelectorAll(`[data-s="${key}"]`).forEach(e => e.style.display = on ? '' : 'none');
   const refresh = () => {
     const jt = form.job_type.value, prov = bulk.find(p => p.name === form.provider.value), c = prov?.capabilities || {};
     form.platform.innerHTML = platformOptions(form.platform.value, tr('— choose —'), prov?.bulk_platforms);
@@ -5387,7 +5428,7 @@ async function showSchedules() {
     form.scope.innerHTML = [c.platform ? `<option value="platform">${tr('one platform')}</option><option value="all">${tr('every catalog platform')}</option>` : '', c.full ? `<option value="full">${tr('full database')}</option>` : ''].join('');
     if ([...form.scope.options].some(o => o.value === keep)) form.scope.value = keep;
     show('prov', jt === 'provider_bulk_sync'); show('plat', jt === 'provider_bulk_sync' && form.scope.value === 'platform'); show('dat', jt === 'dat_sync'); show('scan', jt === 'file_scan'); show('media', jt === 'media_backfill'); show('rabadges', jt === 'ra_badges'); show('aibatch', jt === 'ai_batch_rate');
-    view.querySelectorAll('[data-s="dbopt"]').forEach(e => e.style.display = jt === 'db_optimize' ? '' : 'none');
+    show('dbopt', jt === 'db_optimize'); show('integrity', jt === 'integrity_check');
     show('fixed', form.trigger.value !== 'check'); show('check', form.trigger.value !== 'fixed');
   };
   for (const n of ['job_type', 'provider', 'scope', 'trigger']) form[n].onchange = refresh;
@@ -5567,8 +5608,7 @@ function showSection(host, active, query) {
 async function settingsPage(json, group) {
   const list = await api('/api/v1/settings');
   if (!json) return settingsForm(list, group);
-  const other = json ? tr(`the <span class="link" onclick="go('config/settings')">form</span> covers the same keys.`) : tr(`the <span class="link" onclick="go('config/settings_json')">JSON view</span> shows the stored values as they are.`);
-  view.innerHTML = `<div class="card"><h2>${json ? tr('Settings (JSON)') : tr('Settings')}</h2><p class="muted">${tr('Changes apply after saving and reloading a screen. "reset to default" removes the stored value;')} ${other}</p><div id="rows"></div>
+  view.innerHTML = `<div class="card"><h2>${tr('Settings (JSON)')}</h2><p class="muted">${trf('Changes apply after saving. "reset to default" removes the stored value. Every value as the server stores it; the {link} covers the same keys.', { link: `<span class="link" onclick="go('config/settings')">${tr('form')}</span>` })}</p><div id="rows"></div>
     ${json ? `<form class="inline" id="newkey"><label>${tr('new key')}<input type="text" name="key" placeholder="${tr('key')}"></label><label>${tr('JSON value')}<input type="text" name="value" placeholder='"value" or {"a":1}' style="min-width:300px"></label><button class="btn">${tr('add')}</button></form>` : ''}</div>`;
   const rows = document.getElementById('rows');
   const groups = settingGroups(list);
@@ -5614,7 +5654,7 @@ async function settingsPage(json, group) {
 function settingsForm(list, group) {
   const sections = settingGroups(list);
   const active = sections.some(g => g.id === group) ? group : (sections[0] || {}).id;
-  view.innerHTML = `${sectionTabs(sections, active, 'config/settings')}<div class="card"><h2>${tr('Settings')} ${info(`<p>${tr('Changes apply after saving and reloading a screen. "reset to default" removes the stored value;')} ${tr(`the <span class="link" onclick="go('config/settings_json')">JSON view</span> shows the stored values as they are.`)}</p>`)}</h2>
+  view.innerHTML = `${sectionTabs(sections, active, 'config/settings')}<div class="card"><h2>${tr('Settings')} ${info(`<p>${trf('Changes apply after saving. "reset to default" removes the stored value. The {link} shows the stored values as they are.', { link: `<span class="link" onclick="go('config/settings_json')">${tr('JSON view')}</span>` })}</p>`)}</h2>
     <div class="toolbar"><input type="text" id="setfilter" placeholder="${tr('filter settings…')}" style="min-width:240px"><span class="grow"></span><span class="muted">${trf('{n} settings', { n: list.length })}</span></div></div><div id="setgroups"></div>`;
   const host = document.getElementById('setgroups');
   const groups = new Map();
@@ -5641,7 +5681,8 @@ function settingRow(s, section) {
     <div class="setact"><button class="btn small primary">${tr('save')}</button><button class="btn small danger" title="${tr('reset to default')}">${tr('reset')}</button></div></div>`);
   const holder = row.querySelector('.editor'), name = row.querySelector('.setname'), act = row.querySelector('.setact');
   // An unset key whose default depends on the server's build starts on that default.
-  const editor = COPY_SCREEN_KEYS.includes(s.key) ? copyScreenEditor(s.value) : settingEditor(s.key, s.value ?? s.default ?? null);
+  const elsewhere = screenOfKey(s.key);
+  const editor = elsewhere ? screenEditor(s.value, elsewhere) : settingEditor(s.key, s.value ?? s.default ?? null);
   if (editor) holder.appendChild(editor.el);
   else holder.innerHTML = `<span class="muted">${tr(`no form for this one yet: edit it under <span class="link" onclick="go('config/settings_json')">Settings (JSON)</span>`)}</span>`;
   if (!editor || editor.readonly) act.style.display = 'none';
@@ -6181,6 +6222,9 @@ async function showAiPage() {
     try {
       await setKey('ai_provider', f.get('provider'));
       for (const p of o.providers) await setKey('ai_model_' + p.id, String(f.get('model_' + p.id) || '').trim());
+      // The Gemini row shows gemini_model (the older name) while ai_model_gemini is unset, and
+      // now saves it as ai_model_gemini: drop the old one, or clearing the row would bring it back.
+      await setKey('gemini_model', null);
       await setKey('ai_ask_first', f.get('ask_first'));
       await setKey('ai_cache_days', f.get('cache_days') ? Number(f.get('cache_days')) : null);
       toast(tr('saved')); showAiPage();
@@ -6623,10 +6667,27 @@ async function mountDialog(sourceId, sourceName, done) {
   };
 }
 
+// A server address as the forms show it: the address (scheme kept) and the port apart.
+function splitBase(base) {
+  base = (base || '').trim().replace(/\/+$/, '');
+  const m = base.match(/^(.*?(?:\]|[^:\]]))(?::(\d+))$/);
+  const rest = base.replace(/^[a-z]+:\/\//i, '');
+  // `host:7337` or `[::1]:7337`, not a bare IPv6 address's own colons.
+  if (m && (/\]:\d+$/.test(rest) || (rest.match(/:/g) || []).length === 1)) return [m[1], m[2]];
+  return [base, ''];
+}
+// Put back together; a port typed into the address wins.
+function joinBase(address, port) {
+  const [a, own] = splitBase(address);
+  const p = own || (port || '').trim();
+  return a && p ? `${a}:${p}` : a;
+}
+
 function sourceDialog(s, done) {
-  const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3><form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
+  const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3>${s.id ? '' : `<div class="muted" style="margin-bottom:6px">${tr('On this network')}</div><div class="toolbar" id="src-found" style="flex-wrap:wrap;margin-bottom:10px"></div>`}<form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
     <div>${tr('name')}</div><div><input name="name" value="${esc(s.name)}" required style="width:100%"></div>
-    <div>${tr('address')}</div><div><input name="base_url" value="${esc(s.base_url)}" required style="width:100%" placeholder="http://192.168.1.10:7337"><div class="muted">${tr("host and port only, no /api/v1 — a main server's main port, a peer's share port")}</div></div>
+    <div>${tr('address')}</div><div><input name="base_url" value="${esc(splitBase(s.base_url)[0])}" required style="width:100%" placeholder="https://192.168.1.10"><div class="muted">${tr("the other machine's IP address or name, no /api/v1")}</div></div>
+    <div>${tr('port')}</div><div><input name="port" inputmode="numeric" value="${esc(splitBase(s.base_url)[1] || (s.id ? '' : '7337'))}" style="width:8em" placeholder="7337"><div class="muted">${tr('a main server\'s port (7337 unless changed), or the port a peer shares on')}</div></div>
     <div>${tr('sign in as')}</div><div><input name="username" style="width:48%" autocomplete="off" placeholder="${tr('username on that machine')}"> <input name="password" type="password" style="width:48%" autocomplete="off" placeholder="${tr('password')}">
       <div class="muted">${tr('This machine signs in once and keeps only the token it is given for itself — the password is not stored. Its certificate is trusted on that first connection.')}</div></div>
     <div>${tr('or a token')}</div><div><input name="token" type="password" style="width:100%" autocomplete="off" placeholder="${s.id ? (s.has_token ? tr('stored — leave blank to keep it') : tr('none stored')) : tr("the other machine's bearer token")}"></div>
@@ -6636,9 +6697,28 @@ function sourceDialog(s, done) {
   box.querySelector('#src-cancel').onclick = closeModal;
   const f = box.querySelector('#src-form');
   const send = body => api(s.id ? '/api/v1/sources/' + s.id : '/api/v1/sources', { method: s.id ? 'PUT' : 'POST', body });
+  // Servers and shares that answered a search of the local network. Picking one fills in
+  // the form: a server becomes the main server, a share a peer; signing in is still below.
+  const found = box.querySelector('#src-found');
+  const search = async () => {
+    found.innerHTML = `<span class="muted">${tr('searching…')}</span>`;
+    let list = [];
+    try { list = await api('/api/v1/sources/discover'); } catch (e) { /* shown as nothing found */ }
+    const base = x => `${x.tls ? 'https' : 'http'}://${x.ip.includes(':') ? '[' + x.ip + ']' : x.ip}:${x.port}`;
+    found.innerHTML = (list.length ? list.map((x, i) => `<button class="btn" type="button" data-found="${i}"><b>${esc(x.name)}</b> <span class="muted">${esc(x.ip)}:${x.port} · ${x.kind === 'server' ? tr('main server') : tr('peer')}</span></button>`).join('')
+      : `<span class="muted">${tr('Nothing answered. Type the address below.')}</span>`) + ` <button class="btn" type="button" id="src-search">${tr('search again')}</button>`;
+    for (const b of found.querySelectorAll('[data-found]')) b.onclick = () => {
+      const x = list[+b.dataset.found];
+      f.name.value = x.name; [f.base_url.value, f.port.value] = splitBase(base(x));
+      f.querySelector(`input[name=role][value=${x.kind === 'server' ? 'main' : 'peer'}]`).checked = true;
+      f.username.focus();
+    };
+    found.querySelector('#src-search').onclick = search;
+  };
+  if (found) search();
   f.onsubmit = async ev => {
     ev.preventDefault();
-    const body = { name: f.name.value.trim(), base_url: f.base_url.value.trim(), role: f.role.value, enabled: f.enabled.checked };
+    const body = { name: f.name.value.trim(), base_url: joinBase(f.base_url.value, f.port.value), role: f.role.value, enabled: f.enabled.checked };
     if (f.token.value) body.token = f.token.value;
     if (f.username.value.trim()) { body.username = f.username.value.trim(); body.password = f.password.value; }
     try { await send(body); toast(tr('saved')); closeModal(); done(); }
@@ -6681,6 +6761,7 @@ async function showUsers() {
     list = await api('/api/v1/users');
     const yn = v => v ? badge(tr('yes'), 'ok') : badge(tr('no'), 'dim');
     html += `<div class="card"><h2>${tr('Accounts')}</h2>
+    <p class="muted">${esc(tr('Who may use this machine over the network. An '))}<b>${esc(tr('admin'))}</b>${esc(tr(' can do everything. A '))}<b>${esc(tr('user'))}</b>${esc(tr(' can browse, sync, and fetch the media this server already has; with '))}<b>${esc(tr('upload'))}</b>${esc(tr(" they can also register new files they copied onto the server's share — never change what is already there. Passwords are stored only as hashes, and backups never carry them."))}</p>
     <div class="toolbar"><button class="btn primary" id="user-add">${setup && !list.length ? tr('create the admin account') : tr('add account')}</button></div>
     <table class="grid"><thead><tr><th>${tr('username')}</th><th>${tr('role')}</th><th>${tr('upload')}</th><th>${tr('enabled')}</th><th>${tr('password')}</th><th>${tr('devices')}</th><th>${tr('last sign-in')}</th><th></th></tr></thead>
     <tbody>${list.length ? list.map(u => `<tr><td>${esc(u.username)}</td><td>${badge(u.role, u.role === 'admin' ? 'ok' : 'dim')}</td><td>${yn(u.can_upload || u.role === 'admin')}</td><td>${yn(u.enabled)}</td>
@@ -6730,15 +6811,19 @@ async function deviceList(host, path) {
 function userDialog(existing, setup) {
   const MIN = 8; // romexplorer_types::auth::MIN_PASSWORD_LEN
   const role = existing ? existing.role : (setup ? 'admin' : 'user');
-  const box = openModal(`<h3>${existing ? esc(existing.username) : tr('add account')}</h3>
-    <form id="user-form" class="kv" style="grid-template-columns:120px 1fr">
-      <div>${tr('username')}</div><div><input name="username" autocomplete="off" value="${esc(existing ? existing.username : '')}" style="width:100%"></div>
-      <div>${tr('password')}</div><div><input name="password" type="password" autocomplete="new-password" style="width:100%"></div>
-      <div>${tr('role')}</div><div><select name="role"><option value="admin" ${role === 'admin' ? 'selected' : ''}>${tr('admin')}</option><option value="user" ${role === 'user' ? 'selected' : ''}>${tr('user')}</option></select></div>
-      <div>${tr('upload')}</div><div><input name="can_upload" type="checkbox" ${existing && existing.can_upload ? 'checked' : ''}></div>
-      <div>${tr('enabled')}</div><div><input name="enabled" type="checkbox" ${!existing || existing.enabled ? 'checked' : ''}></div>
+  const box = openModal(`<h3>${existing ? tr('Edit account') : tr('Add account')}</h3>
+    <form id="user-form" class="kv" style="grid-template-columns:110px 1fr">
+      <div>${tr('username')}</div><div><input name="username" required autocomplete="off" value="${esc(existing ? existing.username : '')}" style="width:100%"></div>
+      <div>${tr('password')}</div><div><input name="password" type="password" autocomplete="new-password" style="width:100%" placeholder="${existing ? esc(tr('leave blank to keep it')) : ''}">
+        <div class="muted">${esc(trf("At least {n} characters. Setting a new one signs the account's devices out.", { n: MIN }))}</div></div>
+      <div>${tr('role')}</div><div><label><input type="radio" name="role" value="user" ${role === 'user' ? 'checked' : ''}>${esc(tr(' user — browse, sync, fetch cached media'))}</label><br><label><input type="radio" name="role" value="admin" ${role === 'admin' ? 'checked' : ''}>${esc(tr(' admin — everything'))}</label></div>
+      <div>${tr('upload')}</div><div><label><input name="can_upload" type="checkbox" ${existing && existing.can_upload ? 'checked' : ''}>${esc(tr(" may register new files it copies onto the server's share"))}</label></div>
+      <div>${tr('enabled')}</div><div><label><input name="enabled" type="checkbox" ${!existing || existing.enabled ? 'checked' : ''}>${esc(tr(' enabled'))}</label></div>
       <div></div><div><button class="btn primary">${tr('save')}</button> <button type="button" class="btn" id="user-cancel">${tr('cancel')}</button></div>
     </form><div id="user-error" class="bad"></div>`);
+  // An admin may do everything, uploads included: the box means nothing for one.
+  const form = box.querySelector('#user-form'), syncUpload = () => { form.can_upload.disabled = form.role.value === 'admin'; };
+  form.querySelectorAll('input[name=role]').forEach(r => r.onchange = syncUpload); syncUpload();
   box.querySelector('#user-cancel').onclick = closeModal;
   box.querySelector('#user-form').onsubmit = async ev => {
     ev.preventDefault();

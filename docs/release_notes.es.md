@@ -8,6 +8,16 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
+**3DS**
+- Una copia puede descifrar títulos de 3DS a .cci, .3ds o .cxi, o a los comprimidos .zcci y
+  .zcxi que lee Azahar. Las actualizaciones y los DLC siguen siendo .cia (.zcia), y el homebrew
+  .3dsx (.z3dsx).
+- romexplorer no incluye claves. Pon tu propio aes_keys.txt (y seeddb.bin si un título lo
+  necesita) junto a los archivos, junto a romexplorer o en su carpeta assets.
+- Los escaneos encuentran .cci, .cxi y los comprimidos .zcci, .zcia y .zcxi, así que una copia
+  también puede pasar un .zcci a .cci y al revés. La coincidencia por serie lee su código de
+  producto y su ID de título, y tiene su propia casilla para las imágenes de cartucho.
+
 **Audio de las ROM**
 - Al abrir la página de un título se indexa primero la música de las ROM de ese juego. Mientras
   tanto, la página muestra el progreso en lugar de reproducir música de otro juego.
@@ -28,6 +38,45 @@ Haz una copia de seguridad antes de sustituir una versión.
 - Al convertir volcados de SNES en una copia, se convertía un archivo aunque su tamaño y su
   cabecera interna no coincidieran sobre la cabecera de copiadora. Ahora se informa como error.
   Un volcado de NES que no está en la base de datos de cabeceras se informa con su hash.
+
+**Escaneo**
+- En Linux, un escaneo no encontraba entradas cue, gdi y m3u escritas con otras mayúsculas o
+  con barras invertidas, y tomaba por una sola ROM dos archivos que solo difieren en
+  mayúsculas.
+- Escanear una carpeta ignoraba el tipo y la plataforma de las carpetas que contiene. Las
+  carpetas de juego bajo una carpeta sin plataforma se convertían en un juego por archivo.
+- Los reescaneos volvían a leer los juegos en carpeta, separaban pistas ya unidas y perdían
+  las coincidencias por serie. Agrupar discos era lento en carpetas grandes.
+- Los archivos que no son ROM, como textos e imágenes, se convertían en juegos. Ahora solo
+  cuando se identifican.
+- Con solo xxh3_128 en los hashes de escaneo se perdían las coincidencias DAT. Ahora siempre
+  queda activo uno de crc32, md5 y sha1.
+
+**Copia**
+- Al sobrescribir se borraba el archivo antiguo antes de escribir el nuevo. Una copia también
+  podía reescribir listas que debían conservarse y escribir en uno dos archivos que solo
+  difieren en mayúsculas.
+
+**Unión de títulos**
+- Se podían unir dos versiones de un conjunto de versiones, o un título comercial con uno sin
+  licencia. Los títulos separados volvían con «Aceptar todo», y los enlaces de IGDB quitados
+  por la auditoría volvían en la siguiente coincidencia de hash.
+- Una coincidencia de Hasheous por el otro nombre de un juego unido creaba un título duplicado.
+
+**Servidor y tareas**
+- Obtener imágenes para un cliente podía alcanzar la red del propio servidor, sin límite de
+  tamaño.
+- Cualquier cuenta podía descargar las cachés SQLite «database» y «all», con cuentas y
+  ajustes. Ahora requieren un administrador.
+- Una sincronización completa interrumpida dejaba una tabla a medias, y cancelar una copia de
+  seguridad dejaba empezar la siguiente mientras aún escribía.
+- Las copias a otra unidad y las sincronizaciones desde otro servidor esperaban a tareas
+  ajenas. Tras reiniciar la base de datos, una tarea podía empezar dos veces.
+
+**Otros**
+- La música de ROM podía fallar con un conjunto PSF2.
+- Algunas etiquetas de la consola web y frases de Config › Ajustes seguían en inglés.
+- MariaDB anterior a 10.6 fallaba con errores poco claros. Ahora se rechaza al conectar.
 
 # romexplorer 0.2.0 (alpha)
 

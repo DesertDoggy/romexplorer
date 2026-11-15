@@ -26,10 +26,13 @@ fn grouped(fingerprint: &str) -> String {
 /// confirm before anything is sent -- the server's certificate is self-signed, so this is
 /// where trust in it comes from, the way SSH asks about a new host.
 #[component]
-pub fn SignIn(error: String, on_done: EventHandler<()>) -> Element {
+pub fn SignIn(error: String, on_done: EventHandler<()>, #[props(default)] embedded: bool) -> Element {
     let ep = api::endpoint();
     let web = cfg!(target_arch = "wasm32");
-    let mut server = use_signal(|| ep.base.clone());
+    let (address0, port0) = api::split_base(&ep.base);
+    let mut address = use_signal(|| address0);
+    let mut port = use_signal(|| if port0.is_empty() { api::DEFAULT_PORT.to_string() } else { port0 });
+    let server = use_memo(move || api::join_base(&address(), &port()));
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut use_setup = use_signal(|| false);
@@ -89,58 +92,106 @@ pub fn SignIn(error: String, on_done: EventHandler<()>) -> Element {
             finish(String::new());
         });
     };
-    rsx! {
-        header { h1 { "romexplorer" } }
-        main { id: "view",
-            if !error.is_empty() && message().is_none() { div { class: "card warn", p { "{error}" } } }
-            if let Some(m) = message() { div { class: "card bad", p { "{m}" } } }
-            if let Some(fp) = pending() {
-                div { class: "card",
-                    h2 { {state::tr("Trust this server?")} }
-                    p { {state::tr("This is the first time this app has connected to ")} b { "{api::normalize_base(&server())}" } {state::tr(". Its certificate's fingerprint is:")} }
-                    p { class: "mono", style: "word-break:break-all", "{grouped(&fp)}" }
-                    Explain { {state::tr("Compare it with the one the server shows — in its log when it starts, or under Config › Server. If they match, trust it: from then on this app only talks to that server with that certificate.")} }
-                    div { class: "toolbar",
-                        button { class: "btn primary", disabled: busy(), onclick: move |_| { let fp = fp.clone(); pending.set(None); finish(fp); }, {state::tr("trust and sign in")} }
-                        button { class: "btn", onclick: move |_| pending.set(None), {state::tr("cancel")} }
-                    }
+    let body = rsx! {
+        if !error.is_empty() && message().is_none() { div { class: "card warn", p { "{error}" } } }
+        if let Some(m) = message() { div { class: "card bad", p { "{m}" } } }
+        if let Some(fp) = pending() {
+            div { class: "card",
+                h2 { {state::tr("Trust this server?")} }
+                p { {state::tr("This is the first time this app has connected to ")} b { "{api::normalize_base(&server())}" } {state::tr(". Its certificate's fingerprint is:")} }
+                p { class: "mono", style: "word-break:break-all", "{grouped(&fp)}" }
+                Explain { {state::tr("Compare it with the one the server shows — in its log when it starts, or under Config › Server. If they match, trust it: from then on this app only talks to that server with that certificate.")} }
+                div { class: "toolbar",
+                    button { class: "btn primary", disabled: busy(), onclick: move |_| { let fp = fp.clone(); pending.set(None); finish(fp); }, {state::tr("trust and sign in")} }
+                    button { class: "btn", onclick: move |_| pending.set(None), {state::tr("cancel")} }
                 }
-            } else {
-                div { class: "card",
-                    h2 { {state::tr("Sign in")} }
-                    form { class: "kv", style: "grid-template-columns:120px 1fr",
-                        onsubmit: move |e| { e.prevent_default(); submit(()); },
-                        if !web {
-                            div { {state::tr("server")} }
-                            div {
-                                input { r#type: "text", style: "width:100%", placeholder: "192.168.1.10:7337", value: "{server}", oninput: move |e| server.set(e.value()) }
-                                div { class: "muted", {state::tr("The romexplorer server's address (its port is 7337 unless changed).")} }
-                            }
-                        }
-                        if use_setup() {
-                            div { {state::tr("setup token")} }
-                            div {
-                                input { r#type: "password", style: "width:100%", autocomplete: "off", value: "{setup_token}", oninput: move |e| setup_token.set(e.value()) }
-                                div { class: "muted", {state::tr("The contents of data/server_token on the server. It works only until an admin account exists — use it to create one.")} }
-                            }
-                        } else {
-                            div { {state::tr("username")} }
-                            div { input { r#type: "text", style: "width:100%", autocomplete: "username", value: "{username}", oninput: move |e| username.set(e.value()) } }
-                            div { {state::tr("password")} }
-                            div { input { r#type: "password", style: "width:100%", autocomplete: "current-password", value: "{password}", oninput: move |e| password.set(e.value()) } }
-                        }
-                        div {}
+            }
+        } else {
+            if !web {
+                NetworkServers { on_pick: move |base: String| { let (a, p) = api::split_base(&base); address.set(a); port.set(p); message.set(None); } }
+            }
+            div { class: "card",
+                h2 { {state::tr("Sign in")} }
+                form { class: "kv", style: "grid-template-columns:120px 1fr",
+                    onsubmit: move |e| { e.prevent_default(); submit(()); },
+                    if !web {
+                        div { {state::tr("server")} }
                         div {
-                            button { class: "btn primary", disabled: busy(), if use_setup() { {state::tr("continue")} } else { {state::tr("sign in")} } }
-                            " "
-                            span { class: "link", onclick: move |_| use_setup.set(!use_setup()),
-                                if use_setup() { {state::tr("sign in with an account instead")} } else { {state::tr("a new server? use the setup token")} }
-                            }
+                            input { r#type: "text", style: "width:100%", placeholder: "192.168.1.10", value: "{address}", oninput: move |e| address.set(e.value()) }
+                            div { class: "muted", {state::tr("The romexplorer server's IP address or name.")} }
+                        }
+                        div { {state::tr("port")} }
+                        div {
+                            input { r#type: "text", inputmode: "numeric", style: "width:8em", placeholder: api::DEFAULT_PORT, value: "{port}", oninput: move |e| port.set(e.value()) }
+                            div { class: "muted", {state::tr("7337 unless the server was set to another one.")} }
+                        }
+                    }
+                    if use_setup() {
+                        div { {state::tr("setup token")} }
+                        div {
+                            input { r#type: "password", style: "width:100%", autocomplete: "off", value: "{setup_token}", oninput: move |e| setup_token.set(e.value()) }
+                            div { class: "muted", {state::tr("The contents of data/server_token on the server. It works only until an admin account exists — use it to create one.")} }
+                        }
+                    } else {
+                        div { {state::tr("username")} }
+                        div { input { r#type: "text", style: "width:100%", autocomplete: "username", value: "{username}", oninput: move |e| username.set(e.value()) } }
+                        div { {state::tr("password")} }
+                        div { input { r#type: "password", style: "width:100%", autocomplete: "current-password", value: "{password}", oninput: move |e| password.set(e.value()) } }
+                    }
+                    div {}
+                    div {
+                        button { class: "btn primary", disabled: busy(), if use_setup() { {state::tr("continue")} } else { {state::tr("sign in")} } }
+                        " "
+                        span { class: "link", onclick: move |_| use_setup.set(!use_setup()),
+                            if use_setup() { {state::tr("sign in with an account instead")} } else { {state::tr("a new server? use the setup token")} }
                         }
                     }
                 }
             }
         }
+    };
+    if embedded {
+        return body;
+    }
+    rsx! {
+        header { h1 { "romexplorer" } }
+        main { id: "view", {body} }
+    }
+}
+
+/// The romexplorer servers that answered a search of this network: one tap puts the address
+/// in the sign-in form, which then asks for the account (or the setup token). Shares are left
+/// out: they are for another romexplorer to mirror, not to sign in to.
+#[component]
+fn NetworkServers(on_pick: EventHandler<String>) -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut found = use_resource(|| async { api::discovery::search().await });
+        let list: Option<Vec<romexplorer_types::discovery::Found>> = found.read().as_ref().map(|f| f.iter().filter(|f| f.announce.kind == "server").cloned().collect());
+        rsx! {
+            div { class: "card",
+                h2 { {state::tr("On this network")} }
+                match list {
+                    None => rsx! { p { class: "muted", {state::tr("searching…")} } },
+                    Some(l) if l.is_empty() => rsx! { p { class: "muted", {state::tr("No server answered. Type its address below.")} } },
+                    Some(l) => rsx! {
+                        div { class: "toolbar", style: "flex-wrap:wrap",
+                            for f in l {
+                                button { key: "{f.base()}", class: "btn", onclick: { let b = f.base(); move |_| on_pick.call(b.clone()) },
+                                    b { "{f.announce.name}" } " " span { class: "muted", "{f.ip}:{f.announce.port}" }
+                                }
+                            }
+                        }
+                    },
+                }
+                button { class: "btn", r#type: "button", onclick: move |_| found.restart(), {state::tr("search again")} }
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = on_pick;
+        rsx! {}
     }
 }
 

@@ -138,6 +138,13 @@ struct Holder {
     folder: Option<String>,
 }
 
+/// A destination as the plan's collision map keys it: case-folded (Unicode-aware), because
+/// the destination may be FAT, exFAT, NTFS or SMB, where two names differing only in case
+/// are one file and the second copy would silently replace the first.
+fn taken_key(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
+}
+
 /// The folder a path sits in, on either kind of separator.
 fn parent_folder(path: &str) -> Option<String> {
     path.rfind(['/', '\\']).map(|i| path[..i].to_string())
@@ -173,9 +180,11 @@ fn pick_holders_with(holders: Vec<Holder>, preference: SourcePreference, prefer_
     }
     let lead = rest.remove(0);
     let mut covered = lead.covers.clone();
-    let wants_more = !covered.is_empty() && (covered.len() as i64) < lead.required;
+    let required = lead.required;
+    let wanted = !covered.is_empty();
     let mut out = vec![lead];
-    while wants_more {
+    // Re-checked each round: once the copies taken hold every disc, no more are added.
+    while wanted && (covered.len() as i64) < required {
         let lead = &out[0];
         let next = rest
             .iter()
@@ -651,6 +660,22 @@ pub fn disc_carrier(format: OutputFormat, files: &[SourceFile], main_path: &str)
     None
 }
 
+/// The extension a 3DS file gets as `format`, or `None` when it is copied as it is: not a 3DS
+/// file on its own on the disk, not readable, or already decrypted into exactly that.
+fn n3ds_destination(path: &Path, ext: &str, is_member: bool, format: OutputFormat) -> Option<&'static str> {
+    use crate::rom::n3ds;
+    if is_member || !n3ds::EXTENSIONS.contains(&ext) {
+        return None;
+    }
+    let target = super::n3ds_target(format)?;
+    let info = n3ds::inspect(path).ok()?;
+    let wanted = n3ds::output_extension(&info, target);
+    if !info.encrypted && wanted == ext {
+        return None;
+    }
+    Some(wanted)
+}
+
 fn retarget(path: &std::path::Path, format: OutputFormat) -> PathBuf {
     match format.extension() {
         Some(ext) => path.with_extension(ext),
@@ -843,6 +868,16 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
             if matches!(format, OutputFormat::Zar | OutputFormat::Xiso | OutputFormat::Cso) && ext != "iso" {
                 format = OutputFormat::Same;
             }
+            // A 3DS title is decrypted on its own: a loose file the converter reads. Its output
+            // extension is the title's own -- an update or DLC stays a .cia, homebrew a .3dsx --
+            // and one already decrypted in that very form is copied as it is.
+            let mut n3ds_ext = None;
+            if format.is_3ds() {
+                n3ds_ext = n3ds_destination(&file.path, &ext, file.member.is_some(), format);
+                if n3ds_ext.is_none() {
+                    format = OutputFormat::Same;
+                }
+            }
             // Every other file of a disc-container conversion is inside the one output.
             let folded_in = carrier.is_some_and(|c| !is_playlist && member_index != c);
             if format != OutputFormat::Same && unavailable.contains(&format) {
@@ -863,7 +898,11 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
             };
             // Copied byte for byte, whether from a file or out of an archive.
             let plain = format == OutputFormat::Same || file.member.is_some();
-            let mut destination = if plain || format == OutputFormat::Raw { base } else { retarget(&base, format) };
+            let mut destination = match n3ds_ext {
+                Some(ext) if !plain => base.with_extension(ext),
+                _ if plain || format == OutputFormat::Raw => base,
+                _ => retarget(&base, format),
+            };
 
             let mut skip = None;
             if wua_key && !unavailable.contains(&OutputFormat::Wua) {
@@ -879,7 +918,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
                 already_held += 1;
                 skip = Some(if req.mode.skips_source_holdings() { "already on the server".to_string() } else { "already held on this machine".to_string() });
             }
-            let key = destination.to_string_lossy().to_string();
+            let key = taken_key(&destination);
             if skip.is_none() {
                 match taken.get(&key) {
                     // The same bytes to the same place: copy once. This is the case a
@@ -908,7 +947,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
                             let mut n = 2;
                             let chosen = loop {
                                 let candidate = dir.join(with_dedup_suffix(&name, n));
-                                if !taken.contains_key(&candidate.to_string_lossy().to_string()) {
+                                if !taken.contains_key(&taken_key(&candidate)) {
                                     break candidate;
                                 }
                                 n += 1;
@@ -945,7 +984,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
                         let mut n = 2;
                         let chosen = loop {
                             let candidate = dir.join(with_dedup_suffix(&name, n));
-                            if !taken.contains_key(&candidate.to_string_lossy().to_string()) && std::fs::symlink_metadata(&candidate).is_err() {
+                            if !taken.contains_key(&taken_key(&candidate)) && std::fs::symlink_metadata(&candidate).is_err() {
                                 break candidate;
                             }
                             n += 1;
@@ -960,8 +999,8 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
             }
             let key = destination.to_string_lossy().to_string();
             if skip.is_none() {
-                taken.insert(key.clone(), file.content_id);
-                taken_by.insert(key.clone(), item.release_id);
+                taken.insert(taken_key(&destination), file.content_id);
+                taken_by.insert(taken_key(&destination), item.release_id);
                 by_content.entry(file.content_id).or_default().push(key.clone());
                 if format != OutputFormat::Same && format != source_format {
                     conversions += 1;
@@ -1174,6 +1213,22 @@ mod tests {
         assert_eq!(picked.iter().map(|h| h.game_id).collect::<Vec<_>>(), vec![1, 4]);
     }
 
+    /// Two destinations differing only in case are one file on FAT, NTFS or SMB.
+    #[test]
+    fn collision_keys_ignore_case() {
+        assert_eq!(taken_key(Path::new("/dst/gb/Game.gb")), taken_key(Path::new("/dst/GB/GAME.GB")));
+        assert_eq!(taken_key(Path::new("/dst/Ärger.gb")), taken_key(Path::new("/dst/ärger.gb")));
+        assert_ne!(taken_key(Path::new("/dst/a.gb")), taken_key(Path::new("/dst/b.gb")));
+    }
+
+    /// Taking stops as soon as the copies taken hold as many discs as the release needs,
+    /// even when another copy repeats none of them.
+    #[test]
+    fn taking_stops_once_every_disc_is_held() {
+        let picked = pick_holders_with(vec![disc(1, 10, &[101, 102], 4), disc(2, 10, &[103, 104], 4), disc(3, 10, &[105], 4)], SourcePreference::LocalFirst, true);
+        assert_eq!(picked.iter().map(|h| h.game_id).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
     /// A copy holding every disc is taken alone, and so is one that knows nothing of its
     /// contents (no other copy can be said to complete it).
     #[test]
@@ -1236,6 +1291,31 @@ mod tests {
     fn an_unknown_required_count_does_not_penalise_anyone() {
         let picked = pick_holder(vec![holder(Some(2), 9, "main", 0, 0), holder(None, 1, "local", 0, 0)], SourcePreference::LocalFirst).unwrap();
         assert_eq!(picked.source_id, None);
+    }
+
+    #[test]
+    fn a_3ds_file_takes_its_titles_own_extension() {
+        use cia_tool::testkit::{make_cia, make_ncch, setup, smdh};
+        let dir = std::env::temp_dir().join(format!("romexplorer_plan_n3ds_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut rng, keys, _) = setup();
+        let cia = |rng: &mut _, tid: u64| {
+            let (ncch, _) = make_ncch(rng, &keys, tid, 0x00, None, &smdh("x"));
+            make_cia(rng, &keys, tid, &[(0, ncch)], &smdh("x"))
+        };
+        let game = dir.join("game.cia");
+        std::fs::write(&game, cia(&mut rng, 0x0004_0000_0012_3400)).unwrap();
+        let update = dir.join("update.cia");
+        std::fs::write(&update, cia(&mut rng, 0x0004_000E_0012_3400)).unwrap();
+
+        assert_eq!(n3ds_destination(&game, "cia", false, OutputFormat::Zcci), Some("zcci"));
+        assert_eq!(n3ds_destination(&game, "cia", false, OutputFormat::ThreeDs), Some("3ds"));
+        assert_eq!(n3ds_destination(&update, "cia", false, OutputFormat::Cci), Some("cia"), "an update stays a CIA, decrypted");
+        assert_eq!(n3ds_destination(&update, "cia", false, OutputFormat::Zcxi), Some("zcia"));
+        assert_eq!(n3ds_destination(&game, "cia", true, OutputFormat::Cci), None, "a zip member is copied as it is");
+        assert_eq!(n3ds_destination(&game, "pdf", false, OutputFormat::Cci), None, "a manual beside it too");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

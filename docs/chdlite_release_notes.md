@@ -1,9 +1,14 @@
-# chdlite 0.3.2
+# chdlite 0.3.3
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
 
 ## Changes
 
+- **3DS.** Lite and Comp decrypt a dropped .cia, .3ds, .cci or .cxi into the format picked in
+  Settings: .cci, .3ds, .cxi, or the compressed .zcci and .zcxi that Azahar reads. Updates and
+  DLC stay .cia (.zcia). Extract unpacks the compressed ones. No keys come with chdlite: put
+  your own aes_keys.txt (and seeddb.bin when a title needs it) beside the files, beside
+  chdlite, or in its assets folder. The console tools take `--3ds`.
 - **NES, N64 and SNES dumps.** Lite and Comp write a dropped cartridge dump in the layout
   picked in Settings: NES headered (.nes), headerless (.nes) or headerless (.unh); N64 .z64,
   .v64 or .n64; SNES .sfc or .smc. The main window shows the current choice. A dump already in
@@ -11,6 +16,38 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
   `--n64` and `--snes`.
 - Whether a NES dump has a header is looked up in the NES header database. A dump that is not
   in it is reported with its hash.
+- **A Mac app and a Linux AppImage.** chdlite now comes as `chdlite.app` for macOS and as a
+  single-file AppImage for Linux. Both open the window; the console tools are inside too
+  (`chdlite.AppImage chdcomp ...`).
+- **RetroAchievements.** Hash also shows the RetroAchievements hash, on by default, and whether
+  RetroAchievements has achievements for it, with the game's name. The list it checks is
+  bundled; its date is shown in Settings and by `--version`.
+- **Threads.** Auto now leaves 4 physical cores free, also for a single file. Files at once
+  never use more threads than the total set.
+
+## Bug fixes
+
+- The Android app had the standard Android icon instead of chdlite's.
+- A replace that failed or was cancelled deleted the file it was replacing. A cancelled or
+  killed conversion could also leave that file hidden; it is now put back.
+- Ctrl-C in the console tools left a half-written file under the output's name.
+- Two inputs of the same name written to one folder overwrote each other. The second now
+  gets " (2)" added, or fails with a message when its file names come from the disc.
+- A lone .bin or .img could not be converted from a read-only folder, even with an output
+  folder set.
+- A relative output folder was taken from wherever chdlite was started. It is now taken from
+  each input's own folder.
+- Folders left behind by a killed conversion are cleaned up.
+- The release build could not read .pbp files.
+
+# chdlite 0.3.2
+
+Android only.
+
+## Bug fixes
+
+- In the Android app, allowing file access failed with "Java exception was thrown" instead of
+  opening the system's access screen.
 
 # chdlite 0.3.1
 

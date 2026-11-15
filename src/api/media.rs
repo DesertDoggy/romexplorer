@@ -15,7 +15,7 @@ use crate::database::settings;
 use super::{App, Error, Result};
 
 /// Largest file accepted from a URL or an upload.
-pub const MAX_MEDIA_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_MEDIA_BYTES: usize = media_store::MAX_MEDIA_BYTES;
 
 async fn roots(app: &App) -> Result<Roots> {
     Ok(Roots::load(&app.pool, &app.paths.media_dir()).await?)
@@ -142,8 +142,23 @@ pub struct RefetchResult {
 /// Makes sure the file behind row `id` exists on disk: from a cached copy if any tier has
 /// one, else downloaded again from the URL it was fetched from. The server as a cache, seen
 /// from a client: a miss at the deepest tier is filled from the provider, not reported.
+///
+/// For this server's own jobs. A client's request goes through [`refetch_for_client`].
 pub async fn refetch(app: &App, id: u64) -> Result<RefetchResult> {
-    let row = sqlx::query("SELECT path, root_role, source_url FROM media WHERE id = ? AND deleted = FALSE").bind(id).fetch_optional(&app.pool).await?.ok_or_else(|| Error::not_found(format!("no media {id}")))?;
+    refetch_with(app, id, None).await
+}
+
+/// [`refetch`] asked by a signed-in account (`POST /media/{id}/refetch`): the row's URL may
+/// have come from another account's `POST /media/fetch`, so it is fetched like one -- no
+/// address literal (loopback only for a test, `allow_loopback`) and through
+/// [`App::http_public`], which never connects into this machine's network.
+pub async fn refetch_for_client(app: &App, id: u64, allow_loopback: bool) -> Result<RefetchResult> {
+    refetch_with(app, id, Some(allow_loopback)).await
+}
+
+/// `client`: `None` for this server's own use, `Some(allow_loopback)` for a client's.
+async fn refetch_with(app: &App, id: u64, client: Option<bool>) -> Result<RefetchResult> {
+    let row = sqlx::query("SELECT path, root_role, source_url, media_type FROM media WHERE id = ? AND deleted = FALSE").bind(id).fetch_optional(&app.pool).await?.ok_or_else(|| Error::not_found(format!("no media {id}")))?;
     let roots = roots(app).await?;
     let original = roots.resolve(row.try_get::<Option<String>, _>("root_role")?.as_deref(), &row.try_get::<String, _>("path")?);
     if original.is_file() {
@@ -156,10 +171,20 @@ pub async fn refetch(app: &App, id: u64) -> Result<RefetchResult> {
         return Ok(RefetchResult { media_id: id, bytes: bytes.len() as u64, from: "cache".to_string() });
     }
     let url: String = row.try_get::<Option<String>, _>("source_url")?.filter(|u| !u.is_empty()).ok_or_else(|| Error::invalid(format!("media {id} has no source URL to fetch again from (a manual upload)")))?;
-    // Stored by this server itself, so wherever it points is where this server chose to go.
-    provider_url_allowed(&url, true)?;
-    let response = app.http.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| Error::unavailable(format!("fetching {url} again: {e}")))?;
-    let bytes = response.bytes().await.map_err(|e| Error::unavailable(format!("fetching {url} again: {e}")))?;
+    let http = match client {
+        // Stored by this server itself, so wherever it points is where this server chose to go.
+        None => {
+            provider_url_allowed(&url, true)?;
+            &app.http
+        }
+        Some(allow_loopback) => {
+            provider_url_allowed(&url, allow_loopback)?;
+            &app.http_public
+        }
+    };
+    let media_type: String = row.try_get("media_type")?;
+    let response = http.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| Error::unavailable(format!("fetching {url} again: {e}")))?;
+    let bytes = media_store::read_capped(response, RootRole::for_media_type(&media_type).max_bytes()).await.map_err(|e| Error::unavailable(format!("fetching {url} again: {e}")))?;
     media_store::write_file(&original, &bytes).await?;
     sqlx::query("UPDATE media SET content_sha1 = ?, bytes = ? WHERE id = ?").bind(media_store::sha1_bytes(&bytes)).bind(bytes.len() as u64).bind(id).execute(&app.pool).await?;
     // Whatever the tiers held was made from a file that is gone; the bytes may differ.
@@ -205,11 +230,11 @@ pub async fn fetch_for(app: &App, req: &FetchRequest, allow_loopback: bool) -> R
     provider_url_allowed(&req.url, allow_loopback)?;
     host_resolves_outside(&req.url, allow_loopback).await?;
     let targets = with_group(app, target).await?;
-    let (record, _) = crate::database::providers::media::store_url(&app.http, &app.pool, &app.paths.media_dir(), provider.name(), req.provider_id.as_deref(), &req.url, &req.media_type, sub, &targets).await?;
+    let (record, _) = crate::database::providers::media::store_url(&app.http_public, &app.pool, &app.paths.media_dir(), provider.name(), req.provider_id.as_deref(), &req.url, &req.media_type, sub, &targets).await?;
     if record.path.is_file() {
         return Ok(FetchResult { media_id: record.media_id, bytes: record.bytes, fetched: record.fresh });
     }
-    let restored = refetch(app, record.media_id).await?;
+    let restored = refetch_for_client(app, record.media_id, allow_loopback).await?;
     Ok(FetchResult { media_id: record.media_id, bytes: restored.bytes, fetched: restored.from == "provider" })
 }
 
@@ -357,14 +382,12 @@ pub async fn set_from_url(app: &App, req: &ManualUrl) -> Result<ManualResult> {
         return Err(Error::invalid("url must be http(s)"));
     }
     let response = app.http.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| Error::unavailable(format!("download failed: {e}")))?;
-    if response.content_length().is_some_and(|n| n as usize > MAX_MEDIA_BYTES) {
-        return Err(Error::invalid(format!("file is larger than {} MiB", MAX_MEDIA_BYTES >> 20)));
+    let limit = RootRole::for_media_type(&req.media_type).max_bytes();
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        return Err(Error::invalid(format!("file is larger than {} MiB", limit >> 20)));
     }
     let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
-    let bytes = response.bytes().await.map_err(|e| Error::unavailable(format!("download failed: {e}")))?;
-    if bytes.len() > MAX_MEDIA_BYTES {
-        return Err(Error::invalid(format!("file is larger than {} MiB", MAX_MEDIA_BYTES >> 20)));
-    }
+    let bytes = media_store::read_capped(response, limit).await.map_err(|e| Error::invalid(format!("download failed: {e}")))?;
     if content_type.as_deref().is_some_and(|ct| ct.starts_with("text/html")) {
         return Err(Error::invalid("that URL is a web page, not an image/video/audio file (use the file's own URL)"));
     }
@@ -467,6 +490,15 @@ mod tests {
         assert!(!is_internal_ip("8.8.8.8".parse().unwrap()));
         assert!(names_internal_host(&reqwest::Url::parse("http://[::ffff:127.0.0.1]/").unwrap()));
         assert!(!names_internal_host(&reqwest::Url::parse("https://images.igdb.com/x").unwrap()));
+    }
+
+    /// A name that resolves inside is refused by the client's own resolver, which every
+    /// request and every redirect goes through -- not by a check made before it.
+    #[tokio::test]
+    async fn the_public_client_never_resolves_inside() {
+        let client = crate::database::providers::build_public_http_client().unwrap();
+        let err = client.get("http://localhost:9/x.png").send().await.unwrap_err();
+        assert!(format!("{err:?}").contains("local network"), "{err:?}");
     }
 
     #[test]

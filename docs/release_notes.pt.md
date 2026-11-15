@@ -8,6 +8,15 @@ de segurança antes de substituir uma versão.
 
 ## Alterações
 
+**3DS**
+- Uma cópia pode desencriptar títulos 3DS para .cci, .3ds ou .cxi, ou para os comprimidos .zcci
+  e .zcxi que o Azahar lê. Atualizações e DLC ficam .cia (.zcia), o homebrew .3dsx (.z3dsx).
+- O romexplorer não inclui chaves. Coloque o seu próprio aes_keys.txt (e seeddb.bin quando um
+  título precisar) junto aos ficheiros, junto ao romexplorer ou na sua pasta assets.
+- As análises encontram .cci, .cxi e os comprimidos .zcci, .zcia e .zcxi, por isso uma cópia
+  também pode converter um .zcci em .cci e vice-versa. A correspondência por série lê o código de
+  produto e o ID do título, com uma caixa própria para imagens de cartucho.
+
 **Áudio das ROM**
 - Abrir a página de um título indexa primeiro a música das ROM desse jogo. Até terminar, a página
   mostra o progresso em vez de tocar música de outro jogo.
@@ -27,6 +36,45 @@ de segurança antes de substituir uma versão.
 - Ao converter dumps de SNES numa cópia, um ficheiro era convertido mesmo quando o tamanho e o
   cabeçalho interno não concordavam quanto ao cabeçalho de copiador. Agora é indicado como erro.
   Um dump de NES que não está na base de dados de cabeçalhos é indicado com o seu hash.
+
+**Análise**
+- No Linux, uma análise não encontrava entradas cue, gdi e m3u escritas com outras maiúsculas
+  ou com barras invertidas, e tomava por uma só ROM dois ficheiros que só diferem nas
+  maiúsculas.
+- Analisar uma pasta ignorava o tipo e a plataforma das pastas lá dentro. As pastas de jogo
+  sob uma pasta sem plataforma tornavam-se um jogo por ficheiro.
+- As novas análises voltavam a ler os jogos em pasta, separavam faixas já juntas e perdiam as
+  correspondências por série. Agrupar discos era lento em pastas grandes.
+- Ficheiros que não são ROM, como textos e imagens, tornavam-se jogos. Agora só depois de
+  identificados.
+- Com só xxh3_128 nos hashes de análise perdiam-se as correspondências DAT. Agora um de crc32,
+  md5 e sha1 fica sempre ligado.
+
+**Cópia**
+- Ao substituir, o ficheiro antigo era apagado antes de o novo estar escrito. Uma cópia também
+  podia reescrever listas a manter e escrever num só dois ficheiros que só diferem nas
+  maiúsculas.
+
+**Junção de títulos**
+- Podiam juntar-se duas versões de um conjunto de versões, ou um título comercial com um sem
+  licença. Os títulos separados voltavam com «Aceitar tudo», e as ligações IGDB retiradas pela
+  auditoria voltavam na correspondência de hash seguinte.
+- Uma correspondência Hasheous pelo outro nome de um jogo junto criava um título duplicado.
+
+**Servidor e tarefas**
+- Obter imagens para um cliente podia chegar à rede do próprio servidor, sem limite de
+  tamanho.
+- Qualquer conta podia descarregar as caches SQLite «database» e «all», com contas e
+  definições. Agora exigem um administrador.
+- Uma sincronização completa interrompida deixava uma tabela a meio, e cancelar uma cópia de
+  segurança deixava começar a seguinte enquanto ainda escrevia.
+- As cópias para outra unidade e as sincronizações a partir de outro servidor esperavam por
+  tarefas alheias. Após reiniciar a base de dados, uma tarefa podia começar duas vezes.
+
+**Outros**
+- A música de ROM podia falhar num conjunto PSF2.
+- Algumas etiquetas da consola web e frases em Config › Definições ficavam em inglês.
+- MariaDB anterior a 10.6 falhava com erros pouco claros. Agora é recusada ao ligar.
 
 # romexplorer 0.2.0 (alpha)
 

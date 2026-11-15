@@ -63,11 +63,24 @@ fn with_env<T>(body: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T
     let mut env: AttachGuard = vm.attach_current_thread().map_err(|err| err.to_string())?;
     let activity = activity()?;
     let result = body(&mut env, &activity);
+    // The exception itself (class and message), not only jni's "Java exception was thrown".
+    let mut thrown = None;
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_describe();
+        if let Ok(exception) = env.exception_occurred() {
+            let _ = env.exception_clear();
+            thrown = env
+                .call_method(&exception, "toString", "()Ljava/lang/String;", &[])
+                .and_then(|text| text.l())
+                .and_then(|text| string(&mut env, text))
+                .ok();
+        }
         let _ = env.exception_clear();
     }
-    result.map_err(|err| err.to_string())
+    result.map_err(|err| match thrown {
+        Some(text) => format!("{err}: {text}"),
+        None => err.to_string(),
+    })
 }
 
 /// `ChdliteBridge`, through the activity's class loader: `FindClass` on a native thread sees
