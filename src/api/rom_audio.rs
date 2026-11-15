@@ -722,6 +722,26 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             (Ok(sets), true) => sets.clone(),
             _ => Vec::new(),
         };
+        // Other copies of the game in its title (the original of a translation): a NES copy
+        // with no map of its own plays by theirs where the music is unchanged.
+        let others: Vec<PathBuf> = if songs && rom_songs::borrows_maps(platform) {
+            sqlx::query_scalar::<_, String>(
+                "SELECT DISTINCT r.main_path FROM local_game_roms gr JOIN local_release_games lrg ON lrg.game_id = gr.game_id \
+                 JOIN title_releases tr ON tr.release_id = lrg.release_id JOIN title_releases tr2 ON tr2.title_id = tr.title_id \
+                 JOIN local_release_games lrg2 ON lrg2.release_id = tr2.release_id JOIN local_game_roms gr2 ON gr2.game_id = lrg2.game_id \
+                 JOIN local_rom r ON r.id = gr2.rom_id AND r.deleted = FALSE WHERE gr.rom_id = ? AND gr2.rom_id <> ? LIMIT 16",
+            )
+            .bind(rom_id)
+            .bind(rom_id)
+            .fetch_all(&app.pool)
+            .await?
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect()
+        } else {
+            Vec::new()
+        };
         // What inside the ROM is being read right now, for the job's progress line.
         let step = Arc::new(std::sync::Mutex::new(String::new()));
         let at = step.clone();
@@ -737,7 +757,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             note("disc");
             let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |p| note(p)));
             note("the game's sound engine");
-            let songs = if songs && rom_file.is_file() { rom_songs::index(&rom_file, platform, &thresholds) } else { Ok(Vec::new()) };
+            let songs = if songs && rom_file.is_file() { rom_songs::index_with_others(&rom_file, platform, &thresholds, &others).map(|(found, _)| found) } else { Ok(Vec::new()) };
             (rips, disc, songs, map_error)
         });
         let started = std::time::Instant::now();

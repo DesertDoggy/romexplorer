@@ -246,6 +246,75 @@ pub fn index(path: &Path, platform: u16, t: &Thresholds) -> Result<Vec<FoundTrac
     index_explained(path, platform, t).map(|(found, _)| found)
 }
 
+/// [`index_explained`], with the other copies of the same game (`others`: another region, the
+/// original of a translation) to borrow a NES map from when this copy has none of its own.
+pub fn index_with_others(path: &Path, platform: u16, t: &Thresholds, others: &[PathBuf]) -> Result<(Vec<FoundTrack>, Option<String>), String> {
+    if is_nes(platform) && !others.is_empty() {
+        if let Some(found) = borrowed_nes(path, t, others)? {
+            return Ok((found, None));
+        }
+    }
+    index_explained(path, platform, t)
+}
+
+/// Whether [`index_with_others`] can use other copies of a game on `platform`.
+pub fn borrows_maps(platform: u16) -> bool {
+    is_nes(platform)
+}
+
+/// Share of a track's sound fingerprint a copy shares with the map's own game for the track
+/// to count as the same music there.
+const SAME_MUSIC: f64 = 0.98;
+
+/// A NES copy with no map of its own (a translation, a fix patch) plays by the original's
+/// map: each of the map's tracks that still sounds on the copy is kept. Of several copies with
+/// a map, the one whose tracks agree most with the copy's sound is taken. None only when no
+/// other copy has a map or none of its tracks sounds on this one.
+fn borrowed_nes(path: &Path, t: &Thresholds, others: &[PathBuf]) -> Result<Option<Vec<FoundTrack>>, String> {
+    let rom = read_rom(path)?;
+    let Some(own) = map_key(&rom) else { return Ok(None) };
+    if kept_map("nes", &own).is_some() {
+        return Ok(None);
+    }
+    // (key, map, tracks that sound here, how many of them agree with the original)
+    let mut best: Option<(String, super::nes_nsf::Map, std::collections::HashSet<u8>, usize)> = None;
+    for other in others {
+        let Ok(theirs) = read_rom(other) else { continue };
+        let Some(key) = map_key(&theirs) else { continue };
+        if key == own || best.as_ref().is_some_and(|b| b.0 == key) {
+            continue;
+        }
+        let Some(m) = load_map(&key) else { continue };
+        let mut sounds = std::collections::HashSet::new();
+        let mut agree = 0;
+        for v in (0..m.header.songs).filter(|&v| !matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None))) {
+            let Some(here) = map_print(&m, &rom, v).filter(|p| p.len() >= music_search::MIN_MELODY) else { continue };
+            sounds.insert(v);
+            if map_print(&m, &theirs, v).is_some_and(|there| music_search::alike(&there, &here) >= SAME_MUSIC) {
+                agree += 1;
+            }
+        }
+        if !sounds.is_empty() && best.as_ref().map_or(true, |b| (agree, sounds.len()) > (b.3, b.2.len())) {
+            best = Some((key, m, sounds, agree));
+        }
+    }
+    let Some((key, m, sounds, _)) = best else { return Ok(None) };
+    let found = index_map(&rom, &key, &m, t, Some(&sounds))?;
+    Ok((!found.is_empty()).then_some(found))
+}
+
+/// A map track's [`music_search::writes_print`] played on `rom`.
+fn map_print(m: &super::nes_nsf::Map, rom: &[u8], v: u8) -> Option<std::collections::HashSet<u64>> {
+    let mut song = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
+    let mut samples = Vec::new();
+    let mut frames = Vec::with_capacity(music_search::PRINT_FRAMES);
+    for _ in 0..music_search::PRINT_FRAMES {
+        frames.push(song.frame(&mut samples)?);
+        samples.clear();
+    }
+    Some(music_search::writes_print(&frames))
+}
+
 /// [`index`], and when nothing was found, why.
 pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     if !covers(platform) {
@@ -606,7 +675,7 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
 fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
     if let Some((key, m)) = map_key(&rom).and_then(|k| Some((k.clone(), load_map(&k)?))) {
-        let found = index_map(&rom, &key, &m, t)?;
+        let found = index_map(&rom, &key, &m, t, None)?;
         if !found.is_empty() {
             return Ok((found, None));
         }
@@ -1686,10 +1755,11 @@ pub fn map_from_sets_for(path: &Path, sets: &[PathBuf], platform: Option<u16>) -
 }
 
 /// The songs a map plays, measured and classified like [`index_machine`]'s.
-fn index_map(rom: &[u8], key: &str, m: &super::nes_nsf::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+/// `only`: the tracks to list, when the map is another copy's (see [`borrowed_nes`]).
+fn index_map(rom: &[u8], key: &str, m: &super::nes_nsf::Map, t: &Thresholds, only: Option<&std::collections::HashSet<u8>>) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
     for v in 0..m.header.songs {
-        if matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) {
+        if matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) || only.is_some_and(|o| !o.contains(&v)) {
             continue;
         }
         let Ok(mut song) = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
