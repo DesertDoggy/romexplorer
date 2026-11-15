@@ -344,11 +344,27 @@ if [[ "$platform" == "windows" ]]; then
   # get a properly connected stdin, and will hang waiting for input that never arrives
   # if it (or anything the batch file chains into) ever probes for it. Both confirmed by
   # direct testing, not guesswork.
-  set +e
-  MSYS2_ARG_CONV_EXCL="/c" cmd.exe /c "$win_tmp_bat" < /dev/null 2>&1 | tee -a "$log_file"
-  build_status="${PIPESTATUS[0]}"
-  set -e
-  rm -f "$tmp_bat"
+  #
+  # C1056 ("cannot update the time date stamp field in '...obj'") is not a compile error:
+  # something else held the object open while cl.exe was finishing it -- on the user's PC,
+  # the antivirus scanning each new object. It hits a different file each time, and ninja
+  # keeps everything already built, so another pass carries on from where it stopped. Retry
+  # only on that error; any real failure still stops at the first pass.
+  attempt_log="$build_dir/.dolphinrvz_attempt.log"
+  max_attempts=5
+  attempt=1
+  while :; do
+    set +e
+    MSYS2_ARG_CONV_EXCL="/c" cmd.exe /c "$win_tmp_bat" < /dev/null 2>&1 | tee "$attempt_log" | tee -a "$log_file"
+    build_status="${PIPESTATUS[0]}"
+    set -e
+    [[ "$build_status" -ne 0 ]] || break
+    grep -q "fatal error C1056" "$attempt_log" || break
+    [[ "$attempt" -lt "$max_attempts" ]] || break
+    attempt=$((attempt + 1))
+    echo "[WARN] C1056: an object was locked by another process while being written; retrying the build (pass $attempt of $max_attempts)" | tee -a "$log_file"
+  done
+  rm -f "$tmp_bat" "$attempt_log"
   [[ "$build_status" -eq 0 ]] || { echo "[ERROR] Windows configure/build failed (exit $build_status)" | tee -a "$log_file"; exit "$build_status"; }
 else
   # Dolphin refuses to reconfigure a build directory whose System/Bundled choices changed
