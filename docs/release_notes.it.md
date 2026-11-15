@@ -9,6 +9,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 ## Correzioni
 
 - L'indice della musica delle ROM sembrava fermo mentre una ROM richiedeva molto tempo.
+- L'indice della musica delle ROM saltava le ROM identificate solo tramite un DAT.
 
 # romexplorer 0.2.1 (alpha)
 

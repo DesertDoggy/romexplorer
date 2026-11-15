@@ -9,6 +9,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 ## Fehlerbehebungen
 
 - Der ROM-Musikindex schien stehen zu bleiben, während eine ROM lange gelesen wurde.
+- Der ROM-Musikindex übersprang ROMs, die nur über einen DAT-Abgleich erkannt wurden.
 
 # romexplorer 0.2.1 (alpha)
 

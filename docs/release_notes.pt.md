@@ -9,6 +9,7 @@ de segurança antes de substituir uma versão.
 ## Correções
 
 - O índice de música das ROM parecia parado enquanto uma ROM demorava a ser lida.
+- O índice de música das ROM ignorava as ROM identificadas apenas por uma correspondência com um DAT.
 
 # romexplorer 0.2.1 (alpha)
 

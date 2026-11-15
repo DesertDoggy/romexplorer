@@ -9,6 +9,7 @@ zapasową przed podmianą wersji.
 ## Poprawki błędów
 
 - Indeks muzyki ROM wyglądał na zatrzymany, gdy odczyt jednej ROM trwał długo.
+- Indeks muzyki ROM pomijał ROM-y rozpoznane tylko przez dopasowanie do DAT.
 
 # romexplorer 0.2.1 (alpha)
 

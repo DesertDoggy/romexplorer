@@ -6,6 +6,7 @@ replacing a build.
 ## Bug fixes
 
 - The ROM music index looked stuck while one ROM took long to read.
+- The ROM music index skipped ROMs that were identified only by a DAT match.
 
 # romexplorer 0.2.1 (alpha)
 

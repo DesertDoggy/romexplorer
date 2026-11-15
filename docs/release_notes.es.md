@@ -9,6 +9,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 ## Correcciones
 
 - El índice de música de las ROM parecía detenido mientras una ROM tardaba en leerse.
+- El índice de música de las ROM omitía las ROM identificadas solo por una coincidencia con un DAT.
 
 # romexplorer 0.2.1 (alpha)
 

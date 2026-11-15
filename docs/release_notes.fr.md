@@ -9,6 +9,7 @@ Faites une sauvegarde avant de remplacer une version.
 ## Corrections
 
 - L'index de musique des ROM semblait bloqué pendant la lecture d'une ROM longue à lire.
+- L'index de musique des ROM ignorait les ROM identifiées uniquement par une correspondance DAT.
 
 # romexplorer 0.2.1 (alpha)
 
