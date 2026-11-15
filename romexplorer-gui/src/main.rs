@@ -259,9 +259,17 @@ fn main() {
         {
             api::set_endpoint(api::saved_endpoint().unwrap_or_default());
         }
-        // Mobile: the server the user connected to last (the connect screen asks otherwise).
+        // Mobile: the server the user connected to last, if any (set up under Settings).
         #[cfg(not(target_arch = "wasm32"))]
         api::set_endpoint(api::saved_endpoint().unwrap_or_default());
+        // The phone (romcompanion) reads its synced copy first and the server for the rest.
+        #[cfg(feature = "mobile")]
+        {
+            if let Err(e) = api::companion::open_saved() {
+                eprintln!("romcompanion: the synced copy can't be read ({e}); sync again");
+            }
+            api::set_backend(Box::new(api::companion::CompanionBackend));
+        }
         dioxus::launch(App);
     }
 }
@@ -275,6 +283,11 @@ fn App() -> Element {
     // unmounts and `App` never does.
     #[cfg(feature = "local")]
     api::assets::register();
+    #[cfg(feature = "mobile")]
+    api::companion::register_assets();
+    // The phone's own background work: the daily sync and RA progress, only as turned on.
+    #[cfg(feature = "mobile")]
+    use_future(|| async { api::companion::background().await });
     use_effect(|| {
         let _ = document::eval(LONG_PRESS_JS);
     });
@@ -282,11 +295,13 @@ fn App() -> Element {
         document::Title { "romexplorer" }
         document::Style { {APP_CSS} }
         document::Style { {MOBILE_CSS} }
-        match (api::NEEDS_SIGN_IN.read().clone(), &*loaded.read()) {
+        // The phone starts as a client of its own, signed in or not: sign-in waits under its
+        // Settings, so it never stops the app here.
+        match (if cfg!(feature = "mobile") { None } else { api::NEEDS_SIGN_IN.read().clone() }, &*loaded.read()) {
             // A 401 anywhere (signed out, or the device was revoked) and a failed first load
             // both land here.
             (Some(message), _) => rsx! { SignIn { error: message, on_done: move |_| { *api::NEEDS_SIGN_IN.write() = None; let mut l = loaded; l.restart(); } } },
-            (None, Some(Err(e))) if e.status == 401 || e.status == 0 => rsx! { SignIn { error: e.message.clone(), on_done: move |_| { *api::NEEDS_SIGN_IN.write() = None; let mut l = loaded; l.restart(); } } },
+            (None, Some(Err(e))) if !cfg!(feature = "mobile") && (e.status == 401 || e.status == 0) => rsx! { SignIn { error: e.message.clone(), on_done: move |_| { *api::NEEDS_SIGN_IN.write() = None; let mut l = loaded; l.restart(); } } },
             // Pages read the vocabulary / settings while they build (filters, editors): only
             // once they're in.
             (None, None) => rsx! { header { h1 { "romexplorer" } } main { id: "view", div { class: "muted", {state::tr("loading…")} } } },
@@ -485,9 +500,10 @@ fn Shell() -> Element {
     // The first-run mode choice, once per run, for an installation that was never asked.
     use_future(|| async { crate::screens::maybe_first_run().await });
     // A device set to open in Big Picture does so once per run; leaving it stays left.
+    // The phone's whole UI is that view, so it always opens there.
     use_future(|| async {
-        if !BIG_PICTURE_CHECKED.with(|c| c.replace(true)) && screens::bigpicture::starts_in_big_picture().await {
-            navigator().replace(Route::BigPicture { tab: "titles".into() });
+        if !BIG_PICTURE_CHECKED.with(|c| c.replace(true)) && (cfg!(feature = "mobile") || screens::bigpicture::starts_in_big_picture().await) {
+            navigator().replace(Route::BigPicture { tab: screens::bigpicture::first_tab() });
         }
     });
     // Job counts in the header, every few seconds.
@@ -498,6 +514,14 @@ fn Shell() -> Element {
                 counts.set(state::trf("jobs: {counts}", &[("counts", &text)]));
             }
             ui::sleep(5000).await;
+        }
+    });
+    // Which database this is, as the console's header says it: once, from the status route.
+    let mut db_line = use_signal(String::new);
+    use_future(move || async move {
+        if let Ok(v) = api::get("/api/v1/status").await {
+            let d = &v["database"];
+            db_line.set(format!("{}@{}:{}/{} · MariaDB {}", api::s(d, "user"), api::s(d, "host"), api::u(d, "port"), api::s(d, "database"), api::s(d, "server_version")));
         }
     });
     let db = state::vocab();
@@ -523,6 +547,7 @@ fn Shell() -> Element {
                 HeaderExplain {}
                 // A full-screen launcher view for handhelds and TVs (app only; CLAUDE.md).
                 button { class: "btn small", title: state::tr("full screen, for a controller or touch"), onclick: move |_| { navigator().push(Route::BigPicture { tab: "titles".into() }); }, {state::tr("Big Picture")} }
+                span { class: "meta", "{db_line}" }
                 span { class: "spacer" }
                 span { class: "meta", "{counts}" }
                 if let Some(who) = signed_in {

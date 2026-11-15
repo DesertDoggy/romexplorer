@@ -1,7 +1,7 @@
 [workspace]
 # The GUI (Dioxus) is its own crate so its dependencies stay out of every existing lib /
 # bin / test build here; `cargo build` in this directory still builds just `romexplorer`.
-members = [".", "romexplorer-gui", "romexplorer-types", "chdlite", "rommusic-cli"]
+members = [".", "romexplorer-gui", "romexplorer-types", "chdlite", "rommusic-cli", "cia-tool", "romcompanion"]
 default-members = ["."]
 resolver = "2"
 
@@ -18,7 +18,6 @@ name = "romexplorer"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
-build = "build.rs"
 
 [[bin]]
 name = "biosdb_gen"
@@ -69,6 +68,10 @@ name = "test_pbp"
 path = "tests/src/test_pbp.rs"
 
 [[test]]
+name = "test_n3ds"
+path = "tests/src/test_n3ds.rs"
+
+[[test]]
 name = "test_converter"
 path = "tests/src/test_converter.rs"
 
@@ -109,10 +112,6 @@ name = "test_tls"
 path = "tests/src/test_tls.rs"
 
 [features]
-# Hook for the optional hand-written x86_64 MASM decode loop for LZMA (see build.rs). Off by
-# default: has no effect on non-x86_64 hosts, and falls back to the portable C decoder if no
-# MASM-compatible assembler is found even when enabled on x86_64.
-lzma_dec_asm = []
 # AVIF *decoding* of media sources through dav1d (C, via the image crate's avif-native).
 # Off by default: provider art is JPEG/PNG/WebP, and dav1d would need building per target
 # (incl. iOS/Android). Without it an AVIF source is served as-is, with no thumbnail.
@@ -146,10 +145,14 @@ sha2 = "0.11"
 # AES-128 for the outer layer of PS3/PSP packages, to read their PARAM.SFO (rom::platforms::sony,
 # off unless `scan_pkg_titles` is set). Already in the lock file through nod; test_wiiu uses it too.
 aes = "0.9"
+# 3DS CIA / CCI decryption (`rom::n3ds`): cia-tool's library, pure Rust, in `cia-tool/`.
+# No console keys come with it; they are asked for when a conversion needs them.
+cia-tool = { path = "cia-tool" }
 
 # src/database: MariaDB-backed reference data (hash -> game/region lookup, later
 # file/content/game "pages" -- see docs/plan and the database module's own doc comments).
 # Async because a GUI and a browser-facing web backend are planned to share this layer.
+socket2 = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "process", "sync", "io-util", "signal"] }
 # sqlx over mysql/mysql_async: pure-Rust wire-protocol client like both (no libmysqlclient
 # dependency on any platform), but with one Pool/FromRow abstraction that already covers
@@ -269,9 +272,8 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # `oneshot` for driving the router in-process in server tests, the way the desktop app does.
 # Already in the lock file via axum and the GUI's `local` backend.
 tower = { version = "0.5", features = ["util"] }
-
-[build-dependencies]
-cc = "1.1"
+# Encrypted 3DS test files made with fake keys (`tests/src/test_n3ds.rs`).
+cia-tool = { path = "cia-tool", features = ["testkit"] }
 
 # Release binaries are shipped, so they carry no symbol table: the server binary is 40.6 MB
 # built and ~31.4 MB stripped, and nothing needs `.symtab` at run time -- every `dlopen`ed

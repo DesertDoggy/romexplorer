@@ -14,7 +14,35 @@ use super::server::{MariaDbServer, UserPrivileges};
 /// after connecting (typically once at app startup), not on every connect, since a shared
 /// fileserver instance may already be migrated by another client.
 pub async fn connect(config: &DatabaseConfig) -> Result<MySqlPool, DatabaseError> {
-    MySqlPoolOptions::new().max_connections(config.max_connections).connect_with(config.connect_options(true)).await.map_err(DatabaseError::from)
+    let pool = MySqlPoolOptions::new().max_connections(config.max_connections).connect_with(config.connect_options(true)).await.map_err(DatabaseError::from)?;
+    let version: String = sqlx::query_scalar("SELECT VERSION()").fetch_one(&pool).await?;
+    if let Err(reason) = check_server_version(&version) {
+        pool.close().await;
+        return Err(DatabaseError::Server(reason));
+    }
+    Ok(pool)
+}
+
+/// The oldest MariaDB the schema and its queries run on: `CREATE SEQUENCE` (10.3),
+/// `JSON_TABLE` (10.6), `JSON_VALUE` (10.2.3).
+pub const MIN_MARIADB: (u32, u32) = (10, 6);
+
+/// Whether a server answering `SELECT VERSION()` with `version` can hold this database: a
+/// MariaDB of [`MIN_MARIADB`] or newer. Err says what is wrong, for the user. Without this an
+/// older server (or a MySQL) failed later, at some migration or query, with a syntax error.
+pub fn check_server_version(version: &str) -> Result<(), String> {
+    let (want_major, want_minor) = MIN_MARIADB;
+    if !version.to_ascii_lowercase().contains("mariadb") {
+        return Err(format!("the database server is not MariaDB (it reports version {version:?}); romexplorer needs MariaDB {want_major}.{want_minor} or newer"));
+    }
+    // Some proxies prefix the MySQL-compatible "5.5.5-".
+    let bare = version.strip_prefix("5.5.5-").unwrap_or(version);
+    let mut parts = bare.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(|p| p.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    if (major, minor) < (want_major, want_minor) {
+        return Err(format!("MariaDB {major}.{minor} is too old; romexplorer needs MariaDB {want_major}.{want_minor} or newer"));
+    }
+    Ok(())
 }
 
 /// `CREATE DATABASE IF NOT EXISTS <config.database>` (utf8mb4), connecting without a
@@ -354,4 +382,19 @@ pub async fn initial_setup(server: &mut MariaDbServer, setup: InitialSetup<'_>) 
     }
 
     Ok(admin_config)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::check_server_version;
+
+    #[test]
+    fn only_a_new_enough_mariadb_is_accepted() {
+        assert!(check_server_version("10.11.6-MariaDB").is_ok());
+        assert!(check_server_version("11.4.2-MariaDB-log").is_ok());
+        assert!(check_server_version("10.6.0-MariaDB").is_ok());
+        assert!(check_server_version("5.5.5-10.11.6-MariaDB").is_ok());
+        assert!(check_server_version("10.5.23-MariaDB").is_err());
+        assert!(check_server_version("8.0.36").is_err(), "MySQL");
+    }
 }

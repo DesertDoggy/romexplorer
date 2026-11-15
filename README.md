@@ -2,6 +2,8 @@
 
 **English** · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [Italiano](README.it.md) · [Português](README.pt.md) · [Deutsch](README.de.md) · [한국어](README.ko.md) · [Polski](README.pl.md)
 
+**Downloads:** [Rom Explorer](https://github.com/DesertDoggy/romexplorer/releases?q=v0) · [CHD Lite](https://github.com/DesertDoggy/romexplorer/releases?q=c0) · [Rom Music](https://github.com/DesertDoggy/romexplorer/releases?q=m0)
+
 > **romexplorer does not distribute or download ROMs, BIOS files or keys, and does not
 > support piracy.** Use it with your own dumps of games you own.
 

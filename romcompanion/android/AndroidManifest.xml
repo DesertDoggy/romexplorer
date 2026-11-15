@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  romcompanion's manifest, in place of the one dx generates (Dioxus.toml: `android_manifest`):
+  dx's own template plus a controller as an input that is welcome but not required, and an
+  activity that survives rotation (the lists change layout between portrait and landscape).
+  It reads no storage: everything it keeps is in its own files directory. The library name
+  "main" is the one dx gives the Rust library.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+
+    <application android:hasCode="true" android:icon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true"
+        android:allowNativeHeapPointerTagging="false"
+        android:label="romcompanion"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:configChanges="orientation|screenLayout|screenSize|keyboardHidden|keyboard|navigation"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:label="romcompanion" android:name="dev.dioxus.main.MainActivity">
+            <meta-data android:name="android.app.lib_name" android:value="main" />
+            <meta-data android:name="android.app.func_name" android:value="ANativeActivity_onCreate" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

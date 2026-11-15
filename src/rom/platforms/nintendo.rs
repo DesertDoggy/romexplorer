@@ -424,12 +424,69 @@ pub fn read_3ds_ncsd_metadata(path: &Path, target: Platform) -> Option<NonDiscHe
 /// title). Old code (line 6222) chose between them on the extension alone and so couldn't
 /// read a misnamed container at all; each layout validates its own magic, so trying both
 /// costs one cheap failed read and never mismatches.
-fn read_3ds_container_metadata(path: &Path) -> Option<NonDiscHeaderMetadata> {
-    read_3ds_ncsd_container_metadata(path).or_else(|| read_3ds_cia_metadata(path))
+///
+/// A bare NCCH (`.cxi`) is read as well, and so is Azahar's compressed form of any of the
+/// three (`.zcci`, `.zcia`, `.zcxi`): its first megabytes are unpacked and read the same way.
+/// No offset into a compressed file means anything, so it has no `serial_offset`; its
+/// `titleinfo` metadata gives the title id when the header in it doesn't.
+pub(crate) fn read_3ds_container_metadata(path: &Path) -> Option<NonDiscHeaderMetadata> {
+    if let Some(head) = super::super::n3ds::z3ds_head(path, Z3DS_HEAD) {
+        let src = Src::Bytes(&head);
+        let mut meta = read_3ds_ncsd_container_metadata(src).or_else(|| read_3ds_ncch_metadata(src)).or_else(|| cia_metadata(src));
+        let title_id = super::super::n3ds::z3ds_title_id(path).map(|id| format!("{id:016X}"));
+        match &mut meta {
+            Some(m) => {
+                m.serial_offset = None;
+                m.header_offset = None;
+                if m.manufacturer_id.is_none() {
+                    m.manufacturer_id = title_id;
+                }
+            }
+            None => meta = title_id.map(|id| NonDiscHeaderMetadata { serial: Some(id.clone()), manufacturer_id: Some(id), encrypted: Some(false), ..Default::default() }),
+        }
+        return meta;
+    }
+    let src = Src::File(path);
+    read_3ds_ncsd_container_metadata(src).or_else(|| read_3ds_ncch_metadata(src)).or_else(|| cia_metadata(src))
 }
 
-fn read_3ds_ncsd_container_metadata(path: &Path) -> Option<NonDiscHeaderMetadata> {
-    let ncsd = read_exact_at(path, 0x100, 0x100).ok()?;
+/// How much of a compressed 3DS file is unpacked to read its headers: past a CIA's
+/// certificates, ticket and TMD to its first content, or a cartridge image's first partition.
+const Z3DS_HEAD: usize = 1 << 20;
+
+/// Where the 3DS readers read from: the file, or the unpacked start of a compressed one.
+#[derive(Clone, Copy)]
+enum Src<'a> {
+    File(&'a Path),
+    Bytes(&'a [u8]),
+}
+
+impl Src<'_> {
+    fn at(self, offset: u64, len: usize) -> Option<Vec<u8>> {
+        match self {
+            Src::File(path) => read_exact_at(path, offset, len).ok(),
+            Src::Bytes(bytes) => bytes.get(usize::try_from(offset).ok()?..usize::try_from(offset).ok()?.checked_add(len)?).map(<[u8]>::to_vec),
+        }
+    }
+}
+
+/// A bare NCCH: a `.cxi` (or `.cfa`), the header at the start.
+fn read_3ds_ncch_metadata(src: Src) -> Option<NonDiscHeaderMetadata> {
+    let ncch = src.at(0, 0x200)?;
+    if ncch.get(0x100..0x104) != Some(b"NCCH") {
+        return None;
+    }
+    let product_code = read_ascii_field(ncch.get(0x150..0x160)?).and_then(|value| sanitize_serial_opt(Some(value)));
+    let program_id = read_u64_le(&ncch, 0x118).map(|value| format!("{value:016X}")).and_then(|value| sanitize_serial_opt(Some(value)));
+    let serial = combine_product_code_and_id(product_code.clone(), program_id.clone());
+    serial.as_ref()?;
+    let encrypted = ncch.get(0x18F).map(|flags| (flags & 0x04) == 0);
+    let serial_offset = product_code.is_some().then_some((0x150, 0x160));
+    Some(NonDiscHeaderMetadata { serial, manufacturer_id: program_id, encrypted, serial_offset, ..Default::default() })
+}
+
+fn read_3ds_ncsd_container_metadata(src: Src) -> Option<NonDiscHeaderMetadata> {
+    let ncsd = src.at(0x100, 0x100)?;
     if ncsd.get(0..4) != Some(b"NCSD") {
         return None;
     }
@@ -440,7 +497,7 @@ fn read_3ds_ncsd_container_metadata(path: &Path) -> Option<NonDiscHeaderMetadata
     }
 
     let ncch_offset = part0_media_units.checked_mul(0x200)?;
-    let ncch = read_exact_at(path, ncch_offset, 0x200).ok()?;
+    let ncch = src.at(ncch_offset, 0x200)?;
     if ncch.get(0x100..0x104) != Some(b"NCCH") {
         return None;
     }
@@ -510,8 +567,8 @@ pub fn is_3ds_nand_dump(path: &Path) -> Option<bool> {
 /// `reference/old_archiver.rs`'s `read_3ds_cia_metadata` (line 6264), plus a new
 /// `encrypted` read from the same TMD content_type bit old code already inspected (to
 /// decide whether the NCCH was even readable) but didn't keep.
-pub(crate) fn read_3ds_cia_metadata(path: &Path) -> Option<NonDiscHeaderMetadata> {
-    let header = read_exact_at(path, 0, 0x2020).ok()?;
+fn cia_metadata(src: Src) -> Option<NonDiscHeaderMetadata> {
+    let header = src.at(0, 0x20)?;
     let archive_header_size = read_u32_le(&header, 0x00)? as u64;
     let cert_chain_size = read_u32_le(&header, 0x08)? as u64;
     let ticket_size = read_u32_le(&header, 0x0C)? as u64;
@@ -520,7 +577,7 @@ pub(crate) fn read_3ds_cia_metadata(path: &Path) -> Option<NonDiscHeaderMetadata
     let cert_offset = align_up_u64(archive_header_size, 64)?;
     let ticket_offset = align_up_u64(cert_offset.checked_add(cert_chain_size)?, 64)?;
     let tmd_offset = align_up_u64(ticket_offset.checked_add(ticket_size)?, 64)?;
-    let tmd_bytes = read_exact_at(path, tmd_offset, tmd_size as usize).ok()?;
+    let tmd_bytes = src.at(tmd_offset, tmd_size as usize)?;
 
     let header_offset = parse_tmd_signature_layout(&tmd_bytes)?;
     let title_id = read_u64_be(&tmd_bytes, header_offset + 0x4C)
@@ -545,7 +602,7 @@ pub(crate) fn read_3ds_cia_metadata(path: &Path) -> Option<NonDiscHeaderMetadata
             let content_encrypted = (content_type & 0x0001) != 0;
             encrypted = Some(content_encrypted);
             if !content_encrypted {
-                let ncch = read_exact_at(path, content_offset, 0x200).ok()?;
+                let ncch = src.at(content_offset, 0x200)?;
                 if ncch.get(0x100..0x104) == Some(b"NCCH") {
                     product_code = read_ascii_field(ncch.get(0x150..0x160)?).and_then(|value| sanitize_serial_opt(Some(value)));
                     if product_code.is_some() {

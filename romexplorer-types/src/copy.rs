@@ -335,10 +335,24 @@ pub enum OutputFormat {
     Xiso,
     /// A PS2 or PSP ISO in compressed blocks. Lossless: the ISO comes back byte for byte.
     Cso,
+    /// A 3DS game as a decrypted cartridge image (`.cci`). These five are 3DS titles
+    /// decrypted with the user's own keys (`rom::n3ds`); an update, DLC, demo or system title
+    /// can't be a cartridge image, so under any of them it stays a decrypted `.cia` (`.zcia`
+    /// for the compressed ones), and homebrew stays `.3dsx` (`.z3dsx`).
+    Cci,
+    /// The same image named `.3ds`.
+    #[serde(rename = "3ds")]
+    ThreeDs,
+    /// The image in Azahar's compressed format.
+    Zcci,
+    /// The game's main part (NCCH) alone, decrypted: no manual or download-play parts.
+    Cxi,
+    /// That, compressed for Azahar.
+    Zcxi,
 }
 
 impl OutputFormat {
-    pub const ALL: [OutputFormat; 12] = [
+    pub const ALL: [OutputFormat; 17] = [
         OutputFormat::Same,
         OutputFormat::Raw,
         OutputFormat::Zip,
@@ -351,7 +365,17 @@ impl OutputFormat {
         OutputFormat::Zar,
         OutputFormat::Xiso,
         OutputFormat::Cso,
+        OutputFormat::Cci,
+        OutputFormat::ThreeDs,
+        OutputFormat::Zcci,
+        OutputFormat::Cxi,
+        OutputFormat::Zcxi,
     ];
+
+    /// The five 3DS formats: a title decrypted (and maybe compressed), not re-containered.
+    pub fn is_3ds(self) -> bool {
+        matches!(self, Self::Cci | Self::ThreeDs | Self::Zcci | Self::Cxi | Self::Zcxi)
+    }
 
     /// True for the formats that keep a disc's files but not the disc: what comes out can't
     /// be turned back into the original image, so it is no good for bit-perfect archiving.
@@ -373,6 +397,11 @@ impl OutputFormat {
             Self::Zar => "zar",
             Self::Xiso => "xiso",
             Self::Cso => "cso",
+            Self::Cci => "cci",
+            Self::ThreeDs => "3ds",
+            Self::Zcci => "zcci",
+            Self::Cxi => "cxi",
+            Self::Zcxi => "zcxi",
         }
     }
 
@@ -399,6 +428,8 @@ impl OutputFormat {
             Self::Zar => Some("zar"),
             Self::Xiso => Some("xiso"),
             Self::Cso => Some("cso"),
+            // Plain files to everything that reads that column.
+            Self::Cci | Self::ThreeDs | Self::Zcci | Self::Cxi | Self::Zcxi => None,
         }
     }
 
@@ -417,6 +448,12 @@ impl OutputFormat {
             Self::Zar => Some("zar"),
             Self::Xiso => Some("iso"),
             Self::Cso => Some("cso"),
+            // A game's; an update keeps `.cia` / `.zcia`, decided per file by the plan.
+            Self::Cci => Some("cci"),
+            Self::ThreeDs => Some("3ds"),
+            Self::Zcci => Some("zcci"),
+            Self::Cxi => Some("cxi"),
+            Self::Zcxi => Some("zcxi"),
         }
     }
 }

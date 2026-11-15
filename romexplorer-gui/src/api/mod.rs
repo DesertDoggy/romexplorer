@@ -11,8 +11,14 @@
 #[cfg(feature = "local")]
 pub mod assets;
 pub mod backend;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod discovery;
+#[cfg(feature = "mobile")]
+pub mod companion;
 #[cfg(feature = "local")]
 pub mod local;
+#[cfg(feature = "mobile")]
+pub mod offline;
 pub mod rest;
 
 // Part of this module's surface whichever build this is, but only the desktop one installs
@@ -55,6 +61,30 @@ pub fn is_admin() -> bool {
 
 /// A LAN `http://` address becomes `https://`: a romexplorer server only answers plain HTTP
 /// from itself and redirects everyone else. Loopback stays as it is.
+/// The server's usual port, prefilled in the sign-in and Sources forms.
+pub const DEFAULT_PORT: &str = "7337";
+
+/// Splits a server address into what the forms show apart: the address (scheme kept, if
+/// any) and the port ("" when it names none).
+pub fn split_base(base: &str) -> (String, String) {
+    let base = base.trim().trim_end_matches('/');
+    let rest = base.split_once("://").map(|(_, r)| r).unwrap_or(base);
+    match rest.rsplit_once(':') {
+        // `[::1]:7337` or `host:7337`, but not a bare IPv6 address's own colons.
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) && (h.ends_with(']') || !h.contains(':')) => {
+            (base[..base.len() - p.len() - 1].to_string(), p.to_string())
+        }
+        _ => (base.to_string(), String::new()),
+    }
+}
+
+/// The address and port fields put back together. A port typed into the address wins.
+pub fn join_base(address: &str, port: &str) -> String {
+    let (address, own) = split_base(address);
+    let port = if !own.is_empty() { own } else { port.trim().to_string() };
+    if address.is_empty() || port.is_empty() { address } else { format!("{address}:{port}") }
+}
+
 pub fn normalize_base(base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     match base.strip_prefix("http://") {
@@ -67,6 +97,10 @@ pub fn normalize_base(base: &str) -> String {
                 format!("https://{rest}")
             }
         }
+        // Typed without a scheme ("192.168.1.10:7337", as the placeholder shows): the server
+        // speaks TLS to everyone but this machine, so that is https -- and a bare host would
+        // otherwise not be a URL at all ("builder error").
+        None if !base.is_empty() && !base.contains("://") => normalize_base(&format!("http://{base}")),
         None => base.to_string(),
     }
 }
@@ -75,6 +109,8 @@ pub fn normalize_base(base: &str) -> String {
 fn device_name() -> String {
     if cfg!(target_arch = "wasm32") {
         "web browser".to_string()
+    } else if cfg!(feature = "mobile") {
+        format!("romcompanion ({})", std::env::consts::OS)
     } else {
         format!("romexplorer app ({})", std::env::consts::OS)
     }
@@ -148,11 +184,12 @@ pub fn url(path: &str) -> String {
 /// it does over HTTP, and no bearer token ends up in the DOM. Web and mobile go over HTTP
 /// with the token in the query, because an `<img>` cannot send an `Authorization` header.
 pub fn media_url(path: &str) -> String {
-    #[cfg(feature = "local")]
+    // The phone serves its synced covers itself, and fetches the rest from the server.
+    #[cfg(any(feature = "local", feature = "mobile"))]
     {
         format!("/rxasset{path}")
     }
-    #[cfg(not(feature = "local"))]
+    #[cfg(not(any(feature = "local", feature = "mobile")))]
     {
         // A web session is a cookie the browser sends with the image request by itself.
         let token = endpoint().token;
@@ -296,13 +333,21 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn config_file() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let dir = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))?;
-    Some(dir.join("romexplorer").join("gui.json"))
+    // A phone has no HOME or APPDATA to speak of: its own files directory.
+    #[cfg(feature = "mobile")]
+    {
+        Some(companion::data_dir().join("gui.json"))
+    }
+    #[cfg(not(feature = "mobile"))]
+    {
+        use std::path::PathBuf;
+        let dir = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))?;
+        Some(dir.join("romexplorer").join("gui.json"))
+    }
 }
 
 /// Set by a queue button just before it presses the job button beside it (`ui::QueueButton`):
@@ -432,5 +477,31 @@ mod tests {
     fn a_thumbnail_url_keeps_the_id_out_of_the_query() {
         assert_eq!(with_thumb("/rxasset/api/v1/media/5".into()), "/rxasset/api/v1/media/5?size=thumb");
         assert_eq!(with_thumb("http://h/api/v1/media/5?token=abc".into()), "http://h/api/v1/media/5?token=abc&size=thumb");
+    }
+}
+
+#[cfg(test)]
+mod normalize_base_tests {
+    use super::normalize_base;
+
+    #[test]
+    fn an_address_without_a_scheme_becomes_a_url() {
+        assert_eq!(normalize_base("192.168.1.10:7337"), "https://192.168.1.10:7337");
+        assert_eq!(normalize_base(" 192.168.1.10:7337/ "), "https://192.168.1.10:7337");
+        assert_eq!(normalize_base("localhost:7337"), "http://localhost:7337");
+        assert_eq!(normalize_base("http://192.168.1.10:7337"), "https://192.168.1.10:7337");
+        assert_eq!(normalize_base("https://nas.lan:7337"), "https://nas.lan:7337");
+        assert_eq!(normalize_base(""), "");
+    }
+
+    #[test]
+    fn address_and_port_split_and_join() {
+        use super::{join_base, split_base};
+        assert_eq!(split_base("https://192.168.1.10:7400"), ("https://192.168.1.10".into(), "7400".into()));
+        assert_eq!(split_base("192.168.1.10"), ("192.168.1.10".into(), String::new()));
+        assert_eq!(split_base("https://[fe80::1]:7337"), ("https://[fe80::1]".into(), "7337".into()));
+        assert_eq!(join_base("192.168.1.10", "7400"), "192.168.1.10:7400");
+        assert_eq!(join_base("192.168.1.10:7500", "7400"), "192.168.1.10:7500");
+        assert_eq!(join_base("", "7337"), "");
     }
 }

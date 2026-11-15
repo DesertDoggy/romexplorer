@@ -173,10 +173,12 @@ async fn own_hasheous_igdb(pool: &MySqlPool, title_id: u64) -> Result<HashSet<St
     Ok(out)
 }
 
-/// Removes a title's IGDB link and everything it brought (rows with source `igdb`).
+/// Removes a title's IGDB link and everything it brought (rows with source `igdb`). The game
+/// is remembered as wrong for the title (`rejected_id`): a later hash match or name search
+/// does not link it again -- only a manual link does -- while another game still may.
 async fn drop_igdb_link(pool: &MySqlPool, title_id: u64, igdb_id: &str) -> Result<(), DatabaseError> {
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE title_provider_links SET deleted = TRUE WHERE title_id = ? AND provider = 'igdb' AND provider_id = ? AND confidence IN ('hash', 'name', 'fuzzy')")
+    sqlx::query("UPDATE title_provider_links SET deleted = TRUE, rejected_id = provider_id WHERE title_id = ? AND provider = 'igdb' AND provider_id = ? AND confidence IN ('hash', 'name', 'fuzzy')")
         .bind(title_id)
         .bind(igdb_id)
         .execute(&mut *tx)
@@ -414,6 +416,7 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
         .await?;
     let undone_ids: Vec<u32> = undone.iter().filter_map(|r| r.try_get::<String, _>("reason").ok()).filter_map(|r| r.trim_start_matches("igdb:").trim_end_matches(" (audit)").parse().ok()).collect::<HashSet<u32>>().into_iter().collect();
     book.load_primary(pool, &undone_ids).await?;
+    let versions = super::title_merge::set_versions(pool).await?;
     let n = undone.len() as u64;
     for (i, r) in undone.iter().enumerate() {
         progress.report(i as u64, Some(n), &format!("split {} of {n} ({} merged back)", i + 1, s.remerged)).await;
@@ -425,7 +428,9 @@ pub async fn audit(pool: &MySqlPool, clients: &ProviderClients, progress: &Progr
         let (Some(a), Some(b)) = (super::title_merge::live_title(pool, r.try_get("survivor_id")?).await?, super::title_merge::live_title(pool, r.try_get("restored_title_id")?).await?) else { continue };
         // Never across platforms: the same game on two of them is two titles, one row on the
         // cross-platform list -- however alike the names.
-        if a != b && super::title_merge::share_platform(pool, a, b).await? {
+        // Nor what the merge pass keeps apart: an unlicensed-only title with a retail one, a
+        // RetroAchievements subset, two versions of a version set.
+        if a != b && super::title_merge::share_platform(pool, a, b).await? && super::title_merge::Apart::load(pool, &[a, b], &versions).await?.may_join(a, b) {
             super::title_merge::merge_titles(pool, &[a, b], &format!("igdb:{igdb}"), "name").await?;
             sqlx::query("UPDATE title_merge_log SET reason = CONCAT(reason, ' (re-merged)') WHERE id = ?").bind(r.try_get::<u64, _>("id")?).execute(pool).await?;
             s.remerged += 1;

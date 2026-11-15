@@ -231,7 +231,10 @@ fn sweep_parts(root: &Path, depth: u32) {
 /// `xxh3_128` and `crc32`, because over SMB this reads the whole file and the point is to
 /// make a re-run cheap, not thorough. No hash row at all falls back to size alone, and the
 /// summary says so.
-async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64) -> (bool, bool) {
+///
+/// The read checks `cancel` between chunks: over SMB it can take minutes, and a cancelled
+/// check answers "not there" (the caller stops on the flag next).
+async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64, cancel: &Cancel) -> (bool, bool) {
     let Ok(meta) = std::fs::metadata(dst) else { return (false, false) };
     if meta.len() != size {
         return (false, false);
@@ -248,10 +251,28 @@ async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64) -> (bo
         _ => HashFlags::SHA256,
     };
     let path = dst.to_path_buf();
-    let got = tokio::task::spawn_blocking(move || crate::rom::hash::hash(&path, &crate::rom::hash::HashOptions { flags: flag, ..Default::default() }, |_| {}))
-        .await
-        .ok()
-        .and_then(|r| r.ok());
+    let cancel = cancel.clone();
+    let got = tokio::task::spawn_blocking(move || -> std::io::Result<Option<crate::rom::hash::HashReport>> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path)?;
+        let digest = crate::rom::hash::HashDigest::new(flag);
+        let mut buf = vec![0u8; BUF];
+        loop {
+            if cancel.is_set() {
+                return Ok(None);
+            }
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            digest.update(&buf[..n]).map_err(std::io::Error::other)?;
+        }
+        Ok(Some(digest.finish()))
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .flatten();
     let matches = got
         .and_then(|r| match algo.as_str() {
             "xxh3_128" => r.xxh3_128,
@@ -438,7 +459,7 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         // so hashing it against the source's own hash would read the whole file to learn
         // nothing.
         let (same, size_only) = if file.format == OutputFormat::Same || file.source.member.is_some() {
-            already_there(app, &file.destination, file.source.content_id, file.source.size).await
+            already_there(app, &file.destination, file.source.content_id, file.source.size, &cancel).await
         } else {
             // A converted output's bytes are not the source's, so there is nothing of its own
             // recorded to compare against on a first run. An existing non-empty file is taken
@@ -479,8 +500,9 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
                 continue;
             }
             let answer = req.conflict_choices.iter().find(|(k, _)| Path::new(k) == file.destination).map(|(_, c)| *c);
+            // Overwriting leaves the old file in place until the new one is whole: every write
+            // lands on a part file renamed over it, so a failed or cancelled copy keeps it.
             if answer == Some(romexplorer_types::copy::ConflictChoice::Overwrite) {
-                let _ = std::fs::remove_file(&file.destination);
                 work.push(file);
                 continue;
             }
@@ -501,15 +523,11 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
                     fatal = Some(Error::conflict(format!("{} already exists and differs", file.destination.display())));
                     break;
                 }
-                ConflictPolicy::Overwrite => {
-                    let _ = std::fs::remove_file(&file.destination);
-                }
+                ConflictPolicy::Overwrite => {}
                 // `Rename` picked a free name at plan time, against this job's writes and the
                 // disk. A file there now is one of the same size that turned out different,
                 // or one written since the preview: it stays, and the summary says so.
-                ConflictPolicy::Rename if req.conflict_choices.iter().any(|(k, c)| *c == romexplorer_types::copy::ConflictChoice::Overwrite && Path::new(k) == file.destination) => {
-                    let _ = std::fs::remove_file(&file.destination);
-                }
+                ConflictPolicy::Rename if req.conflict_choices.iter().any(|(k, c)| *c == romexplorer_types::copy::ConflictChoice::Overwrite && Path::new(k) == file.destination) => {}
                 ConflictPolicy::Rename => {
                     summary.blocked_existing.push(file.destination.display().to_string());
                     failed_items.insert(file.item);
@@ -686,10 +704,15 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         return Err(e);
     }
 
-    // Playlists last: their lines can only be rewritten once the discs have names.
-    for (index, file) in planned.files.iter().enumerate() {
-        let _ = index;
-        if !file.is_playlist || file.skip.is_some() {
+    // Playlists last: their lines can only be rewritten once the discs have names. Only a
+    // playlist this run wrote (or found already there with the source's bytes): one the
+    // conflict decisions kept, blocked or skipped is left as it is, and a cancelled run
+    // rewrites none.
+    for file in planned.files.iter() {
+        if summary.cancelled || cancel.is_set() {
+            break;
+        }
+        if !file.is_playlist || file.skip.is_some() || !copied.iter().any(|(f, _)| std::ptr::eq(*f, file)) {
             continue;
         }
         if let Ok(text) = std::fs::read_to_string(&file.source.path) {
@@ -813,6 +836,11 @@ fn check_kind(verify: bool, file: &PlannedCopy, converted: bool, payload_convert
     if converted && matches!(file.format, OutputFormat::Wua | OutputFormat::Zar | OutputFormat::Xiso | OutputFormat::Cso) {
         return CheckKind::None;
     }
+    // A decrypted 3DS title is new bytes the converter already hashed: nothing to compare it
+    // with, only a catalogue match to find what it is.
+    if converted && file.format.is_3ds() {
+        return CheckKind::Identified;
+    }
     // A rehash is not a check the user can decline: without it the file has no identity at
     // all, which is worse than an unverified one.
     if payload_converted {
@@ -834,6 +862,8 @@ enum CheckKind {
     Whole,
     Content,
     Rehash,
+    /// Hashed by its converter already; matched against the catalogue afterwards.
+    Identified,
 }
 
 fn record_produced(produced: &mut std::collections::HashMap<usize, Vec<(String, String)>>, file: &PlannedCopy) {
@@ -889,6 +919,9 @@ async fn copy_one(
     done: &Arc<std::sync::atomic::AtomicU64>,
     total_bytes: u64,
 ) -> Result<CopyOutcome> {
+    if file.format.is_3ds() {
+        return convert_n3ds(app, file, populate, container_flags, cancel, progress, done, total_bytes).await;
+    }
     if file.format == OutputFormat::Wua && file.source_format != OutputFormat::Wua {
         return convert_wua(app, file, populate, container_flags, verify, cancel, progress, done, total_bytes).await;
     }
@@ -1180,6 +1213,91 @@ async fn convert_wua(
         }
     };
     Ok(CopyOutcome::Copied { bytes, converted: true, payload_converted: PAYLOAD_CONVERSION, content_id, read_back: None })
+}
+
+/// A 3DS title decrypted with the user's own keys (`rom::n3ds`): a game into a cartridge
+/// image or its main part, maybe compressed for Azahar; an update, DLC or homebrew kept in its
+/// own kind of file. No keys come with romexplorer: `aes_keys.txt` (or `boot9.bin`) and
+/// `seeddb.bin` are looked for beside the file, beside romexplorer, and in the app's own
+/// folder, each also in its `assets` subfolder.
+///
+/// The payload is new bytes, so the output is hashed into its own content row here and
+/// matched against the catalogue afterwards (a decrypted DAT names it), never compared with
+/// the source.
+#[allow(clippy::too_many_arguments)]
+async fn convert_n3ds(
+    app: &App,
+    file: &PlannedCopy,
+    populate: crate::common::models::HashAlgorithms,
+    container_flags: crate::rom::hash::HashFlags,
+    cancel: &Cancel,
+    progress: &Progress,
+    done: &Arc<std::sync::atomic::AtomicU64>,
+    total_bytes: u64,
+) -> Result<CopyOutcome> {
+    use crate::rom::n3ds::{self, KeyFiles, Keys};
+
+    let Some(target) = super::n3ds_target(file.format) else { return Err(Error::internal("not a 3DS format")) };
+    let src = file.source.path.clone();
+    let dst = file.destination.clone();
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Error::internal(format!("can't create {}: {e}", parent.display())))?;
+    }
+    let part = part_path(&dst);
+    let weight = file.weight;
+    let relay_handle = ProgressRelay::new(progress, Arc::clone(done), total_bytes);
+    let relay = relay_handle.sender();
+    let flag = cancel.clone();
+    let root = app.paths.root.clone();
+    let (src_run, dst_run, part_run) = (src.clone(), dst.clone(), part.clone());
+    let flags = container_flags | crate::rom::hash::HashFlags::algorithm_to_flag(populate);
+    let result = tokio::task::spawn_blocking(move || -> std::result::Result<(u64, crate::rom::hash::HashReport), String> {
+        let keys = Keys::load(&KeyFiles::find(&n3ds::key_dirs(&src_run, &[root])))?;
+        if let Some(missing) = n3ds::check(&src_run, &keys)? {
+            return Err(format!("{}: {missing} -- put it beside the file, beside romexplorer, or in its assets folder", src_run.display()));
+        }
+        // Progress in the file's own bytes: the job's bar is sized by them.
+        let mut sent = 0u64;
+        n3ds::convert(&src_run, &part_run, target, &keys, &mut |d, t| {
+            let now = if t > 0 { (weight as u128 * d.min(t) as u128 / t as u128) as u64 } else { 0 };
+            if now > sent {
+                let _ = relay.send(now - sent);
+                sent = now;
+            }
+            !flag.is_set()
+        })
+        .map_err(|e| if e == "cancelled" { e } else { format!("converting {}: {e}", src_run.display()) })?;
+        let report = crate::rom::hash::hash(&part_run, &crate::rom::hash::HashOptions { flags, ..Default::default() }, |_| {}).map_err(|e| format!("hashing {}: {e}", part_run.display()))?;
+        std::fs::rename(&part_run, &dst_run).map_err(|e| format!("moving {} into place: {e}", part_run.display()))?;
+        let bytes = std::fs::metadata(&dst_run).map(|m| m.len()).unwrap_or(0);
+        Ok((bytes, report))
+    })
+    .await
+    .map_err(|e| Error::internal(e.to_string()))?;
+    let moved = relay_handle.finish().await;
+    done.fetch_add(weight.saturating_sub(moved), Ordering::Relaxed);
+    let (bytes, report) = match result {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            if e == "cancelled" {
+                return Ok(CopyOutcome::Cancelled);
+            }
+            return Err(Error::invalid(e));
+        }
+    };
+    let name = dst.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let content_id = match crate::database::content::upsert_content(&app.pool, file.platform, &name, bytes, &report).await {
+        Ok((id, _)) => Some(id),
+        Err(e) => {
+            log::warn!("copy: couldn't record the decrypted content for {}: {e}", dst.display());
+            None
+        }
+    };
+    // `converted` and not `payload_converted`: the bytes are new, but the title is the same
+    // playable unit, and RetroAchievements hashes a 3DS title over its decrypted code -- so
+    // its RA hash carries over as it does for a container change.
+    Ok(CopyOutcome::Copied { bytes, converted: true, payload_converted: false, content_id, read_back: None })
 }
 
 /// An Xbox 360 disc into Xenia's `.zar`, an Xbox disc into an XISO, or a PS2/PSP ISO into a
@@ -1478,6 +1596,11 @@ async fn check_copy(
             Ok(content_check::ContentOutcome::NoMembers) => c.unverifiable = true,
             Err(e) => c.errors.push(format!("{where_}: {}", e.message)),
         },
+        CheckKind::Identified => {
+            c.full_hashed = content_id.is_some();
+            c.archive_hashed = content_id.is_some();
+            c.rehashed_dir = file.destination.parent().map(Path::to_path_buf);
+        }
         CheckKind::Rehash => match content_check::rehash(app, &file.destination, file.platform, container_flags).await {
             Ok(id) => {
                 c.identity = Some(id);
@@ -1612,11 +1735,12 @@ async fn register(
         let (game_id, _) = crate::api::scan::ensure_game(&app.pool, rom_id, &item.game_name).await?;
         // The release the copy came from, carried straight over: a copied game shows as held
         // immediately, with no hash match to wait for. That link is the one thing a
-        // `file_scan` could not have reconstructed without re-matching it.
-        if let Some(release_id) = item.release_id {
+        // `file_scan` could not have reconstructed without re-matching it. Only for a whole
+        // copy: one missing files is not that release, and a hash match will say what it is.
+        let whole = !incomplete.contains(&index) && landed.get(&index).copied().unwrap_or(0) == wanted.get(&index).copied().unwrap_or(usize::MAX);
+        if let Some(release_id) = item.release_id.filter(|_| whole) {
             sqlx::query("INSERT IGNORE INTO local_release_games (release_id, game_id) VALUES (?, ?)").bind(release_id).bind(game_id).execute(&app.pool).await?;
         }
-        let whole = !incomplete.contains(&index) && landed.get(&index).copied().unwrap_or(0) == wanted.get(&index).copied().unwrap_or(usize::MAX);
         ra_carried += carry_ra_hashes(app, item, rom_id, !whole).await?;
     }
     Ok((registered, ra_carried))

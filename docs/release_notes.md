@@ -5,6 +5,15 @@ replacing a build.
 
 ## Changes
 
+**3DS**
+- A copy can decrypt 3DS titles into .cci, .3ds or .cxi, or the compressed .zcci and .zcxi
+  that Azahar reads. Updates and DLC stay .cia (.zcia), homebrew .3dsx (.z3dsx).
+- No keys come with romexplorer. Put your own aes_keys.txt (and seeddb.bin when a title needs
+  it) beside the files, beside romexplorer, or in its assets folder.
+- Scans find .cci, .cxi and the compressed .zcci, .zcia and .zcxi, so a copy can also turn a
+  .zcci into a .cci and back. Serial matching reads their product code and title id, with its
+  own checkbox for cartridge images.
+
 **ROM audio**
 - Opening a title page indexes that game's ROM music first. Until it is done, the page shows
   the progress instead of playing another game's music.
@@ -25,6 +34,43 @@ replacing a build.
 - When a copy converted SNES dumps, a file whose size and internal header disagreed about a
   copier header was converted anyway. It is now reported instead. A NES dump missing from the
   header database is reported with its hash.
+
+**Scan**
+- On Linux, a scan missed cue, gdi and m3u entries written in another case or with
+  backslashes, and took two files whose names differ only in case for one ROM.
+- Scanning a folder ignored the type and platform set on folders inside it. Game folders
+  directly under a folder with no platform became one game per file.
+- Rescans read folder games again, split tracks already joined into their disc and lost serial
+  matches. Grouping discs into games was slow on large folders.
+- Files that are not ROMs, such as text and images, became games. They now become games only
+  once identified.
+- With only xxh3_128 on in the scan hashes, rescans lost their DAT matches. One of crc32, md5
+  and sha1 now always stays on.
+
+**Copy**
+- Overwriting deleted the old file before the new one was written. A copy could also rewrite
+  playlists it was told to keep, and write two files whose names differ only in case to one.
+
+**Title merging**
+- Merging could join two versions of a version set, or a retail title with an unlicensed one.
+  Decoupled titles came back with "Accept all", and IGDB links the merge audit removed came
+  back with the next hash match.
+- A Hasheous match on a merged game's other name made a duplicate title.
+
+**Server and jobs**
+- Fetching art for a client could reach addresses on the server's own network, with no size
+  limit.
+- Any account could download the "database" and "all" SQLite caches, which hold the accounts
+  and settings. They now need an admin.
+- A full sync cut short left a table half filled, and cancelling a backup let the next one
+  start while it was still writing.
+- Copies to another drive and syncs from another server waited for unrelated jobs. After a
+  database restart, a job could start twice.
+
+**Other**
+- ROM music could crash on a PSF2 set.
+- A few labels in the web console and sentences in Config › Settings stayed in English.
+- MariaDB older than 10.6 failed with unclear errors. It is now refused at connect.
 
 # romexplorer 0.2.0 (alpha)
 

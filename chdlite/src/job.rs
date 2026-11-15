@@ -54,6 +54,10 @@ pub struct JobSpec {
     pub settings: Settings,
     /// Compression/decode threads for this job; `None` = every core.
     pub threads: Option<u32>,
+    /// The name its outputs take in place of the input's own stem: set by a batch when another
+    /// of its jobs would write the same file ([`crate::batch`]).
+    #[serde(default)]
+    pub output_stem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,8 +65,44 @@ pub enum Event {
     /// 0..=100.
     Progress(f32),
     Message(String),
-    /// A file this job is about to write (so whoever supervises it can remove a partial one).
+    /// An output this job has claimed ([`claim_output`]) and is about to write, so whoever
+    /// supervises it can roll a partial one back ([`Writing::undo`]).
     Output(PathBuf),
+    /// A scratch file or folder of this job's own, removed when the job does not finish.
+    Scratch(PathBuf),
+}
+
+/// What a running job has announced it is writing: its outputs and its scratch files.
+#[derive(Debug, Default, Clone)]
+pub struct Writing {
+    claimed: Vec<PathBuf>,
+    scratch: Vec<PathBuf>,
+}
+
+impl Writing {
+    pub fn note(&mut self, event: &Event) {
+        match event {
+            Event::Output(path) => self.claimed.push(path.clone()),
+            Event::Scratch(path) => self.scratch.push(path.clone()),
+            _ => {}
+        }
+    }
+
+    /// Undoes a job that did not finish: each output still being written goes and the file it
+    /// was replacing comes back; one whose claim already finished or was rolled back is left
+    /// as it is. Scratch files and folders go.
+    pub fn undo(&self) {
+        for output in &self.claimed {
+            roll_back(output);
+        }
+        for path in &self.scratch {
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(path);
+            } else {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
 }
 
 /// Runs one job on the calling thread. `on_event` returning `false` asks it to stop, which
@@ -71,30 +111,18 @@ pub enum Event {
 /// ([`crate::batch`]).
 ///
 /// `Ok` carries the text to show for the finished job. On `Err` every output this job
-/// started is removed.
+/// started is rolled back -- a file it was replacing is back where it was -- and its scratch
+/// files are removed.
 pub fn run_one(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
-    let mut outputs: Vec<PathBuf> = Vec::new();
+    let mut writing = Writing::default();
     let result = run_inner(spec, &mut |event| {
-        if let Event::Output(path) = &event {
-            outputs.push(path.clone());
-        }
+        writing.note(&event);
         on_event(event)
     });
     if result.is_err() {
-        remove_outputs(&outputs);
+        writing.undo();
     }
     result
-}
-
-/// Removes what a job that did not finish was writing: files, and its scratch folders.
-pub fn remove_outputs(outputs: &[PathBuf]) {
-    for path in outputs {
-        if path.is_dir() {
-            let _ = std::fs::remove_dir_all(path);
-        } else {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 }
 
 fn run_inner(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
@@ -107,7 +135,9 @@ fn run_inner(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<
             content_pass(spec, Some(dir), on_event)
         }
         (Mode::Lite | Mode::Comp, Input::Cso | Input::Pbp) => create_from_container(spec, on_event),
+        (Mode::Extract, Input::N3ds) => extract_n3ds(spec, on_event),
         (Mode::Extract, Input::Image { .. } | Input::Cartridge(_)) => Err("nothing to extract: not a .chd, .rvz, .cso or .pbp".to_string()),
+        (Mode::Lite | Mode::Comp, Input::N3ds) => convert_n3ds(spec, on_event),
         (Mode::Lite | Mode::Comp, Input::Cartridge(cart)) => convert_cartridge(spec, cart, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Wua, source, .. }) => create_wua(spec, &source, on_event),
         (Mode::Lite | Mode::Comp, Input::Image { target: Target::Zar, source, .. }) => create_zar(spec, &source, on_event),
@@ -116,8 +146,62 @@ fn run_inner(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<
     }
 }
 
+/// Where a job writes ([`Settings::output_dir_for`]), not yet made.
+fn planned_dir(spec: &JobSpec) -> PathBuf {
+    spec.settings.output_dir_for(&spec.input)
+}
+
+/// What a job will write, worked out before it runs, so a batch can tell two jobs that would
+/// write the same file apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Planned {
+    /// One output named after the job's stem ([`JobSpec::output_stem`] renames it).
+    Named {
+        dir: PathBuf,
+        stem: String,
+        /// `None` when it depends on the content (a cartridge's layout, a 3DS title's kind).
+        extension: Option<String>,
+    },
+    /// Files named by the content itself (what a disc image's sheet calls its tracks).
+    Files(Vec<PathBuf>),
+    /// Writes nothing, or fails before it would.
+    Nothing,
+}
+
+/// [`Planned`] for `spec`: classifies the input and, for an extraction, lists the content.
+pub fn plan(spec: &JobSpec) -> Planned {
+    let Ok(input) = classify(&spec.input) else { return Planned::Nothing };
+    let dir = planned_dir(spec);
+    let named = |extension: Option<&str>| Planned::Named { dir: dir.clone(), stem: out_stem(spec), extension: extension.map(str::to_string) };
+    let content = |chds: bool| {
+        let Ok(base) = cue_style(&spec.settings.extract.cue_style).map(|style| SingleArgs::default().with_sheet_style(style)) else { return Planned::Nothing };
+        let mut base = base;
+        if !chds {
+            let Ok(sheet) = gdrom_sheet(&spec.settings.extract.gdrom_sheet) else { return Planned::Nothing };
+            base.cd_sheet = sheet;
+        }
+        let Ok(set) = InputSet::resolve(&spec.input) else { return Planned::Nothing };
+        let Ok(plan) = ContentPlan::build(&set, &base.cue_sheet, base.cd_sheet) else { return Planned::Nothing };
+        let names = plan.files.iter().map(|file| Path::new(&file.name));
+        Planned::Files(if chds {
+            names.filter(|name| matches!(crate::classify::extension(name).as_str(), "cue" | "iso")).map(|name| dir.join(format!("{}.chd", stem(name)))).collect()
+        } else {
+            names.map(|name| dir.join(name)).collect()
+        })
+    };
+    match (spec.mode, input) {
+        (Mode::Read | Mode::Hash, _) => Planned::Nothing,
+        (Mode::Extract | Mode::Lite | Mode::Comp, Input::Chd | Input::Rvz) | (Mode::Extract, Input::Cso | Input::Pbp) => content(false),
+        (Mode::Lite | Mode::Comp, Input::Cso | Input::Pbp) => content(true),
+        (Mode::Extract, Input::N3ds) => named(crate::classify::extension(&spec.input).strip_prefix('z')),
+        (Mode::Extract, Input::Image { .. } | Input::Cartridge(_)) => Planned::Nothing,
+        (Mode::Lite | Mode::Comp, Input::N3ds | Input::Cartridge(_)) => named(None),
+        (Mode::Lite | Mode::Comp, Input::Image { target, .. }) => named(Some(target.extension())),
+    }
+}
+
 fn output_dir(spec: &JobSpec) -> Result<PathBuf, String> {
-    let dir = spec.settings.output_dir().unwrap_or_else(|| spec.input.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+    let dir = planned_dir(spec);
     std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
     Ok(dir)
 }
@@ -125,6 +209,11 @@ fn output_dir(spec: &JobSpec) -> Result<PathBuf, String> {
 fn stem(path: &Path) -> String {
     // Lossy rather than a fixed fallback: a name that is not UTF-8 keeps every readable part.
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".to_string())
+}
+
+/// The stem a job's outputs are named after: the input's, unless the batch gave it another.
+fn out_stem(spec: &JobSpec) -> String {
+    spec.output_stem.clone().unwrap_or_else(|| stem(&spec.input))
 }
 
 fn human(bytes: u64) -> String {
@@ -256,22 +345,32 @@ pub fn rvz_level(compression: DiscCompression, level: i32) -> i32 {
 
 fn create(spec: &JobSpec, target: Target, source: &Path, needs_cue: bool, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let dir = output_dir(spec)?;
-    let output = dir.join(format!("{}.{}", stem(&spec.input), target.extension()));
+    let output = dir.join(format!("{}.{}", out_stem(spec), target.extension()));
     let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
         return Ok(format!("skipped, {} already exists", output.display()));
     };
     let input_bytes = InputSet::resolve(source).map(|set| set.total_bytes).unwrap_or(0);
 
-    // A lone raw track: a CD CHD is made from a sheet, and the sheet names the track relative
-    // to itself, so it has to sit beside the track for as long as the conversion runs.
+    // A lone raw track: a CD CHD is made from a sheet, written for as long as the conversion
+    // runs. In the output folder when one is set (the track's own may be read-only), naming the
+    // track by a path relative to the sheet: chdman joins the sheet's folder and the name, so
+    // an absolute one would not do. Beside the track when there is no such path (another
+    // drive) or no output folder.
     let mut temp_cue: Option<PathBuf> = None;
     let source = if needs_cue {
-        let track = TrackFile::at(source).map_err(|err| format!("{}: {err}", source.display()))?;
-        let rebuilt = rebuild_cue(&stem(source), &[track], &Expected::default(), &CueSheetOptions::default())?;
+        let mut track = TrackFile::at(source).map_err(|err| format!("{}: {err}", source.display()))?;
+        let in_output = spec.settings.output_dir().is_some().then(|| relative_path(&dir, source)).flatten();
         // Hidden, so a folder dropped again after a killed run does not take it for a game.
-        let cue = source.with_file_name(format!(".{}.chdlite.cue", stem(source)));
+        let cue = match in_output {
+            Some(relative) => {
+                track.name = relative.to_string_lossy().into_owned();
+                dir.join(format!(".{}.chdlite.cue", out_stem(spec)))
+            }
+            None => source.with_file_name(format!(".{}.chdlite.cue", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+        };
+        let rebuilt = rebuild_cue(&stem(source), &[track], &Expected::default(), &CueSheetOptions::default())?;
         // Told to the supervisor first, so a killed worker's sheet is removed too.
-        on_event(Event::Output(cue.clone()));
+        on_event(Event::Scratch(cue.clone()));
         std::fs::write(&cue, &rebuilt.bytes).map_err(|err| format!("{}: {err}", cue.display()))?;
         temp_cue = Some(cue.clone());
         cue
@@ -300,6 +399,20 @@ fn create(spec: &JobSpec, target: Target, source: &Path, needs_cue: bool, on_eve
     let output_bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
     let ratio = if input_bytes > 0 { format!(" ({:.1}%)", output_bytes as f64 * 100.0 / input_bytes as f64) } else { String::new() };
     Ok(format!("{}: {} -> {}{ratio}", target.label(), human(input_bytes), human(output_bytes)))
+}
+
+/// `target` as a path relative to the folder `base`, or `None` when there is none (another
+/// drive) or either cannot be resolved.
+fn relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
+    let (base, target) = (base.canonicalize().ok()?, target.canonicalize().ok()?);
+    let (base, target): (Vec<_>, Vec<_>) = (base.components().collect(), target.components().collect());
+    let common = base.iter().zip(&target).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return None;
+    }
+    let mut relative: PathBuf = base[common..].iter().map(|_| "..").collect();
+    relative.extend(&target[common..]);
+    Some(relative)
 }
 
 /// What one create job hands `Single`: archive only, the platform guessed here taken as given
@@ -335,7 +448,7 @@ fn create_args(spec: &JobSpec, target: Target, source: &Path) -> Result<SingleAr
         detect: Detect::Trust(trusted),
         max_workers: spec.threads.map(|n| n as usize),
         decode_threads: decode_threads(spec),
-        archive_stem: Some(stem(&spec.input)),
+        archive_stem: Some(out_stem(spec)),
         ..SingleArgs::default()
     }
     .with_sheet_style(cue_style(&spec.settings.extract.cue_style)?))
@@ -368,7 +481,7 @@ fn wud_size(image: &Path) -> Option<u64> {
 /// `keys.txt`. Lite and Comp write the same file: the archive's zstd level is fixed.
 fn create_wua(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let dir = output_dir(spec)?;
-    let output = dir.join(format!("{}.wua", stem(&spec.input)));
+    let output = dir.join(format!("{}.wua", out_stem(spec)));
     let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
         return Ok(format!("skipped, {} already exists", output.display()));
     };
@@ -411,7 +524,7 @@ fn create_wua(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> b
 /// Where a create job writes, claimed ([`claim_output`]), or `Ok(None)` when it is already
 /// there and not to be replaced.
 fn fresh_output(spec: &JobSpec, extension: &str) -> Result<Option<(PathBuf, Claim)>, String> {
-    let output = output_dir(spec)?.join(format!("{}.{extension}", stem(&spec.input)));
+    let output = output_dir(spec)?.join(format!("{}.{extension}", out_stem(spec)));
     Ok(claim_output(&output, spec.settings.output.force)?.map(|claim| (output, claim)))
 }
 
@@ -426,7 +539,7 @@ fn ratio(input_bytes: u64, output: &Path) -> String {
 fn create_zar(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let (output, claim) = match fresh_output(spec, Target::Zar.extension())? {
         Some(claimed) => claimed,
-        None => return Ok(format!("skipped, {}.zar already exists", stem(&spec.input))),
+        None => return Ok(format!("skipped, {}.zar already exists", out_stem(spec))),
     };
     on_event(Event::Message(format!("ZAR -> {}", output.display())));
     on_event(Event::Output(output.clone()));
@@ -454,7 +567,7 @@ fn create_zar(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> b
 fn create_xiso(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let (output, claim) = match fresh_output(spec, Target::Xiso.extension())? {
         Some(claimed) => claimed,
-        None => return Ok(format!("skipped, {}.{} already exists", stem(&spec.input), Target::Xiso.extension())),
+        None => return Ok(format!("skipped, {}.{} already exists", out_stem(spec), Target::Xiso.extension())),
     };
     on_event(Event::Message(format!("XISO -> {}", output.display())));
     on_event(Event::Output(output.clone()));
@@ -498,10 +611,11 @@ fn create_from_container(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool
             return Ok(format!("skipped, {shown} already exist{}", if chds.len() == 1 { "s" } else { "" }));
         }
     }
-    let scratch = dir.join(format!(".chdlite-{}-{}", std::process::id(), stem(&spec.input)));
+    remove_stale_scratch(&dir);
+    let scratch = dir.join(format!("{SCRATCH_PREFIX}{}-{}", std::process::id(), out_stem(spec)));
     let _ = std::fs::remove_dir_all(&scratch);
     // Told to the supervisor first, so a killed worker's scratch folder is removed too.
-    on_event(Event::Output(scratch.clone()));
+    on_event(Event::Scratch(scratch.clone()));
     std::fs::create_dir_all(&scratch).map_err(|err| format!("{}: {err}", scratch.display()))?;
     // Half the bar each: the extract, then the CHDs. Scratch files go with the scratch
     // folder; only the CHDs are this job's outputs.
@@ -528,7 +642,7 @@ fn create_from_container(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool
         let count = sources.len() as f32;
         for (i, source) in sources.iter().enumerate() {
             let target = if crate::classify::extension(source) == "cue" { Target::CdChd } else { Target::DvdChd };
-            let disc = JobSpec { mode: spec.mode, input: source.clone(), settings: settings.clone(), threads: spec.threads };
+            let disc = JobSpec { mode: spec.mode, input: source.clone(), settings: settings.clone(), threads: spec.threads, output_stem: None };
             let offset = 50.0 + 50.0 * i as f32 / count;
             done.push(create(&disc, target, source, false, &mut |event| relay(event, offset, 0.5 / count, &scratch, on_event))?);
         }
@@ -536,6 +650,59 @@ fn create_from_container(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     result
+}
+
+/// A scratch folder is `.chdlite-<pid>-<stem>`, `<pid>` the process that made it.
+const SCRATCH_PREFIX: &str = ".chdlite-";
+
+/// Removes the scratch folders in `dir` that a process no longer running left behind (one
+/// killed with nobody left to clean up after it: a power cut, or the GUI killed with it).
+fn remove_stale_scratch(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.strip_prefix(SCRATCH_PREFIX).and_then(|rest| rest.split_once('-')).and_then(|(pid, _)| pid.parse::<u32>().ok()) else { continue };
+        if pid != std::process::id() && !process_alive(pid) && entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    // Signal 0 only checks: EPERM is a process there that belongs to someone else.
+    let sent = unsafe { libc::kill(pid, 0) } == 0;
+    sent || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use std::ffi::c_void;
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut code = 0u32;
+        let alive = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE;
+        CloseHandle(process);
+        alive
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_alive(_pid: u32) -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +726,7 @@ fn same_file_path(a: &Path, b: &Path) -> bool {
 fn convert_cartridge(spec: &JobSpec, cart: Cart, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
     let converted = crate::cart::convert(cart, &spec.input, &spec.settings.cartridge)?;
     let dir = output_dir(spec)?;
-    let output = dir.join(format!("{}.{}", stem(&spec.input), converted.extension));
+    let output = dir.join(format!("{}.{}", out_stem(spec), converted.extension));
     // Already there: nothing is written, wherever the output would go.
     if !converted.changed && crate::classify::extension(&spec.input) == converted.extension {
         return Ok(format!("skipped, already {}", converted.to));
@@ -575,15 +742,82 @@ fn convert_cartridge(spec: &JobSpec, cart: Cart, on_event: &mut dyn FnMut(Event)
         return Ok(format!("skipped, {} already exists", output.display()));
     };
     on_event(Event::Message(format!("{} -> {}", cart.label(), output.display())));
-    // Not for the input itself: a failed job removes what it announced, and the claim has
-    // already put the input back by then.
-    if !in_place {
-        on_event(Event::Output(output.clone()));
-    }
+    // The input itself too: rolling a claim back puts back what it was replacing.
+    on_event(Event::Output(output.clone()));
     std::fs::write(&output, &converted.data).map_err(|err| format!("{}: {err}", output.display()))?;
     claim.finish();
     let what = if converted.changed { format!("{} -> {}", converted.from, converted.to) } else { format!("already {}, copied as .{}", converted.to, converted.extension) };
     Ok(format!("{}: {what} ({})", cart.label(), human(converted.data.len() as u64)))
+}
+
+// ---------------------------------------------------------------------------
+// 3DS: decrypted into the settings' format
+// ---------------------------------------------------------------------------
+
+/// Lite and Comp alike (the compressed formats have one zstd level, Azahar's). A file already
+/// in the wanted form -- decrypted, same extension -- is skipped.
+fn convert_n3ds(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
+    use romexplorer::rom::n3ds;
+    let target = crate::n3ds::target(&spec.settings.n3ds.format)?;
+    let info = n3ds::inspect(&spec.input)?;
+    let extension = n3ds::output_extension(&info, target);
+    if !info.encrypted && crate::classify::extension(&spec.input) == extension {
+        return Ok(format!("skipped, already a decrypted .{extension}"));
+    }
+    let keys = crate::n3ds::keys_for(&spec.input)?;
+    if let Some(missing) = n3ds::check(&spec.input, &keys)? {
+        return Err(format!("{missing} -- put it beside the file, beside chdlite, or in chdlite's assets folder"));
+    }
+    let output = output_dir(spec)?.join(format!("{}.{extension}", out_stem(spec)));
+    if same_file_path(&output, &spec.input) {
+        return Ok(format!("skipped: {} would be written over the input itself -- choose an output folder", output.display()));
+    }
+    let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
+        return Ok(format!("skipped, {} already exists", output.display()));
+    };
+    on_event(Event::Message(format!("3DS {} -> {}", info.title_kind, output.display())));
+    on_event(Event::Output(output.clone()));
+    let mut last = -1.0f32;
+    let outcome = n3ds::convert(&spec.input, &output, target, &keys, &mut |done, total| {
+        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
+        if percent - last < 0.2 {
+            return true;
+        }
+        last = percent;
+        on_event(Event::Progress(percent))
+    })?;
+    claim.finish();
+    let input_bytes = std::fs::metadata(&spec.input).map(|m| m.len()).unwrap_or(0);
+    let what = match outcome {
+        n3ds::Outcome::Converted => "decrypted",
+        n3ds::Outcome::AlreadyDecrypted => "already decrypted",
+    };
+    Ok(format!("3DS {}, {what}: .{} -> .{extension}{}", info.title_kind, crate::classify::extension(&spec.input), ratio(input_bytes, &output)))
+}
+
+/// A compressed 3DS file back to the plain one: `.zcci` -> `.cci`, `.zcia` -> `.cia`,
+/// `.zcxi` -> `.cxi`, `.z3dsx` -> `.3dsx`.
+fn extract_n3ds(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
+    let ext = crate::classify::extension(&spec.input);
+    let Some(plain) = ext.strip_prefix('z').filter(|_| matches!(ext.as_str(), "zcci" | "zcia" | "zcxi" | "z3dsx")) else {
+        return Err("nothing to extract: not a compressed 3DS file (.zcci, .zcia, .zcxi, .z3dsx)".to_string());
+    };
+    let output = output_dir(spec)?.join(format!("{}.{plain}", out_stem(spec)));
+    let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
+        return Ok(format!("skipped, {} already exists", output.display()));
+    };
+    on_event(Event::Output(output.clone()));
+    let mut last = -1.0f32;
+    romexplorer::rom::n3ds::z3ds_decompress(&spec.input, &output, &mut |done, total| {
+        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
+        if percent - last < 0.2 {
+            return true;
+        }
+        last = percent;
+        on_event(Event::Progress(percent))
+    })?;
+    claim.finish();
+    Ok(format!(".{ext} -> .{plain} ({})", human(std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0))))
 }
 
 // ---------------------------------------------------------------------------
@@ -613,24 +847,36 @@ pub(crate) struct Claim {
 
 impl Claim {
     pub(crate) fn finish(mut self) {
-        let _ = std::fs::remove_file(previous_of(&self.output));
+        // The marker first: once it is gone the output counts as finished, and a run killed
+        // before the old file is removed leaves only a stale `.chdlite-old`, cleared next time.
         let _ = std::fs::remove_file(marker_of(&self.output));
+        let _ = std::fs::remove_file(previous_of(&self.output));
         self.finished = true;
     }
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        if self.finished {
-            return;
+        if !self.finished {
+            roll_back(&self.output);
         }
-        let _ = std::fs::remove_file(&self.output);
-        let previous = previous_of(&self.output);
-        if previous.exists() {
-            let _ = std::fs::rename(&previous, &self.output);
-        }
-        let _ = std::fs::remove_file(marker_of(&self.output));
     }
+}
+
+/// Undoes an unfinished claim on `output`: the partial file goes and the file it was replacing
+/// comes back. Nothing happens when its marker is gone -- the claim finished, or was already
+/// rolled back -- so this is safe to call again, by whoever supervises a job.
+fn roll_back(output: &Path) {
+    let marker = marker_of(output);
+    if !marker.exists() {
+        return;
+    }
+    let _ = std::fs::remove_file(output);
+    let previous = previous_of(output);
+    if previous.exists() {
+        let _ = std::fs::rename(&previous, output);
+    }
+    let _ = std::fs::remove_file(marker);
 }
 
 /// Claims `output` for writing: `Ok(None)` when a finished one is there and not to be
@@ -645,6 +891,9 @@ pub(crate) fn claim_output(output: &Path, force: bool) -> Result<Option<Claim>, 
             std::fs::rename(&previous, output).map_err(|err| format!("{}: {err}", previous.display()))?;
         }
         let _ = std::fs::remove_file(&marker);
+    } else if output.exists() {
+        // Left by a run killed while finishing: the output is the finished one.
+        let _ = std::fs::remove_file(previous_of(output));
     }
     if output.exists() {
         if !force {
@@ -726,6 +975,7 @@ pub fn hash_flags(names: &[String]) -> Result<HashFlags, String> {
             "crc32" | "crc" => HashFlags::CRC32,
             "sha256" => HashFlags::SHA256,
             "xxh3" | "xxh3_128" => HashFlags::XXH3_128,
+            "rahash" | "ra" => HashFlags::RAHASH,
             "" => HashFlags::empty(),
             other => return Err(format!("unknown hash '{other}'")),
         };
@@ -782,9 +1032,13 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
         }
     }
 
+    // The RA hash is worked out apart (`crate::ra`). For most cartridge systems it is the
+    // file's MD5, so the pass works one out for it, shown only when asked for.
+    let want_ra = flags.contains(HashFlags::RAHASH);
+    let shown = flags.difference(HashFlags::RAHASH);
     let args = SingleArgs {
         stages: StageSwitches { extract: extracting, hash: !extracting, ..StageSwitches::NONE },
-        hash_flags: flags,
+        hash_flags: if want_ra { shown | HashFlags::MD5 } else { shown },
         output_dir: out_dir,
         detect: Detect::Trust(Platform::Unknown),
         decode_threads: decode_threads(spec),
@@ -802,13 +1056,31 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
     }
     stage_ok(&outcome.stages.hash, "hash")?;
     let mut lines = Vec::new();
-    for record in outcome.input_hashes.map(|r| r.content_hashes).unwrap_or_default() {
+    let records = outcome.input_hashes.map(|r| r.content_hashes).unwrap_or_default();
+    for record in &records {
         lines.push(format!("{}  ({} bytes)", record.path, record.size_bytes.unwrap_or(0)));
-        for (label, value) in [("crc32", &record.crc32), ("md5", &record.md5), ("sha1", &record.sha1), ("sha256", &record.sha256), ("xxh3", &record.xxh3_128)] {
-            if let Some(value) = value {
+        for (label, value, flag) in [
+            ("crc32", &record.crc32, HashFlags::CRC32),
+            ("md5", &record.md5, HashFlags::MD5),
+            ("sha1", &record.sha1, HashFlags::SHA1),
+            ("sha256", &record.sha256, HashFlags::SHA256),
+            ("xxh3", &record.xxh3_128, HashFlags::XXH3_128),
+        ] {
+            if let Some(value) = value.as_ref().filter(|_| shown.contains(flag)) {
                 lines.push(format!("  {label:<7}{value}"));
             }
         }
+    }
+    if want_ra {
+        // A cue and its tracks, or a CHD's several files, have no one MD5 to stand for them.
+        let file_md5 = match records.as_slice() {
+            [one] => one.md5.as_deref(),
+            _ => None,
+        };
+        if records.len() > 1 {
+            lines.push(spec.input.display().to_string());
+        }
+        lines.extend(crate::ra::lines(&spec.input, file_md5));
     }
     Ok(lines.join("\n"))
 }
@@ -929,6 +1201,27 @@ fn read(path: &Path, input: &Input, settings: &Settings) -> Result<String, Strin
                 Err(err) => lines.push(format!("  layout       unknown: {err}")),
             }
         }
+        Input::N3ds => {
+            use romexplorer::rom::n3ds;
+            match n3ds::inspect(path) {
+                Ok(info) => {
+                    let container = match info.container {
+                        n3ds::Container::Cia => "CIA",
+                        n3ds::Container::Cci => "cartridge image (NCSD)",
+                        n3ds::Container::Ncch => "NCCH",
+                        n3ds::Container::Homebrew => "homebrew (3DSX)",
+                    };
+                    lines.push(format!("  type         3DS {container}{}, {}", if info.compressed { ", compressed (Z3DS)" } else { "" }, human(file_bytes)));
+                    lines.push(format!("  title        {}", info.title_kind));
+                    lines.push(format!("  encrypted    {}", if info.encrypted { "yes" } else { "no" }));
+                    match crate::n3ds::target(&settings.n3ds.format) {
+                        Ok(target) => lines.push(format!("  converts to  .{}", n3ds::output_extension(&info, target))),
+                        Err(err) => lines.push(format!("  converts to  unknown: {err}")),
+                    }
+                }
+                Err(err) => lines.push(format!("  type         3DS file, unreadable: {err}")),
+            }
+        }
         Input::Image { target: Target::Wua, .. } => {
             lines.push(format!("  type         Wii U disc image, {}", human(file_bytes)));
             if let Some(size) = wud_size(path).filter(|size| *size != file_bytes) {
@@ -997,6 +1290,85 @@ mod tests {
         claim.finish();
         assert_eq!(std::fs::read(&out).unwrap(), b"new");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no marks or old copies left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("chdlite_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A replace that fails puts the old file back, and the job's own clean-up afterwards must
+    /// not remove it again.
+    #[test]
+    fn a_failed_replace_keeps_the_file_it_was_replacing() {
+        let dir = fresh_dir("failed_replace");
+        let input = dir.join("Game.cue");
+        std::fs::write(&input, "not a sheet").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("Game.chd"), b"previous").unwrap();
+        let mut settings = Settings::default();
+        settings.output.dir = out.to_string_lossy().into_owned();
+        settings.output.force = true;
+        let spec = JobSpec { mode: Mode::Lite, input, settings, threads: Some(1), output_stem: None };
+        assert!(run_one(&spec, &mut |_| true).is_err());
+        assert_eq!(std::fs::read(out.join("Game.chd")).unwrap(), b"previous");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1, "no marks or old copies left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A killed worker's claims are rolled back by its supervisor from what it announced; one
+    /// that finished is left alone.
+    #[test]
+    fn undoing_a_killed_job_puts_back_what_it_was_replacing() {
+        let dir = fresh_dir("undo");
+        let (replaced, finished, scratch) = (dir.join("A.chd"), dir.join("B.chd"), dir.join(".A.bin.chdlite.cue"));
+        std::fs::write(&replaced, b"previous").unwrap();
+        let mut writing = Writing::default();
+        let claim = claim_output(&replaced, true).unwrap().unwrap();
+        writing.note(&Event::Output(replaced.clone()));
+        std::fs::write(&replaced, b"half").unwrap();
+        std::mem::forget(claim);
+        let claim = claim_output(&finished, false).unwrap().unwrap();
+        writing.note(&Event::Output(finished.clone()));
+        std::fs::write(&finished, b"whole").unwrap();
+        claim.finish();
+        writing.note(&Event::Scratch(scratch.clone()));
+        std::fs::write(&scratch, b"sheet").unwrap();
+
+        writing.undo();
+        assert_eq!(std::fs::read(&replaced).unwrap(), b"previous");
+        assert_eq!(std::fs::read(&finished).unwrap(), b"whole");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "no marks, old copies or scratch left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scratch_of_a_process_no_longer_running_is_removed() {
+        let dir = fresh_dir("stale");
+        let mine = dir.join(format!("{SCRATCH_PREFIX}{}-Game", std::process::id()));
+        let gone = dir.join(format!("{SCRATCH_PREFIX}4000000000-Game"));
+        let other = dir.join(".chdlite-notes");
+        for folder in [&mine, &gone, &other] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        remove_stale_scratch(&dir);
+        assert!(mine.exists() && other.exists());
+        assert!(!gone.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_track_is_named_relative_to_a_sheet_elsewhere() {
+        let dir = fresh_dir("relative");
+        let (source, out) = (dir.join("in").join("sub"), dir.join("out"));
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(source.join("Game.bin"), b"").unwrap();
+        assert_eq!(relative_path(&out, &source.join("Game.bin")).unwrap(), Path::new("..").join("in").join("sub").join("Game.bin"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

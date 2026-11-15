@@ -103,6 +103,10 @@ pub const KEY_TEMP_DIR_MARGIN: &str = "temp_dir_margin";
 /// "source": {...}}` -- icon/favicon URLs shown before badge text; unset values fall back
 /// to the console's built-in emoji flags and family glyphs.
 pub const KEY_UI_ICONS: &str = "ui_icons";
+/// `bigpicture_icon_style`: how Big Picture draws its tab buttons' icons: `color` (default:
+/// each icon in its own colour, filled softly) | `outline` (thin lines in the text colour).
+pub const KEY_BIGPICTURE_ICON_STYLE: &str = "bigpicture_icon_style";
+pub const BIGPICTURE_ICON_STYLES: [&str; 2] = ["color", "outline"];
 pub const KEY_REGION_PRIORITY: &str = "region_priority";
 pub const KEY_LANGUAGE_PRIORITY: &str = "language_priority";
 /// Which release names a (merged) title: one ordered list of region codes (upper case: US,
@@ -262,13 +266,17 @@ pub const KEY_SERIAL_MATCH: &str = "serial_match";
 /// changed dump is not quietly linked to the release it no longer is.
 ///
 /// - `cia`, `xiso`, `wua`, `zar`, `vpk`, `pkg`, `psv`: by extension (`psv` also covers a Vita
-///   game-card `.img`).
+///   game-card `.img`, `cia` a compressed `.zcia`).
+/// - `3ds`: a 3DS cartridge image or its main part, `.3ds`, `.cci`, `.cxi`, and compressed
+///   `.zcci` / `.zcxi`. No-Intro hashes the encrypted cartridge, but a decrypted or
+///   compressed one matches no hash, so its serial is all there is.
 /// - `nsp`: a Switch `.nsp` or `.nsz`, by the ticket inside or the title id in its name.
 /// - `vita_folder`: a Vita app folder, by its `sce_sys/param.sfo`.
 /// - `ps_disc`: a PS1, PS2 or PS3 disc image, by the serial on the disc, and a PS3 game
 ///   folder by its `PS3_GAME/PARAM.SFO`.
-pub const SERIAL_MATCH_FORMATS: [(&str, bool); 10] = [
+pub const SERIAL_MATCH_FORMATS: [(&str, bool); 11] = [
     ("cia", true),
+    ("3ds", true),
     ("xiso", true),
     ("wua", true),
     ("zar", true),
@@ -403,7 +411,8 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 107] = [
+pub const KNOWN_KEYS: [(&str, &str); 108] = [
+    (KEY_BIGPICTURE_ICON_STYLE, "Big Picture: how the tab buttons' icons are drawn: color (default; each icon in its own colour) | outline (thin lines in the text colour)."),
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -696,8 +705,9 @@ pub fn playmatch_batch_limit(stored: Option<i64>) -> Option<u64> {
 /// only one that needs a RetroAchievements console id, and `hash::hash` rejects the whole
 /// call when that is missing. The scan asks for it only for files whose platform resolved.
 /// The sections the settings form is laid out in: (id, heading), in display order.
-pub const SETTING_GROUPS: [(&str, &str); 12] = [
+pub const SETTING_GROUPS: [(&str, &str); 13] = [
     ("display", "Display & language"),
+    ("view", "View"),
     ("lists", "Lists & ordering"),
     ("scan", "Scanning & files"),
     ("copy", "Copy & conversion"),
@@ -772,7 +782,7 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
     ]),
     (KEY_SCAN_HASHES, &[
         "Which hashes a file scan computes. Default: everything except sha256.",
-        "Content is identified by hash, so at least one of crc32, xxh3_128, md5, sha1 and sha256 must stay on. ra_hash (RetroAchievements) is skipped where the platform has no RetroAchievements console id.",
+        "Files are matched to DATs by crc32, md5 or sha1, so at least one of those three must stay on; xxh3_128, sha256 and ra_hash are extras. ra_hash (RetroAchievements) is skipped where the platform has no RetroAchievements console id.",
     ]),
     (KEY_COPY_RECENT_DESTINATIONS, &[
         "The destination folders the copy dialog offers again, most recent first. Written by the app as you copy; remove the ones you no longer want, or reset to forget them all.",
@@ -905,6 +915,7 @@ pub fn default_audio_client_format() -> &'static str {
 /// Which [`SETTING_GROUPS`] section a key belongs in. Unknown keys go to "other".
 pub fn group_of(key: &str) -> &'static str {
     match key {
+        KEY_BIGPICTURE_ICON_STYLE => "view",
         KEY_UI_LANGUAGE | KEY_PLATFORM_NAME_LANGUAGE | "title_display_mode" | "language_display" | "ui_colors" | "ui_icons" | "grid_media_type" => "display",
         "release_kinds_default" | "release_unlicensed" | KEY_COLLECTION_DEFAULT_TAB | KEY_COLLECTION_HIDDEN_TABS | "definitive_fetch_versions" | KEY_PLATFORM_PRIORITY | "definitive_pc_max_age" | "definitive_two_cover_layout" | "release_edition_order" | "view_defaults" | "region_priority" | "language_priority" | "canonical_name_priority" => "lists",
         KEY_SCAN_HASHES | KEY_SCAN_HEURISTICS | KEY_SCAN_PKG_TITLES | KEY_SERIAL_MATCH | KEY_SCAN_PARALLEL | KEY_SHEET_STYLE | KEY_CHD_READER | "integrity_populate_hash" => "scan",
