@@ -1,6 +1,12 @@
-# chdlite 0.3.3
+# chdlite 0.3.4
 
 chdlite is released separately from romexplorer; these notes cover chdlite only.
+
+## Changes
+
+- **RetroAchievements.** The list ships as assets/radb.bin and can be replaced with a newer one.
+
+# chdlite 0.3.3
 
 ## Changes
 

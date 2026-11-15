@@ -1,6 +1,12 @@
-# chdlite 0.3.3
+# chdlite 0.3.4
 
 chdlite は romexplorer とは別にリリースされます。このノートは chdlite のみが対象です。
+
+## 変更点
+
+- **RetroAchievements。** リスト（assets/radb.bin）を同梱。新しいリストに差し替え可能。
+
+# chdlite 0.3.3
 
 ## 変更点
 
