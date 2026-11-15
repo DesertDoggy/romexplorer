@@ -17,6 +17,10 @@ for d in external/dolphin external/RALibretro; do
   git -C "$d" submodule update --init --recursive
 done
 
+# vgmtrans: the vendored libraries rommusic builds its core with (deps/rommusic/CMakeLists.txt).
+# Not lib/qwindowkit, which is VGMTrans's Qt GUI.
+git -C external/vgmtrans submodule update --init lib/fmt lib/spdlog lib/zlib lib/libchdr
+
 # mariadb-server: libmariadb only (TLS is our own OpenSSL, so no bundled wolfssl). Stop its
 # CMake from fetching the rest at configure time.
 git -C external/mariadb-server submodule update --init libmariadb
