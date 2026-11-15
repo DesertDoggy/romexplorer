@@ -343,6 +343,15 @@ fn platform_by_extension(main_path: &str) -> Option<u16> {
 
 /// Where to open a ROM from: its main file when that is a disc image, the folder it is a
 /// dump of when it is made of many files, or nothing (a cartridge, an archive).
+/// SQL over `rom_audio_index i`: the ROM's index stands for a "new only" run. One that found
+/// no music before the bundled music maps last changed does not: a map may play it now.
+fn indexed_for_good() -> String {
+    match rom_songs::maps_changed_at() {
+        Some(at) => format!("(i.tracks > 0 OR i.error IS NOT NULL OR i.indexed_at >= FROM_UNIXTIME({at}))"),
+        None => "TRUE".into(),
+    }
+}
+
 fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
     let main = PathBuf::from(main_path);
     let ext = main.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -609,7 +618,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         ),
         None => String::new(),
     };
-    let skip = if quick { " AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)" } else { "" };
+    let skip = if quick { format!(" AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})", indexed_for_good()) } else { String::new() };
     // Smallest first: cartridges and small discs are playable within minutes, and big disc
     // images, which take longest to read, come last. A ROM with no file sizes recorded goes
     // last too, not first.
@@ -636,7 +645,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         }
     }
     if quick {
-        summary.skipped_existing = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM local_rom r WHERE r.deleted = FALSE{scope} AND EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)")))
+        summary.skipped_existing = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM local_rom r WHERE r.deleted = FALSE{scope} AND EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})", indexed_for_good())))
             .fetch_one(&app.pool)
             .await?
             .max(0) as u64;
@@ -674,7 +683,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         };
         // A title page opened while this run goes on indexes its own ROMs first, beside it:
         // a quick run does not read them a second time when it gets there.
-        if quick && sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rom_audio_index WHERE rom_id = ?").bind(rom_id).fetch_one(&app.pool).await? > 0 {
+        if quick && sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM rom_audio_index i WHERE i.rom_id = ? AND {}", indexed_for_good()))).bind(rom_id).fetch_one(&app.pool).await? > 0 {
             summary.skipped_existing += 1;
             continue;
         }
@@ -1096,8 +1105,9 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
     for &title in titles.iter().take(4) {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT r.id, r.main_path, {ROM_PLATFORM}, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
-             FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
-            roms_of(&[title])
+             FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})",
+            roms_of(&[title]),
+            indexed_for_good()
         )))
         .fetch_all(&app.pool)
         .await?;

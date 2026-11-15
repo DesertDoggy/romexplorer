@@ -865,6 +865,20 @@ fn pack_maps(dir: &Path, kinds: &[&str], shard: Option<(char, char)>) -> Result<
 /// Each kind of map: its folder under the maps dir and its file extension.
 const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap"), ("gba", "gbamap"), ("snes", "snesmap"), ("n64", "n64map")];
 
+/// When the bundled music maps last changed (the newest `music_maps*.zst` in the app's
+/// assets), as seconds since 1970: a ROM indexed with no music before then may play by a map
+/// now. None when no bundle is shipped.
+pub fn maps_changed_at() -> Option<i64> {
+    let root = super::native_lib::exe_root()?;
+    asset_files()
+        .iter()
+        .filter(|f| f.starts_with("music_maps") && f.ends_with(".zst"))
+        .filter_map(|f| std::fs::metadata(root.join("assets").join(f)).ok()?.modified().ok())
+        .max()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
 /// The file names in `<app root>/assets/`, listed once.
 fn asset_files() -> &'static [String] {
     static FILES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
