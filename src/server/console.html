@@ -2716,8 +2716,29 @@ async function showStatus() {
 // ---------------------------------------------------------------------------
 // collection: titles / releases / games / files / sets
 // ---------------------------------------------------------------------------
+// How a list is ordered and whether RetroAchievements narrows it. Where the rows are held is
+// the Held and Machine filters'; the API still reads the old local / server /
+// missing_on_server views.
 function viewFilter() {
-  return { key: 'view', label: tr('view'), type: 'select', options: () => `<option value="collection_local_first">${tr('collection (local first)')}</option><option value="collection">${tr('collection')}</option><option value="local">${tr('local only')}</option><option value="local_ra_local_first">${tr('local + RetroAchievements (local first)')}</option><option value="local_ra_ra_first">${tr('local + RetroAchievements (RA first)')}</option><option value="ra_only">${tr('RetroAchievements only')}</option><option value="server">${tr('server only')}</option><option value="missing_on_server">${tr('not on the main server')}</option>` };
+  return { key: 'view', label: tr('view'), type: 'select', options: () => `<option value="collection_local_first">${tr('collection (local first)')}</option><option value="collection">${tr('collection')}</option><option value="local_ra_local_first">${tr('local + RetroAchievements (local first)')}</option><option value="local_ra_ra_first">${tr('local + RetroAchievements (RA first)')}</option><option value="ra_only">${tr('RetroAchievements only')}</option>` };
+}
+// The Machine filter's machines (the vocabulary's): this machine first, then in client mode
+// the main server and the other clients.
+const vocabMachines = () => (vocab && vocab.machines) || [];
+// Held or not, on the machine the Machine filter picks. On a client, also the backlog still
+// to copy up to the main server.
+function heldFilter() {
+  return { key: 'held', label: tr('Held'), type: 'select', options: () => [['', tr('anywhere')], ['held', tr('held')], ['not_held', tr('not held (catalogue only)')]].concat(vocabMachines().some(m => m.role === 'main') ? [['missing_on_main', tr('not on the main server')]] : []).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('') };
+}
+// Whose holdings count: this machine, or on a client also the main server and each other
+// client. A server and a standalone machine have only themselves.
+function machineFilter() {
+  return { key: 'machine', label: tr('Machine'), type: 'select', options: () => {
+    const ms = vocabMachines();
+    const self = ms[0] && ms[0].name ? trf('this machine ({name})', { name: ms[0].name }) : tr('this machine');
+    const o = ms.length <= 1 ? [['', self]] : [['', tr('any machine')], ['local', self]].concat(ms.slice(1).map(m => [m.id, `${m.name} (${m.role === 'main' ? tr('main server') : tr('peer')})`]));
+    return o.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  } };
 }
 // Which releases the Titles / Releases lists include (default from Config > Settings).
 // A title page's sections below its releases, in this order.
@@ -3003,7 +3024,7 @@ async function showTitles() {
       ...displayColumns(),
       { key: 'id', label: tr('id'), sort: 'id', cls: 'num' },
     ],
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter(), { key: 'provider', label: tr('provider'), type: 'select', options: () => `<option value="">${tr('any provider link')}</option>` + (vocab ? vocab.jobs.providers.map(p => `<option value="${p}">${esc(p)}</option>`).join('') : '') },
       { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }, { key: 'one_per_group', label: tr('one of each version group'), type: 'check' }].concat(facetFilters()),
     fetch: st => api('/api/v1/catalog/titles' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, igdb: st.filters.igdb, basegame: st.filters.basegame, view: st.filters.view, provider: st.filters.provider, hide_minor: st.filters.hide_minor === 'true' || null, one_per_group: st.filters.one_per_group === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/titles/' + r.id,
@@ -3156,7 +3177,7 @@ async function reviewFilters(extra) {
   let sets = [];
   try { const v = await api('/api/v1/sets'); sets = Array.isArray(v) ? v : (v.items || []); } catch (e) {}
   const setFilter = { key: 'set_id', label: trc('sets', 'set'), type: 'select', options: () => `<option value="">${tr('any set')}</option>` + sets.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('') };
-  return [setFilter, platformFilter(), viewFilter(), kindsFilter(), materialFilter()].concat(extra || [], facetFilters());
+  return [setFilter, platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter()].concat(extra || [], facetFilters());
 }
 // The filters' query pairs (no paging). The release kinds only when picked: the list's default
 // kinds would narrow every review to the Titles list's rows for nothing.
@@ -3584,7 +3605,7 @@ async function showReleases() {
   const grid = makeGrid(document.getElementById('grid'), {
     gridKey: 'releases', explain: ['explain.collection.releases', 'explain.list.ownership'],
     columns: releaseColumns(),
-    filters: [platformFilter(), viewFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), materialFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }, { key: 'hide_minor', label: tr('hide minor versions'), type: 'check' }].concat(facetFilters()),
     fetch: st => api('/api/v1/catalog/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds || releaseKindsDefault, material: st.filters.material, view: st.filters.view, source: st.filters.source, hide_minor: st.filters.hide_minor === 'true' || null }, facetParams(st)))),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
@@ -4134,7 +4155,7 @@ async function showMaterial(kind) {
     gridKey: 'material_' + kind, explain: kind === 'etc' ? ['explain.collection.etc', 'explain.list.ownership'] : undefined,
     columns,
     filters: (discs ? [{ key: 'material', label: tr('kind'), type: 'select', options: () => `<option value="">${kind === 'etc' ? tr('all kinds') : tr('all discs')}</option>` + Object.entries(kinds).filter(([v]) => v !== 'dlc').map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('') }] : [])
-      .concat([viewFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }]),
+      .concat([viewFilter(), heldFilter(), machineFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }]),
     fetch: st => api('/api/v1/catalog/releases' + qs({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, material: (discs && st.filters.material) || kind, view: st.filters.view, source: st.filters.source })),
     rowLink: r => 'collection/releases/' + r.id,
     isLocal: heldClass,
@@ -4469,7 +4490,7 @@ async function showSet(id) {
     gridKey: 'set_' + id, columns: cols, pageSize: 500,
     // The Releases tab's filters, so part of a set can be picked out (and removed at once).
     // No kinds default: a set holds what was put in it, hacks included.
-    filters: [platformFilter(), viewFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
+    filters: [platformFilter(), viewFilter(), heldFilter(), machineFilter(), kindsFilter(), { key: 'source', label: tr('source'), type: 'select', options: () => `<option value="">${tr('all sources')}</option>` + (vocab ? vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('') : '') }].concat(facetFilters()).concat([
       // The grid's D/C/T/R badge sits on the cover, so it is shown on request.
       { key: 'type_badges', label: tr('entry type on covers'), type: 'check' }]).concat(rankFilters()),
     fetch: st => (showTypes = !!st.filters.type_badges && st.filters.type_badges !== 'false', api('/api/v1/sets/' + id + '/releases' + qs(Object.assign({ search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset, platforms: st.filters.platform, kinds: st.filters.kinds, view: st.filters.view, source: st.filters.source }, rankFilterParams(st), facetParams(st)))).then(page => { for (const r of page.items || []) rowsById.set(r.id, r); return page; })),
@@ -4995,6 +5016,7 @@ function settingEditor(key, value) {
       return { el: box, get };
     }
     case 'release_kinds_default': current = value || 'all'; box.appendChild(el(`<div class="muted">${tr('Collection Titles / Releases: which releases are listed by default (changeable on the page). "All" keeps ROM hacks, translations and RetroAchievements subsets visible, so nothing you own seems missing.')}</div>`)); box.appendChild(radios(key, [['all', tr('all releases, incl. patches & subsets (default)')], ['patches', tr('commercial + patches')], ['commercial', tr('commercial only')]], current, v => { current = v; })); return { el: box, get };
+    case 'bigpicture_icon_style': current = value === 'outline' ? 'outline' : 'color'; box.appendChild(el(`<div class="muted">${tr('Big Picture mode: how the icons on its tab buttons are drawn.')}</div>`)); box.appendChild(radios(key, [['color', tr('colour: each icon in its own colour (default)')], ['outline', tr('outline: thin lines in the text colour')]], current, v => { current = v; })); return { el: box, get };
     case 'definitive_two_cover_layout': current = ['diagonal', 'left_right'].includes(value) ? value : 'top_bottom'; box.appendChild(el(`<div class="muted">${tr("Collection › Definitive, two-cover grid: how the definitive version's and the base game's covers share a card. Each cover is cropped to fill its half.")}</div>`)); box.appendChild(radios(key, [['top_bottom', tr('top / bottom (default)')], ['diagonal', tr('diagonal (top left / bottom right)')], ['left_right', tr('left / right')]], current, v => { current = v; })); return { el: box, get };
     case 'release_unlicensed': current = value === 'retail' ? 'retail' : 'separate'; box.appendChild(el(`<div class="muted">${tr("Unlicensed releases (Unl) with no other tag: a kind and Titles row of their own, or listed with the title's retail releases. An unlicensed demo or pirate copy stays a demo or pirate copy.")}</div>`)); box.appendChild(radios(key, [['separate', tr('a kind of their own (default)')], ['retail', tr('with retail')]], current, v => { current = v; })); return { el: box, get };
     case 'ra_base_filter_default': current = value || 'console'; box.appendChild(el(`<div class="muted">${tr('RetroAchievements tab: which base filter the lists start with (switchable on the page).')}</div>`)); box.appendChild(radios(key, [['console', tr('by console (default)')], ['genre', tr('by genre')]], current, v => { current = v; })); return { el: box, get };
@@ -6643,10 +6665,27 @@ async function mountDialog(sourceId, sourceName, done) {
   };
 }
 
+// A server address as the forms show it: the address (scheme kept) and the port apart.
+function splitBase(base) {
+  base = (base || '').trim().replace(/\/+$/, '');
+  const m = base.match(/^(.*?(?:\]|[^:\]]))(?::(\d+))$/);
+  const rest = base.replace(/^[a-z]+:\/\//i, '');
+  // `host:7337` or `[::1]:7337`, not a bare IPv6 address's own colons.
+  if (m && (/\]:\d+$/.test(rest) || (rest.match(/:/g) || []).length === 1)) return [m[1], m[2]];
+  return [base, ''];
+}
+// Put back together; a port typed into the address wins.
+function joinBase(address, port) {
+  const [a, own] = splitBase(address);
+  const p = own || (port || '').trim();
+  return a && p ? `${a}:${p}` : a;
+}
+
 function sourceDialog(s, done) {
-  const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3><form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
+  const box = openModal(`<h3>${s.id ? tr('Edit source') : tr('Add source')}</h3>${s.id ? '' : `<div class="muted" style="margin-bottom:6px">${tr('On this network')}</div><div class="toolbar" id="src-found" style="flex-wrap:wrap;margin-bottom:10px"></div>`}<form id="src-form" class="kv" style="grid-template-columns:110px 1fr">
     <div>${tr('name')}</div><div><input name="name" value="${esc(s.name)}" required style="width:100%"></div>
-    <div>${tr('address')}</div><div><input name="base_url" value="${esc(s.base_url)}" required style="width:100%" placeholder="http://192.168.1.10:7337"><div class="muted">${tr("host and port only, no /api/v1 — a main server's main port, a peer's share port")}</div></div>
+    <div>${tr('address')}</div><div><input name="base_url" value="${esc(splitBase(s.base_url)[0])}" required style="width:100%" placeholder="https://192.168.1.10"><div class="muted">${tr("the other machine's IP address or name, no /api/v1")}</div></div>
+    <div>${tr('port')}</div><div><input name="port" inputmode="numeric" value="${esc(splitBase(s.base_url)[1] || (s.id ? '' : '7337'))}" style="width:8em" placeholder="7337"><div class="muted">${tr('a main server\'s port (7337 unless changed), or the port a peer shares on')}</div></div>
     <div>${tr('sign in as')}</div><div><input name="username" style="width:48%" autocomplete="off" placeholder="${tr('username on that machine')}"> <input name="password" type="password" style="width:48%" autocomplete="off" placeholder="${tr('password')}">
       <div class="muted">${tr('This machine signs in once and keeps only the token it is given for itself — the password is not stored. Its certificate is trusted on that first connection.')}</div></div>
     <div>${tr('or a token')}</div><div><input name="token" type="password" style="width:100%" autocomplete="off" placeholder="${s.id ? (s.has_token ? tr('stored — leave blank to keep it') : tr('none stored')) : tr("the other machine's bearer token")}"></div>
@@ -6656,9 +6695,28 @@ function sourceDialog(s, done) {
   box.querySelector('#src-cancel').onclick = closeModal;
   const f = box.querySelector('#src-form');
   const send = body => api(s.id ? '/api/v1/sources/' + s.id : '/api/v1/sources', { method: s.id ? 'PUT' : 'POST', body });
+  // Servers and shares that answered a search of the local network. Picking one fills in
+  // the form: a server becomes the main server, a share a peer; signing in is still below.
+  const found = box.querySelector('#src-found');
+  const search = async () => {
+    found.innerHTML = `<span class="muted">${tr('searching…')}</span>`;
+    let list = [];
+    try { list = await api('/api/v1/sources/discover'); } catch (e) { /* shown as nothing found */ }
+    const base = x => `${x.tls ? 'https' : 'http'}://${x.ip.includes(':') ? '[' + x.ip + ']' : x.ip}:${x.port}`;
+    found.innerHTML = (list.length ? list.map((x, i) => `<button class="btn" type="button" data-found="${i}"><b>${esc(x.name)}</b> <span class="muted">${esc(x.ip)}:${x.port} · ${x.kind === 'server' ? tr('main server') : tr('peer')}</span></button>`).join('')
+      : `<span class="muted">${tr('Nothing answered. Type the address below.')}</span>`) + ` <button class="btn" type="button" id="src-search">${tr('search again')}</button>`;
+    for (const b of found.querySelectorAll('[data-found]')) b.onclick = () => {
+      const x = list[+b.dataset.found];
+      f.name.value = x.name; [f.base_url.value, f.port.value] = splitBase(base(x));
+      f.querySelector(`input[name=role][value=${x.kind === 'server' ? 'main' : 'peer'}]`).checked = true;
+      f.username.focus();
+    };
+    found.querySelector('#src-search').onclick = search;
+  };
+  if (found) search();
   f.onsubmit = async ev => {
     ev.preventDefault();
-    const body = { name: f.name.value.trim(), base_url: f.base_url.value.trim(), role: f.role.value, enabled: f.enabled.checked };
+    const body = { name: f.name.value.trim(), base_url: joinBase(f.base_url.value, f.port.value), role: f.role.value, enabled: f.enabled.checked };
     if (f.token.value) body.token = f.token.value;
     if (f.username.value.trim()) { body.username = f.username.value.trim(); body.password = f.password.value; }
     try { await send(body); toast(tr('saved')); closeModal(); done(); }

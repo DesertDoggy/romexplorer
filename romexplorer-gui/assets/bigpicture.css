@@ -82,6 +82,10 @@
 .bp-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; max-height: 50vh; overflow: auto; }
 .bp-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
 #modal, #submodal { z-index: 30; }
+/* A sheet's title and its close button, top right and always in view. */
+.bp-sheet-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 6px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+.bp-sheet-head h3 { flex: 1; margin: 0; }
+.bp-close { min-width: 44px; min-height: 44px; font-size: 18px; }
 #ctxmenu { z-index: 40; font-size: 16px; }
 .bp ~ #ctxmenu div, .bp #ctxmenu div { padding: 10px 14px; }
 
@@ -107,3 +111,57 @@
   .bp-hero-meta { min-width: 0; }
   .bp-page { padding: 12px 12px 32px; }
 }
+
+/* The top buttons (Collection, RetroAchievements) and the open one's lists as icon buttons:
+   one row each in portrait and on a desktop, both in one row in a phone's landscape. Icons
+   from bp_icons.rs, drawn as the bigpicture_icon_style setting says (icons-color /
+   icons-outline on the frame). */
+.bp-top { flex-wrap: nowrap; }
+.bp-groups { display: flex; gap: 6px; min-width: 0; }
+.bp-spacer { flex: 1; }
+.bp-group { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 14px 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--hover); color: var(--fg); font-size: 15px; cursor: pointer; white-space: nowrap; }
+.bp-group.active { border-color: var(--acc); box-shadow: inset 0 -3px 0 var(--acc); }
+.bp-tool { display: inline-flex; align-items: center; justify-content: center; padding: 0; width: 44px; height: 44px; }
+.bp-ic { display: inline-flex; line-height: 0; }
+.bp-ic svg { width: 26px; height: 26px; }
+.bp-tabs { flex: none; flex-wrap: nowrap; padding: 8px 12px 6px; gap: 6px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.bp-tabs button.bp-tab { flex: none; display: inline-flex; flex-direction: column; align-items: center; gap: 3px; min-width: 72px; padding: 6px 10px; border: 1px solid var(--line); background: var(--hover); color: var(--dim); font-size: 12px; border-radius: 10px; box-shadow: none; }
+.bp-tabs button.bp-tab.active { color: var(--fg); border-color: var(--acc); background: var(--bg); }
+.bp-tab .bp-ic svg { width: 28px; height: 28px; }
+@media (orientation: landscape) and (max-height: 520px) {
+  .bp-tabs { padding: 4px 8px; }
+  .bp-tabs button.bp-tab { flex-direction: row; gap: 6px; min-width: 0; font-size: 13px; padding: 4px 10px; }
+  .bp-tab .bp-ic svg { width: 22px; height: 22px; }
+  .bp-group { min-height: 40px; }
+}
+.bp { --c-blue:#6aa8ff; --c-gold:#f2c14e; --c-teal:#4fd1c5; --c-grey:#aab2c0; --c-violet:#b48cff; --c-diamond:#eef7ff; --c-orange:#ff9f5a; --c-green:#6fd08c; --c-slate:#9fb3c8; --c-amber:#d9a066; --c-silver:#c5ced9; --c-red:#f0735f; --c-cyan:#5ac8fa; --c-pad:#c9ced6; --c-padd:#4a505a; --c-tv:#0b0c0f; }
+.bp-ic svg path { stroke-linecap: round; stroke-linejoin: round; }
+.bp.icons-outline .bp-ic .f, .bp.icons-outline .bp-ic .s, .bp.icons-outline .bp-ic .d { fill: none; stroke: currentColor; stroke-width: 1.7; }
+.bp.icons-color .bp-ic .f { fill: color-mix(in srgb, var(--ic) 30%, transparent); stroke: var(--ic); stroke-width: 1.7; }
+.bp.icons-color .bp-ic .s, .bp.icons-color .bp-ic .d { fill: none; stroke: var(--ic); stroke-width: 1.7; }
+.bp.icons-color .bp-ic .d { stroke: var(--dc, var(--ic)); }
+.bp.icons-color .bp-ic svg[style*="--dc"] .d { stroke-width: 2.3; }
+.bp.icons-color .active .bp-ic .f { fill: var(--ic); }
+.bp.icons-color .active .bp-ic .d { stroke: var(--bg); }
+.bp-ic .tx { stroke: none; font-weight: 700; font-size: 4.3px; letter-spacing: -.1px; }
+.bp.icons-outline .bp-ic .tx { fill: currentColor; }
+.bp.icons-color .bp-ic .tx { fill: var(--tc, var(--ic)); }
+.bp.icons-color .active .bp-ic .tx:not([style]) { fill: var(--bg); }
+.bp.icons-outline .bp-ic .sd { fill: currentColor; }
+.bp.icons-color .bp-ic .sd { fill: var(--ic); }
+.bp.icons-color .active .bp-ic .sd { fill: var(--bg); }
+.bp.icons-outline .bp-ic .cs { display: none; }
+.bp.icons-color .bp-ic .nocol { display: none; }
+.bp.icons-outline .bp-ic .pd { fill: currentColor; }
+.bp.icons-color .bp-ic .pd { fill: var(--c-padd); }
+.bp.icons-color .bp-ic .full .f, .bp.icons-color .active .bp-ic .full .f { fill: var(--ic); stroke: var(--c-padd); stroke-width: 1.2; }
+.bp.icons-color .bp-ic svg[style*="c-tv"] .f { stroke: #6b7280; stroke-width: .9; }
+.bp.icons-color .active .bp-ic .full .d { stroke: var(--c-padd); }
+.bp.icons-outline .bp-ic .cb { fill: none; stroke: currentColor; stroke-width: 1.2; }
+.bp.icons-color .bp-ic .cb { fill: var(--btn); stroke: none; }
+/* A narrow phone: the layout button gives way (it is in Settings › Covers too). */
+@media (max-width: 440px) {
+  .bp-layout { display: none; }
+  .bp-group { padding: 6px 12px 6px 8px; gap: 6px; }
+}
+.bp-flag { font-size: 22px; }

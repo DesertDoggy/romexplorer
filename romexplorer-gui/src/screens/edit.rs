@@ -481,6 +481,8 @@ fn review_filters(sets: Signal<Vec<(String, String)>>, extra: Vec<Filter>) -> Ve
         },
         common::platform_filter(),
         common::view_filter(),
+        common::held_filter(),
+        common::machine_filter(),
         common::kinds_filter(),
         common::material_filter(),
     ];

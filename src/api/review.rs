@@ -109,6 +109,8 @@ fn narrows(q: &ListQuery) -> bool {
         || some(&q.display_scan)
         || some(&q.display_state)
         || q.view.as_deref().is_some_and(|v| !matches!(v, "" | "collection" | "collection_local_first"))
+        || some(&q.held)
+        || some(&q.machine)
         || q.igdb.is_some()
         || q.basegame.is_some()
 }

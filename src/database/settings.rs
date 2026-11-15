@@ -103,6 +103,10 @@ pub const KEY_TEMP_DIR_MARGIN: &str = "temp_dir_margin";
 /// "source": {...}}` -- icon/favicon URLs shown before badge text; unset values fall back
 /// to the console's built-in emoji flags and family glyphs.
 pub const KEY_UI_ICONS: &str = "ui_icons";
+/// `bigpicture_icon_style`: how Big Picture draws its tab buttons' icons: `color` (default:
+/// each icon in its own colour, filled softly) | `outline` (thin lines in the text colour).
+pub const KEY_BIGPICTURE_ICON_STYLE: &str = "bigpicture_icon_style";
+pub const BIGPICTURE_ICON_STYLES: [&str; 2] = ["color", "outline"];
 pub const KEY_REGION_PRIORITY: &str = "region_priority";
 pub const KEY_LANGUAGE_PRIORITY: &str = "language_priority";
 /// Which release names a (merged) title: one ordered list of region codes (upper case: US,
@@ -407,7 +411,8 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 107] = [
+pub const KNOWN_KEYS: [(&str, &str); 108] = [
+    (KEY_BIGPICTURE_ICON_STYLE, "Big Picture: how the tab buttons' icons are drawn: color (default; each icon in its own colour) | outline (thin lines in the text colour)."),
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
     (KEY_COLLECTION_HIDDEN_TABS, "Which Collection sub-tabs are turned off: a list of crossplatform | definitive | games | roms | files | contents | sets | audio | multimedia | documents | source | etc | patches | bios. Empty (default): all shown. Titles and Releases are always shown."),
@@ -700,8 +705,9 @@ pub fn playmatch_batch_limit(stored: Option<i64>) -> Option<u64> {
 /// only one that needs a RetroAchievements console id, and `hash::hash` rejects the whole
 /// call when that is missing. The scan asks for it only for files whose platform resolved.
 /// The sections the settings form is laid out in: (id, heading), in display order.
-pub const SETTING_GROUPS: [(&str, &str); 12] = [
+pub const SETTING_GROUPS: [(&str, &str); 13] = [
     ("display", "Display & language"),
+    ("view", "View"),
     ("lists", "Lists & ordering"),
     ("scan", "Scanning & files"),
     ("copy", "Copy & conversion"),
@@ -909,6 +915,7 @@ pub fn default_audio_client_format() -> &'static str {
 /// Which [`SETTING_GROUPS`] section a key belongs in. Unknown keys go to "other".
 pub fn group_of(key: &str) -> &'static str {
     match key {
+        KEY_BIGPICTURE_ICON_STYLE => "view",
         KEY_UI_LANGUAGE | KEY_PLATFORM_NAME_LANGUAGE | "title_display_mode" | "language_display" | "ui_colors" | "ui_icons" | "grid_media_type" => "display",
         "release_kinds_default" | "release_unlicensed" | KEY_COLLECTION_DEFAULT_TAB | KEY_COLLECTION_HIDDEN_TABS | "definitive_fetch_versions" | KEY_PLATFORM_PRIORITY | "definitive_pc_max_age" | "definitive_two_cover_layout" | "release_edition_order" | "view_defaults" | "region_priority" | "language_priority" | "canonical_name_priority" => "lists",
         KEY_SCAN_HASHES | KEY_SCAN_HEURISTICS | KEY_SCAN_PKG_TITLES | KEY_SERIAL_MATCH | KEY_SCAN_PARALLEL | KEY_SHEET_STYLE | KEY_CHD_READER | "integrity_populate_hash" => "scan",
