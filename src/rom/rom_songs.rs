@@ -1824,8 +1824,14 @@ const SAME_PIECE_WRITES_ALONE: f64 = 0.98;
 
 type Melody = fn(&[Vec<music_search::Write>]) -> std::collections::HashSet<u64>;
 
+/// A found song's (writes print, notes print).
+type Print = (std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>);
+
+/// Most two found songs' measured lengths differ, in percent, for them to be one piece.
+const SAME_PIECE_LENGTH_PCT: usize = 3;
+
 /// Whether `a` and `b` (writes print, notes print) are one piece ([`SAME_PIECE_WRITES`]).
-fn same_piece(a: &(std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>), b: &(std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>)) -> bool {
+fn same_piece(a: &Print, b: &Print) -> bool {
     let writes = music_search::alike(&a.0, &b.0);
     match (&a.1, &b.1) {
         (Some(x), Some(y)) if x.len().min(y.len()) >= music_search::MIN_MELODY => writes >= SAME_PIECE_WRITES && music_search::alike(x, y) >= SAME_PIECE_NOTES,
@@ -1848,7 +1854,7 @@ fn index_machine_with<M: Machine>(path: &Path, t: &Thresholds, engine: &str, cod
     let recipe = found.recipe.encode();
     let mut out = Vec::with_capacity(found.songs.len());
     let mut failed = None;
-    let mut prints: Vec<(std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>)> = Vec::new();
+    let mut prints: Vec<(usize, Print)> = Vec::new();
     for &v in &found.songs {
         // A song that breaks off is left out, not the game.
         let timing = match music_search::measure::<M>(&rom, &found.recipe, v) {
@@ -1862,10 +1868,13 @@ fn index_machine_with<M: Machine>(path: &Path, t: &Thresholds, engine: &str, cod
         // only once, so every number plays the same) is that piece again: left out.
         if let Ok(frames) = music_search::first_writes::<M>(&rom, &found.recipe, v) {
             let print = (music_search::writes_print(&frames), melody.map(|f| f(&frames)));
-            if prints.iter().any(|p| same_piece(p, &print)) {
+            // A version of a tune at another tempo is a song of its own: one piece also lasts
+            // as long.
+            let len = timing.frames;
+            if prints.iter().any(|(l, p)| len.abs_diff(*l) * 100 <= len.max(*l) * SAME_PIECE_LENGTH_PCT && same_piece(p, &print)) {
                 continue;
             }
-            prints.push(print);
+            prints.push((len, print));
         }
         let (looping, intro, lp) = match timing.looping {
             Some((start, len)) => (true, ms(start), ms(len)),
