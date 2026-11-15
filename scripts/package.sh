@@ -485,8 +485,19 @@ ship_music_maps() {
     fi
 }
 
-# The chdlite tools read nothing from assets/: their images and stylesheet are compiled in.
+# The chdlite tools' images and stylesheet are compiled in. radb.bin, the RetroAchievements
+# list (scripts/update_ra_db.sh), is compiled in too when the build finds it, but ra::list reads
+# <app root>/assets/radb.bin first, so shipping it is what lets a newer list be dropped in
+# without a rebuild -- as fcdb.bin does for romexplorer. It is gitignored (RetroAchievements'
+# data), so a checkout without it packages without it, as it builds without it.
 if [[ "$KIND" == "chdlite" ]]; then
+    if [[ -f "$ROOT_DIR/app_root_ex/assets/radb.bin" ]]; then
+        mkdir -p "$APP/assets"
+        cp -f "$ROOT_DIR/app_root_ex/assets/radb.bin" "$APP/assets/radb.bin"
+        note "assets/radb.bin"
+    else
+        note "no app_root_ex/assets/radb.bin (scripts/update_ra_db.sh) -- the package has no RetroAchievements list"
+    fi
     for doc in chdlite_release_notes.md chdlite_release_notes.ja.md; do
         [[ -f "$ROOT_DIR/docs/$doc" ]] && cp -f "$ROOT_DIR/docs/$doc" "$STAGE/$doc" && note "$doc"
     done
