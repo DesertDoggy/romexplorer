@@ -312,6 +312,14 @@ pub async fn validate(_app: &App, _request: &RomAudioIndexRequest) -> Result<()>
     Ok(())
 }
 
+/// A ROM's platform as a select column (`app_platform_id`, of `local_rom r`): its own, or when
+/// the scan left it Unknown (a zip in a folder with no platform set, say), that of the release
+/// a hash match linked it to. Without the fallback such a ROM had no music player and was left
+/// out of every index run, though the app shows it under its platform.
+const ROM_PLATFORM: &str = "CAST(COALESCE(NULLIF(r.app_platform_id, 0), \
+     (SELECT rel.app_platform_id FROM local_game_roms gr JOIN local_release_games lrg ON lrg.game_id = gr.game_id \
+      JOIN `release` rel ON rel.id = lrg.release_id WHERE gr.rom_id = r.id AND rel.app_platform_id <> 0 ORDER BY rel.id LIMIT 1), 0) AS UNSIGNED) AS app_platform_id";
+
 /// Where to open a ROM from: its main file when that is a disc image, the folder it is a
 /// dump of when it is made of many files, or nothing (a cartridge, an archive).
 fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
@@ -585,7 +593,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     // images, which take longest to read, come last. A ROM with no file sizes recorded goes
     // last too, not first.
     let all = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT r.id, r.main_path, r.app_platform_id, s.files, s.bytes FROM local_rom r \
+        "SELECT r.id, r.main_path, {ROM_PLATFORM}, s.files, s.bytes FROM local_rom r \
          LEFT JOIN (SELECT rf.rom_id, COUNT(*) AS files, CAST(SUM(f.size) AS UNSIGNED) AS bytes FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE GROUP BY rf.rom_id) s ON s.rom_id = r.id \
          WHERE r.deleted = FALSE{scope}{skip} ORDER BY s.bytes IS NULL, s.bytes, r.main_path"
     )))
@@ -958,7 +966,7 @@ async fn same_content_indexed(app: &App, rom_id: u64, platform: u16, among: Opti
     let mine = content_of(app, rom_id).await?;
     let Some(&first) = mine.first() else { return Ok(None) };
     let candidates: Vec<u64> = sqlx::query_scalar(
-        "SELECT DISTINCT rf.rom_id FROM local_files f JOIN local_rom_files rf ON rf.file_id = f.id JOIN local_rom r ON r.id = rf.rom_id AND r.deleted = FALSE AND r.app_platform_id = ? \
+        "SELECT DISTINCT rf.rom_id FROM local_files f JOIN local_rom_files rf ON rf.file_id = f.id JOIN local_rom r ON r.id = rf.rom_id AND r.deleted = FALSE AND r.app_platform_id IN (?, 0) \
          JOIN rom_audio_index i ON i.rom_id = rf.rom_id AND i.error IS NULL WHERE f.content_id = ? AND f.deleted = FALSE AND rf.rom_id <> ? LIMIT 50",
     )
     .bind(platform)
@@ -1046,7 +1054,7 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
     let mut queued = None;
     for &title in titles.iter().take(4) {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT r.id, r.main_path, r.app_platform_id, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
+            "SELECT r.id, r.main_path, {ROM_PLATFORM}, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
              FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
             roms_of(&[title])
         )))
