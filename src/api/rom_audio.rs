@@ -1425,12 +1425,34 @@ pub async fn title_tracks(app: &App, titles: &[u64], s: &Settings) -> Result<Vec
     if titles.is_empty() {
         return Ok(Vec::new());
     }
+    let rank = super::catalog::ReleaseRank::load(app).await?;
     let mut groups = Vec::new();
     for &title in titles {
+        let Some(roms) = title_music_roms(app, title, &rank).await? else { continue };
         let videos = videos_for(app, title, s).await?;
-        groups.push(format!("(t.rom_id IN ({}){})", roms_of(&[title]), if videos { "" } else { " AND t.video = FALSE" }));
+        groups.push(format!("(t.rom_id IN ({roms}){})", if videos { "" } else { " AND t.video = FALSE" }));
+    }
+    if groups.is_empty() {
+        return Ok(Vec::new());
     }
     tracks_where(app, &format!("({})", groups.join(" OR ")), "r.main_path, t.location, t.cd_track, t.data_track, t.inner_path, t.subsong", s, MAX_TRACKS).await
+}
+
+/// The ROMs whose music a title page plays: those of one game -- the copy of the title's
+/// best-ranked release (region / language / edition priority) that has tracks indexed -- as an
+/// SQL list. One game, not every ROM: a title held as several dumps or patched copies listed
+/// the same soundtrack once per copy. A game's discs all play. `None` when no copy has tracks.
+async fn title_music_roms(app: &App, title: u64, rank: &super::catalog::ReleaseRank) -> Result<Option<String>> {
+    let sql = format!(
+        "SELECT lrg.game_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE \
+         JOIN local_release_games lrg ON lrg.release_id = r.id \
+         WHERE tr.title_id = ? AND EXISTS (SELECT 1 FROM local_game_roms gr JOIN local_rom lr ON lr.id = gr.rom_id AND lr.deleted = FALSE \
+           JOIN rom_audio_tracks t ON t.rom_id = gr.rom_id WHERE gr.game_id = lrg.game_id) \
+         ORDER BY {}, lrg.game_id LIMIT 1",
+        rank.sql("r")
+    );
+    let Some(game) = sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(sql)).bind(title).fetch_optional(&app.pool).await? else { return Ok(None) };
+    Ok(Some(format!("SELECT gr.rom_id FROM local_game_roms gr WHERE gr.game_id = {game}")))
 }
 
 /// A title's own choice on video sound, when it has one.

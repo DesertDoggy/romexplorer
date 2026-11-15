@@ -24,6 +24,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - L'indice della musica delle ROM sembrava fermo mentre una ROM richiedeva molto tempo.
 - L'indice della musica delle ROM saltava le ROM identificate solo tramite un DAT.
 - Una scansione lasciava senza piattaforma le ROM giapponesi del Super Famicom con il titolo interno in katakana.
+- La pagina di un titolo ripeteva la stessa musica per ogni copia del gioco trovata.
 - L'indicizzazione della musica delle ROM non finiva mai su alcune immagini disco.
 - Convertendo dump SNES in una copia, un file con dimensione e header interno in disaccordo
   sull'header del copiatore veniva convertito comunque.

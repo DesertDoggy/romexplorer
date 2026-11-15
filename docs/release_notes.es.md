@@ -24,6 +24,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 - El índice de música de las ROM parecía detenido mientras una ROM tardaba en leerse.
 - El índice de música de las ROM omitía las ROM identificadas solo por una coincidencia con un DAT.
 - Un escaneo dejaba sin plataforma las ROM japonesas de Super Famicom cuyo título interno está en katakana.
+- La página de un título repetía la misma música por cada copia del juego que encontraba.
 - La indexación de la música de las ROM no terminaba nunca en algunas imágenes de disco.
 - Al convertir volcados de SNES en una copia, se convertía igualmente un archivo cuyo tamaño y
   cabecera interna no coincidían sobre la cabecera de copiadora.
