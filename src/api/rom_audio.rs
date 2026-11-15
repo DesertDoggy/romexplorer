@@ -343,6 +343,15 @@ fn platform_by_extension(main_path: &str) -> Option<u16> {
 
 /// Where to open a ROM from: its main file when that is a disc image, the folder it is a
 /// dump of when it is made of many files, or nothing (a cartridge, an archive).
+/// SQL over `rom_audio_index i`: the ROM's index stands for a "new only" run. One that found
+/// no music before the bundled music maps last changed does not: a map may play it now.
+fn indexed_for_good() -> String {
+    match rom_songs::maps_changed_at() {
+        Some(at) => format!("(i.tracks > 0 OR i.error IS NOT NULL OR i.indexed_at >= FROM_UNIXTIME({at}))"),
+        None => "TRUE".into(),
+    }
+}
+
 fn rom_path(main_path: &str, files: &[String]) -> Option<PathBuf> {
     let main = PathBuf::from(main_path);
     let ext = main.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -609,7 +618,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         ),
         None => String::new(),
     };
-    let skip = if quick { " AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)" } else { "" };
+    let skip = if quick { format!(" AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})", indexed_for_good()) } else { String::new() };
     // Smallest first: cartridges and small discs are playable within minutes, and big disc
     // images, which take longest to read, come last. A ROM with no file sizes recorded goes
     // last too, not first.
@@ -636,7 +645,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         }
     }
     if quick {
-        summary.skipped_existing = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM local_rom r WHERE r.deleted = FALSE{scope} AND EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)")))
+        summary.skipped_existing = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM local_rom r WHERE r.deleted = FALSE{scope} AND EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})", indexed_for_good())))
             .fetch_one(&app.pool)
             .await?
             .max(0) as u64;
@@ -674,7 +683,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         };
         // A title page opened while this run goes on indexes its own ROMs first, beside it:
         // a quick run does not read them a second time when it gets there.
-        if quick && sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rom_audio_index WHERE rom_id = ?").bind(rom_id).fetch_one(&app.pool).await? > 0 {
+        if quick && sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM rom_audio_index i WHERE i.rom_id = ? AND {}", indexed_for_good()))).bind(rom_id).fetch_one(&app.pool).await? > 0 {
             summary.skipped_existing += 1;
             continue;
         }
@@ -722,6 +731,26 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             (Ok(sets), true) => sets.clone(),
             _ => Vec::new(),
         };
+        // Other copies of the game in its title (the original of a translation): a NES copy
+        // with no map of its own plays by theirs where the music is unchanged.
+        let others: Vec<PathBuf> = if songs && rom_songs::borrows_maps(platform) {
+            sqlx::query_scalar::<_, String>(
+                "SELECT DISTINCT r.main_path FROM local_game_roms gr JOIN local_release_games lrg ON lrg.game_id = gr.game_id \
+                 JOIN title_releases tr ON tr.release_id = lrg.release_id JOIN title_releases tr2 ON tr2.title_id = tr.title_id \
+                 JOIN local_release_games lrg2 ON lrg2.release_id = tr2.release_id JOIN local_game_roms gr2 ON gr2.game_id = lrg2.game_id \
+                 JOIN local_rom r ON r.id = gr2.rom_id AND r.deleted = FALSE WHERE gr.rom_id = ? AND gr2.rom_id <> ? LIMIT 16",
+            )
+            .bind(rom_id)
+            .bind(rom_id)
+            .fetch_all(&app.pool)
+            .await?
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect()
+        } else {
+            Vec::new()
+        };
         // What inside the ROM is being read right now, for the job's progress line.
         let step = Arc::new(std::sync::Mutex::new(String::new()));
         let at = step.clone();
@@ -737,7 +766,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             note("disc");
             let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |p| note(p)));
             note("the game's sound engine");
-            let songs = if songs && rom_file.is_file() { rom_songs::index(&rom_file, platform, &thresholds) } else { Ok(Vec::new()) };
+            let songs = if songs && rom_file.is_file() { rom_songs::index_with_others(&rom_file, platform, &thresholds, &others).map(|(found, _)| found) } else { Ok(Vec::new()) };
             (rips, disc, songs, map_error)
         });
         let started = std::time::Instant::now();
@@ -1076,8 +1105,9 @@ pub async fn indexing_for(app: &App, titles: &[u64]) -> Result<Option<Indexing>>
     for &title in titles.iter().take(4) {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT r.id, r.main_path, {ROM_PLATFORM}, (SELECT COUNT(*) FROM local_rom_files rf WHERE rf.rom_id = r.id) AS files \
-             FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id)",
-            roms_of(&[title])
+             FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})",
+            roms_of(&[title]),
+            indexed_for_good()
         )))
         .fetch_all(&app.pool)
         .await?;

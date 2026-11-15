@@ -246,6 +246,75 @@ pub fn index(path: &Path, platform: u16, t: &Thresholds) -> Result<Vec<FoundTrac
     index_explained(path, platform, t).map(|(found, _)| found)
 }
 
+/// [`index_explained`], with the other copies of the same game (`others`: another region, the
+/// original of a translation) to borrow a NES map from when this copy has none of its own.
+pub fn index_with_others(path: &Path, platform: u16, t: &Thresholds, others: &[PathBuf]) -> Result<(Vec<FoundTrack>, Option<String>), String> {
+    if is_nes(platform) && !others.is_empty() {
+        if let Some(found) = borrowed_nes(path, t, others)? {
+            return Ok((found, None));
+        }
+    }
+    index_explained(path, platform, t)
+}
+
+/// Whether [`index_with_others`] can use other copies of a game on `platform`.
+pub fn borrows_maps(platform: u16) -> bool {
+    is_nes(platform)
+}
+
+/// Share of a track's sound fingerprint a copy shares with the map's own game for the track
+/// to count as the same music there.
+const SAME_MUSIC: f64 = 0.98;
+
+/// A NES copy with no map of its own (a translation, a fix patch) plays by the original's
+/// map: each of the map's tracks that still sounds on the copy is kept. Of several copies with
+/// a map, the one whose tracks agree most with the copy's sound is taken. None only when no
+/// other copy has a map or none of its tracks sounds on this one.
+fn borrowed_nes(path: &Path, t: &Thresholds, others: &[PathBuf]) -> Result<Option<Vec<FoundTrack>>, String> {
+    let rom = read_rom(path)?;
+    let Some(own) = map_key(&rom) else { return Ok(None) };
+    if kept_map("nes", &own).is_some() {
+        return Ok(None);
+    }
+    // (key, map, tracks that sound here, how many of them agree with the original)
+    let mut best: Option<(String, super::nes_nsf::Map, std::collections::HashSet<u8>, usize)> = None;
+    for other in others {
+        let Ok(theirs) = read_rom(other) else { continue };
+        let Some(key) = map_key(&theirs) else { continue };
+        if key == own || best.as_ref().is_some_and(|b| b.0 == key) {
+            continue;
+        }
+        let Some(m) = load_map(&key) else { continue };
+        let mut sounds = std::collections::HashSet::new();
+        let mut agree = 0;
+        for v in (0..m.header.songs).filter(|&v| !matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None))) {
+            let Some(here) = map_print(&m, &rom, v).filter(|p| p.len() >= music_search::MIN_MELODY) else { continue };
+            sounds.insert(v);
+            if map_print(&m, &theirs, v).is_some_and(|there| music_search::alike(&there, &here) >= SAME_MUSIC) {
+                agree += 1;
+            }
+        }
+        if !sounds.is_empty() && best.as_ref().map_or(true, |b| (agree, sounds.len()) > (b.3, b.2.len())) {
+            best = Some((key, m, sounds, agree));
+        }
+    }
+    let Some((key, m, sounds, _)) = best else { return Ok(None) };
+    let found = index_map(&rom, &key, &m, t, Some(&sounds))?;
+    Ok((!found.is_empty()).then_some(found))
+}
+
+/// A map track's [`music_search::writes_print`] played on `rom`.
+fn map_print(m: &super::nes_nsf::Map, rom: &[u8], v: u8) -> Option<std::collections::HashSet<u64>> {
+    let mut song = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
+    let mut samples = Vec::new();
+    let mut frames = Vec::with_capacity(music_search::PRINT_FRAMES);
+    for _ in 0..music_search::PRINT_FRAMES {
+        frames.push(song.frame(&mut samples)?);
+        samples.clear();
+    }
+    Some(music_search::writes_print(&frames))
+}
+
 /// [`index`], and when nothing was found, why.
 pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     if !covers(platform) {
@@ -289,7 +358,7 @@ pub fn index_explained(path: &Path, platform: u16, t: &Thresholds) -> Result<(Ve
                 return Ok((found, None));
             }
         }
-        return index_machine::<super::gb_music::GameBoy>(path, t, GB, "Game Boy");
+        return index_machine_with::<super::gb_music::GameBoy>(path, t, GB, "Game Boy", Some(super::gb_gbs::melody));
     }
     {
         use crate::common::models::Platform as P;
@@ -606,12 +675,12 @@ pub fn open(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
 fn index_nes(path: &Path, t: &Thresholds) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
     if let Some((key, m)) = map_key(&rom).and_then(|k| Some((k.clone(), load_map(&k)?))) {
-        let found = index_map(&rom, &key, &m, t)?;
+        let found = index_map(&rom, &key, &m, t, None)?;
         if !found.is_empty() {
             return Ok((found, None));
         }
     }
-    index_machine::<super::nes_music::Nes>(path, t, NES, "NES")
+    index_machine_with::<super::nes_music::Nes>(path, t, NES, "NES", Some(super::nes_nsf::melody))
 }
 
 // --- Music maps: where a game's music is in its ROM, as numbers (super::nes_nsf::Map) -----
@@ -795,6 +864,20 @@ fn pack_maps(dir: &Path, kinds: &[&str], shard: Option<(char, char)>) -> Result<
 
 /// Each kind of map: its folder under the maps dir and its file extension.
 const MAP_KINDS: &[(&str, &str)] = &[("nes", "nesmap"), ("gb", "gbmap"), ("hes", "hesmap"), ("sgc", "sgcmap"), ("ws", "wsmap"), ("gba", "gbamap"), ("snes", "snesmap"), ("n64", "n64map")];
+
+/// When the bundled music maps last changed (the newest `music_maps*.zst` in the app's
+/// assets), as seconds since 1970: a ROM indexed with no music before then may play by a map
+/// now. None when no bundle is shipped.
+pub fn maps_changed_at() -> Option<i64> {
+    let root = super::native_lib::exe_root()?;
+    asset_files()
+        .iter()
+        .filter(|f| f.starts_with("music_maps") && f.ends_with(".zst"))
+        .filter_map(|f| std::fs::metadata(root.join("assets").join(f)).ok()?.modified().ok())
+        .max()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
 
 /// The file names in `<app root>/assets/`, listed once.
 fn asset_files() -> &'static [String] {
@@ -1686,10 +1769,11 @@ pub fn map_from_sets_for(path: &Path, sets: &[PathBuf], platform: Option<u16>) -
 }
 
 /// The songs a map plays, measured and classified like [`index_machine`]'s.
-fn index_map(rom: &[u8], key: &str, m: &super::nes_nsf::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
+/// `only`: the tracks to list, when the map is another copy's (see [`borrowed_nes`]).
+fn index_map(rom: &[u8], key: &str, m: &super::nes_nsf::Map, t: &Thresholds, only: Option<&std::collections::HashSet<u8>>) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
     for v in 0..m.header.songs {
-        if matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) {
+        if matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) || only.is_some_and(|o| !o.contains(&v)) {
             continue;
         }
         let Ok(mut song) = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
@@ -1744,7 +1828,36 @@ fn open_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream>, 
     Ok(Box::new(MapPcm { song: AnyMapSong::Nes(song), channels: 1, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
 }
 
+/// When two found songs are one piece. With a console's melody fingerprint (the notes its tone
+/// channels play), both the writes and the notes must agree; songs that share their drums,
+/// bass and tempo share most writes but not their notes. Without one (or with too few notes
+/// to tell), the writes alone must agree nearly throughout.
+const SAME_PIECE_WRITES: f64 = 0.9;
+const SAME_PIECE_NOTES: f64 = 0.9;
+const SAME_PIECE_WRITES_ALONE: f64 = 0.98;
+
+type Melody = fn(&[Vec<music_search::Write>]) -> std::collections::HashSet<u64>;
+
+/// A found song's (writes print, notes print).
+type Print = (std::collections::HashSet<u64>, Option<std::collections::HashSet<u64>>);
+
+/// Most two found songs' measured lengths differ, in percent, for them to be one piece.
+const SAME_PIECE_LENGTH_PCT: usize = 3;
+
+/// Whether `a` and `b` (writes print, notes print) are one piece ([`SAME_PIECE_WRITES`]).
+fn same_piece(a: &Print, b: &Print) -> bool {
+    let writes = music_search::alike(&a.0, &b.0);
+    match (&a.1, &b.1) {
+        (Some(x), Some(y)) if x.len().min(y.len()) >= music_search::MIN_MELODY => writes >= SAME_PIECE_WRITES && music_search::alike(x, y) >= SAME_PIECE_NOTES,
+        _ => writes >= SAME_PIECE_WRITES_ALONE,
+    }
+}
+
 fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str) -> Result<(Vec<FoundTrack>, Option<String>), String> {
+    index_machine_with::<M>(path, t, engine, codec, None)
+}
+
+fn index_machine_with<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &str, melody: Option<Melody>) -> Result<(Vec<FoundTrack>, Option<String>), String> {
     let rom = read_rom(path)?;
     let found = music_search::search::<M>(&rom)?;
     if found.songs.is_empty() {
@@ -1755,7 +1868,8 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
     let recipe = found.recipe.encode();
     let mut out = Vec::with_capacity(found.songs.len());
     let mut failed = None;
-    for (i, &v) in found.songs.iter().enumerate() {
+    let mut prints: Vec<(usize, Print)> = Vec::new();
+    for &v in &found.songs {
         // A song that breaks off is left out, not the game.
         let timing = match music_search::measure::<M>(&rom, &found.recipe, v) {
             Ok(t) => t,
@@ -1764,6 +1878,18 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
                 continue;
             }
         };
+        // A song number that starts a piece already listed (the game's song variable read
+        // only once, so every number plays the same) is that piece again: left out.
+        if let Ok(frames) = music_search::first_writes::<M>(&rom, &found.recipe, v) {
+            let print = (music_search::writes_print(&frames), melody.map(|f| f(&frames)));
+            // A version of a tune at another tempo is a song of its own: one piece also lasts
+            // as long.
+            let len = timing.frames;
+            if prints.iter().any(|(l, p)| len.abs_diff(*l) * 100 <= len.max(*l) * SAME_PIECE_LENGTH_PCT && same_piece(p, &print)) {
+                continue;
+            }
+            prints.push((len, print));
+        }
         let (looping, intro, lp) = match timing.looping {
             Some((start, len)) => (true, ms(start), ms(len)),
             None => (false, ms(timing.frames), 0),
@@ -1771,7 +1897,7 @@ fn index_machine<M: Machine>(path: &Path, t: &Thresholds, engine: &str, codec: &
         let duration_ms = if looping { intro + lp } else { intro };
         // Played: the intro and the loop twice, then a fade; a song that ends plays to its end.
         let (body, fade) = if looping { (intro + lp * u64::from(PLAY_LOOPS), SONG_FADE_MS) } else { (duration_ms, 0) };
-        let name = format!("Track {}", i + 1);
+        let name = format!("Track {}", out.len() + 1);
         let shape = Shape { looping, duration_ms, channels: M::CHANNELS, cd_track: 0, rip: true };
         let kind = classify(&shape, &name, t);
         let r = u64::from(PLAY_RATE);
