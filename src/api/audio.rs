@@ -874,8 +874,12 @@ async fn playlist_inner(app: &App, q: &PlaylistQuery, rom: &super::rom_audio::Se
     let client = crate::database::settings::instance_mode(&app.pool).await? == crate::database::settings::InstanceMode::Client;
     let titles = titles_of(app, q).await?;
     let mut list = if rom.sources.tagged() { local_playlist(app, &titles).await? } else { Playlist::default() };
-    // The music inside the title's own ROMs, after the tagged albums.
+    // The music inside the title's own ROMs, after the tagged albums. Cartridges with a known
+    // music map are indexed first, right now: they need no index job to play.
     if rom.sources.rom() {
+        if let Err(e) = super::rom_audio::index_known_for(app, &titles).await {
+            log::warn!("rom audio: known music maps: {e}");
+        }
         list.tracks.extend(super::rom_audio::title_tracks(app, &titles, rom).await?);
     }
     // A client plays the main server's library too, streamed: its catalogue is the server's,

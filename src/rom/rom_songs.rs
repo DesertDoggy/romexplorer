@@ -782,6 +782,34 @@ pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, St
     Ok(maps)
 }
 
+/// Adds the track times kept under `times_dir` (`<kind>/<key>.times`, as [`time_map`] keeps
+/// them) to the bundle `packed`, beside each map it holds; times of maps it does not hold are
+/// left out. Returns the bundle repacked, how many maps it holds and how many of them now
+/// have times.
+/// `None` for the bundle when it would not change (no times for any of its maps, or the same
+/// ones it holds already), so it is not rewritten.
+pub fn add_times_to_bundle(packed: &[u8], times_dir: &Path) -> Result<(Option<Vec<u8>>, usize, usize), String> {
+    let mut entries: std::collections::BTreeMap<String, String> = read_bundle(packed)?.into_iter().collect();
+    let maps: Vec<String> = entries.keys().filter(|k| !k.ends_with(TIMES_SUFFIX)).cloned().collect();
+    let mut changed = false;
+    for name in &maps {
+        let file = times_dir.join(format!("{name}.{TIMES_EXT}"));
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            changed |= entries.insert(format!("{name}{TIMES_SUFFIX}"), text.clone()).as_ref() != Some(&text);
+        }
+    }
+    let timed = maps.iter().filter(|m| entries.contains_key(&format!("{m}{TIMES_SUFFIX}"))).count();
+    if !changed {
+        return Ok((None, maps.len(), timed));
+    }
+    let mut text = format!("{BUNDLE_MAGIC}\n");
+    for (name, body) in &entries {
+        text.push_str(&format!("{name} {}\n", body.len()));
+        text.push_str(body);
+    }
+    Ok((Some(pack_text(&text)?), maps.len(), timed))
+}
+
 /// Packs the maps of each kind kept under `dir` (as [`set_maps_dir`] lays them out) into its
 /// own bundle ([`bundle_file`]), or, past [`SPLIT_ABOVE`], into parts ([`shard_file`]). Returns
 /// each file to write: its name, its bytes and how many maps went in.
@@ -845,21 +873,300 @@ fn pack_maps(dir: &Path, kinds: &[&str], shard: Option<(char, char)>) -> Result<
     for (kind, ext) in MAP_KINDS.iter().filter(|(k, _)| kinds.contains(k)) {
         let Ok(entries) = std::fs::read_dir(dir.join(kind)) else { continue };
         let in_shard = |p: &Path| shard.is_none_or(|(a, b)| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.chars().next()).is_some_and(|c| (a..=b).contains(&c.to_ascii_lowercase())));
-        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext) && in_shard(p)).collect();
+        // A map's track times ([`TIMES_EXT`]) go in beside it, under `<kind>/<key>.times`.
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == *ext || x == TIMES_EXT) && in_shard(p)).collect();
         // Sorted, so the same maps always pack to the same bytes.
         files.sort();
+        let mut maps = 0;
         for f in &files {
             let body = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
             let key = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            text.push_str(&format!("{kind}/{key} {}\n", body.len()));
+            let times = f.extension().is_some_and(|x| x == TIMES_EXT);
+            maps += usize::from(!times);
+            text.push_str(&format!("{kind}/{key}{} {}\n", if times { TIMES_SUFFIX } else { "" }, body.len()));
             text.push_str(&body);
         }
-        counts.push((kind.to_string(), files.len()));
+        counts.push((kind.to_string(), maps));
+        if maps == 0 && !files.is_empty() {
+            // Times alone (maps that ship in another bundle) still make a bundle.
+            counts.push((format!("{kind} times"), files.len()));
+        }
     }
-    // zstd -19: packed once per release and read once per run, so size is what counts here.
-    // Measured on the first bundle: 105 MB of text to 2.65 MB in 6 s.
-    let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
-    Ok((packed, counts))
+    Ok((pack_text(&text)?, counts))
+}
+
+/// A bundle packed again the current way ([`pack_text`]), entries in name order as packing
+/// puts them. Its maps and times are unchanged.
+pub fn repack_bundle(packed: &[u8]) -> Result<Vec<u8>, String> {
+    let entries: std::collections::BTreeMap<String, String> = read_bundle(packed)?.into_iter().collect();
+    let mut text = format!("{BUNDLE_MAGIC}\n");
+    for (name, body) in &entries {
+        text.push_str(&format!("{name} {}\n", body.len()));
+        text.push_str(body);
+    }
+    pack_text(&text)
+}
+
+/// Window of [`pack_text`]: 128 MB, the most a zstd reader takes without being told to.
+const BUNDLE_WINDOW_LOG: u32 = 27;
+
+/// A bundle's text, packed: zstd -22 over a 128 MB window, with long-distance matching. Packed
+/// once per release and read once per run, so size is what counts; a bundle holds many
+/// near-copies of one map (regions, revisions), further apart than a small window reaches.
+/// Measured on the shipped bundles (packed size, packing time; reading back 0.06-0.2 s at
+/// every level):
+///
+/// | bundle (text) | -19 | -19 long | -22 |
+/// |---|---|---|---|
+/// | GBA (153 MB) | 16.6 MB, 55 s | 11.4 MB, 48 s | 10.9 MB, 87 s |
+/// | N64 (202 MB) | 15.0 MB, 45 s | 9.1 MB, 31 s | 8.9 MB, 50 s |
+/// | SNES e-f (52 MB) | 6.05 MB, 20 s | 5.61 MB, 21 s | 5.59 MB, 32 s |
+/// | NES/GB/PCE (105 MB) | 2.65 MB, 12 s | 2.23 MB, 12 s | 2.16 MB, 17 s |
+///
+/// The same maps as binary were 1% bigger than as text once packed: the hex runs pack to a
+/// byte a byte already.
+fn pack_text(text: &str) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let err = |e: std::io::Error| e.to_string();
+    let mut e = zstd::stream::Encoder::new(Vec::new(), 22).map_err(err)?;
+    e.long_distance_matching(true).map_err(err)?;
+    e.window_log(BUNDLE_WINDOW_LOG).map_err(err)?;
+    e.include_contentsize(true).map_err(err)?;
+    e.set_pledged_src_size(Some(text.len() as u64)).map_err(err)?;
+    e.write_all(text.as_bytes()).map_err(err)?;
+    e.finish().map_err(err)
+}
+
+// --- Track times kept with a map ---------------------------------------------------------
+//
+// A map says where a game's songs are, not how long they run: that is found by playing each
+// song until it falls silent or repeats ([`music_search::measure_frames`]), which is most of
+// the time an index of a mapped game takes. Measured once, the times are kept beside the map
+// (`<maps dir>/<kind>/<key>.times`, and in the bundles as `<kind>/<key>.times`), so the next
+// index of that game, here or on any machine the bundle ships to, plays nothing.
+
+/// The file extension of a map's track times in the maps dir.
+const TIMES_EXT: &str = "times";
+/// The bundle entry of a map's track times: `<kind>/<key>.times`.
+const TIMES_SUFFIX: &str = ".times";
+/// First word of a times file, and its version: raised when measuring changes, so times
+/// measured the old way are measured again.
+const TIMES_MAGIC: &str = "maptimes 1";
+
+/// One song's measured time: the rate its frames run at, and its [`music_search::Timing`].
+/// `None`: the song does not play (it could not be opened, or broke off while measured).
+type SongTime = Option<(f64, music_search::Timing)>;
+
+/// A short fingerprint of a map, so times kept for another version of it are not used.
+fn map_fingerprint(encoded: &str) -> String {
+    use sha1::{Digest, Sha1};
+    Sha1::digest(encoded.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The text of a times file: the magic and the map's fingerprint, then one line per song,
+/// `<song> <frame rate> <frames> <loop start> <loop length>` (`-` for no loop), or
+/// `<song> x` for a song that does not play.
+fn encode_times(print: &str, times: &std::collections::BTreeMap<u8, SongTime>) -> String {
+    let mut text = format!("{TIMES_MAGIC} {print}\n");
+    for (v, t) in times {
+        match t {
+            None => text.push_str(&format!("{v} x\n")),
+            Some((rate, t)) => {
+                let (start, len) = t.looping.map_or(("-".to_string(), "-".to_string()), |(a, b)| (a.to_string(), b.to_string()));
+                text.push_str(&format!("{v} {rate} {} {start} {len}\n", t.frames));
+            }
+        }
+    }
+    text
+}
+
+/// A times file's songs, when it was measured the current way for the map `print` names.
+fn decode_times(text: &str, print: &str) -> Option<std::collections::BTreeMap<u8, SongTime>> {
+    let mut lines = text.lines();
+    if lines.next()? != format!("{TIMES_MAGIC} {print}") {
+        return None;
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for line in lines.filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let v: u8 = f.first()?.parse().ok()?;
+        let time = match f[1..] {
+            ["x"] => None,
+            [rate, frames, start, len] => {
+                let looping = match (start, len) {
+                    ("-", "-") => None,
+                    (a, b) => Some((a.parse().ok()?, b.parse().ok()?)),
+                };
+                Some((rate.parse().ok()?, music_search::Timing { frames: frames.parse().ok()?, looping }))
+            }
+            _ => return None,
+        };
+        out.insert(v, time);
+    }
+    Some(out)
+}
+
+/// The times of `songs` of a map (`kind`, `key`, its text `encoded`): those kept with it, and
+/// the rest measured now by `measure` and kept for next time (in the maps dir, when there is
+/// one). With `keep` false (a map played on another copy of its game) nothing kept is read
+/// or written. Returns each song that plays, in the order given.
+fn map_times(kind: &str, key: &str, encoded: &str, songs: &[u8], keep: bool, mut measure: impl FnMut(u8) -> SongTime) -> Vec<(u8, f64, music_search::Timing)> {
+    let print = map_fingerprint(encoded);
+    let mut kept = if keep { kept_text(kind, key, TIMES_EXT, TIMES_SUFFIX).and_then(|t| decode_times(&t, &print)).unwrap_or_default() } else { Default::default() };
+    // [`index_known`]: nothing is measured; a song with no kept time leaves the whole map to
+    // a full index.
+    if KNOWN_ONLY.with(|k| k.get()) && songs.iter().any(|v| !kept.contains_key(v)) {
+        KNOWN_ONLY_MISSED.with(|m| m.set(true));
+        return Vec::new();
+    }
+    let mut measured = false;
+    let mut out = Vec::with_capacity(songs.len());
+    for &v in songs {
+        let time = match kept.get(&v) {
+            Some(t) => *t,
+            None => {
+                let t = measure(v);
+                kept.insert(v, t);
+                measured = true;
+                t
+            }
+        };
+        if let Some((rate, t)) = time {
+            out.push((v, rate, t));
+        }
+    }
+    if keep && measured {
+        if let Some(file) = MAPS_DIR.get().map(|d| d.join(kind).join(format!("{key}.{TIMES_EXT}"))) {
+            let written = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, encode_times(&print, &kept)));
+            if let Err(e) = written {
+                log::warn!("music map times {}: {e}", file.display());
+            }
+        }
+    }
+    out
+}
+
+thread_local! {
+    /// Set while [`index_known`] runs: [`map_times`] measures nothing.
+    static KNOWN_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by [`map_times`] when a song it was asked for has no kept time.
+    static KNOWN_ONLY_MISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The songs of a cartridge whose music map is kept (shipped or built here) and needs nothing
+/// measured: every song's time is kept with the map, or the map carries its own lengths (SNES,
+/// N64, GBA). Takes as long as reading the ROM and hashing it, so a title page can list the
+/// game's music at once instead of waiting for an index run.
+/// `None` when the ROM has no such map, or a song of it would need measuring; the index run
+/// then reads it the usual way.
+pub fn index_known(path: &Path, platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
+    if !covers(platform) || !is_cartridge(platform) {
+        return Ok(None);
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            KNOWN_ONLY.with(|k| k.set(false));
+        }
+    }
+    let rom = read_rom(path)?;
+    KNOWN_ONLY.with(|k| k.set(true));
+    KNOWN_ONLY_MISSED.with(|m| m.set(false));
+    let _reset = Reset;
+    let found = known_songs(&rom, platform, t)?;
+    if KNOWN_ONLY_MISSED.with(|m| m.get()) {
+        return Ok(None);
+    }
+    Ok(found.filter(|f| !f.is_empty()))
+}
+
+/// The songs of a cartridge whose music map is kept, by that map alone: times not kept with
+/// it are measured (and kept), but the game's own sound code is never searched. `None` when
+/// the ROM has no map or its map plays nothing; an index run then reads another copy of the
+/// game first, and searches this one only when no copy has a map.
+pub fn index_mapped(path: &Path, platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
+    if !covers(platform) || !is_cartridge(platform) {
+        return Ok(None);
+    }
+    let rom = read_rom(path)?;
+    Ok(known_songs(&rom, platform, t)?.filter(|f| !f.is_empty()))
+}
+
+/// [`index_known`]'s map lookup, per console: the same keys [`index_explained`] uses.
+fn known_songs(rom: &[u8], platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
+    use crate::common::models::Platform as P;
+    if is_nes(platform) {
+        let Some(key) = map_key(rom) else { return Ok(None) };
+        let Some(m) = load_map(&key) else { return Ok(None) };
+        return index_map(rom, &key, &m, t, None).map(Some);
+    }
+    if is_snes(platform) {
+        let key = gb_key(super::snes_sound::rom_image(rom));
+        return Ok(load_snes_map(&key).map(|m| index_snes_map(&key, &m, t)));
+    }
+    if platform == P::Nintendo64 as u16 {
+        let Some(native) = super::n64_map::native(rom) else { return Ok(None) };
+        let key = gb_key(&native);
+        return Ok(load_n64_map(&key).map(|m| index_n64_map(&key, &m, t)));
+    }
+    if is_gb(platform) {
+        let key = gb_key(rom);
+        let Some(m) = load_gb_map(&key) else { return Ok(None) };
+        return index_gb_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 {
+        let key = gb_key(rom);
+        let Some(m) = load_sgc_map(&key) else { return Ok(None) };
+        return index_sgc_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::TurboGrafx16 as u16 {
+        let key = gb_key(super::hes_map::program(rom));
+        let Some(m) = load_hes_map(&key) else { return Ok(None) };
+        return index_hes_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
+        let key = gb_key(rom);
+        let Some(m) = load_ws_map(&key) else { return Ok(None) };
+        return index_ws_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::GameBoyAdvance as u16 && super::gba_map::available() {
+        let key = gb_key(rom);
+        return Ok(load_gba_map(&key).map(|m| index_gba_map(&key, &m, t)));
+    }
+    Ok(None)
+}
+
+/// Measures and keeps the track times of the map the ROM at `path` plays by, where its kind
+/// of map is timed when indexed (NES, Game Boy, PC Engine, Master System / Game Gear,
+/// WonderSwan). Returns how many of its songs play, or `None` when no map is kept for it.
+/// For the tool that packs the bundles, so they ship with times.
+pub fn time_map(path: &Path, platform: u16) -> Result<Option<usize>, String> {
+    use crate::common::models::Platform as P;
+    let t = Thresholds::default();
+    let rom = read_rom(path)?;
+    let found = if is_nes(platform) {
+        let Some((key, m)) = map_key(&rom).and_then(|k| Some((k.clone(), load_map(&k)?))) else { return Ok(None) };
+        index_map(&rom, &key, &m, &t, None)?
+    } else if is_gb(platform) {
+        let key = gb_key(&rom);
+        let Some(m) = load_gb_map(&key) else { return Ok(None) };
+        index_gb_map(&rom, &key, &m, &t)?
+    } else if platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 {
+        let key = gb_key(&rom);
+        let Some(m) = load_sgc_map(&key) else { return Ok(None) };
+        index_sgc_map(&rom, &key, &m, &t)?
+    } else if platform == P::TurboGrafx16 as u16 {
+        let key = gb_key(super::hes_map::program(&rom));
+        let Some(m) = load_hes_map(&key) else { return Ok(None) };
+        index_hes_map(&rom, &key, &m, &t)?
+    } else if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
+        let key = gb_key(&rom);
+        let Some(m) = load_ws_map(&key) else { return Ok(None) };
+        index_ws_map(&rom, &key, &m, &t)?
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(found.len()))
 }
 
 /// Each kind of map: its folder under the maps dir and its file extension.
@@ -892,12 +1199,18 @@ fn asset_files() -> &'static [String] {
 /// A kept map's text: one built here first, then the bundled one.
 fn kept_map(kind: &str, key: &str) -> Option<String> {
     let ext = MAP_KINDS.iter().find(|(k, _)| *k == kind)?.1;
+    kept_text(kind, key, ext, "")
+}
+
+/// A kept file of a map's game: `<key>.<ext>` in the maps dir first, then the bundle entry
+/// `<kind>/<key><suffix>` ("" for the map itself, [`TIMES_SUFFIX`] for its track times).
+fn kept_text(kind: &str, key: &str, ext: &str, suffix: &str) -> Option<String> {
     if let Some(dir) = MAPS_DIR.get() {
         if let Ok(text) = std::fs::read_to_string(dir.join(kind).join(format!("{key}.{ext}"))) {
             return Some(text);
         }
     }
-    let name = format!("{kind}/{key}");
+    let name = format!("{kind}/{key}{suffix}");
     let root = super::native_lib::exe_root();
     // Maps added or fixed since the main files were packed, kept apart so a fix ships as a
     // small file instead of a repacked part.
@@ -1007,13 +1320,13 @@ fn sgc_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<(), String> {
 fn index_sgc_map(rom: &[u8], key: &str, m: &super::sgc_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
     let codec = if m.header.system == 1 { "Game Gear" } else { "Master System" };
-    for v in 0..m.header.songs {
-        if matches!(m.ways.get(v as usize), None | Some(super::sgc_map::Way::None)) {
-            continue;
-        }
-        let Ok(mut song) = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+    let songs: Vec<u8> = (0..m.header.songs).filter(|&v| !matches!(m.ways.get(v as usize), None | Some(super::sgc_map::Way::None))).collect();
+    let timed = map_times("sgc", key, &m.encode(), &songs, true, |v| {
+        let mut song = super::sgc_map::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        Some((rate, music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())).ok()?))
+    });
+    for (v, rate, timing) in timed {
         if let Some(track) = map_track(SGC_MAP, key, v, out.len(), rate, timing, 2, codec, t) {
             out.push(track);
         }
@@ -1071,13 +1384,13 @@ fn hes_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
 
 fn index_hes_map(rom: &[u8], key: &str, m: &super::hes_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
-    for v in 0..m.header.songs {
-        if matches!(m.ways.get(v as usize), None | Some(super::hes_map::Way::None)) {
-            continue;
-        }
-        let Ok(mut song) = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+    let songs: Vec<u8> = (0..m.header.songs).filter(|&v| !matches!(m.ways.get(v as usize), None | Some(super::hes_map::Way::None))).collect();
+    let timed = map_times("hes", key, &m.encode(), &songs, true, |v| {
+        let mut song = super::hes_map::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        Some((rate, music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())).ok()?))
+    });
+    for (v, rate, timing) in timed {
         if let Some(track) = map_track(HES_MAP, key, v, out.len(), rate, timing, 2, "PC Engine", t) {
             out.push(track);
         }
@@ -1139,10 +1452,13 @@ fn ws_map_from_sets(rom: &[u8], sets: &[PathBuf]) -> Result<bool, String> {
 
 fn index_ws_map(rom: &[u8], key: &str, m: &super::ws_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
-    for &(v, _) in &m.songs {
-        let Ok(mut song) = super::ws_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+    let songs: Vec<u8> = m.songs.iter().map(|&(v, _)| v).collect();
+    let timed = map_times("ws", key, &m.encode(), &songs, true, |v| {
+        let mut song = super::ws_map::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        Some((rate, music_search::measure_frames_by_writes(rate, music_search::every_write, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())).ok()?))
+    });
+    for (v, rate, timing) in timed {
         if let Some(track) = map_track(WS_MAP, key, v, out.len(), rate, timing, 2, "WonderSwan", t) {
             out.push(track);
         }
@@ -1163,6 +1479,11 @@ fn open_ws_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MapPcm { song: AnyMapSong::Ws(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+/// Whether a SNES music map is kept for the ROM `rom` (a copier header or none).
+pub fn has_snes_map(rom: &[u8]) -> bool {
+    kept_map("snes", &gb_key(super::snes_sound::rom_image(rom))).is_some()
 }
 
 fn load_snes_map(key: &str) -> Option<super::snes_map::Map> {
@@ -1625,13 +1946,13 @@ fn gb_map_from_sets(path: &Path, sets: &[PathBuf]) -> Result<(), String> {
 /// The songs a Game Boy map plays, measured and classified like [`index_machine`]'s.
 fn index_gb_map(rom: &[u8], key: &str, m: &super::gb_map::Map, t: &Thresholds) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
-    for v in 0..m.header.songs {
-        if matches!(m.ways.get(v as usize), None | Some(super::gb_map::Way::None)) {
-            continue;
-        }
-        let Ok(mut song) = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+    let songs: Vec<u8> = (0..m.header.songs).filter(|&v| !matches!(m.ways.get(v as usize), None | Some(super::gb_map::Way::None))).collect();
+    let timed = map_times("gb", key, &m.encode(), &songs, true, |v| {
+        let mut song = super::gb_map::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames_by_writes(rate, gb_notes(), |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        Some((rate, music_search::measure_frames_by_writes(rate, gb_notes(), |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())).ok()?))
+    });
+    for (v, rate, timing) in timed {
         if let Some(track) = map_track(GB_MAP, key, v, out.len(), rate, timing, 2, "Game Boy", t) {
             out.push(track);
         }
@@ -1772,13 +2093,14 @@ pub fn map_from_sets_for(path: &Path, sets: &[PathBuf], platform: Option<u16>) -
 /// `only`: the tracks to list, when the map is another copy's (see [`borrowed_nes`]).
 fn index_map(rom: &[u8], key: &str, m: &super::nes_nsf::Map, t: &Thresholds, only: Option<&std::collections::HashSet<u8>>) -> Result<Vec<FoundTrack>, String> {
     let mut out = Vec::new();
-    for v in 0..m.header.songs {
-        if matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) || only.is_some_and(|o| !o.contains(&v)) {
-            continue;
-        }
-        let Ok(mut song) = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE) else { continue };
+    let songs: Vec<u8> = (0..m.header.songs).filter(|&v| !matches!(m.ways.get(v as usize), None | Some(super::nes_nsf::Way::None)) && only.is_none_or(|o| o.contains(&v))).collect();
+    // A map played on another copy of its game (`only`) is timed on that copy, not kept.
+    let timed = map_times("nes", key, &m.encode(), &songs, only.is_none(), |v| {
+        let mut song = super::nes_nsf::MapSong::open(m, rom, v, MEASURE_RATE).ok()?;
         let rate = song.frame_rate();
-        let Ok(timing) = music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())) else { continue };
+        Some((rate, music_search::measure_frames(rate, |samples| song.frame(samples).ok_or_else(|| "the song stopped".to_string())).ok()?))
+    });
+    for (v, rate, timing) in timed {
         let ms = |frames: usize| (frames as f64 * 1000.0 / rate) as u64;
         let (looping, intro, lp) = match timing.looping {
             Some((start, len)) => (true, ms(start), ms(len)),
@@ -2120,6 +2442,91 @@ mod bundle_tests {
         let (r, body, fade) = machine_record("md@120@1@1a2b@m0040@2@90000@8000").unwrap();
         assert_eq!((r.calls, body, fade), (2, 90000, 8000));
         assert!(machine_record("md@120@1@1a2b@m0040@90000").is_none());
+    }
+
+    #[test]
+    fn map_times_read_back_only_for_the_map_they_were_measured_for() {
+        let mut times = std::collections::BTreeMap::new();
+        times.insert(0u8, Some((60.098_813_897_440_5, music_search::Timing { frames: 3600, looping: Some((120, 2400)) })));
+        times.insert(1, Some((59.727_500_569_605_83, music_search::Timing { frames: 90, looping: None })));
+        times.insert(4, None);
+        let print = map_fingerprint("nesmap 1\nline two\n");
+        let text = encode_times(&print, &times);
+        assert_eq!(decode_times(&text, &print), Some(times.clone()), "rates, frames and loops come back exactly");
+        assert_eq!(decode_times(&text, &map_fingerprint("nesmap 1\nline 2\n")), None, "times of another version of the map");
+        assert_eq!(decode_times(&text.replacen(TIMES_MAGIC, "maptimes 0", 1), &print), None, "times measured the old way");
+        assert_eq!(decode_times(&format!("{TIMES_MAGIC} {print}\n3 junk\n"), &print), None);
+    }
+
+    #[test]
+    fn map_times_known_only_measure_nothing() {
+        KNOWN_ONLY.with(|k| k.set(true));
+        KNOWN_ONLY_MISSED.with(|m| m.set(false));
+        let mut measured = 0;
+        let got = map_times("nes", "00ff", "nesmap 1\n", &[0, 1], false, |_| {
+            measured += 1;
+            None
+        });
+        let missed = KNOWN_ONLY_MISSED.with(|m| m.get());
+        KNOWN_ONLY.with(|k| k.set(false));
+        assert_eq!(measured, 0, "nothing measured");
+        assert!(got.is_empty() && missed, "a song without a kept time sends the map to a full index");
+    }
+
+    #[test]
+    fn map_times_not_kept_measure_every_song() {
+        let mut measured = Vec::new();
+        let mut measure = |v: u8| {
+            measured.push(v);
+            (v != 2).then_some((60.0, music_search::Timing { frames: 600 + usize::from(v), looping: None }))
+        };
+        // Not kept (`keep` false): nothing read, nothing written, every song measured.
+        let got = map_times("nes", "00ff", "nesmap 1\n", &[0, 1, 2], false, &mut measure);
+        assert_eq!(got.iter().map(|(v, _, t)| (*v, t.frames)).collect::<Vec<_>>(), vec![(0, 600), (1, 601)]);
+        assert_eq!(measured, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_bundle_packs_each_maps_times_beside_it() {
+        let dir = std::env::temp_dir().join(format!("music_map_times_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("gb")).unwrap();
+        std::fs::write(dir.join("gb").join("aa.gbmap"), "gbmap 1\n").unwrap();
+        std::fs::write(dir.join("gb").join("aa.times"), "maptimes 1 x\n").unwrap();
+        std::fs::create_dir_all(dir.join("ws")).unwrap();
+        // Times of a map shipped in another bundle still pack.
+        std::fs::write(dir.join("ws").join("bb.times"), "maptimes 1 y\n").unwrap();
+        let (packed, counts) = pack_bundle(&dir, &["gb"]).unwrap();
+        let split = pack_bundles(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(counts, vec![("gb".to_string(), 1)], "times are not counted as maps");
+        let maps = read_bundle(&packed).unwrap();
+        assert_eq!(maps["gb/aa"], "gbmap 1\n");
+        assert_eq!(maps["gb/aa.times"], "maptimes 1 x\n");
+        assert_eq!(split.iter().map(|(k, _, _)| k.as_str()).collect::<Vec<_>>(), vec!["music_maps_gb.zst", "music_maps_ws.zst"]);
+        assert_eq!(read_bundle(&split[1].1).unwrap().keys().collect::<Vec<_>>(), vec!["ws/bb.times"]);
+    }
+
+    #[test]
+    fn times_are_added_to_a_shipped_bundle_beside_their_maps() {
+        let dir = std::env::temp_dir().join(format!("music_map_add_times_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("maps").join("nes")).unwrap();
+        std::fs::create_dir_all(dir.join("times").join("nes")).unwrap();
+        std::fs::write(dir.join("maps").join("nes").join("aa.nesmap"), "nesmap 1\n").unwrap();
+        std::fs::write(dir.join("maps").join("nes").join("bb.nesmap"), "nesmap 2\n").unwrap();
+        std::fs::write(dir.join("times").join("nes").join("aa.times"), "maptimes 1 x\n").unwrap();
+        std::fs::write(dir.join("times").join("nes").join("zz.times"), "maptimes 1 y\n").unwrap();
+        let (packed, _) = pack_bundle(&dir.join("maps"), &["nes"]).unwrap();
+        let (again, maps, timed) = add_times_to_bundle(&packed, &dir.join("times")).unwrap();
+        let again = again.expect("times were added");
+        // Run again over its own output: nothing to add, nothing rewritten.
+        let (same, ..) = add_times_to_bundle(&again, &dir.join("times")).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(same.is_none());
+        assert_eq!((maps, timed), (2, 1));
+        let entries = read_bundle(&again).unwrap();
+        assert_eq!(entries.len(), 3, "the maps, and times only for a map the bundle holds");
+        assert_eq!(entries["nes/aa.times"], "maptimes 1 x\n");
+        assert_eq!(entries["nes/bb"], "nesmap 2\n");
     }
 
     #[test]

@@ -866,6 +866,18 @@ async fn audio_tag_remove(State(s): State<Shared>, Json(b): Json<api::audio::Aud
     Ok(Json(json!({ "changed": api::audio::remove_tag(&s.app, &b).await? })))
 }
 
+#[derive(Deserialize, Default)]
+struct RomIndexClear {
+    #[serde(default)]
+    platform: Option<u16>,
+}
+
+/// The Audio screen's "Clear ROM audio index": every ROM's, or one platform's.
+async fn audio_rom_clear(State(s): State<Shared>, body: Option<Json<RomIndexClear>>) -> ApiResult<Value> {
+    let platform = body.and_then(|Json(b)| b.platform).filter(|p| *p != 0);
+    Ok(Json(json!({ "cleared": api::rom_audio::clear_index(&s.app, platform).await? })))
+}
+
 #[derive(Deserialize)]
 struct RomTitleChoice {
     videos: String,
@@ -2795,6 +2807,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/remote/rom/{id}/file", get(audio_remote_rom))
         .route("/api/v1/audio/rom/title/{id}", axum::routing::put(audio_rom_title))
         .route("/api/v1/audio/hidden", axum::routing::put(audio_hidden))
+        .route("/api/v1/audio/rom/clear", post(audio_rom_clear))
         .route("/api/v1/media/strip", get(media_strip))
         .route("/api/v1/media/reuse_prompt", get(media_reuse_prompt))
         .route("/api/v1/ai", get(ai_overview))

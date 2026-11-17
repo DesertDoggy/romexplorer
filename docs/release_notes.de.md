@@ -1,6 +1,19 @@
 *Dies ist eine Übersetzung der Versionshinweise zu 0.2.1, 0.2.0 und 0.1.8. Ältere Versionen stehen in
 [release_notes.md](release_notes.md) (Englisch), die bei Abweichungen maßgeblich ist.*
 
+# romexplorer 0.2.2 (alpha)
+
+Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
+Sie ein Backup, bevor Sie einen Build ersetzen.
+
+## Änderungen
+
+**ROM-Audio**
+- Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
+- Der ROM-Musikindex liest pro Titel nur die am höchsten eingestufte Kopie, andere Kopien nur, wenn sie keine Musik hat.
+- Bei Spielen mit mehreren Discs werden Musikdateien, die schon auf einer früheren Disc liegen, nicht erneut gelesen.
+- Cartridge-Spiele, deren Musik die App bereits kennt, spielen sie ab, sobald die Titelseite geöffnet wird, ohne auf den Index zu warten.
+
 # romexplorer 0.2.1 (alpha)
 
 Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen

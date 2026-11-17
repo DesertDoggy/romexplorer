@@ -2920,6 +2920,11 @@
   "find the music and sounds inside disc images and dumped folders, and the music files in original audio formats kept in a game's folder, so title pages can play them": "znajdź muzykę i dźwięki w obrazach płyt i zrzuconych folderach oraz pliki muzyczne w oryginalnych formatach audio trzymane w folderze gry, aby strony tytułów mogły je odtwarzać",
   "Index ROM audio": "Indeksuj dźwięk z ROM-ów",
   "Index ROM audio (new only)": "Indeksuj dźwięk z ROM-ów (tylko nowe)",
+  "Clear ROM audio index": "Wyczyść indeks dźwięku z ROM-ów",
+  "which ROMs Clear ROM audio index clears": "które ROM-y czyści „Wyczyść indeks dźwięku z ROM-ów”",
+  "forget the music found in ROMs (all, or one platform's) so the next index, new only included, reads them again; kinds you set on their tracks are cleared too": "zapomina muzykę znalezioną w ROM-ach (wszystkich lub jednej platformy), by następny indeks, także „tylko nowe”, przeczytał je ponownie; ustawione ręcznie rodzaje ich ścieżek też znikają",
+  "Clear the ROM audio index of {which}? The next index reads those ROMs again.": "Wyczyścić indeks dźwięku z ROM-ów dla: {which}? Następny indeks przeczyta te ROM-y ponownie.",
+  "{n} ROM(s) cleared": "Wyczyszczono ROM-y: {n}",
   "Where a title page's music comes from: the audio files tagged with the title (soundtrack CDs, concerts), the music inside the title's ROMs, or both (default).": "Skąd pochodzi muzyka strony tytułu: pliki audio otagowane tytułem (płyty ze ścieżką dźwiękową, koncerty), muzyka z ROM-ów tytułu albo oba (domyślnie).",
   "ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first. A track the browser cannot play is converted on first play and kept in the converted-audio cache (audio_cache_max_mb).": "Muzyka z ROM-ów jest odtwarzana prosto z ROM-u, jak z odtwarzacza CD: najpierw uruchom „Indeksuj dźwięk z ROM-ów” na karcie Audio. Utwór, którego przeglądarka nie odtworzy, jest konwertowany przy pierwszym odtworzeniu i trzymany w pamięci podręcznej przekonwertowanego audio (audio_cache_max_mb).",
   "Which sounds from a ROM a title page plays: music only (default), music and jingles, or everything including sound effects.": "Które dźwięki z ROM-u odtwarza strona tytułu: tylko muzyka (domyślnie), muzyka i dżingle albo wszystko, także efekty dźwiękowe.",
@@ -2994,5 +2999,8 @@
   "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "Format: AVIF zajmuje mniej więcej połowę JPEG; wybierz JPEG tylko, gdy okładki się nie wyświetlają.",
   "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "Rozmiar: dłuższy bok. 512 px jest ostre na większości telefonów; 768 px dla dużego lub gęstego ekranu, 256 px, by oszczędzić miejsce.",
   "Cover layout": "Układ okładek",
-  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Jak listy pokazują okładki. Auto i Pojedynczo: duże okładki ze szczegółami, w kolumnie pionowo i w rzędzie poziomo. Siatka: tyle małych okładek, ile się zmieści, ze szczegółami zaznaczonej obok, gdy jest miejsce."
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Jak listy pokazują okładki. Auto i Pojedynczo: duże okładki ze szczegółami, w kolumnie pionowo i w rzędzie poziomo. Siatka: tyle małych okładek, ile się zmieści, ze szczegółami zaznaczonej obok, gdy jest miejsce.",
+  "ROMs": "ROM-y",
+  "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "Indeksuj dźwięk z ROM-ów: ile ROM-ów czytać naraz. Więcej jest szybsze na dysku SSD lub szybkim serwerze; na dysku twardym mniej może być szybsze.",
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Ile ROM-ów „Indeksuj dźwięk z ROM-ów” czyta naraz (domyślnie 4, 1–32)."
 }

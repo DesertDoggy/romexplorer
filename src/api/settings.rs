@@ -429,6 +429,11 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 }
             }
         }
+        db_settings::KEY_AUDIO_ROM_INDEX_PARALLEL => {
+            if !value.as_u64().is_some_and(|n| (1..=32).contains(&n)) {
+                return Err(Error::invalid("audio_rom_index_parallel must be an integer 1-32"));
+            }
+        }
         db_settings::KEY_HASHEOUS_PARALLEL => {
             if !value.as_u64().is_some_and(|n| (1..=16).contains(&n)) {
                 return Err(Error::invalid("hasheous_parallel_downloads must be an integer 1-16"));

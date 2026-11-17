@@ -996,6 +996,45 @@ mod raw_image_tests {
 }
 
 #[cfg(test)]
+mod seen_files_tests {
+    use super::*;
+
+    struct Bytes(Vec<u8>);
+
+    impl VgmSource for Bytes {
+        fn read_at(&mut self, offset: u64, dst: &mut [u8]) -> usize {
+            let from = (offset as usize).min(self.0.len());
+            let n = dst.len().min(self.0.len() - from);
+            dst[..n].copy_from_slice(&self.0[from..from + n]);
+            n
+        }
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn open(&self, _: &str) -> Option<Box<dyn VgmSource>> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_later_disc_leaves_out_only_the_same_file() {
+        let music: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut other = music.clone();
+        other[150_000] ^= 1;
+        let mut seen = SeenFiles::for_discs();
+        assert!(!seen.seen_before(&mut Bytes(music.clone()), "BGM/TITLE.XA", 300_000), "disc 1");
+        assert!(seen.seen_before(&mut Bytes(music.clone()), "bgm/title.xa", 300_000), "disc 2, same file");
+        assert!(!seen.seen_before(&mut Bytes(other), "BGM/TITLE.XA", 300_000), "same name and size, other music");
+        assert!(!seen.seen_before(&mut Bytes(music.clone()), "BGM/END.XA", 300_000), "same bytes under another name");
+        assert_eq!(seen.skipped, 1);
+        // A game of one disc compares nothing.
+        let mut one = SeenFiles::default();
+        assert!(!one.seen_before(&mut Bytes(music.clone()), "BGM/TITLE.XA", 300_000));
+        assert!(!one.seen_before(&mut Bytes(music), "BGM/TITLE.XA", 300_000));
+    }
+}
+
+#[cfg(test)]
 mod str_tests {
     use super::*;
 
@@ -1086,7 +1125,59 @@ fn index_sequences(source: &mut dyn VgmSource, path: &str, view: u32, t: &Thresh
 
 /// Finds every sound in the ROM at `path`. `progress` is told what is being looked at.
 /// A ROM with nothing vgmstream reads gives an empty list, not an error.
-pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) -> Result<Vec<FoundTrack>, String> {
+pub fn index_rom(path: &Path, t: &Thresholds, progress: impl FnMut(&str)) -> Result<Vec<FoundTrack>, String> {
+    index_rom_with(path, t, &mut SeenFiles::default(), progress)
+}
+
+/// The sound files of a game's discs read so far in one run, so a file the next disc holds
+/// too is not read again: each by its path, its size and a fingerprint of samples of its
+/// bytes, since discs of one game reuse names for files that differ.
+#[derive(Debug, Default)]
+pub struct SeenFiles {
+    /// Off for a game of one disc: nothing to compare, so no bytes are read for it.
+    on: bool,
+    files: std::collections::HashSet<(String, u64, u64)>,
+    /// How many files were left out because an earlier disc had them.
+    pub skipped: u64,
+}
+
+impl SeenFiles {
+    /// For a game of several discs, read one after another.
+    pub fn for_discs() -> Self {
+        Self { on: true, ..Default::default() }
+    }
+
+    /// The bytes compared: this much from the start, the middle and the end.
+    const SAMPLE: usize = 64 << 10;
+
+    fn key(source: &mut dyn VgmSource, path: &str, size: u64) -> (String, u64, u64) {
+        use std::hash::Hasher;
+        let mut hash = std::hash::DefaultHasher::new();
+        let mut buf = vec![0u8; Self::SAMPLE];
+        for at in [0, (size / 2).saturating_sub(Self::SAMPLE as u64 / 2), size.saturating_sub(Self::SAMPLE as u64)] {
+            let n = source.read_at(at, &mut buf);
+            hash.write(&buf[..n]);
+        }
+        (path.to_ascii_lowercase(), size, hash.finish())
+    }
+
+    /// Whether an earlier disc had this file; if not, it is noted as seen now.
+    fn seen_before(&mut self, source: &mut dyn VgmSource, path: &str, size: u64) -> bool {
+        if !self.on {
+            return false;
+        }
+        let fresh = self.files.insert(Self::key(source, path, size));
+        if !fresh {
+            self.skipped += 1;
+        }
+        !fresh
+    }
+}
+
+/// [`index_rom`] for one disc of a game whose other discs this run has read: the sound files
+/// `seen` holds already are left out (their tracks are on the disc read before), and this
+/// disc's are added to it.
+pub fn index_rom_with(path: &Path, t: &Thresholds, seen: &mut SeenFiles, mut progress: impl FnMut(&str)) -> Result<Vec<FoundTrack>, String> {
     if !vgmstream::available() {
         return Err("the game audio decoder (rvgmstream) is not built for this machine".into());
     }
@@ -1120,6 +1211,10 @@ pub fn index_rom(path: &Path, t: &Thresholds, mut progress: impl FnMut(&str)) ->
                 continue;
             }
             let source = DiscFileSource { view: view.clone(), listing: listing.clone(), file: file.clone() };
+            let sound = inner_archives::kind_of(&file.path).is_some() || vgmstream::known_extension(file.name());
+            if sound && seen.on && seen.seen_before(&mut source.clone(), &file.path, file.size) {
+                continue;
+            }
             if let Some(kind) = inner_archives::kind_of(&file.path) {
                 progress(&file.path);
                 index_members(&|| Box::new(source.clone()), &file.path, kind, n as u32, t, &mut out);

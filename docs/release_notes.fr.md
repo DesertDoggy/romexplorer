@@ -1,6 +1,19 @@
 *Ceci est une traduction des notes de version 0.2.1, 0.2.0 et 0.1.8. Les versions antérieures se
 trouvent dans [release_notes.md](release_notes.md) (anglais), qui fait foi en cas de divergence.*
 
+# romexplorer 0.2.2 (alpha)
+
+Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
+Faites une sauvegarde avant de remplacer une version.
+
+## Changements
+
+**Audio des ROM**
+- L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
+- L'index de musique des ROM ne lit que la copie la mieux classée de chaque titre, et les autres seulement si elle n'a pas de musique.
+- Pour les jeux sur plusieurs disques, les fichiers de musique déjà présents sur un disque précédent ne sont pas relus.
+- Les jeux sur cartouche dont l'application connaît déjà la musique la jouent dès l'ouverture de la page du titre, sans attendre l'index.
+
 # romexplorer 0.2.1 (alpha)
 
 Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.

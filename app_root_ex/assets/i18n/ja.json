@@ -2886,6 +2886,11 @@
   "find the music and sounds inside disc images and dumped folders, and the music files in original audio formats kept in a game's folder, so title pages can play them": "ディスクイメージやダンプしたフォルダーの中の音楽と音、ゲームのフォルダーに置いた原音形式の音楽ファイルを探し、タイトルページで再生できるようにします",
   "Index ROM audio": "ROM の音声を索引",
   "Index ROM audio (new only)": "ROM の音声を索引（新規のみ）",
+  "Clear ROM audio index": "ROM の音声の索引を消去",
+  "which ROMs Clear ROM audio index clears": "「ROM の音声の索引を消去」で消す ROM",
+  "forget the music found in ROMs (all, or one platform's) so the next index, new only included, reads them again; kinds you set on their tracks are cleared too": "ROM から見つけた音楽の索引を消します（全部か、1 つのプラットフォーム分）。次の索引で、新規のみでも読み直します。トラックに手で設定した種類も消えます",
+  "Clear the ROM audio index of {which}? The next index reads those ROMs again.": "{which} の ROM の音声の索引を消去しますか？次の索引で読み直します。",
+  "{n} ROM(s) cleared": "{n} 件の ROM を消去しました",
   "Where a title page's music comes from: the audio files tagged with the title (soundtrack CDs, concerts), the music inside the title's ROMs, or both (default).": "タイトルページで流す音楽の出どころです。タイトルのタグが付いた音声ファイル（サントラ CD やコンサート）、タイトルの ROM の中の音楽、またはその両方（既定）から選べます。",
   "ROM music is played from the ROM itself, like a CD player: run Index ROM audio on the Audio tab first. A track the browser cannot play is converted on first play and kept in the converted-audio cache (audio_cache_max_mb).": "ROM の音楽は CD プレーヤーのように ROM から直接再生します。先に音声タブで「ROM の音声を索引」を実行してください。ブラウザーで再生できない曲は初回再生時に変換し、変換キャッシュ（audio_cache_max_mb）に保存します。",
   "Which sounds from a ROM a title page plays: music only (default), music and jingles, or everything including sound effects.": "タイトルページで流す ROM の音です。BGM だけ（既定）、BGM とジングル、効果音も含めたすべて、から選べます。",
@@ -2994,5 +2999,8 @@
   "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "形式：AVIF は JPEG の約半分のサイズです。カバーが表示されない場合のみ JPEG を選んでください。",
   "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "サイズ：長辺のピクセル数です。多くの端末は 512 px で十分です。大きい画面や高解像度なら 768 px、容量を節約するなら 256 px。",
   "Cover layout": "カバーの並べ方",
-  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "一覧でのカバーの並べ方です。自動と1列/1行は大きなカバーと詳細を表示し、縦持ちでは縦1列、横持ちでは横1行に並べます。グリッドは小さなカバーを入るだけ並べ、余裕があれば選択中の詳細を横に表示します。"
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "一覧でのカバーの並べ方です。自動と1列/1行は大きなカバーと詳細を表示し、縦持ちでは縦1列、横持ちでは横1行に並べます。グリッドは小さなカバーを入るだけ並べ、余裕があれば選択中の詳細を横に表示します。",
+  "ROMs": "個の ROM",
+  "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "「ROM の音声を索引」で同時に読む ROM の数です。SSD や速いサーバーでは多いほど速くなります。HDD では少ないほうが速いこともあります。",
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "「ROM の音声を索引」で同時に読む ROM の数です（既定 4、1〜32）。"
 }

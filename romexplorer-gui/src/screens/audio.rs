@@ -221,6 +221,24 @@ pub fn Audio() -> Element {
             }
         });
     };
+    let mut clear_platform = use_signal(String::new);
+    let clear_index = move |_| {
+        spawn(async move {
+            let platform = clear_platform();
+            let which = platform.parse::<u64>().map(state::platform_name).unwrap_or_else(|_| state::tr("all platforms"));
+            if !ui::confirm(&state::trf("Clear the ROM audio index of {which}? The next index reads those ROMs again.", &[("which", &which)])).await {
+                return;
+            }
+            let body = json!({ "platform": platform.parse::<u64>().ok() });
+            match api::post("/api/v1/audio/rom/clear", body).await {
+                Ok(r) => {
+                    ui::toast(state::trf("{n} ROM(s) cleared", &[("n", &u(&r, "cleared").to_string())]), false);
+                    bump(reload);
+                }
+                Err(e) => ui::toast(e.message, true),
+            }
+        });
+    };
     let Some(facets) = facets.read().clone() else { return rsx! { div { class: "muted", {state::tr("loading…")} } } };
     let spec = Spec(Rc::new(audio_spec(&facets)));
     rsx! {
@@ -239,6 +257,11 @@ pub fn Audio() -> Element {
                 crate::ui::QueueButton {}
                 button { class: "btn", r#type: "button", title: state::tr("find the music and sounds inside disc images and dumped folders, and the music files in original audio formats kept in a game's folder, so title pages can play them"), onclick: move |_| rom_index("new_only"), {state::tr("Index ROM audio (new only)")} }
                 crate::ui::QueueButton {}
+                select { title: state::tr("which ROMs Clear ROM audio index clears"), value: "{clear_platform}", onchange: move |e| clear_platform.set(e.value()),
+                    option { value: "", {state::tr("all platforms")} }
+                    for p in state::platforms().into_iter().filter(|p| u(p, "id") != 0) { option { value: "{u(&p, \"id\")}", {state::platform_label(&s(&p, "name"))} } }
+                }
+                button { class: "btn", r#type: "button", title: state::tr("forget the music found in ROMs (all, or one platform's) so the next index, new only included, reads them again; kinds you set on their tracks are cleared too"), onclick: clear_index, {state::tr("Clear ROM audio index")} }
             }
             if let Some(id) = job() {
                 JobWatch { key: "{id}", job_id: id, on_done: move |_| bump(reload) }
