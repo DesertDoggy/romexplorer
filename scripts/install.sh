@@ -454,12 +454,23 @@ if [[ "$UPGRADE" -eq 1 ]]; then
     for f in romexplorer_server romexplorer_worker romexplorer_dbtool romexplorer-server-start LICENSE; do
         if [[ -f "$SRC/$f" ]]; then cp -af "$SRC/$f" "$PREFIX/$f"; fi
     done
-    for shared in icons gui_web; do
+    for shared in icons gui_web i18n; do
         if [[ -d "$SRC/assets/$shared" ]]; then
             rm -rf "$APP/assets/$shared"
             mkdir -p "$APP/assets"
             cp -a "$SRC/assets/$shared" "$APP/assets/"
         fi
+    done
+    # The databases and music map bundles the package ships beside them. The old map files go
+    # first: a kind repacked into parts under new names would otherwise keep its old file,
+    # and an install that never got the maps keeps finding no music for the kinds they cover.
+    if compgen -G "$SRC/assets/music_maps*.zst" >/dev/null; then
+        rm -f "$APP"/assets/music_maps*.zst
+    fi
+    for f in "$SRC"/assets/music_maps*.zst "$SRC"/assets/fcdb.bin "$SRC"/assets/biosdb.bin; do
+        [[ -f "$f" ]] || continue
+        mkdir -p "$APP/assets"
+        cp -f "$f" "$APP/assets/"
     done
     note "replaced the executables, lib/ and the shipped assets; kept data/ and everything else in assets/"
 else
