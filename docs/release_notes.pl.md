@@ -1,6 +1,18 @@
 *To jest tłumaczenie informacji o wydaniach 0.2.1, 0.2.0 i 0.1.8. Starsze wersje są w
 [release_notes.md](release_notes.md) (po angielsku), która rozstrzyga w razie różnic.*
 
+# romexplorer 0.2.2 (alpha)
+
+Alfa: schemat bazy danych może się zmienić między wydaniami bez możliwości aktualizacji. Zrób kopię
+zapasową przed podmianą wersji.
+
+## Zmiany
+
+**Dźwięk z ROM-ów**
+- Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).
+- Indeks muzyki z ROM-ów czyta tylko najwyżej ocenianą kopię każdego tytułu, a inne kopie tylko wtedy, gdy ta nie ma muzyki.
+- W grach na kilku płytach pliki muzyczne, które ma już wcześniejsza płyta, nie są czytane ponownie.
+
 # romexplorer 0.2.1 (alpha)
 
 Alfa: schemat bazy danych może się zmienić między wydaniami bez możliwości aktualizacji. Zrób kopię

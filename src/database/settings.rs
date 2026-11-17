@@ -176,6 +176,8 @@ pub const KEY_AUDIO_ROM_LIMITER: &str = "audio_rom_limiter";
 pub const KEY_AUDIO_ROM_LOOP_MIN_S: &str = "audio_rom_loop_min_s";
 pub const KEY_AUDIO_ROM_BGM_MIN_S: &str = "audio_rom_bgm_min_s";
 pub const KEY_AUDIO_ROM_JINGLE_MIN_S: &str = "audio_rom_jingle_min_s";
+/// How many ROMs a ROM audio index reads at once.
+pub const KEY_AUDIO_ROM_INDEX_PARALLEL: &str = "audio_rom_index_parallel";
 /// Folders of music in original audio formats, matched to the ROMs by content when ROM audio is indexed.
 pub const KEY_AUDIO_RIP_FOLDERS: &str = "audio_rip_folders";
 /// This installation's own identity, created on first use and never changed.
@@ -411,7 +413,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 108] = [
+pub const KNOWN_KEYS: [(&str, &str); 109] = [
     (KEY_BIGPICTURE_ICON_STYLE, "Big Picture: how the tab buttons' icons are drawn: color (default; each icon in its own colour) | outline (thin lines in the text colour)."),
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
@@ -467,6 +469,7 @@ pub const KNOWN_KEYS: [(&str, &str); 108] = [
     (KEY_AUDIO_ROM_LOOP_MIN_S, "A ROM sound that loops is music from this many seconds (default 3)."),
     (KEY_AUDIO_ROM_BGM_MIN_S, "A ROM sound that does not loop is music from this many seconds (default 60)."),
     (KEY_AUDIO_ROM_JINGLE_MIN_S, "A ROM sound that does not loop is a jingle from this many seconds (default 8); shorter is a sound effect."),
+    (KEY_AUDIO_ROM_INDEX_PARALLEL, "How many ROMs Index ROM audio reads at once (default 4, 1-32)."),
     (KEY_AUDIO_RIP_FOLDERS, "Folders of music in original audio formats (NSF, SPC, GBS, HES, KSS, SGC and the like, loose or zipped; one set per zip or folder). Index ROM audio matches each set to your ROMs by content, in every region. Default: none."),
     (KEY_INSTANCE_ID, "This installation's own id, generated once. Stamped into exports so an import can tell your own data from another machine's."),
     (KEY_BACKUP_DIR, "Where backup zips are written. Empty = <data root>/backups."),
@@ -679,6 +682,11 @@ pub async fn media_reuse_existing(pool: &MySqlPool) -> Result<bool, DatabaseErro
 
 pub async fn media_provider_fallback(pool: &MySqlPool) -> Result<bool, DatabaseError> {
     Ok(get::<bool>(pool, KEY_MEDIA_PROVIDER_FALLBACK).await?.unwrap_or(true))
+}
+
+/// `audio_rom_index_parallel`: how many ROMs an index run reads at once, 1-32 (default 4).
+pub async fn rom_audio_index_parallel(pool: &MySqlPool) -> Result<usize, DatabaseError> {
+    Ok(get::<u64>(pool, KEY_AUDIO_ROM_INDEX_PARALLEL).await?.map_or(4, |n| n.clamp(1, 32) as usize))
 }
 
 pub async fn hasheous_parallel_downloads(pool: &MySqlPool) -> Result<usize, DatabaseError> {

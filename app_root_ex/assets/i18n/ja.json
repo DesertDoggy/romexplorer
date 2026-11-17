@@ -2994,5 +2994,8 @@
   "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "形式：AVIF は JPEG の約半分のサイズです。カバーが表示されない場合のみ JPEG を選んでください。",
   "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "サイズ：長辺のピクセル数です。多くの端末は 512 px で十分です。大きい画面や高解像度なら 768 px、容量を節約するなら 256 px。",
   "Cover layout": "カバーの並べ方",
-  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "一覧でのカバーの並べ方です。自動と1列/1行は大きなカバーと詳細を表示し、縦持ちでは縦1列、横持ちでは横1行に並べます。グリッドは小さなカバーを入るだけ並べ、余裕があれば選択中の詳細を横に表示します。"
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "一覧でのカバーの並べ方です。自動と1列/1行は大きなカバーと詳細を表示し、縦持ちでは縦1列、横持ちでは横1行に並べます。グリッドは小さなカバーを入るだけ並べ、余裕があれば選択中の詳細を横に表示します。",
+  "ROMs": "個の ROM",
+  "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "「ROM の音声を索引」で同時に読む ROM の数です。SSD や速いサーバーでは多いほど速くなります。HDD では少ないほうが速いこともあります。",
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "「ROM の音声を索引」で同時に読む ROM の数です（既定 4、1〜32）。"
 }

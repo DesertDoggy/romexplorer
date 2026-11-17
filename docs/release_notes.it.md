@@ -1,6 +1,18 @@
 *Questa è una traduzione delle note di rilascio 0.2.1, 0.2.0 e 0.1.8. Le versioni precedenti sono in
 [release_notes.md](release_notes.md) (inglese), che fa fede in caso di differenze.*
 
+# romexplorer 0.2.2 (alpha)
+
+Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
+aggiornamento. Fai un backup prima di sostituire una build.
+
+## Modifiche
+
+**Audio delle ROM**
+- L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
+- L'indice della musica delle ROM legge solo la copia meglio classificata di ogni titolo, e le altre solo se quella non ha musica.
+- Nei giochi su più dischi, i file musicali già presenti su un disco precedente non vengono riletti.
+
 # romexplorer 0.2.1 (alpha)
 
 Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di

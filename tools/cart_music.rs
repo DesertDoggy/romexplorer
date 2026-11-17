@@ -239,7 +239,8 @@ struct Options {
     /// play every track from the ROM by it, against the NSF's own.
     mapcheck: bool,
     /// `--write-maps <dir>`: with `--originals`, build each matched ROM's music map the way the
-    /// app does and keep it under `<dir>` (`nes/<key>.nesmap`, ...), for `--pack-maps`.
+    /// app does and keep it under `<dir>` (`nes/<key>.nesmap`, ...), for `--pack-maps`, with
+    /// its track times (`nes/<key>.times`). A map kept already is timed when it has no times.
     write_maps: Option<PathBuf>,
     /// `--spcprobe`: with `--originals`, boot each SNES ROM, then start songs by writing each
     /// value to each port of its sound chip, and count the `.spc` tracks that start that way.
@@ -1605,11 +1606,12 @@ fn write_map(
     };
     let t = tally.entry(what).or_default();
     t.games += 1;
+    rom_songs::set_maps_dir(dir.to_path_buf());
     let Some(set) = matched_set(lib, path, platform, verbose) else {
         *t.reasons.entry("no matching set".into()).or_default() += 1;
+        time_map(path, platform);
         return;
     };
-    rom_songs::set_maps_dir(dir.to_path_buf());
     let before = count_maps(dir);
     match rom_songs::map_from_sets_for(path, &[set], Some(platform as u16)) {
         Ok(()) if count_maps(dir) > before => {
@@ -1625,10 +1627,26 @@ fn write_map(
             println!("{}: {e}", path.display());
         }
     }
+    time_map(path, platform);
 }
 
+/// The track times of the map `path` plays by (new or kept before), measured and kept beside
+/// it under the maps dir unless they are kept already, so `--pack-maps` ships them and the
+/// app's index plays nothing to time the songs.
+fn time_map(path: &Path, platform: Platform) {
+    match rom_songs::time_map(path, platform as u16) {
+        Ok(Some(n)) => println!("{}: times kept for {n} tracks", path.display()),
+        Ok(None) => {}
+        Err(e) => println!("{}: times: {e}", path.display()),
+    }
+}
+
+/// The maps kept under `dir` (not their `.times` files).
 fn count_maps(dir: &Path) -> usize {
-    ["nes", "gb", "hes", "sgc", "ws", "gba", "snes", "n64"].iter().map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.count())).sum()
+    ["nes", "gb", "hes", "sgc", "ws", "gba", "snes", "n64"]
+        .iter()
+        .map(|k| std::fs::read_dir(dir.join(k)).map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_none_or(|x| x != "times")).count()))
+        .sum()
 }
 
 fn main() {

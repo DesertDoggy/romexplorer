@@ -2994,5 +2994,8 @@
   "Format: AVIF is about half the size of JPEG; pick JPEG only if covers don't show on this phone.": "Formato: AVIF ocupa cerca de metade do JPEG; escolha JPEG só se as capas não aparecerem neste telemóvel.",
   "Size: the longest edge. 512 px is sharp on most phones; 768 px for a large or high-resolution screen, 256 px to save space.": "Tamanho: o lado mais longo. 512 px fica nítido na maioria dos telemóveis; 768 px para ecrãs grandes ou de alta resolução, 256 px para poupar espaço.",
   "Cover layout": "Disposição das capas",
-  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Como as listas mostram as capas. Auto e Simples: capas grandes com os detalhes, em coluna na vertical e em linha na horizontal. Grelha: tantas capas pequenas quanto couberem, com os detalhes da selecionada ao lado se houver espaço."
+  "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Como as listas mostram as capas. Auto e Simples: capas grandes com os detalhes, em coluna na vertical e em linha na horizontal. Grelha: tantas capas pequenas quanto couberem, com os detalhes da selecionada ao lado se houver espaço.",
+  "ROMs": "ROM",
+  "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "Indexar o áudio das ROM: quantas ROM são lidas ao mesmo tempo. Mais é mais rápido num SSD ou num servidor rápido; num disco rígido, menos pode ser mais rápido.",
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Quantas ROM «Indexar o áudio das ROM» lê ao mesmo tempo (predefinição 4, 1-32)."
 }

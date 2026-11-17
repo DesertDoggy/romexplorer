@@ -266,6 +266,11 @@ pub struct IndexSummary {
     /// ROMs whose files are byte for byte those of a ROM already indexed: its tracks were
     /// copied instead of reading the ROM again.
     pub same_content: u64,
+    /// Copies of a title left out because a copy ranked above them has music: the one the
+    /// title page plays.
+    pub other_copy: u64,
+    /// Sound files left out on a game's later discs because an earlier disc held them.
+    pub disc_files_shared: u64,
     pub errors: Vec<String>,
     /// A title page's run (`title_id`): every ROM it looked at, music found or not, so the
     /// page does not queue the same ROMs again when they turn out to have none.
@@ -286,6 +291,12 @@ pub fn one_liner(s: &IndexSummary) -> String {
     }
     if s.same_content > 0 {
         parts.push(format!("{} copied from an indexed ROM with the same content", s.same_content));
+    }
+    if s.other_copy > 0 {
+        parts.push(format!("{} left out as another copy of a title that has music", s.other_copy));
+    }
+    if s.disc_files_shared > 0 {
+        parts.push(format!("{} sound file(s) left out on later discs that an earlier disc holds", s.disc_files_shared));
     }
     if s.skipped_existing > 0 {
         parts.push(format!("{} already indexed", s.skipped_existing));
@@ -655,15 +666,141 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     if request.title_id.is_some() {
         summary.rom_ids = roms.iter().filter_map(|r| r.try_get("id").ok()).collect();
     }
-    let mut chosen = choose_library_sets(app, progress, &library, &roms).await?;
-    // A library set's tracks, read once per run however many ROMs (regions) it matches.
-    let mut set_tracks: HashMap<PathBuf, Vec<FoundTrack>> = HashMap::new();
-    // ROMs this run indexed: what a full run may copy a same-content ROM's tracks from.
-    let mut read_this_run: HashSet<u64> = HashSet::new();
-    for (i, row) in roms.iter().enumerate() {
+    let chosen = choose_library_sets(app, progress, &library, &roms).await?;
+    let parallel = db_settings::rom_audio_index_parallel(&app.pool).await?;
+    let plan = plan_copies(app, &roms).await?;
+    let run = Run {
+        app,
+        request,
+        progress,
+        quick,
+        total,
+        thresholds,
+        library,
+        summary: std::sync::Mutex::new(summary),
+        chosen: std::sync::Mutex::new(chosen),
+        set_tracks: Default::default(),
+        read_this_run: Default::default(),
+        started: Default::default(),
+        done: Default::default(),
+        reading: Default::default(),
+    };
+    // Copy by copy: the best-ranked copy of every title first, the next only for titles whose
+    // better copies gave no music. Within a step, `parallel` games at once.
+    for (level, units) in plan.into_iter().enumerate() {
         if progress.cancelled().await {
             break;
         }
+        let mut todo = Vec::with_capacity(units.len());
+        for unit in units {
+            if level > 0 && outranked(app, &unit).await? {
+                let skipped = unit.roms.len() as u64;
+                run.tally(|s| s.other_copy += skipped);
+                run.done.fetch_add(skipped, std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            todo.push(unit);
+        }
+        use futures_util::StreamExt;
+        let results: Vec<Result<()>> = futures_util::stream::iter(todo.into_iter().map(|unit| run.index_unit(&roms, unit))).buffer_unordered(parallel).collect().await;
+        results.into_iter().collect::<Result<Vec<()>>>()?;
+    }
+    let mut summary = run.summary.into_inner().unwrap_or_else(|p| p.into_inner());
+    // A run stopped before its end did not look at all of its ROMs: a title page asks for
+    // them again.
+    if progress.cancelled().await {
+        summary.rom_ids.clear();
+    }
+    progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
+    Ok(summary)
+}
+
+/// One index run's shared state, for the ROMs it reads side by side.
+struct Run<'a> {
+    app: &'a App,
+    request: &'a RomAudioIndexRequest,
+    progress: &'a Progress,
+    quick: bool,
+    total: u64,
+    thresholds: Thresholds,
+    library: Arc<rip_match::Library>,
+    summary: std::sync::Mutex<IndexSummary>,
+    /// The library sets each ROM takes ([`choose_library_sets`]), taken out as it is read.
+    chosen: std::sync::Mutex<HashMap<u64, std::result::Result<Vec<PathBuf>, String>>>,
+    /// A library set's tracks, read once per run however many ROMs (regions) it matches.
+    set_tracks: std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::OnceCell<Vec<FoundTrack>>>>>,
+    /// ROMs this run indexed: what a full run may copy a same-content ROM's tracks from.
+    read_this_run: std::sync::Mutex<HashSet<u64>>,
+    /// ROMs started, for "ROM n of total".
+    started: std::sync::atomic::AtomicU64,
+    /// ROMs finished or left out, for the progress bar.
+    done: std::sync::atomic::AtomicU64,
+    /// The names of the ROMs being read right now, for the progress line.
+    reading: std::sync::Mutex<Vec<String>>,
+}
+
+/// A game's discs (or one ROM in no game), read one after another so a later disc can leave
+/// out what an earlier one held.
+#[derive(Debug, Default)]
+struct Unit {
+    /// Indexes into the run's ROM list, in disc order.
+    roms: Vec<usize>,
+    /// For each title the game is in: the games ranked above it there. Empty for a ROM in no
+    /// title, or a game that is the best-ranked copy of one of its titles.
+    better: Vec<Vec<u64>>,
+}
+
+impl Run<'_> {
+    fn tally(&self, f: impl FnOnce(&mut IndexSummary)) {
+        f(&mut self.summary.lock().unwrap_or_else(|p| p.into_inner()));
+    }
+
+    fn done(&self) -> u64 {
+        self.done.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// " (3 read at once)" when more ROMs than one are being read.
+    fn reading_now(&self) -> String {
+        let names = self.reading.lock().unwrap_or_else(|p| p.into_inner());
+        if names.len() < 2 {
+            return String::new();
+        }
+        format!(" ({} read at once)", names.len())
+    }
+
+    /// Reads a unit's ROMs, one after another.
+    async fn index_unit(&self, roms: &[sqlx::mysql::MySqlRow], unit: Unit) -> Result<()> {
+        let seen = Arc::new(std::sync::Mutex::new(if unit.roms.len() > 1 { rom_audio::SeenFiles::for_discs() } else { rom_audio::SeenFiles::default() }));
+        for i in unit.roms {
+            if self.progress.cancelled().await {
+                break;
+            }
+            let row = &roms[i];
+            let n = self.started.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let name = row.try_get::<String, _>("main_path").unwrap_or_default();
+            self.reading.lock().unwrap_or_else(|p| p.into_inner()).push(name.clone());
+            let result = self.index_one(row, n, seen.clone()).await;
+            {
+                let mut reading = self.reading.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(at) = reading.iter().position(|r| *r == name) {
+                    reading.remove(at);
+                }
+            }
+            self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            result?;
+        }
+        let shared = seen.lock().unwrap_or_else(|p| p.into_inner()).skipped;
+        if shared > 0 {
+            self.tally(|s| s.disc_files_shared += shared);
+        }
+        Ok(())
+    }
+
+    /// Reads one ROM of the run into the index: the `n`th started. `seen`: the sound files of
+    /// its game's discs read before it in this run.
+    async fn index_one(&self, row: &sqlx::mysql::MySqlRow, n: u64, seen: Arc<std::sync::Mutex<rom_audio::SeenFiles>>) -> Result<()> {
+        let (app, request, progress, quick, total, thresholds) = (self.app, self.request, self.progress, self.quick, self.total, self.thresholds);
+        let library = &self.library;
         let rom_id: u64 = row.try_get("id")?;
         let main_path: String = row.try_get("main_path")?;
         // A ROM another run is reading right now (a title page's, beside this one) is that
@@ -672,20 +809,20 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         // and passing it by would show stand-in music and count it as looked at.
         let mut reading = Reading::start(rom_id);
         while reading.is_none() && request.title_id.is_some() && !progress.cancelled().await {
-            progress.report(i as u64, Some(total), &format!("ROM {} of {total}: waiting for another index run reading it", i + 1)).await;
+            progress.report(self.done(), Some(total), &format!("ROM {n} of {total}: waiting for another index run reading it")).await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             reading = Reading::start(rom_id);
         }
         let Some(reading) = reading else {
-            summary.skipped_existing += 1;
-            summary.rom_ids.retain(|&id| id != rom_id);
-            continue;
+            self.tally(|s| s.skipped_existing += 1);
+            self.tally(|s| s.rom_ids.retain(|&id| id != rom_id));
+            return Ok(());
         };
         // A title page opened while this run goes on indexes its own ROMs first, beside it:
         // a quick run does not read them a second time when it gets there.
         if quick && sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM rom_audio_index i WHERE i.rom_id = ? AND {}", indexed_for_good()))).bind(rom_id).fetch_one(&app.pool).await? > 0 {
-            summary.skipped_existing += 1;
-            continue;
+            self.tally(|s| s.skipped_existing += 1);
+            return Ok(());
         }
         let files: Vec<String> = sqlx::query_scalar("SELECT f.path FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE WHERE rf.rom_id = ? ORDER BY f.path LIMIT 100000")
             .bind(rom_id)
@@ -700,14 +837,17 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         // tracks are this one's too. Not when this ROM's folder has music files of its own,
         // which the other's index would not have. A full run reuses only ROMs it read itself.
         if folder.is_none() {
-            if let Some(source) = same_content_indexed(app, rom_id, platform, (!quick).then_some(&read_this_run)).await? {
+            let among = (!quick).then(|| self.read_this_run.lock().unwrap_or_else(|p| p.into_inner()).clone());
+            if let Some(source) = same_content_indexed(app, rom_id, platform, among.as_ref()).await? {
                 let label = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
-                progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label} (same content as one already indexed)", i + 1)).await;
+                progress.report(self.done(), Some(total), &format!("ROM {n} of {total}: {label} (same content as one already indexed)")).await;
                 if let Some(copied) = copy_index(app, source, rom_id, !quick).await? {
-                    summary.same_content += 1;
-                    summary.tracks += copied;
-                    read_this_run.insert(rom_id);
-                    continue;
+                    self.tally(|s| {
+                        s.same_content += 1;
+                        s.tracks += copied;
+                    });
+                    self.read_this_run.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id);
+                    return Ok(());
                 }
             }
         }
@@ -716,13 +856,13 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         let in_library = library.covers(platform);
         let songs = rom_songs::covers(platform);
         if disc.is_none() && folder.is_none() && !in_library && !songs {
-            summary.skipped_not_disc += 1;
-            continue;
+            self.tally(|s| s.skipped_not_disc += 1);
+            return Ok(());
         }
         let label = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
-        progress.report(i as u64, Some(total), &format!("ROM {} of {total}: {label}", i + 1)).await;
+        progress.report(self.done(), Some(total), &format!("ROM {n} of {total}: {label}{}", self.reading_now())).await;
         let open = disc.clone();
-        let matched = chosen.remove(&rom_id).unwrap_or(Ok(Vec::new()));
+        let matched = self.chosen.lock().unwrap_or_else(|p| p.into_inner()).remove(&rom_id).unwrap_or(Ok(Vec::new()));
         let had_sets = matches!(&matched, Ok(sets) if !sets.is_empty());
         let rom_file = PathBuf::from(&main_path);
         // A NES ROM matched to a set with an NSF: its music map, built once, so the songs play
@@ -764,7 +904,13 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             note("music files in the game's folder");
             let rips = folder.map(|f| rip_sets::index(&f, &thresholds, |p| note(p))).unwrap_or_default();
             note("disc");
-            let disc = open.map(|p| rom_audio::index_rom(&p, &thresholds, |p| note(p)));
+            // The discs before this one of the same game were read just now: the sound files
+            // they hold too are not read again. A disc still held by a reader given up on is
+            // read whole.
+            let disc = open.map(|p| match seen.try_lock() {
+                Ok(mut seen) => rom_audio::index_rom_with(&p, &thresholds, &mut seen, |p| note(p)),
+                Err(_) => rom_audio::index_rom(&p, &thresholds, |p| note(p)),
+            });
             note("the game's sound engine");
             let songs = if songs && rom_file.is_file() { rom_songs::index_with_others(&rom_file, platform, &thresholds, &others).map(|(found, _)| found) } else { Ok(Vec::new()) };
             (rips, disc, songs, map_error)
@@ -781,7 +927,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                         let what = step.lock().unwrap_or_else(|p| p.into_inner()).clone();
                         let error = format!("reader failed while reading {what}: {}", panic_text(e.into_panic()));
                         log::warn!("rom audio index: {main_path}: {error}");
-                        summary.errors.push(format!("{main_path}: {error}"));
+                        self.tally(|s| s.errors.push(format!("{main_path}: {error}")));
                         record_error(app, rom_id, &error).await?;
                         break None;
                     }
@@ -796,7 +942,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                         if started.elapsed() > ROM_TIME_LIMIT {
                             let error = format!("gave up after {} min, still reading {what}", ROM_TIME_LIMIT.as_secs() / 60);
                             log::warn!("rom audio index: {main_path}: {error}");
-                            summary.errors.push(format!("{main_path}: {error}"));
+                            self.tally(|s| s.errors.push(format!("{main_path}: {error}")));
                             record_error(app, rom_id, &error).await?;
                         }
                         break None;
@@ -805,92 +951,193 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
                     // shows the first 90 characters, and a full path in front pushed the time
                     // past them, so a ROM that takes long read like a run that had stopped.
                     if secs >= 4 {
-                        progress.report(i as u64, Some(total), &format!("ROM {} of {total}, {secs} s on {label}: {what}", i + 1)).await;
+                        progress.report(self.done(), Some(total), &format!("ROM {n} of {total}, {secs} s on {label}: {what}{}", self.reading_now())).await;
                     }
                 }
             }
         };
-        let Some(found) = found else { continue };
+        let Some(found) = found else { return Ok(()) };
         let (mut rips, disc_found, songs_found, map_error) = found;
         if let Some(e) = map_error {
-            summary.errors.push(format!("{main_path}: music map: {e}"));
+            self.tally(|s| s.errors.push(format!("{main_path}: music map: {e}")));
         }
         let mut song_count = 0;
         let mut song_error = None;
         match songs_found {
             Ok(songs) => {
                 song_count = songs.len();
-                summary.rom_songs += song_count as u64;
+                self.tally(|s| s.rom_songs += song_count as u64);
                 rips.extend(songs);
             }
             Err(e) => {
-                summary.errors.push(format!("{main_path}: ROM music: {e}"));
+                self.tally(|s| s.errors.push(format!("{main_path}: ROM music: {e}")));
                 song_error = Some(format!("ROM music: {e}"));
             }
         }
         match matched {
             Ok(sets) => {
                 if !sets.is_empty() {
-                    summary.library_matches += 1;
+                    self.tally(|s| s.library_matches += 1);
                 }
                 for set in sets {
-                    if !set_tracks.contains_key(&set) {
-                        let (path, t) = (set.clone(), thresholds);
-                        let tracks = match tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await {
-                            Ok(tracks) => tracks,
-                            // A set that panics its reader is left out; the rest still count.
-                            Err(e) if e.is_panic() => {
-                                summary.errors.push(format!("{}: reader failed: {}", set.display(), panic_text(e.into_panic())));
-                                Vec::new()
+                    // A library set's tracks, read once per run however many ROMs (regions) it
+                    // matches, by whichever ROM gets there first.
+                    let cell = self.set_tracks.lock().unwrap_or_else(|p| p.into_inner()).entry(set.clone()).or_default().clone();
+                    let tracks = cell
+                        .get_or_try_init(|| async {
+                            let (path, t) = (set.clone(), thresholds);
+                            match tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await {
+                                Ok(tracks) => Ok(tracks),
+                                // A set that panics its reader is left out; the rest still count.
+                                Err(e) if e.is_panic() => {
+                                    self.tally(|s| s.errors.push(format!("{}: reader failed: {}", set.display(), panic_text(e.into_panic()))));
+                                    Ok(Vec::new())
+                                }
+                                Err(e) => Err(Error::internal(format!("ROM audio task: {e}"))),
                             }
-                            Err(e) => return Err(Error::internal(format!("ROM audio task: {e}"))),
-                        };
-                        set_tracks.insert(set.clone(), tracks);
-                    }
-                    rips.extend(set_tracks[&set].iter().cloned());
+                        })
+                        .await?;
+                    rips.extend(tracks.iter().cloned());
                 }
             }
-            Err(e) => summary.errors.push(format!("{main_path}: original audio format sets: {e}")),
+            Err(e) => self.tally(|s| s.errors.push(format!("{main_path}: original audio format sets: {e}"))),
         }
         let (disc_tracks, error) = match disc_found {
             Some(Ok(tracks)) => (tracks, None),
             Some(Err(e)) => {
-                summary.errors.push(format!("{}: {e}", disc.as_deref().unwrap_or(Path::new(&main_path)).display()));
+                self.tally(|s| s.errors.push(format!("{}: {e}", disc.as_deref().unwrap_or(Path::new(&main_path)).display())));
                 (Vec::new(), Some(e))
             }
             None => (Vec::new(), None),
         };
         if let (Some(e), true) = (&error, rips.is_empty()) {
             record_error(app, rom_id, e).await?;
-            continue;
+            return Ok(());
         }
         if disc.is_none() && rips.is_empty() {
             // A cartridge whose sound engine or map was searched and gave nothing is recorded
             // as looked at, so a "new only" run does not search it again.
             if songs || had_sets {
-                summary.no_music += 1;
+                self.tally(|s| s.no_music += 1);
                 store(app, rom_id, &[], song_error.as_deref()).await?;
             } else {
-                summary.skipped_not_disc += 1;
+                self.tally(|s| s.skipped_not_disc += 1);
             }
-            continue;
+            return Ok(());
         }
-        summary.rip_tracks += (rips.len() - song_count) as u64;
+        let rip_count = (rips.len() - song_count) as u64;
         let tracks: Vec<FoundTrack> = disc_tracks.into_iter().chain(rips).collect();
-        summary.tracks += tracks.len() as u64;
-        summary.roms_read += 1;
+        self.tally(|s| {
+            s.rip_tracks += rip_count;
+            s.tracks += tracks.len() as u64;
+            s.roms_read += 1;
+        });
         store(app, rom_id, &tracks, error.as_deref()).await?;
         if error.is_none() {
-            read_this_run.insert(rom_id);
+            self.read_this_run.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id);
+        }
+        Ok(())
+    }
+}
+
+/// The run's ROMs in the order they are read: in steps, each a list of [`Unit`]s. Step 0 holds
+/// the best-ranked copy of every title (by `ReleaseRank`, as a title page picks the copy it
+/// plays) and every ROM in no title; step 1 the second-best copies, and so on. A title page
+/// plays one copy, so a later copy is read only when every copy above it gave no music
+/// ([`outranked`]).
+async fn plan_copies(app: &App, roms: &[sqlx::mysql::MySqlRow]) -> Result<Vec<Vec<Unit>>> {
+    let ids: Vec<u64> = roms.iter().map(|r| r.try_get::<u64, _>("id")).collect::<std::result::Result<_, _>>()?;
+    let mut game_of: HashMap<u64, u64> = HashMap::new();
+    for chunk in ids.chunks(1000) {
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        let rows: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT rom_id, MIN(game_id) FROM local_game_roms WHERE rom_id IN ({list}) GROUP BY rom_id"))).fetch_all(&app.pool).await?;
+        game_of.extend(rows);
+    }
+    let games: Vec<u64> = game_of.values().copied().collect::<HashSet<_>>().into_iter().collect();
+    // Each title's games, best-ranked first.
+    let rank = super::catalog::ReleaseRank::load(app).await?;
+    let mut ranked: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut titles_of: HashMap<u64, Vec<u64>> = HashMap::new();
+    for chunk in games.chunks(1000) {
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        let pairs: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT DISTINCT lrg.game_id, tr.title_id FROM local_release_games lrg JOIN title_releases tr ON tr.release_id = lrg.release_id WHERE lrg.game_id IN ({list})"
+        )))
+        .fetch_all(&app.pool)
+        .await?;
+        let titles: HashSet<u64> = pairs.iter().map(|(_, t)| *t).filter(|t| !ranked.contains_key(t)).collect();
+        for (game, title) in pairs {
+            titles_of.entry(game).or_default().push(title);
+        }
+        let titles: Vec<u64> = titles.into_iter().collect();
+        for tchunk in titles.chunks(1000) {
+            let tlist = tchunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+            let rows: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT tr.title_id, lrg.game_id FROM title_releases tr JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE \
+                 JOIN local_release_games lrg ON lrg.release_id = r.id WHERE tr.title_id IN ({tlist}) ORDER BY tr.title_id, {}, lrg.game_id",
+                rank.sql("r")
+            )))
+            .fetch_all(&app.pool)
+            .await?;
+            for (title, game) in rows {
+                let list = ranked.entry(title).or_default();
+                if !list.contains(&game) {
+                    list.push(game);
+                }
+            }
         }
     }
-    // A run stopped before its end did not look at all of its ROMs: a title page asks for
-    // them again.
-    if progress.cancelled().await {
-        summary.rom_ids.clear();
+    Ok(arrange(roms.len(), |i| ids.get(i).and_then(|id| game_of.get(id)).copied(), |game| {
+        titles_of.get(&game).map(|titles| titles.iter().filter_map(|t| ranked.get(t)).map(|list| list.iter().take_while(|g| **g != game).copied().collect()).collect()).unwrap_or_default()
+    }))
+}
+
+/// [`plan_copies`] from what it looked up: `game(i)` is the game of the run's ROM `i`, and
+/// `better(game)` the games ranked above it in each of its titles. A game's ROMs keep the
+/// run's order, as do the units within a step.
+fn arrange(roms: usize, game: impl Fn(usize) -> Option<u64>, better: impl Fn(u64) -> Vec<Vec<u64>>) -> Vec<Vec<Unit>> {
+    let mut units: Vec<(usize, Unit)> = Vec::new();
+    let mut unit_of: HashMap<u64, usize> = HashMap::new();
+    for i in 0..roms {
+        match game(i) {
+            Some(g) => match unit_of.get(&g) {
+                Some(&u) => units[u].1.roms.push(i),
+                None => {
+                    let better = better(g);
+                    // Its place: the best it ranks in any of its titles.
+                    let level = better.iter().map(Vec::len).min().unwrap_or(0);
+                    unit_of.insert(g, units.len());
+                    units.push((level, Unit { roms: vec![i], better }));
+                }
+            },
+            None => units.push((0, Unit { roms: vec![i], better: Vec::new() })),
+        }
     }
-    progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
-    Ok(summary)
+    let levels = units.iter().map(|(l, _)| l + 1).max().unwrap_or(0);
+    let mut out: Vec<Vec<Unit>> = (0..levels).map(|_| Vec::new()).collect();
+    for (level, unit) in units {
+        out[level].push(unit);
+    }
+    out
+}
+
+/// Whether a later copy can be left out: in each of its titles, a copy ranked above it has
+/// music indexed (that is the copy the title page plays).
+async fn outranked(app: &App, unit: &Unit) -> Result<bool> {
+    if unit.better.is_empty() || unit.better.iter().any(Vec::is_empty) {
+        return Ok(false);
+    }
+    let all: HashSet<u64> = unit.better.iter().flatten().copied().collect();
+    let list = all.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let with_music: HashSet<u64> = sqlx::query_scalar::<_, u64>(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT gr.game_id FROM local_game_roms gr JOIN local_rom lr ON lr.id = gr.rom_id AND lr.deleted = FALSE \
+         WHERE gr.game_id IN ({list}) AND EXISTS (SELECT 1 FROM rom_audio_tracks t WHERE t.rom_id = gr.rom_id)"
+    )))
+    .fetch_all(&app.pool)
+    .await?
+    .into_iter()
+    .collect();
+    Ok(unit.better.iter().all(|games| games.iter().any(|g| with_music.contains(g))))
 }
 
 /// The library sets each ROM of the run takes, by ROM id. Every covered ROM is matched first,
@@ -1926,6 +2173,25 @@ fn scaled(mut pcm: Vec<i16>, gain: f32) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_are_read_best_ranked_first_and_discs_together() {
+        // ROMs 0 and 2 are discs 1 and 2 of game 10, the best copy of its title; ROM 1 is game
+        // 11, the second copy (game 10 above it); ROM 3 is in no game; ROM 4 is game 12, third
+        // in one title but first in another (a compilation).
+        let game = |i: usize| [Some(10), Some(11), Some(10), None, Some(12)][i];
+        let better = |g: u64| match g {
+            10 => vec![vec![]],
+            11 => vec![vec![10]],
+            12 => vec![vec![10, 11], vec![]],
+            _ => unreachable!(),
+        };
+        let plan = arrange(5, game, better);
+        let roms: Vec<Vec<Vec<usize>>> = plan.iter().map(|level| level.iter().map(|u| u.roms.clone()).collect()).collect();
+        assert_eq!(roms, vec![vec![vec![0, 2], vec![3], vec![4]], vec![vec![1]]]);
+        assert_eq!(plan[1][0].better, vec![vec![10]]);
+        assert!(arrange(0, game, better).is_empty());
+    }
 
     #[test]
     fn the_limiter_holds_a_burst_down_and_leaves_quiet_music_alone() {
