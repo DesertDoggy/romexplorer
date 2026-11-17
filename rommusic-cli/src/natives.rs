@@ -63,6 +63,15 @@ pub fn ensure() -> Result<(), String> {
     // links are, so an update's newer maps replace the old ones. Without them a cartridge still
     // plays, found by the slower search from boot.
     let maps = |name: &str| name.starts_with("music_maps") && name.ends_with(".zst");
+    // An older APK's files go first: a bundle renamed or split differently since would still
+    // be read beside the new ones, and could answer a key with a map fixed since.
+    if let Ok(entries) = std::fs::read_dir(root.join("assets")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_str().is_some_and(maps) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
     if let Err(err) = crate::android::copy_assets(maps, &root.join("assets")) {
         log::warn!("music maps: {err}");
     }

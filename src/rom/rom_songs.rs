@@ -1226,7 +1226,7 @@ fn kept_text(kind: &str, key: &str, ext: &str, suffix: &str) -> Option<String> {
     }
     let name = format!("{kind}/{key}{suffix}");
     let digit = key.chars().next().map(|c| c.to_ascii_lowercase())?;
-    // Every file of the kind that can hold the key, newest first: the first that has it wins.
+    // Every file of the kind that can hold the key, latest first: the first that has it wins.
     // Only those files are opened, and each once per run.
     let mut files: Vec<(BundleName, &String)> = asset_files().iter().filter_map(|f| Some((bundle_name(kind, f)?, f))).collect();
     if files.is_empty() {
@@ -1235,7 +1235,11 @@ fn kept_text(kind: &str, key: &str, ext: &str, suffix: &str) -> Option<String> {
         return bundled(BUNDLE_FILE).get(&name).cloned();
     }
     files.retain(|(b, _)| b.range.is_none_or(|(a, z)| (a..=z).contains(&digit)));
-    files.sort_by(|a, b| b.0.order.cmp(&a.0.order).then_with(|| a.1.cmp(b.1)));
+    // Of the same order, the newest file first: a part left behind by an older release
+    // unpacked over (a range split differently since) is read after the release's own.
+    let root = super::native_lib::exe_root();
+    let modified = |f: &str| root.as_ref().and_then(|r| std::fs::metadata(r.join("assets").join(f)).ok()?.modified().ok());
+    files.sort_by(|a, b| b.0.order.cmp(&a.0.order).then_with(|| modified(b.1).cmp(&modified(a.1))).then_with(|| a.1.cmp(b.1)));
     files.iter().find_map(|(_, f)| bundled(f).get(&name).cloned())
 }
 
