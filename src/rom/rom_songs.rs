@@ -1042,6 +1042,18 @@ pub fn index_known(path: &Path, platform: u16, t: &Thresholds) -> Result<Option<
     Ok(found.filter(|f| !f.is_empty()))
 }
 
+/// The songs of a cartridge whose music map is kept, by that map alone: times not kept with
+/// it are measured (and kept), but the game's own sound code is never searched. `None` when
+/// the ROM has no map or its map plays nothing; an index run then reads another copy of the
+/// game first, and searches this one only when no copy has a map.
+pub fn index_mapped(path: &Path, platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
+    if !covers(platform) || !is_cartridge(platform) {
+        return Ok(None);
+    }
+    let rom = read_rom(path)?;
+    Ok(known_songs(&rom, platform, t)?.filter(|f| !f.is_empty()))
+}
+
 /// [`index_known`]'s map lookup, per console: the same keys [`index_explained`] uses.
 fn known_songs(rom: &[u8], platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
     use crate::common::models::Platform as P;

@@ -271,6 +271,9 @@ pub struct IndexSummary {
     pub other_copy: u64,
     /// Sound files left out on a game's later discs because an earlier disc held them.
     pub disc_files_shared: u64,
+    /// Cartridges read by their music map before any copy's sound code was searched.
+    #[serde(default)]
+    pub by_map: u64,
     pub errors: Vec<String>,
     /// A title page's run (`title_id`): every ROM it looked at, music found or not, so the
     /// page does not queue the same ROMs again when they turn out to have none.
@@ -291,6 +294,9 @@ pub fn one_liner(s: &IndexSummary) -> String {
     }
     if s.same_content > 0 {
         parts.push(format!("{} copied from an indexed ROM with the same content", s.same_content));
+    }
+    if s.by_map > 0 {
+        parts.push(format!("{} read by music map first", s.by_map));
     }
     if s.other_copy > 0 {
         parts.push(format!("{} left out as another copy of a title that has music", s.other_copy));
@@ -685,6 +691,9 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
         done: Default::default(),
         reading: Default::default(),
     };
+    // Music maps first, in the same copy-by-copy order: the best-ranked copy of a title that
+    // has a map plays by it, and no copy of that title has its sound code searched.
+    let mapped = run.map_pass(&roms, &plan, parallel).await?;
     // Copy by copy: the best-ranked copy of every title first, the next only for titles whose
     // better copies gave no music. Within a step, `parallel` games at once.
     for (level, units) in plan.into_iter().enumerate() {
@@ -692,8 +701,12 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             break;
         }
         let mut todo = Vec::with_capacity(units.len());
-        for unit in units {
-            if level > 0 && outranked(app, &unit).await? {
+        for mut unit in units {
+            unit.roms.retain(|i| !mapped.roms.contains(i));
+            if unit.roms.is_empty() {
+                continue;
+            }
+            if mapped.covers(&unit) || (level > 0 && outranked(app, &unit).await?) {
                 let skipped = unit.roms.len() as u64;
                 run.tally(|s| s.other_copy += skipped);
                 run.done.fetch_add(skipped, std::sync::atomic::Ordering::Relaxed);
@@ -748,9 +761,107 @@ struct Unit {
     /// For each title the game is in: the games ranked above it there. Empty for a ROM in no
     /// title, or a game that is the best-ranked copy of one of its titles.
     better: Vec<Vec<u64>>,
+    /// The game, when the ROMs are in one.
+    game: Option<u64>,
+    /// The titles the game is in.
+    titles: Vec<u64>,
+}
+
+/// What [`Run::map_pass`] read: the run's ROMs (by index) and the titles they play for.
+#[derive(Default)]
+struct Mapped {
+    roms: HashSet<usize>,
+    titles: HashSet<u64>,
+}
+
+impl Mapped {
+    /// Whether every title of `unit` plays another copy's map.
+    fn covers(&self, unit: &Unit) -> bool {
+        !unit.titles.is_empty() && unit.titles.iter().all(|t| self.titles.contains(t))
+    }
 }
 
 impl Run<'_> {
+    /// Reads, step by step in [`plan_copies`]'s order, every cartridge that has a music map
+    /// and whose titles have no map read yet. Only cartridges whose music nothing else adds to
+    /// (no library sets for the platform, no music files in their folder); the rest are read
+    /// by the steps after.
+    async fn map_pass(&self, roms: &[sqlx::mysql::MySqlRow], plan: &[Vec<Unit>], parallel: usize) -> Result<Mapped> {
+        let mut mapped = Mapped::default();
+        for units in plan {
+            if self.progress.cancelled().await {
+                break;
+            }
+            let mut todo = Vec::new();
+            for unit in units {
+                if mapped.covers(unit) {
+                    continue;
+                }
+                for &i in &unit.roms {
+                    let row = &roms[i];
+                    let platform = platform_of(row)?;
+                    if !rom_songs::is_cartridge(platform) || !rom_songs::covers(platform) || self.library.covers(platform) {
+                        continue;
+                    }
+                    let (rom_id, main_path): (u64, String) = (row.try_get("id")?, row.try_get("main_path")?);
+                    if rip_sets::available() {
+                        if let Some(folder) = game_folder(&main_path) {
+                            if owns_rip_sets(self.app, rom_id, &folder).await? {
+                                continue;
+                            }
+                        }
+                    }
+                    todo.push((i, rom_id, main_path, platform, unit.titles.clone()));
+                }
+            }
+            use futures_util::StreamExt;
+            let found: Vec<Result<Option<(usize, Vec<u64>)>>> = futures_util::stream::iter(todo.into_iter().map(|(i, rom_id, main_path, platform, titles)| async move {
+                let Some(reading) = Reading::start(rom_id) else { return Ok(None) };
+                let label = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
+                self.progress.report(self.done(), Some(self.total), &format!("music maps: {label}")).await;
+                let (path, t) = (PathBuf::from(&main_path), self.thresholds);
+                let read = tokio::task::spawn_blocking(move || {
+                    let _reading = reading;
+                    if !path.is_file() {
+                        return Ok(None);
+                    }
+                    rom_songs::index_mapped(&path, platform, &t)
+                })
+                .await;
+                let tracks = match read {
+                    Ok(Ok(Some(tracks))) => tracks,
+                    // No map, or one that could not be read: the steps after read it the usual way.
+                    Ok(Ok(None)) | Ok(Err(_)) => return Ok(None),
+                    Err(e) => {
+                        log::warn!("rom audio index: {main_path}: music map: {e}");
+                        return Ok(None);
+                    }
+                };
+                store(self.app, rom_id, &tracks, None).await?;
+                let n = tracks.len() as u64;
+                self.tally(|s| {
+                    s.roms_read += 1;
+                    s.by_map += 1;
+                    s.rom_songs += n;
+                    s.tracks += n;
+                });
+                self.read_this_run.lock().unwrap_or_else(|p| p.into_inner()).insert(rom_id);
+                self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Some((i, titles)))
+            }))
+            .buffer_unordered(parallel)
+            .collect()
+            .await;
+            for got in found {
+                if let Some((i, titles)) = got? {
+                    mapped.roms.insert(i);
+                    mapped.titles.extend(titles);
+                }
+            }
+        }
+        Ok(mapped)
+    }
+
     fn tally(&self, f: impl FnOnce(&mut IndexSummary)) {
         f(&mut self.summary.lock().unwrap_or_else(|p| p.into_inner()));
     }
@@ -1087,9 +1198,15 @@ async fn plan_copies(app: &App, roms: &[sqlx::mysql::MySqlRow]) -> Result<Vec<Ve
             }
         }
     }
-    Ok(arrange(roms.len(), |i| ids.get(i).and_then(|id| game_of.get(id)).copied(), |game| {
+    let mut plan = arrange(roms.len(), |i| ids.get(i).and_then(|id| game_of.get(id)).copied(), |game| {
         titles_of.get(&game).map(|titles| titles.iter().filter_map(|t| ranked.get(t)).map(|list| list.iter().take_while(|g| **g != game).copied().collect()).collect()).unwrap_or_default()
-    }))
+    });
+    for unit in plan.iter_mut().flatten() {
+        if let Some(titles) = unit.game.and_then(|g| titles_of.get(&g)) {
+            unit.titles = titles.iter().filter(|t| ranked.contains_key(t)).copied().collect();
+        }
+    }
+    Ok(plan)
 }
 
 /// [`plan_copies`] from what it looked up: `game(i)` is the game of the run's ROM `i`, and
@@ -1107,10 +1224,10 @@ fn arrange(roms: usize, game: impl Fn(usize) -> Option<u64>, better: impl Fn(u64
                     // Its place: the best it ranks in any of its titles.
                     let level = better.iter().map(Vec::len).min().unwrap_or(0);
                     unit_of.insert(g, units.len());
-                    units.push((level, Unit { roms: vec![i], better }));
+                    units.push((level, Unit { roms: vec![i], better, game: Some(g), titles: Vec::new() }));
                 }
             },
-            None => units.push((0, Unit { roms: vec![i], better: Vec::new() })),
+            None => units.push((0, Unit { roms: vec![i], ..Default::default() })),
         }
     }
     let levels = units.iter().map(|(l, _)| l + 1).max().unwrap_or(0);
@@ -1337,6 +1454,28 @@ pub struct Indexing {
     pub done: Option<u64>,
     pub total: Option<u64>,
     pub message: Option<String>,
+}
+
+/// Clears the ROM music index (every ROM, or those of `platform`): their tracks and their
+/// "indexed" marks, so the next index run, new only included, reads them again. The kinds set
+/// by hand on their tracks go with them. Title pages that were told their ROMs were looked
+/// at already ask again. Returns how many ROMs were cleared.
+pub async fn clear_index(app: &App, platform: Option<u16>) -> Result<u64> {
+    let scope = match platform {
+        Some(p) => format!("rom_id IN (SELECT x.id FROM (SELECT r.id, {ROM_PLATFORM} FROM local_rom r) x WHERE x.app_platform_id = {p})"),
+        None => "TRUE".to_string(),
+    };
+    let mut tx = app.pool.begin().await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM rom_audio_tracks WHERE {scope}"))).execute(&mut *tx).await?;
+    let cleared = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM rom_audio_index WHERE {scope}"))).execute(&mut *tx).await?.rows_affected();
+    // A title page does not queue ROMs the last run for its title looked at: that list no
+    // longer holds once their index is gone.
+    sqlx::query("UPDATE jobs SET result = JSON_REMOVE(result, '$.rom_ids') WHERE job_type = 'rom_audio_index' AND JSON_CONTAINS_PATH(result, 'one', '$.rom_ids')")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    log::info!("rom audio: index cleared for {cleared} ROM(s){}", platform.map(|p| format!(" of platform {p}")).unwrap_or_default());
+    Ok(cleared)
 }
 
 /// Most ROMs of a page [`index_known_for`] reads while the page waits.
@@ -2244,6 +2383,16 @@ fn scaled(mut pcm: Vec<i16>, gain: f32) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_with_a_mapped_copy_leaves_its_other_copies_out() {
+        let mut mapped = Mapped::default();
+        mapped.titles.insert(7);
+        let unit = |titles: Vec<u64>| Unit { roms: vec![0], titles, ..Default::default() };
+        assert!(mapped.covers(&unit(vec![7])), "the title plays the mapped copy");
+        assert!(!mapped.covers(&unit(vec![7, 8])), "a compilation's other title still needs it");
+        assert!(!mapped.covers(&unit(vec![])), "a ROM in no title is always read");
+    }
 
     #[test]
     fn copies_are_read_best_ranked_first_and_discs_together() {

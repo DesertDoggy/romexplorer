@@ -208,6 +208,7 @@ const ADMIN: &[Rule] = &[
     ("POST", "/api/v1/audio/tags/remove"),
     ("PUT", "/api/v1/audio/rom/title/{id}"),
     ("PUT", "/api/v1/audio/hidden"),
+    ("POST", "/api/v1/audio/rom/clear"),
     ("DELETE", "/api/v1/media/{id}"),
     ("GET", "/api/v1/backup"),
     ("POST", "/api/v1/backup"),
