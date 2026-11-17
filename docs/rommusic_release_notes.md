@@ -1,3 +1,9 @@
+# rommusic 0.2.1
+
+rommusic is released separately from romexplorer; these notes cover rommusic only.
+
+## Changes
+
 # rommusic 0.2.0
 
 rommusic is released separately from romexplorer; these notes cover rommusic only.
