@@ -10,6 +10,7 @@ replacing a build.
 - The ROM music index reads only the best-ranked copy of each title, and other copies only when it has no music.
 - On games with several discs, music files an earlier disc already has are not read again.
 - Cartridge games whose music the app already knows play it as soon as the title page opens, without waiting for the index.
+- "Clear ROM audio index" was added (all ROMs or one platform).
 
 # romexplorer 0.2.1 (alpha)
 

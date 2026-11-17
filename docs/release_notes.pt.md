@@ -13,6 +13,7 @@ de segurança antes de substituir uma versão.
 - O índice de música das ROM lê só a cópia mais bem classificada de cada título, e as outras só se essa não tiver música.
 - Nos jogos com vários discos, os ficheiros de música que um disco anterior já tem não voltam a ser lidos.
 - Os jogos em cartucho cuja música a aplicação já conhece reproduzem-na assim que a página do título abre, sem esperar pelo índice.
+- Adicionado «Limpar o índice de áudio das ROM» (todas ou por plataforma).
 
 # romexplorer 0.2.1 (alpha)
 

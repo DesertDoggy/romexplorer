@@ -13,6 +13,7 @@ zapasową przed podmianą wersji.
 - Indeks muzyki z ROM-ów czyta tylko najwyżej ocenianą kopię każdego tytułu, a inne kopie tylko wtedy, gdy ta nie ma muzyki.
 - W grach na kilku płytach pliki muzyczne, które ma już wcześniejsza płyta, nie są czytane ponownie.
 - Gry na kartridżach, których muzykę aplikacja już zna, odtwarzają ją od razu po otwarciu strony tytułu, bez czekania na indeks.
+- Dodano „Wyczyść indeks dźwięku z ROM-ów” (wszystkie lub jedna platforma).
 
 # romexplorer 0.2.1 (alpha)
 

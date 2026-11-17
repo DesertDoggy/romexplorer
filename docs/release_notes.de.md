@@ -13,6 +13,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Der ROM-Musikindex liest pro Titel nur die am höchsten eingestufte Kopie, andere Kopien nur, wenn sie keine Musik hat.
 - Bei Spielen mit mehreren Discs werden Musikdateien, die schon auf einer früheren Disc liegen, nicht erneut gelesen.
 - Cartridge-Spiele, deren Musik die App bereits kennt, spielen sie ab, sobald die Titelseite geöffnet wird, ohne auf den Index zu warten.
+- „ROM-Audio-Index löschen“ wurde hinzugefügt (alle ROMs oder eine Plattform).
 
 # romexplorer 0.2.1 (alpha)
 

@@ -4,6 +4,13 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 
 ## Changes
 
+- **Cartridges with a known music map are written faster.**
+
+## Bug fixes
+
+- SNES games with no music map wrote no music.
+- The Android app kept the old music maps after an update.
+
 # rommusic 0.2.0
 
 rommusic is released separately from romexplorer; these notes cover rommusic only.
