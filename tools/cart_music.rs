@@ -1727,7 +1727,8 @@ fn main() {
         for file in names {
             let result = std::fs::read(&file).map_err(|e| e.to_string()).and_then(|packed| rom_songs::add_times_to_bundle(&packed, Path::new(times)));
             match result {
-                Ok((packed, maps, timed)) => {
+                Ok((None, maps, timed)) => println!("{}: unchanged, {timed} of {maps} maps have times", file.display()),
+                Ok((Some(packed), maps, timed)) => {
                     if let Err(e) = std::fs::write(&file, &packed) {
                         eprintln!("{}: {e}", file.display());
                         std::process::exit(1);

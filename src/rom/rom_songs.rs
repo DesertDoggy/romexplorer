@@ -786,23 +786,29 @@ pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, St
 /// them) to the bundle `packed`, beside each map it holds; times of maps it does not hold are
 /// left out. Returns the bundle repacked, how many maps it holds and how many of them now
 /// have times.
-pub fn add_times_to_bundle(packed: &[u8], times_dir: &Path) -> Result<(Vec<u8>, usize, usize), String> {
+/// `None` for the bundle when it would not change (no times for any of its maps, or the same
+/// ones it holds already), so it is not rewritten.
+pub fn add_times_to_bundle(packed: &[u8], times_dir: &Path) -> Result<(Option<Vec<u8>>, usize, usize), String> {
     let mut entries: std::collections::BTreeMap<String, String> = read_bundle(packed)?.into_iter().collect();
     let maps: Vec<String> = entries.keys().filter(|k| !k.ends_with(TIMES_SUFFIX)).cloned().collect();
+    let mut changed = false;
     for name in &maps {
         let file = times_dir.join(format!("{name}.{TIMES_EXT}"));
         if let Ok(text) = std::fs::read_to_string(&file) {
-            entries.insert(format!("{name}{TIMES_SUFFIX}"), text);
+            changed |= entries.insert(format!("{name}{TIMES_SUFFIX}"), text.clone()).as_ref() != Some(&text);
         }
     }
     let timed = maps.iter().filter(|m| entries.contains_key(&format!("{m}{TIMES_SUFFIX}"))).count();
+    if !changed {
+        return Ok((None, maps.len(), timed));
+    }
     let mut text = format!("{BUNDLE_MAGIC}\n");
     for (name, body) in &entries {
         text.push_str(&format!("{name} {}\n", body.len()));
         text.push_str(body);
     }
     let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
-    Ok((packed, maps.len(), timed))
+    Ok((Some(packed), maps.len(), timed))
 }
 
 /// Packs the maps of each kind kept under `dir` (as [`set_maps_dir`] lays them out) into its
@@ -2357,7 +2363,11 @@ mod bundle_tests {
         std::fs::write(dir.join("times").join("nes").join("zz.times"), "maptimes 1 y\n").unwrap();
         let (packed, _) = pack_bundle(&dir.join("maps"), &["nes"]).unwrap();
         let (again, maps, timed) = add_times_to_bundle(&packed, &dir.join("times")).unwrap();
+        let again = again.expect("times were added");
+        // Run again over its own output: nothing to add, nothing rewritten.
+        let (same, ..) = add_times_to_bundle(&again, &dir.join("times")).unwrap();
         std::fs::remove_dir_all(&dir).ok();
+        assert!(same.is_none());
         assert_eq!((maps, timed), (2, 1));
         let entries = read_bundle(&again).unwrap();
         assert_eq!(entries.len(), 3, "the maps, and times only for a map the bundle holds");
