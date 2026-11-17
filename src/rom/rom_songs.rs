@@ -807,8 +807,7 @@ pub fn add_times_to_bundle(packed: &[u8], times_dir: &Path) -> Result<(Option<Ve
         text.push_str(&format!("{name} {}\n", body.len()));
         text.push_str(body);
     }
-    let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
-    Ok((Some(packed), maps.len(), timed))
+    Ok((Some(pack_text(&text)?), maps.len(), timed))
 }
 
 /// Packs the maps of each kind kept under `dir` (as [`set_maps_dir`] lays them out) into its
@@ -893,10 +892,49 @@ fn pack_maps(dir: &Path, kinds: &[&str], shard: Option<(char, char)>) -> Result<
             counts.push((format!("{kind} times"), files.len()));
         }
     }
-    // zstd -19: packed once per release and read once per run, so size is what counts here.
-    // Measured on the first bundle: 105 MB of text to 2.65 MB in 6 s.
-    let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
-    Ok((packed, counts))
+    Ok((pack_text(&text)?, counts))
+}
+
+/// A bundle packed again the current way ([`pack_text`]), entries in name order as packing
+/// puts them. Its maps and times are unchanged.
+pub fn repack_bundle(packed: &[u8]) -> Result<Vec<u8>, String> {
+    let entries: std::collections::BTreeMap<String, String> = read_bundle(packed)?.into_iter().collect();
+    let mut text = format!("{BUNDLE_MAGIC}\n");
+    for (name, body) in &entries {
+        text.push_str(&format!("{name} {}\n", body.len()));
+        text.push_str(body);
+    }
+    pack_text(&text)
+}
+
+/// Window of [`pack_text`]: 128 MB, the most a zstd reader takes without being told to.
+const BUNDLE_WINDOW_LOG: u32 = 27;
+
+/// A bundle's text, packed: zstd -22 over a 128 MB window, with long-distance matching. Packed
+/// once per release and read once per run, so size is what counts; a bundle holds many
+/// near-copies of one map (regions, revisions), further apart than a small window reaches.
+/// Measured on the shipped bundles (packed size, packing time; reading back 0.06-0.2 s at
+/// every level):
+///
+/// | bundle (text) | -19 | -19 long | -22 |
+/// |---|---|---|---|
+/// | GBA (153 MB) | 16.6 MB, 55 s | 11.4 MB, 48 s | 10.9 MB, 87 s |
+/// | N64 (202 MB) | 15.0 MB, 45 s | 9.1 MB, 31 s | 8.9 MB, 50 s |
+/// | SNES e-f (52 MB) | 6.05 MB, 20 s | 5.61 MB, 21 s | 5.59 MB, 32 s |
+/// | NES/GB/PCE (105 MB) | 2.65 MB, 12 s | 2.23 MB, 12 s | 2.16 MB, 17 s |
+///
+/// The same maps as binary were 1% bigger than as text once packed: the hex runs pack to a
+/// byte a byte already.
+fn pack_text(text: &str) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let err = |e: std::io::Error| e.to_string();
+    let mut e = zstd::stream::Encoder::new(Vec::new(), 22).map_err(err)?;
+    e.long_distance_matching(true).map_err(err)?;
+    e.window_log(BUNDLE_WINDOW_LOG).map_err(err)?;
+    e.include_contentsize(true).map_err(err)?;
+    e.set_pledged_src_size(Some(text.len() as u64)).map_err(err)?;
+    e.write_all(text.as_bytes()).map_err(err)?;
+    e.finish().map_err(err)
 }
 
 // --- Track times kept with a map ---------------------------------------------------------

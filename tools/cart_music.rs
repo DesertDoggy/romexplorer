@@ -1715,6 +1715,35 @@ fn main() {
     // `--add-times <times folder> <bundle folder>`: adds the track times `--time-maps` kept to
     // every music_maps*.zst in <bundle folder> (the app's assets/), beside the maps each holds,
     // and writes each bundle back in place.
+    // `--repack <bundle folder>`: packs every music_maps*.zst there again the current way
+    // (rom_songs::repack_bundle), maps and times unchanged.
+    if let Some(i) = args.iter().position(|a| a == "--repack") {
+        let Some(folder) = args.get(i + 1) else {
+            eprintln!("usage: cart_music --repack <bundle folder>");
+            std::process::exit(2);
+        };
+        let mut names: Vec<PathBuf> = std::fs::read_dir(folder)
+            .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("music_maps") && n.ends_with(".zst"))).collect())
+            .unwrap_or_default();
+        names.sort();
+        for file in names {
+            let result = std::fs::read(&file).map_err(|e| e.to_string()).and_then(|old| Ok((old.len(), rom_songs::repack_bundle(&old)?)));
+            match result {
+                Ok((before, packed)) => {
+                    if let Err(e) = std::fs::write(&file, &packed) {
+                        eprintln!("{}: {e}", file.display());
+                        std::process::exit(1);
+                    }
+                    println!("{}: {before} -> {} bytes", file.display(), packed.len());
+                }
+                Err(e) => {
+                    eprintln!("{}: {e}", file.display());
+                    std::process::exit(1);
+                }
+            }
+        }
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--add-times") {
         let (Some(times), Some(folder)) = (args.get(i + 1), args.get(i + 2)) else {
             eprintln!("usage: cart_music --add-times <times folder> <bundle folder>");
