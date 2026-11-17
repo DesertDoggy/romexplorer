@@ -1776,7 +1776,11 @@ fn main() {
         let total = mine.len();
         let (mut timed, mut tracks) = (0usize, 0usize);
         for (n, path) in mine.iter().enumerate() {
-            let Ok(rom) = rom_songs::read_rom(path) else { continue };
+            // A line for every file, so a watcher can show how far the run is.
+            let Ok(rom) = rom_songs::read_rom(path) else {
+                println!("[{}/{total}] -", n + 1);
+                continue;
+            };
             let platform = match console(&rom, path) {
                 Some("NES") | Some("NES?") | Some("FDS") => Platform::Famicom,
                 Some("GB") => Platform::GameBoy,
@@ -1786,7 +1790,10 @@ fn main() {
                 Some("GG") => Platform::SegaGameGear,
                 Some("WS") => Platform::WonderSwan,
                 Some("WSC") => Platform::WonderSwanColor,
-                _ => continue,
+                _ => {
+                    println!("[{}/{total}] -", n + 1);
+                    continue;
+                }
             };
             let started = std::time::Instant::now();
             match rom_songs::time_map(path, platform as u16) {
@@ -1795,7 +1802,7 @@ fn main() {
                     tracks += k;
                     println!("[{}/{total}] {}: {k} tracks, {:.1} s", n + 1, path.display(), started.elapsed().as_secs_f64());
                 }
-                Ok(None) => {}
+                Ok(None) => println!("[{}/{total}] -", n + 1),
                 Err(e) => println!("[{}/{total}] {}: {e}", n + 1, path.display()),
             }
         }
