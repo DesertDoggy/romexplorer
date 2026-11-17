@@ -1715,33 +1715,57 @@ fn main() {
     // `--add-times <times folder> <bundle folder>`: adds the track times `--time-maps` kept to
     // every music_maps*.zst in <bundle folder> (the app's assets/), beside the maps each holds,
     // and writes each bundle back in place.
-    // `--repack <bundle folder>`: packs every music_maps*.zst there again the current way
-    // (rom_songs::repack_bundle), maps and times unchanged.
+    // `--repack <bundle folder>`: packs every music_maps*.zst there again the current way,
+    // maps and times unchanged. A kind's own bundle (music_maps_<kind>[_<from>-<to>].zst) is
+    // split again too, into as few parts as the size limit allows; the old all-kinds bundle and
+    // the _updates ones keep their files.
     if let Some(i) = args.iter().position(|a| a == "--repack") {
-        let Some(folder) = args.get(i + 1) else {
+        let Some(folder) = args.get(i + 1).map(PathBuf::from) else {
             eprintln!("usage: cart_music --repack <bundle folder>");
             std::process::exit(2);
         };
-        let mut names: Vec<PathBuf> = std::fs::read_dir(folder)
+        let fail = |what: &str, e: String| -> ! {
+            eprintln!("{what}: {e}");
+            std::process::exit(1)
+        };
+        let mut names: Vec<PathBuf> = std::fs::read_dir(&folder)
             .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("music_maps") && n.ends_with(".zst"))).collect())
             .unwrap_or_default();
-        names.sort();
+        // Merged lowest reading order first, so a map in a file added later replaces the one
+        // it fixes.
+        names.sort_by_key(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            (rom_songs::bundle_order(&name).unwrap_or(0), name)
+        });
+        let scratch = folder.join(".repack");
+        let _ = std::fs::remove_dir_all(&scratch);
+        let mut split = Vec::new();
         for file in names {
-            let result = std::fs::read(&file).map_err(|e| e.to_string()).and_then(|old| Ok((old.len(), rom_songs::repack_bundle(&old)?)));
-            match result {
-                Ok((before, packed)) => {
-                    if let Err(e) = std::fs::write(&file, &packed) {
-                        eprintln!("{}: {e}", file.display());
-                        std::process::exit(1);
-                    }
-                    println!("{}: {before} -> {} bytes", file.display(), packed.len());
-                }
-                Err(e) => {
-                    eprintln!("{}: {e}", file.display());
-                    std::process::exit(1);
-                }
+            let name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            let old = std::fs::read(&file).unwrap_or_else(|e| fail(&name, e.to_string()));
+            if name == "music_maps.zst" || name.contains("_updates") {
+                let packed = rom_songs::repack_bundle(&old).unwrap_or_else(|e| fail(&name, e));
+                std::fs::write(&file, &packed).unwrap_or_else(|e| fail(&name, e.to_string()));
+                println!("{name}: {} -> {} bytes", old.len(), packed.len());
+                continue;
             }
+            rom_songs::unpack_bundle_to(&old, &scratch).unwrap_or_else(|e| fail(&name, e));
+            split.push((file, old.len()));
         }
+        if !split.is_empty() {
+            let packed = rom_songs::pack_bundles(&scratch).unwrap_or_else(|e| fail("pack", e));
+            let before: usize = split.iter().map(|(_, n)| n).sum();
+            for (file, n) in &split {
+                std::fs::remove_file(file).unwrap_or_else(|e| fail(&file.display().to_string(), e.to_string()));
+                println!("removed {} ({n} bytes)", file.display());
+            }
+            for (name, bytes, maps) in &packed {
+                std::fs::write(folder.join(name), bytes).unwrap_or_else(|e| fail(name, e.to_string()));
+                println!("{name}: {maps} maps, {} bytes", bytes.len());
+            }
+            println!("{before} -> {} bytes", packed.iter().map(|(_, b, _)| b.len()).sum::<usize>());
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--add-times") {

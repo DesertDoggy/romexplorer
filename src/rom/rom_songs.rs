@@ -713,7 +713,8 @@ pub fn shard_file(kind: &str, from: char, to: char) -> String {
 }
 
 /// The bundle of a kind's maps added or fixed after its main files were packed, read before
-/// them: `music_maps_snes_updates.zst`.
+/// them: `music_maps_snes_updates.zst`. Numbered files (`music_maps_snes_2.zst`) do the same
+/// for maps added later still ([`bundle_name`]).
 pub fn updates_file(kind: &str) -> String {
     format!("music_maps_{kind}_updates.zst")
 }
@@ -724,18 +725,10 @@ pub fn pack_updates(dir: &Path) -> Result<Vec<(String, Vec<u8>, usize)>, String>
     pack_bundles_split(dir, SPLIT_ABOVE, "_updates")
 }
 
-/// The digit range of a part's file name, for `kind`.
-fn shard_range(kind: &str, file: &str) -> Option<(char, char)> {
-    let range = file.strip_prefix(&format!("music_maps_{kind}_"))?.strip_suffix(".zst")?;
-    let (a, b) = range.split_once('-')?;
-    let one = |s: &str| s.chars().next().filter(|c| s.len() == 1 && c.is_ascii_hexdigit());
-    Some((one(a)?, one(b)?))
-}
-
 /// A kind's bundle larger than this packed is split by the first hex digit of the key into as
 /// few files as keep each at most this size: GitHub warns on files over 50 MB and refuses
 /// them over 100 MB, and a game opens only its own part. The SNES maps (400 MB of text) pack
-/// to 51 MB, so three files.
+/// to 36 MB, so two files.
 const SPLIT_ABOVE: usize = 24 << 20;
 const HEX_DIGITS: &str = "0123456789abcdef";
 
@@ -893,6 +886,27 @@ fn pack_maps(dir: &Path, kinds: &[&str], shard: Option<(char, char)>) -> Result<
         }
     }
     Ok((pack_text(&text)?, counts))
+}
+
+/// Writes a bundle's maps and times out under `dir` as [`set_maps_dir`] lays them out
+/// (`<kind>/<key>.<ext>`, `<kind>/<key>.times`), for [`pack_bundles`] to pack again (another
+/// split, say). Returns how many files it wrote.
+pub fn unpack_bundle_to(packed: &[u8], dir: &Path) -> Result<usize, String> {
+    let mut n = 0;
+    for (name, body) in read_bundle(packed)? {
+        let (kind, key) = name.split_once('/').ok_or_else(|| format!("bad bundle entry {name}"))?;
+        let file = match key.strip_suffix(TIMES_SUFFIX) {
+            Some(key) => format!("{key}.{TIMES_EXT}"),
+            None => format!("{key}.{}", MAP_KINDS.iter().find(|(k, _)| *k == kind).ok_or_else(|| format!("unknown map kind {kind}"))?.1),
+        };
+        let path = dir.join(kind).join(file);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// A bundle packed again the current way ([`pack_text`]), entries in name order as packing
@@ -1211,27 +1225,73 @@ fn kept_text(kind: &str, key: &str, ext: &str, suffix: &str) -> Option<String> {
         }
     }
     let name = format!("{kind}/{key}{suffix}");
-    let root = super::native_lib::exe_root();
-    // Maps added or fixed since the main files were packed, kept apart so a fix ships as a
-    // small file instead of a repacked part.
-    let digit = key.chars().next().map(|c| c.to_ascii_lowercase());
-    // A bundle shipped in parts: only the part holding the key is opened.
-    let part_of = |base: &str| digit.and_then(|d| asset_files().iter().find(|f| shard_range(base, f).is_some_and(|(a, b)| (a..=b).contains(&d))));
-    let updates = updates_file(kind);
-    let updates = asset_files().contains(&updates).then_some(&updates).or_else(|| part_of(&format!("{kind}_updates")));
-    if let Some(text) = updates.and_then(|u| bundled(u).get(&name)) {
-        return Some(text.clone());
+    let digit = key.chars().next().map(|c| c.to_ascii_lowercase())?;
+    // Every file of the kind that can hold the key, newest first: the first that has it wins.
+    // Only those files are opened, and each once per run.
+    let mut files: Vec<(BundleName, &String)> = asset_files().iter().filter_map(|f| Some((bundle_name(kind, f)?, f))).collect();
+    if files.is_empty() {
+        // The old all-kinds bundle (105 MB as text, held for the run) only stands in for a
+        // kind with no file of its own: a miss in a kind's own files is a miss.
+        return bundled(BUNDLE_FILE).get(&name).cloned();
     }
-    if let Some(part) = part_of(kind) {
-        return bundled(part).get(&name).cloned();
+    files.retain(|(b, _)| b.range.is_none_or(|(a, z)| (a..=z).contains(&digit)));
+    files.sort_by(|a, b| b.0.order.cmp(&a.0.order).then_with(|| a.1.cmp(b.1)));
+    files.iter().find_map(|(_, f)| bundled(f).get(&name).cloned())
+}
+
+/// Where a bundle file of any kind comes in its kind's reading order ([`bundle_name`]): files
+/// read later (lower) first, so a tool that merges them lets the later ones win. `None` for a
+/// name that is no kind's bundle.
+pub fn bundle_order(file: &str) -> Option<u32> {
+    MAP_KINDS.iter().find_map(|(kind, _)| bundle_name(kind, file)).map(|b| b.order)
+}
+
+/// What a bundle file's name says about it, for one kind ([`bundle_name`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BundleName {
+    /// The first hex digits of the keys it holds; `None` for every key.
+    range: Option<(char, char)>,
+    /// Which is read first when two can hold a key: the higher. The kind's main files are 0,
+    /// files added later 1, 2, … by their number, and the updates files above them all.
+    order: u32,
+}
+
+/// Parses a bundle file name of `kind`. Every form is `music_maps_<kind>[_<parts>].zst`:
+///
+/// - `music_maps_snes.zst`: every key ([`bundle_file`]).
+/// - `music_maps_snes_0-7.zst`: keys starting with 0 to 7 ([`shard_file`]).
+/// - `music_maps_snes_2.zst`, `music_maps_snes_0-7_2.zst`: added later, numbered from 1; a
+///   higher number is read before a lower one and before the main files, so maps for new
+///   games, or fixed ones, ship as a new file without repacking the others.
+/// - `music_maps_snes_updates.zst`, `music_maps_snes_updates_0-7.zst`: read first of all
+///   ([`updates_file`]).
+fn bundle_name(kind: &str, file: &str) -> Option<BundleName> {
+    let rest = file.strip_prefix("music_maps_")?.strip_suffix(".zst")?.strip_prefix(kind)?;
+    let mut range = None;
+    let mut order = 0;
+    if rest.is_empty() {
+        return Some(BundleName { range, order });
     }
-    let own = bundle_file(kind);
-    // The old all-kinds bundle (105 MB as text, held for the run) only stands in for a kind
-    // with no bundle of its own: a miss in a kind's own bundle is a miss.
-    if root.is_some_and(|root| root.join("assets").join(&own).is_file()) {
-        return bundled(&own).get(&name).cloned();
+    let rest = rest.strip_prefix('_')?;
+    let mut parts = rest.split('_').peekable();
+    if parts.peek() == Some(&"updates") {
+        parts.next();
+        order = u32::MAX;
     }
-    bundled(BUNDLE_FILE).get(&name).cloned()
+    let digit = |s: &str| s.chars().next().filter(|c| s.len() == 1 && c.is_ascii_hexdigit()).map(|c| c.to_ascii_lowercase());
+    for part in parts {
+        if let Some((a, b)) = part.split_once('-') {
+            if range.is_some() {
+                return None;
+            }
+            range = Some((digit(a)?, digit(b)?));
+        } else if order == 0 {
+            order = part.parse::<u32>().ok().filter(|n| *n >= 1 && *n < u32::MAX)?;
+        } else {
+            return None;
+        }
+    }
+    Some(BundleName { range, order })
 }
 
 /// What a NES ROM's map is kept under: the SHA-1 of its program data (a Disk System image's
@@ -2577,10 +2637,23 @@ mod bundle_tests {
         assert_eq!(grouped.iter().map(|(f, _, n)| (f.as_str(), *n)).collect::<Vec<_>>(), vec![("music_maps_snes_0-9.zst", 2), ("music_maps_snes_a-f.zst", 2)]);
         assert_eq!(back.len(), 4);
         assert_eq!(updates[0].0, "music_maps_snes_updates_0-0.zst");
-        assert_eq!(shard_range("snes_updates", &updates[0].0), Some(('0', '0')));
-        assert_eq!(shard_range("snes", &updates[0].0), None);
-        assert_eq!(shard_range("snes", "music_maps_snes_a-f.zst"), Some(('a', 'f')));
-        assert_eq!(shard_range("snes", "music_maps_snes.zst"), None);
-        assert_eq!(shard_range("gba", "music_maps_snes_a-f.zst"), None);
+        assert_eq!(bundle_name("snes", &updates[0].0), Some(BundleName { range: Some(('0', '0')), order: u32::MAX }));
+    }
+
+    #[test]
+    fn bundle_names_take_parts_and_files_added_later() {
+        let name = |kind: &str, file: &str| bundle_name(kind, file).map(|b| (b.range, b.order));
+        assert_eq!(name("snes", "music_maps_snes.zst"), Some((None, 0)));
+        assert_eq!(name("snes", "music_maps_snes_a-f.zst"), Some((Some(('a', 'f')), 0)));
+        assert_eq!(name("snes", "music_maps_snes_2.zst"), Some((None, 2)), "added later, every key");
+        assert_eq!(name("snes", "music_maps_snes_0-7_3.zst"), Some((Some(('0', '7')), 3)));
+        assert_eq!(name("snes", "music_maps_snes_updates.zst"), Some((None, u32::MAX)));
+        assert_eq!(name("snes", "music_maps_snes_updates_0-0.zst"), Some((Some(('0', '0')), u32::MAX)));
+        assert_eq!(name("gb", "music_maps_gba.zst"), None, "another kind whose name starts the same");
+        assert_eq!(name("gb", "music_maps_gba_2.zst"), None);
+        assert_eq!(name("gba", "music_maps_snes_a-f.zst"), None);
+        assert_eq!(name("snes", "music_maps_snes_0.zst"), None, "numbers start at 1");
+        assert_eq!(name("snes", "music_maps_snes_x-y.zst"), None);
+        assert_eq!(name("snes", "music_maps.zst"), None);
     }
 }
