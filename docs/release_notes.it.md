@@ -12,6 +12,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
 - L'indice della musica delle ROM legge solo la copia meglio classificata di ogni titolo, e le altre solo se quella non ha musica.
 - Nei giochi su più dischi, i file musicali già presenti su un disco precedente non vengono riletti.
+- I giochi su cartuccia di cui l'app conosce già la musica la riproducono appena si apre la pagina del titolo, senza attendere l'indice.
 
 # romexplorer 0.2.1 (alpha)
 

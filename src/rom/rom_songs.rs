@@ -975,6 +975,12 @@ fn decode_times(text: &str, print: &str) -> Option<std::collections::BTreeMap<u8
 fn map_times(kind: &str, key: &str, encoded: &str, songs: &[u8], keep: bool, mut measure: impl FnMut(u8) -> SongTime) -> Vec<(u8, f64, music_search::Timing)> {
     let print = map_fingerprint(encoded);
     let mut kept = if keep { kept_text(kind, key, TIMES_EXT, TIMES_SUFFIX).and_then(|t| decode_times(&t, &print)).unwrap_or_default() } else { Default::default() };
+    // [`index_known`]: nothing is measured; a song with no kept time leaves the whole map to
+    // a full index.
+    if KNOWN_ONLY.with(|k| k.get()) && songs.iter().any(|v| !kept.contains_key(v)) {
+        KNOWN_ONLY_MISSED.with(|m| m.set(true));
+        return Vec::new();
+    }
     let mut measured = false;
     let mut out = Vec::with_capacity(songs.len());
     for &v in songs {
@@ -1000,6 +1006,84 @@ fn map_times(kind: &str, key: &str, encoded: &str, songs: &[u8], keep: bool, mut
         }
     }
     out
+}
+
+thread_local! {
+    /// Set while [`index_known`] runs: [`map_times`] measures nothing.
+    static KNOWN_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by [`map_times`] when a song it was asked for has no kept time.
+    static KNOWN_ONLY_MISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The songs of a cartridge whose music map is kept (shipped or built here) and needs nothing
+/// measured: every song's time is kept with the map, or the map carries its own lengths (SNES,
+/// N64, GBA). Takes as long as reading the ROM and hashing it, so a title page can list the
+/// game's music at once instead of waiting for an index run.
+/// `None` when the ROM has no such map, or a song of it would need measuring; the index run
+/// then reads it the usual way.
+pub fn index_known(path: &Path, platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
+    if !covers(platform) || !is_cartridge(platform) {
+        return Ok(None);
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            KNOWN_ONLY.with(|k| k.set(false));
+        }
+    }
+    let rom = read_rom(path)?;
+    KNOWN_ONLY.with(|k| k.set(true));
+    KNOWN_ONLY_MISSED.with(|m| m.set(false));
+    let _reset = Reset;
+    let found = known_songs(&rom, platform, t)?;
+    if KNOWN_ONLY_MISSED.with(|m| m.get()) {
+        return Ok(None);
+    }
+    Ok(found.filter(|f| !f.is_empty()))
+}
+
+/// [`index_known`]'s map lookup, per console: the same keys [`index_explained`] uses.
+fn known_songs(rom: &[u8], platform: u16, t: &Thresholds) -> Result<Option<Vec<FoundTrack>>, String> {
+    use crate::common::models::Platform as P;
+    if is_nes(platform) {
+        let Some(key) = map_key(rom) else { return Ok(None) };
+        let Some(m) = load_map(&key) else { return Ok(None) };
+        return index_map(rom, &key, &m, t, None).map(Some);
+    }
+    if is_snes(platform) {
+        let key = gb_key(super::snes_sound::rom_image(rom));
+        return Ok(load_snes_map(&key).map(|m| index_snes_map(&key, &m, t)));
+    }
+    if platform == P::Nintendo64 as u16 {
+        let Some(native) = super::n64_map::native(rom) else { return Ok(None) };
+        let key = gb_key(&native);
+        return Ok(load_n64_map(&key).map(|m| index_n64_map(&key, &m, t)));
+    }
+    if is_gb(platform) {
+        let key = gb_key(rom);
+        let Some(m) = load_gb_map(&key) else { return Ok(None) };
+        return index_gb_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::SegaMasterSystem as u16 || platform == P::SegaGameGear as u16 {
+        let key = gb_key(rom);
+        let Some(m) = load_sgc_map(&key) else { return Ok(None) };
+        return index_sgc_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::TurboGrafx16 as u16 {
+        let key = gb_key(super::hes_map::program(rom));
+        let Some(m) = load_hes_map(&key) else { return Ok(None) };
+        return index_hes_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::WonderSwan as u16 || platform == P::WonderSwanColor as u16 {
+        let key = gb_key(rom);
+        let Some(m) = load_ws_map(&key) else { return Ok(None) };
+        return index_ws_map(rom, &key, &m, t).map(Some);
+    }
+    if platform == P::GameBoyAdvance as u16 && super::gba_map::available() {
+        let key = gb_key(rom);
+        return Ok(load_gba_map(&key).map(|m| index_gba_map(&key, &m, t)));
+    }
+    Ok(None)
 }
 
 /// Measures and keeps the track times of the map the ROM at `path` plays by, where its kind
@@ -1345,6 +1429,11 @@ fn open_ws_map(path: &Path, engine: &str, song: u32) -> Result<Box<dyn PcmStream
     let r = u64::from(PLAY_RATE);
     let tail = if fade > 0 { super::track_timing::FADE_TAIL_MS } else { 0 };
     Ok(Box::new(MapPcm { song: AnyMapSong::Ws(song), channels: 2, left: (body + fade + tail) * r / 1000, fade: fade * r / 1000, tail: tail * r / 1000, pending: Vec::new() }))
+}
+
+/// Whether a SNES music map is kept for the ROM `rom` (a copier header or none).
+pub fn has_snes_map(rom: &[u8]) -> bool {
+    kept_map("snes", &gb_key(super::snes_sound::rom_image(rom))).is_some()
 }
 
 fn load_snes_map(key: &str) -> Option<super::snes_map::Map> {
@@ -2317,6 +2406,21 @@ mod bundle_tests {
         assert_eq!(decode_times(&text, &map_fingerprint("nesmap 1\nline 2\n")), None, "times of another version of the map");
         assert_eq!(decode_times(&text.replacen(TIMES_MAGIC, "maptimes 0", 1), &print), None, "times measured the old way");
         assert_eq!(decode_times(&format!("{TIMES_MAGIC} {print}\n3 junk\n"), &print), None);
+    }
+
+    #[test]
+    fn map_times_known_only_measure_nothing() {
+        KNOWN_ONLY.with(|k| k.set(true));
+        KNOWN_ONLY_MISSED.with(|m| m.set(false));
+        let mut measured = 0;
+        let got = map_times("nes", "00ff", "nesmap 1\n", &[0, 1], false, |_| {
+            measured += 1;
+            None
+        });
+        let missed = KNOWN_ONLY_MISSED.with(|m| m.get());
+        KNOWN_ONLY.with(|k| k.set(false));
+        assert_eq!(measured, 0, "nothing measured");
+        assert!(got.is_empty() && missed, "a song without a kept time sends the map to a full index");
     }
 
     #[test]

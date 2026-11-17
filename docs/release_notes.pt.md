@@ -12,6 +12,7 @@ de segurança antes de substituir uma versão.
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
 - O índice de música das ROM lê só a cópia mais bem classificada de cada título, e as outras só se essa não tiver música.
 - Nos jogos com vários discos, os ficheiros de música que um disco anterior já tem não voltam a ser lidos.
+- Os jogos em cartucho cuja música a aplicação já conhece reproduzem-na assim que a página do título abre, sem esperar pelo índice.
 
 # romexplorer 0.2.1 (alpha)
 

@@ -367,8 +367,9 @@ fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thr
     }
     let mut why_none = None;
     match platform {
-        // Played by the game's own sound code or engine, straight from the ROM.
-        p if rom_songs::covers(p as u16) => {
+        // Played by the game's own sound code or engine, straight from the ROM. A SNES game
+        // with a music map plays each song by it; one without falls to the capture below.
+        p if rom_songs::covers(p as u16) && !(matches!(p, Platform::Snes | Platform::SuperFamicom) && !rom_songs::has_snes_map(&rom_songs::read_rom(input)?)) => {
             let (found, why) = rom_songs::index_explained(input, p as u16, t)?;
             jobs.extend(tracks(input, found));
             if jobs.is_empty() {

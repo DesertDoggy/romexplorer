@@ -1339,6 +1339,77 @@ pub struct Indexing {
     pub message: Option<String>,
 }
 
+/// Most ROMs of a page [`index_known_for`] reads while the page waits.
+const KNOWN_PER_PAGE: usize = 16;
+
+/// The page's cartridges whose music map is known (shipped or built here, with every song's
+/// time kept): indexed right here, before the playlist is read, so their music plays when the
+/// page opens instead of after an index job. Only a cartridge whose music nothing else adds
+/// to (no library sets for its platform, no music files in its own folder); the rest are left
+/// to [`indexing_for`]'s job. Returns how many ROMs were indexed.
+pub async fn index_known_for(app: &App, titles: &[u64]) -> Result<usize> {
+    if titles.is_empty() {
+        return Ok(0);
+    }
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT r.id, r.main_path, {ROM_PLATFORM} FROM local_rom r WHERE r.deleted = FALSE AND r.id IN ({}) \
+         AND NOT EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {}) ORDER BY r.id LIMIT {KNOWN_PER_PAGE}",
+        roms_of(&titles[..titles.len().min(4)]),
+        indexed_for_good()
+    )))
+    .fetch_all(&app.pool)
+    .await?;
+    let mut candidates = Vec::new();
+    for row in &rows {
+        let platform = platform_of(row)?;
+        if !rom_songs::is_cartridge(platform) || !rom_songs::covers(platform) {
+            continue;
+        }
+        candidates.push((row.try_get::<u64, _>("id")?, row.try_get::<String, _>("main_path")?, platform));
+    }
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let library = page_library(app).await?;
+    let thresholds = Settings::load(app).await?.thresholds;
+    let mut indexed = 0;
+    for (rom_id, main_path, platform) in candidates {
+        if library.covers(platform) {
+            continue;
+        }
+        if rip_sets::available() {
+            if let Some(folder) = game_folder(&main_path) {
+                if owns_rip_sets(app, rom_id, &folder).await? {
+                    continue;
+                }
+            }
+        }
+        // A run reading it right now has it.
+        let Some(reading) = Reading::start(rom_id) else { continue };
+        let path = PathBuf::from(&main_path);
+        let found = tokio::task::spawn_blocking(move || {
+            let _reading = reading;
+            if !path.is_file() {
+                return Ok(None);
+            }
+            rom_songs::index_known(&path, platform, &thresholds)
+        })
+        .await;
+        match found {
+            Ok(Ok(Some(tracks))) => {
+                store(app, rom_id, &tracks, None).await?;
+                indexed += 1;
+                log::info!("rom audio: {main_path}: {} track(s) from its known music map", tracks.len());
+            }
+            Ok(Ok(None)) => {}
+            // Left to the index job, which reports it.
+            Ok(Err(e)) => log::debug!("rom audio: {main_path}: known music map: {e}"),
+            Err(e) => log::warn!("rom audio: {main_path}: known music map: {e}"),
+        }
+    }
+    Ok(indexed)
+}
+
 /// The page's own ROMs first: when `titles` have ROMs here that were never indexed, a quick
 /// index of just those titles goes into the ROM audio lane's fast slot, so it runs beside a
 /// long index of the whole library instead of waiting behind it. Returns the job while it

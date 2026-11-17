@@ -12,6 +12,7 @@ Faites une sauvegarde avant de remplacer une version.
 - L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
 - L'index de musique des ROM ne lit que la copie la mieux classée de chaque titre, et les autres seulement si elle n'a pas de musique.
 - Pour les jeux sur plusieurs disques, les fichiers de musique déjà présents sur un disque précédent ne sont pas relus.
+- Les jeux sur cartouche dont l'application connaît déjà la musique la jouent dès l'ouverture de la page du titre, sans attendre l'index.
 
 # romexplorer 0.2.1 (alpha)
 
