@@ -782,6 +782,29 @@ pub fn read_bundle(packed: &[u8]) -> Result<std::collections::HashMap<String, St
     Ok(maps)
 }
 
+/// Adds the track times kept under `times_dir` (`<kind>/<key>.times`, as [`time_map`] keeps
+/// them) to the bundle `packed`, beside each map it holds; times of maps it does not hold are
+/// left out. Returns the bundle repacked, how many maps it holds and how many of them now
+/// have times.
+pub fn add_times_to_bundle(packed: &[u8], times_dir: &Path) -> Result<(Vec<u8>, usize, usize), String> {
+    let mut entries: std::collections::BTreeMap<String, String> = read_bundle(packed)?.into_iter().collect();
+    let maps: Vec<String> = entries.keys().filter(|k| !k.ends_with(TIMES_SUFFIX)).cloned().collect();
+    for name in &maps {
+        let file = times_dir.join(format!("{name}.{TIMES_EXT}"));
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            entries.insert(format!("{name}{TIMES_SUFFIX}"), text);
+        }
+    }
+    let timed = maps.iter().filter(|m| entries.contains_key(&format!("{m}{TIMES_SUFFIX}"))).count();
+    let mut text = format!("{BUNDLE_MAGIC}\n");
+    for (name, body) in &entries {
+        text.push_str(&format!("{name} {}\n", body.len()));
+        text.push_str(body);
+    }
+    let packed = zstd::encode_all(text.as_bytes(), 19).map_err(|e| e.to_string())?;
+    Ok((packed, maps.len(), timed))
+}
+
 /// Packs the maps of each kind kept under `dir` (as [`set_maps_dir`] lays them out) into its
 /// own bundle ([`bundle_file`]), or, past [`SPLIT_ABOVE`], into parts ([`shard_file`]). Returns
 /// each file to write: its name, its bytes and how many maps went in.
@@ -2321,6 +2344,25 @@ mod bundle_tests {
         assert_eq!(maps["gb/aa.times"], "maptimes 1 x\n");
         assert_eq!(split.iter().map(|(k, _, _)| k.as_str()).collect::<Vec<_>>(), vec!["music_maps_gb.zst", "music_maps_ws.zst"]);
         assert_eq!(read_bundle(&split[1].1).unwrap().keys().collect::<Vec<_>>(), vec!["ws/bb.times"]);
+    }
+
+    #[test]
+    fn times_are_added_to_a_shipped_bundle_beside_their_maps() {
+        let dir = std::env::temp_dir().join(format!("music_map_add_times_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("maps").join("nes")).unwrap();
+        std::fs::create_dir_all(dir.join("times").join("nes")).unwrap();
+        std::fs::write(dir.join("maps").join("nes").join("aa.nesmap"), "nesmap 1\n").unwrap();
+        std::fs::write(dir.join("maps").join("nes").join("bb.nesmap"), "nesmap 2\n").unwrap();
+        std::fs::write(dir.join("times").join("nes").join("aa.times"), "maptimes 1 x\n").unwrap();
+        std::fs::write(dir.join("times").join("nes").join("zz.times"), "maptimes 1 y\n").unwrap();
+        let (packed, _) = pack_bundle(&dir.join("maps"), &["nes"]).unwrap();
+        let (again, maps, timed) = add_times_to_bundle(&packed, &dir.join("times")).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!((maps, timed), (2, 1));
+        let entries = read_bundle(&again).unwrap();
+        assert_eq!(entries.len(), 3, "the maps, and times only for a map the bundle holds");
+        assert_eq!(entries["nes/aa.times"], "maptimes 1 x\n");
+        assert_eq!(entries["nes/bb"], "nesmap 2\n");
     }
 
     #[test]

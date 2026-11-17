@@ -1712,6 +1712,95 @@ fn main() {
             }
         }
     }
+    // `--add-times <times folder> <bundle folder>`: adds the track times `--time-maps` kept to
+    // every music_maps*.zst in <bundle folder> (the app's assets/), beside the maps each holds,
+    // and writes each bundle back in place.
+    if let Some(i) = args.iter().position(|a| a == "--add-times") {
+        let (Some(times), Some(folder)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("usage: cart_music --add-times <times folder> <bundle folder>");
+            std::process::exit(2);
+        };
+        let mut names: Vec<PathBuf> = std::fs::read_dir(folder)
+            .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("music_maps") && n.ends_with(".zst"))).collect())
+            .unwrap_or_default();
+        names.sort();
+        for file in names {
+            let result = std::fs::read(&file).map_err(|e| e.to_string()).and_then(|packed| rom_songs::add_times_to_bundle(&packed, Path::new(times)));
+            match result {
+                Ok((packed, maps, timed)) => {
+                    if let Err(e) = std::fs::write(&file, &packed) {
+                        eprintln!("{}: {e}", file.display());
+                        std::process::exit(1);
+                    }
+                    println!("{}: {timed} of {maps} maps have times, {} bytes", file.display(), packed.len());
+                }
+                Err(e) => {
+                    eprintln!("{}: {e}", file.display());
+                    std::process::exit(1);
+                }
+            }
+        }
+        return;
+    }
+    // `--time-maps <times folder> [--shard I/N] <rom or folder>...`: for each ROM with a music
+    // map (kept in the bundles beside this tool), measure its tracks' times and keep them under
+    // <times folder> (`<kind>/<key>.times`), for `--add-times`. Times kept already are not
+    // measured again, so a run can be stopped and started over. `--shard I/N` takes every Nth
+    // file from the Ith (0-based), so N processes split one list.
+    if let Some(i) = args.iter().position(|a| a == "--time-maps") {
+        let Some(dir) = args.get(i + 1).map(PathBuf::from) else {
+            eprintln!("usage: cart_music --time-maps <times folder> [--shard I/N] <rom or folder>...");
+            std::process::exit(2);
+        };
+        args.drain(i..i + 2);
+        let mut shard = (0usize, 1usize);
+        if let Some(j) = args.iter().position(|a| a == "--shard") {
+            shard = args.get(j + 1).and_then(|v| v.split_once('/')).and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).filter(|&(a, b): &(usize, usize)| b > 0 && a < b).unwrap_or_else(|| {
+                eprintln!("--shard takes I/N, 0 <= I < N");
+                std::process::exit(2);
+            });
+            args.drain(j..(j + 2).min(args.len()));
+        }
+        // Without the sound chips every song would be kept as not playing.
+        if !romexplorer::rom::nes_apu::available() || !romexplorer::rom::gb_apu::available() || !romexplorer::rom::vgm_chips::available() {
+            eprintln!("the rommusic library (sound chips) was not found: set ROMEXPLORER_EXE_ROOT or put it in lib/ beside this tool");
+            std::process::exit(1);
+        }
+        rom_songs::set_maps_dir(dir);
+        let mut files = Vec::new();
+        for a in &args {
+            collect(Path::new(a), &mut files);
+        }
+        let mine: Vec<PathBuf> = files.into_iter().enumerate().filter(|(n, _)| n % shard.1 == shard.0).map(|(_, f)| f).collect();
+        let total = mine.len();
+        let (mut timed, mut tracks) = (0usize, 0usize);
+        for (n, path) in mine.iter().enumerate() {
+            let Ok(rom) = rom_songs::read_rom(path) else { continue };
+            let platform = match console(&rom, path) {
+                Some("NES") | Some("NES?") | Some("FDS") => Platform::Famicom,
+                Some("GB") => Platform::GameBoy,
+                Some("GBC") => Platform::GameBoyColor,
+                Some("PCE") => Platform::TurboGrafx16,
+                Some("SMS") => Platform::SegaMasterSystem,
+                Some("GG") => Platform::SegaGameGear,
+                Some("WS") => Platform::WonderSwan,
+                Some("WSC") => Platform::WonderSwanColor,
+                _ => continue,
+            };
+            let started = std::time::Instant::now();
+            match rom_songs::time_map(path, platform as u16) {
+                Ok(Some(k)) => {
+                    timed += 1;
+                    tracks += k;
+                    println!("[{}/{total}] {}: {k} tracks, {:.1} s", n + 1, path.display(), started.elapsed().as_secs_f64());
+                }
+                Ok(None) => {}
+                Err(e) => println!("[{}/{total}] {}: {e}", n + 1, path.display()),
+            }
+        }
+        println!("done: {timed} maps timed, {tracks} tracks, of {total} files");
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--write-maps") {
         o.write_maps = args.get(i + 1).map(PathBuf::from);
         args.drain(i..(i + 2).min(args.len()));
@@ -1736,7 +1825,7 @@ fn main() {
     }
     if args.is_empty() {
         eprintln!(
-            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps | --pack-updates <maps folder> <output folder>"
+            "usage: cart_music [--render <dir>] [--seconds N] [--verbose] [--probe SECONDS] [--originals <folder> [--layout | --mapcheck | --write-maps <dir>]] <rom or folder>...\n       cart_music --pack-maps | --pack-updates <maps folder> <output folder>\n       cart_music --time-maps <times folder> [--shard I/N] <rom or folder>...\n       cart_music --add-times <times folder> <bundle folder>"
         );
         std::process::exit(2);
     }
