@@ -18,12 +18,29 @@ de segurança antes de substituir uma versão.
 **Listas**
 - As vistas em cartões com muitas entradas abrem e deslizam mais depressa.
 
+**Progresso**
+- Cada tarefa mostra o que está a fazer, o total e em que ponto vai, incluindo a pesquisa de pastas, as verificações e os passos da base de dados.
+- As tarefas com vários passos mostram a lista de passos.
+- As tarefas têm o botão «detalhes».
+- As tarefas em curso mostram o tempo decorrido e o tempo restante.
+- As transferências grandes e as verificações de ficheiros mostram quanto já foi lido.
+- Esvaziar o catálogo e importar um ficheiro de coleções são executados como tarefas.
+- A aplicação de computador mostra o que está a fazer enquanto arranca.
+
+**Áudio**
+- Várias faixas podem ser convertidas ao mesmo tempo para reprodução.
+
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
 - O índice de música das ROM lê só a cópia mais bem classificada de cada título, e as outras só se essa não tiver música.
 - Nos jogos com vários discos, os ficheiros de música que um disco anterior já tem não voltam a ser lidos.
 - Os jogos em cartucho cuja música a aplicação já conhece reproduzem-na assim que a página do título abre, sem esperar pelo índice.
 - Adicionado «Limpar o índice de áudio das ROM» (todas ou por plataforma).
+
+## Correções
+
+- O progresso da análise de áudio parava durante a medição do volume.
+- O progresso do índice de música das ROM só avançava a cada 500 ROM.
 
 # romexplorer 0.2.1 (alpha)
 

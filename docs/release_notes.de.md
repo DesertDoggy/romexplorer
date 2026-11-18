@@ -18,12 +18,29 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 **Listen**
 - Kartenansichten mit vielen Einträgen öffnen und scrollen schneller.
 
+**Fortschritt**
+- Jeder Job zeigt, was er gerade tut, die Gesamtzahl und wie weit er ist, auch beim Durchsuchen von Ordnern, bei Prüfungen und Datenbankschritten.
+- Jobs aus mehreren Schritten listen ihre Schritte auf.
+- Jobs haben die Schaltfläche „Details“.
+- Laufende Jobs zeigen die bisherige und die verbleibende Zeit.
+- Große Downloads und Dateiprüfungen zeigen, wie viel schon gelesen ist.
+- Das Leeren des Katalogs und der Import einer Set-Datei laufen als Jobs.
+- Die Desktop-App zeigt beim Start, was sie gerade tut.
+
+**Audio**
+- Mehrere Titel können gleichzeitig für die Wiedergabe umgewandelt werden.
+
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
 - Der ROM-Musikindex liest pro Titel nur die am höchsten eingestufte Kopie, andere Kopien nur, wenn sie keine Musik hat.
 - Bei Spielen mit mehreren Discs werden Musikdateien, die schon auf einer früheren Disc liegen, nicht erneut gelesen.
 - Cartridge-Spiele, deren Musik die App bereits kennt, spielen sie ab, sobald die Titelseite geöffnet wird, ohne auf den Index zu warten.
 - „ROM-Audio-Index löschen“ wurde hinzugefügt (alle ROMs oder eine Plattform).
+
+## Fehlerbehebungen
+
+- Der Fortschritt des Audio-Scans stand still, während die Lautheit gemessen wurde.
+- Der Fortschritt des ROM-Musikindex bewegte sich nur alle 500 ROMs.
 
 # romexplorer 0.2.1 (alpha)
 

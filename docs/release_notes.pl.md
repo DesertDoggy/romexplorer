@@ -18,12 +18,29 @@ zapasową przed podmianą wersji.
 **Listy**
 - Widoki kart z wieloma pozycjami otwierają się i przewijają szybciej.
 
+**Postęp**
+- Każde zadanie pokazuje, co robi, ile jest wszystkiego i jak daleko doszło, także przy przeszukiwaniu folderów, sprawdzaniu i krokach bazy danych.
+- Zadania złożone z kilku kroków pokazują listę kroków.
+- Zadania mają przycisk „szczegóły”.
+- Trwające zadania pokazują czas, który minął, i czas do końca.
+- Duże pobierania i sprawdzanie plików pokazują, ile już odczytano.
+- Czyszczenie katalogu i import pliku zestawów działają jako zadania.
+- Aplikacja na komputer pokazuje podczas uruchamiania, co robi.
+
+**Dźwięk**
+- Kilka utworów można jednocześnie konwertować do odtwarzania.
+
 **Dźwięk z ROM-ów**
 - Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).
 - Indeks muzyki z ROM-ów czyta tylko najwyżej ocenianą kopię każdego tytułu, a inne kopie tylko wtedy, gdy ta nie ma muzyki.
 - W grach na kilku płytach pliki muzyczne, które ma już wcześniejsza płyta, nie są czytane ponownie.
 - Gry na kartridżach, których muzykę aplikacja już zna, odtwarzają ją od razu po otwarciu strony tytułu, bez czekania na indeks.
 - Dodano „Wyczyść indeks dźwięku z ROM-ów” (wszystkie lub jedna platforma).
+
+## Poprawki błędów
+
+- Postęp skanowania dźwięku zatrzymywał się podczas pomiaru głośności.
+- Postęp indeksu muzyki z ROM-ów przesuwał się tylko co 500 ROM-ów.
 
 # romexplorer 0.2.1 (alpha)
 

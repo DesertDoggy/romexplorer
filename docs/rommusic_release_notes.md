@@ -5,6 +5,8 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 ## Changes
 
 - **Cartridges with a known music map are written faster.**
+- **Progress.** Shows the file being searched in each input, the original audio format files being read, and each track's progress in the command line.
+- The original audio format library loads faster after the first time.
 
 ## Bug fixes
 

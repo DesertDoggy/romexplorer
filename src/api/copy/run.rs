@@ -244,7 +244,7 @@ fn sweep_parts_counting(root: &Path, depth: u32, seen: &std::sync::atomic::Atomi
 ///
 /// `rows` are the content's `hashes` rows, loaded for every file of the job at once
 /// ([`hash_rows_for`]) rather than one query per file.
-async fn already_there(dst: &Path, rows: &[(String, String)], size: u64, cancel: &Cancel) -> (bool, bool) {
+async fn already_there(dst: &Path, rows: &[(String, String)], size: u64, cancel: &Cancel, read: &std::sync::Arc<std::sync::atomic::AtomicU64>) -> (bool, bool) {
     let Ok(meta) = std::fs::metadata(dst) else { return (false, false) };
     if meta.len() != size {
         return (false, false);
@@ -261,6 +261,7 @@ async fn already_there(dst: &Path, rows: &[(String, String)], size: u64, cancel:
     };
     let path = dst.to_path_buf();
     let cancel = cancel.clone();
+    let read = std::sync::Arc::clone(read);
     let got = tokio::task::spawn_blocking(move || -> std::io::Result<Option<crate::rom::hash::HashReport>> {
         use std::io::Read;
         let mut file = std::fs::File::open(&path)?;
@@ -275,6 +276,8 @@ async fn already_there(dst: &Path, rows: &[(String, String)], size: u64, cancel:
                 break;
             }
             digest.update(&buf[..n]).map_err(std::io::Error::other)?;
+            // For the job's line: how much of the destination has been read back so far.
+            read.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(Some(digest.finish()))
     })
@@ -496,25 +499,41 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
             let auto = tokio::task::spawn_blocking(move || setting.auto_limits(&dst_root, crate::rom::hash::HashFlags::default(), crate::rom::operation::JobStages::default())).await.map_err(|e| Error::internal(e.to_string()))?;
             let gate = Gate::new(setting.resolve(auto));
             let n = candidates.len();
-            progress.force(0, None, &format!("checking {n} destination file(s) for copies already made")).await;
+            // Bytes read back so far, against the most there could be (every candidate's size):
+            // a same-size file over SMB can take minutes, and the line moves through it.
+            let read = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let most: u64 = candidates.iter().map(|(_, file)| file.source.size).sum();
+            let thousands = crate::database::jobs::thousands;
+            let line = |checked: usize, name: &str, read: u64| {
+                let last = if name.is_empty() { String::new() } else { format!(", last: {name}") };
+                format!("checking the destination for copies already made: {} of {} ({} of {} read){last}", thousands(checked as u64), thousands(n as u64), crate::database::jobs::human_bytes(read), crate::database::jobs::human_bytes(most))
+            };
+            progress.force(0, Some(n as u64), &line(0, "", 0)).await;
             let empty: Vec<(String, String)> = Vec::new();
             let mut running: FuturesUnordered<_> = candidates
                 .iter()
                 .map(|&(i, file)| {
-                    let (gate, cancel, rows, empty) = (&gate, &cancel, &rows, &empty);
+                    let (gate, cancel, rows, empty, read) = (&gate, &cancel, &rows, &empty, &read);
                     async move {
                         let _slot = gate.enter(Tier::of(file.source.size)).await;
                         let held = rows.get(&file.source.content_id).unwrap_or(empty);
-                        (i, file, already_there(&file.destination, held, file.source.size, cancel).await)
+                        (i, file, already_there(&file.destination, held, file.source.size, cancel, read).await)
                     }
                 })
                 .collect();
             let mut checked = 0usize;
-            while let Some((i, file, answer)) = running.next().await {
-                checked += 1;
-                let name = file.destination.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                progress.report(0, None, &format!("checking the destination for copies already made: {checked} of {n}, last: {name}")).await;
-                answers.insert(i, answer);
+            let mut name = String::new();
+            loop {
+                tokio::select! {
+                    next = running.next() => {
+                        let Some((i, file, answer)) = next else { break };
+                        checked += 1;
+                        name = file.destination.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        answers.insert(i, answer);
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                }
+                progress.report(checked as u64, Some(n as u64), &line(checked, &name, read.load(std::sync::atomic::Ordering::Relaxed))).await;
             }
         }
         answers
@@ -676,7 +695,7 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
                     let outcome = ON_BOARD.scope((Arc::clone(board), ordinal), copy_one(app, file, settings, populate, container_flags, verify, cancel, progress, done, total_bytes)).await;
                     board.stage(ordinal, "check");
                     let checked = match &outcome {
-                        Ok(CopyOutcome::Copied { converted, payload_converted, content_id, read_back, .. }) => Some(check_copy(app, file, verify, *converted, *payload_converted, *content_id, read_back.as_deref(), populate, container_flags).await),
+                        Ok(CopyOutcome::Copied { converted, payload_converted, content_id, read_back, .. }) => Some(ON_BOARD.scope((Arc::clone(board), ordinal), check_copy(app, file, verify, *converted, *payload_converted, *content_id, read_back.as_deref(), populate, container_flags)).await),
                         _ => None,
                     };
                     board.leave(ordinal);
@@ -1602,7 +1621,8 @@ impl CopyBoard {
 
     fn stage(&self, ordinal: usize, stage: &str) {
         if let Some(f) = self.running.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&ordinal) {
-            f.done = f.size;
+            // A check reads the file back from the start, and says how far as it goes.
+            f.done = if stage == "check" { 0 } else { f.size };
             f.stage = stage.to_string();
         }
     }
@@ -1799,7 +1819,15 @@ async fn check_copy(
 /// go on to declare the original corrupt.
 async fn verify_one(app: &App, file: &PlannedCopy, converted: Option<u64>, populate: crate::common::models::HashAlgorithms) -> Result<super::CheckOutcome> {
     let content_id = converted.unwrap_or(file.source.content_id);
-    Ok(super::check_file(app, &file.destination, content_id, populate).await?.0)
+    // On the board, the file's own bar shows how far the read-back is.
+    let on_progress: Box<dyn FnMut(f32) + Send> = match ON_BOARD.try_with(|(board, ordinal)| (Arc::clone(board), *ordinal)) {
+        Ok((board, ordinal)) => {
+            let size = file.weight;
+            Box::new(move |pct: f32| board.moved(ordinal, (size as f64 * (pct.clamp(0.0, 100.0) as f64 / 100.0)) as u64))
+        }
+        Err(_) => Box::new(|_| {}),
+    };
+    Ok(super::check_file_reporting(app, &file.destination, content_id, populate, on_progress).await?.0)
 }
 
 /// Records what the copy wrote in this machine's own ownership tables.

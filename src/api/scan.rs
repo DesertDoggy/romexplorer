@@ -1073,12 +1073,12 @@ pub async fn run_file_scan(app: &App, req: &FileScanRequest, progress: &crate::d
 
 /// A file scan's steps, for `jobs::Steps` (keys the jobs screens translate by).
 const SCAN_STEPS: [(&str, &str); 6] = [
-    ("scan_walk", "walking the folder"),
-    ("scan_precheck", "checking the files found"),
-    ("scan_hash", "reading and hashing"),
-    ("scan_playlists", "playlists and system files"),
-    ("scan_missing", "marking missing files"),
-    ("scan_links", "dropping stale release links"),
+    ("scan_walk", "Walk the folder"),
+    ("scan_precheck", "Check the files found"),
+    ("scan_hash", "Read and hash"),
+    ("scan_playlists", "Playlists and system files"),
+    ("scan_missing", "Mark missing files"),
+    ("scan_links", "Drop stale release links"),
 ];
 
 /// One candidate as measured before hashing: its bytes for the bar (a bundle folder's
@@ -2706,20 +2706,20 @@ struct MatchSteps<'a> {
 
 impl<'a> MatchSteps<'a> {
     const ALL: [(&'static str, &'static str); 14] = [
-        ("match_unlink", "removing the links to make again"),
+        ("match_unlink", "Remove the links to make again"),
         ("match_dat_resolve", "DAT resolve"),
         ("match_ra_hashes", "RetroAchievements hashes"),
         ("match_dat", "DAT match"),
-        ("match_serial", "serial match"),
+        ("match_serial", "Serial match"),
         ("match_rom_platforms", "ROM platforms"),
-        ("match_kinds", "sorting what no DAT matched"),
-        ("match_targets", "finding the games to look up"),
+        ("match_kinds", "Sort what no DAT matched"),
+        ("match_targets", "Find the games to look up"),
         ("match_dumps", "Hasheous downloaded dumps"),
         ("match_lookups", "Hasheous lookups"),
-        ("match_playmatch", "own tables and PlayMatch"),
-        ("match_linking", "linking what the lookups found"),
-        ("match_followups", "follow-up jobs"),
-        ("match_platforms", "file platforms"),
+        ("match_playmatch", "Own tables and PlayMatch"),
+        ("match_linking", "Link what the lookups found"),
+        ("match_followups", "Follow-up jobs"),
+        ("match_platforms", "File platforms"),
     ];
 
     fn new(progress: &'a crate::database::jobs::Progress, req: &HashMatchRequest, scope: &str) -> Self {

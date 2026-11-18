@@ -15,12 +15,29 @@ replacing a build.
 **Lists**
 - Card grids with many entries open and scroll faster.
 
+**Progress**
+- Every job shows what it is doing, the total and how far it is, including folder walks, checks and database steps.
+- Jobs made of several steps list their steps.
+- Jobs have a "details" button that shows the steps and the files being read.
+- Running jobs show the time taken and the time left.
+- Large downloads and file checks show how much has been read.
+- Clearing the catalogue and importing a sets file run as jobs.
+- The desktop app shows what it is doing while it starts.
+
+**Audio**
+- Several tracks can be converted for playback at once.
+
 **ROM audio**
 - The ROM music index can read several ROMs at once (4 by default, set under Audio settings).
 - The ROM music index reads only the best-ranked copy of each title, and other copies only when it has no music.
 - On games with several discs, music files an earlier disc already has are not read again.
 - Cartridge games whose music the app already knows play it as soon as the title page opens, without waiting for the index.
 - "Clear ROM audio index" was added (all ROMs or one platform).
+
+## Bug fixes
+
+- The audio scan's progress stopped while it measured loudness.
+- The ROM music index's progress moved only every 500 ROMs.
 
 # romexplorer 0.2.1 (alpha)
 

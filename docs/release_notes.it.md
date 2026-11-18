@@ -18,12 +18,29 @@ aggiornamento. Fai un backup prima di sostituire una build.
 **Elenchi**
 - Le viste a schede con molte voci si aprono e scorrono più velocemente.
 
+**Avanzamento**
+- Ogni processo mostra cosa sta facendo, il totale e a che punto è, anche durante l'esplorazione delle cartelle, i controlli e i passaggi del database.
+- I processi in più passaggi mostrano l'elenco dei passaggi.
+- I processi hanno il pulsante «dettagli».
+- I processi in corso mostrano il tempo trascorso e quello rimanente.
+- I download grandi e i controlli dei file mostrano quanto è stato letto.
+- Svuotare il catalogo e importare un file di raccolte vengono eseguiti come processi.
+- L'app desktop mostra cosa sta facendo durante l'avvio.
+
+**Audio**
+- Più brani possono essere convertiti insieme per la riproduzione.
+
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
 - L'indice della musica delle ROM legge solo la copia meglio classificata di ogni titolo, e le altre solo se quella non ha musica.
 - Nei giochi su più dischi, i file musicali già presenti su un disco precedente non vengono riletti.
 - I giochi su cartuccia di cui l'app conosce già la musica la riproducono appena si apre la pagina del titolo, senza attendere l'indice.
 - Aggiunto «Cancella l'indice audio delle ROM» (tutte o per piattaforma).
+
+## Correzioni
+
+- L'avanzamento della scansione audio si fermava durante la misura del volume.
+- L'avanzamento dell'indice musicale delle ROM si muoveva solo ogni 500 ROM.
 
 # romexplorer 0.2.1 (alpha)
 
