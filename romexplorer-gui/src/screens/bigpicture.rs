@@ -21,11 +21,12 @@ use crate::Route;
 
 /// The list tabs, with their short labels on the sub-tab buttons: the collection's browse
 /// lists, then the RetroAchievements lists. The two groups are the top buttons.
-const TABS: [(&str, &str); 13] = [
+const TABS: [(&str, &str); 14] = [
     ("definitive", "Def."),
     ("crossplatform", "Cross."),
     ("titles", "Titles"),
     ("releases", "Release"),
+    ("sets", "Sets"),
     ("games", "Games"),
     ("files", "Files"),
     ("contents", "Contents"),
@@ -76,6 +77,7 @@ fn tab_shown(key: &str) -> bool {
             "definitive" => t.definitive,
             "titles" => t.titles,
             "releases" => t.releases,
+            k if k == "sets" || k.starts_with("set-") => t.sets,
             "games" => t.games,
             "files" => t.files,
             "contents" => t.contents,
@@ -352,6 +354,26 @@ fn cross_item(r: &Value) -> Item {
     }
 }
 
+fn set_item(r: &Value) -> Item {
+    let id = u(r, "id");
+    let mut details = Vec::new();
+    detail(&mut details, "description", s(r, "description"));
+    detail(&mut details, "titles", u(r, "title_count").to_string());
+    detail(&mut details, "releases", u(r, "release_count").to_string());
+    detail(&mut details, "held locally", u(r, "local_releases").to_string());
+    detail(&mut details, "platforms", u(r, "platform_count").to_string());
+    Item {
+        key: format!("s{id}"),
+        name: s(r, "name"),
+        sub: state::trf("{n} release(s), {local} held locally", &[("n", &u(r, "release_count").to_string()), ("local", &u(r, "local_releases").to_string())]),
+        cover: None,
+        open: Some(Route::BigPicture { tab: format!("set-{id}") }),
+        held: false,
+        play: Play::None,
+        details,
+    }
+}
+
 fn definitive_item(r: &Value) -> Item {
     let lead = r.get("lead").cloned().unwrap_or(Value::Null);
     let other = r.get("other").cloned().unwrap_or(Value::Null);
@@ -454,6 +476,21 @@ async fn fetch_list(tab: &str, q: &ListQuery, offset: u64) -> api::ApiResult<(Ve
         "titles" => (format!("/api/v1/catalog/titles{}", base(held_of())), title_item),
         "releases" => (format!("/api/v1/catalog/releases{}", base(held_of())), release_item),
         "definitive" => (format!("/api/v1/catalog/definitive{}", base(held())), definitive_item),
+        // The sets themselves: one unpaged list, searched and paged here.
+        "sets" => {
+            let v = api::get("/api/v1/sets").await?;
+            let needle = q.search.trim().to_lowercase();
+            let all: Vec<Item> = v.as_array().map(Vec::as_slice).unwrap_or_default().iter().filter(|x| needle.is_empty() || s(x, "name").to_lowercase().contains(&needle)).map(set_item).collect();
+            let total = all.len() as u64;
+            return Ok((all.into_iter().skip(offset as usize).take(PAGE as usize).collect(), total));
+        }
+        // One set: its releases, in the set's order.
+        set if set.starts_with("set-") => {
+            let id = set.trim_start_matches("set-");
+            let mut extra = held_of();
+            extra.push(("set_id", id.to_string()));
+            (format!("/api/v1/catalog/releases{}", base(extra)), release_item)
+        }
         "contents" => (format!("/api/v1/catalog/contents{}", base(vec![])), content_item),
         "games" => (format!("/api/v1/catalog/games{}", base(vec![])), game_item),
         "files" => (format!("/api/v1/catalog/files{}", base(vec![])), file_item),
@@ -803,6 +840,7 @@ pub fn BigPictureShell() -> Element {
     let current = if let Route::BigPicture { tab } = &route { tab.clone() } else { String::new() };
     // B on a list leaves Big Picture; on a page it goes back to where it came from.
     let on_list = matches!(route, Route::BigPicture { .. });
+    let in_set = current.starts_with("set-");
     use_effect(|| {
         let _ = document::eval(NAV_JS);
     });
@@ -826,7 +864,10 @@ pub fn BigPictureShell() -> Element {
             div { class: "bp-top",
                 button { id: "bp-back", class: "bp-btn", title: state::tr("back (B)"),
                     onclick: move |_| {
-                        if on_list || !navigator().can_go_back() {
+                        if in_set {
+                            // A set's releases: back to the sets.
+                            navigator().replace(Route::BigPicture { tab: "sets".into() });
+                        } else if on_list || !navigator().can_go_back() {
                             // The phone's lists are its home: there is nowhere further back.
                             if CAN_START { navigator().push(Route::Status {}); }
                         } else {
@@ -861,7 +902,7 @@ pub fn BigPictureShell() -> Element {
             if on_list {
                 div { class: "bp-tabs",
                     for (key, label) in TABS.into_iter().filter(|(k, _)| tab_shown(k) && group_of(k) == group_of(&current)) {
-                        button { key: "{key}", "data-tab": "{key}", class: if key == current { "bp-tab active" } else { "bp-tab" },
+                        button { key: "{key}", "data-tab": "{key}", class: if key == current || (key == "sets" && current.starts_with("set-")) { "bp-tab active" } else { "bp-tab" },
                             onclick: move |_| { navigator().replace(Route::BigPicture { tab: key.to_string() }); },
                             {icon(key)} span { {tab_label(key, label)} }
                         }

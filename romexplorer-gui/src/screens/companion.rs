@@ -317,11 +317,12 @@ pub fn PhoneSettings() -> Element {
         };
         let c = cfg();
         let o = c.options.clone();
-        let tab_rows: [(&str, &str, bool); 8] = [
+        let tab_rows: [(&str, &str, bool); 9] = [
             ("crossplatform", "Cross-platform", o.tabs.crossplatform),
             ("definitive", "Definitive", o.tabs.definitive),
             ("titles", "Titles", o.tabs.titles),
             ("releases", "Releases", o.tabs.releases),
+            ("sets", "Sets", o.tabs.sets),
             ("ra", "RetroAchievements", o.tabs.ra),
             ("games", "Games", o.tabs.games),
             ("files", "Files", o.tabs.files),
@@ -354,7 +355,7 @@ pub fn PhoneSettings() -> Element {
                         onclick: move |_| {
                             let mut s = cfg();
                             let t = &mut s.options.tabs;
-                            let slot = match key { "crossplatform" => &mut t.crossplatform, "definitive" => &mut t.definitive, "titles" => &mut t.titles, "releases" => &mut t.releases, "ra" => &mut t.ra, "games" => &mut t.games, "files" => &mut t.files, _ => &mut t.contents };
+                            let slot = match key { "crossplatform" => &mut t.crossplatform, "definitive" => &mut t.definitive, "titles" => &mut t.titles, "releases" => &mut t.releases, "sets" => &mut t.sets, "ra" => &mut t.ra, "games" => &mut t.games, "files" => &mut t.files, _ => &mut t.contents };
                             *slot = !*slot;
                             save(s);
                         },

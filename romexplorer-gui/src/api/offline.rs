@@ -298,7 +298,15 @@ pub fn answer(conn: &Connection, path: &str, strict: bool) -> Option<Result<Stri
     {
         return Some(Ok(body));
     }
-    let (route, q) = split(path);
+    let (route, mut q) = split(path);
+    // A set's releases (the Sets tab's set page): its own list, in the set's order.
+    if route == "/api/v1/catalog/releases" && q.contains_key("set_id") {
+        let id = q.remove("set_id").and_then(|i| i.parse::<u64>().ok())?;
+        if !has_tab(conn, "sets") || (strict && q.keys().any(|k| !LIST_KEYS.contains(&k.as_str()))) {
+            return None;
+        }
+        return Some(list(conn, &format!("set:{id}"), &q));
+    }
     if let Some(tab) = list_tab(route) {
         if !has_tab(conn, tab) {
             return None;
@@ -428,7 +436,7 @@ fn list(conn: &Connection, tab: &str, q: &HashMap<String, String>) -> Result<Str
     }
     held_filter(conn, q, &mut wh, &mut args);
     // A page's own list of a title's releases is in the order the server gave, held or not.
-    if q.contains_key("title_id") || q.contains_key("igdb") {
+    if q.contains_key("title_id") || q.contains_key("igdb") || tab.starts_with("set:") {
         held_first = false;
     }
     let desc = q.get("desc").is_some_and(|d| d == "true" || d == "1");
@@ -788,6 +796,28 @@ mod tests {
             replace_table_rows(&mut c, "no_such_table", &rows).unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn a_sets_releases_come_from_its_own_list_in_its_order() {
+        let c = fixture();
+        c.execute("UPDATE _mobile_meta SET value = ?1 WHERE key = 'options'", [r#"{"tabs":{"releases":true,"sets":true}}"#]).unwrap();
+        for (key, ord, id, held) in [("31", 1, 31, ""), ("30", 2, 30, ",local,")] {
+            c.execute(
+                "INSERT INTO _mobile_rows (tab, key, ord, id, title_id, platforms, name, held, body) VALUES ('set:4', ?1, ?2, ?3, NULL, ',5,', 'x', ?4, ?5)",
+                rusqlite::params![key, ord, id, held, json!({ "id": id }).to_string()],
+            )
+            .unwrap();
+        }
+        // The set's own order, not held first.
+        let body = answer(&c, "/api/v1/catalog/releases?set_id=4&limit=60&held=&machine=", true).unwrap().unwrap();
+        assert_eq!(ids(&body), vec![31, 30]);
+        assert_eq!(ids(&answer(&c, "/api/v1/catalog/releases?set_id=4&held=held", true).unwrap().unwrap()), vec![30]);
+        // Another set has nothing synced: an empty list, not the server.
+        assert!(ids(&answer(&c, "/api/v1/catalog/releases?set_id=9", true).unwrap().unwrap()).is_empty());
+        // Without the Sets tab synced, the server answers.
+        c.execute("UPDATE _mobile_meta SET value = ?1 WHERE key = 'options'", [r#"{"tabs":{"releases":true}}"#]).unwrap();
+        assert!(answer(&c, "/api/v1/catalog/releases?set_id=4", true).is_none());
     }
 
     #[test]

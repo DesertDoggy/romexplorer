@@ -728,6 +728,7 @@ mod tests {
                 && s.options.tabs.definitive
                 && s.options.tabs.titles
                 && s.options.tabs.releases
+                && s.options.tabs.sets
                 && s.options.tabs.ra
         );
         assert!(!s.options.tabs.games && !s.options.tabs.files && !s.options.tabs.contents);

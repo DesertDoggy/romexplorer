@@ -74,6 +74,9 @@ pub struct SyncTabs {
     pub definitive: bool,
     pub titles: bool,
     pub releases: bool,
+    /// Collection sets, each with its releases. On by default; a phone synced before this
+    /// existed takes the default too.
+    pub sets: bool,
     pub ra: bool,
     pub games: bool,
     pub files: bool,
@@ -87,6 +90,7 @@ impl Default for SyncTabs {
             definitive: true,
             titles: true,
             releases: true,
+            sets: true,
             ra: true,
             games: false,
             files: false,
