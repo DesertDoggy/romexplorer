@@ -3172,5 +3172,8 @@
   "{n} job(s) queued on the server; sync to see the results": "{n} tarefa(s) em fila no servidor; sincronize para ver os resultados",
   "{n} minutes ago": "há {n} minutos",
   "Details": "Detalhes",
-  "Paste a page URL or type an id": "Colar o URL de uma página ou escrever um id"
+  "Paste a page URL or type an id": "Colar o URL de uma página ou escrever um id",
+  "search {n} items": "pesquisar em {n} itens",
+  "What to sync": "O que sincronizar",
+  "Discs…": "Discos…"
 }

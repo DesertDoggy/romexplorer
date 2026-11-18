@@ -35,7 +35,7 @@ button.danger { background: #8d2b2b; border-color: #a33; }
 
 .hint { color: #8a90a0; font-size: 12px; margin: -4px 2px 0; }
 
-.drop { border: 2px dashed #3a404d; border-radius: 12px; padding: 18px 12px; text-align: center; color: #aab0bf; cursor: pointer; }
+.drop { border: 2px dashed #3a404d; border-radius: 12px; padding: 10px 12px; text-align: center; color: #aab0bf; cursor: pointer; }
 .drop.over { border-color: #2f6fed; background: #1a2233; color: #fff; }
 .drop b { display: block; font-size: 15px; color: #e6e8ee; margin-bottom: 2px; }
 

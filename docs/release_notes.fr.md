@@ -1,7 +1,7 @@
 *Ceci est une traduction des notes de version 0.2.1, 0.2.0 et 0.1.8. Les versions antérieures se
 trouvent dans [release_notes.md](release_notes.md) (anglais), qui fait foi en cas de divergence.*
 
-# romexplorer 0.2.2 (alpha)
+# romexplorer 0.3.0 (alpha)
 
 Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
 Faites une sauvegarde avant de remplacer une version.
@@ -14,6 +14,18 @@ Faites une sauvegarde avant de remplacer une version.
 - Les sous-onglets de la collection pour les fichiers locaux et pour le contenu hors jeux sont maintenant deux menus déroulants.
 - Les réglages affichent un nom dans la langue de l'interface, avec la clé en dessous. Enregistrer et réinitialiser n'apparaissent que s'ils changent quelque chose, et les réglages d'un autre écran restent sur cet écran.
 - Les pages de titre et de version ne gardent en boutons que les actions principales. Les liens vers les titres liés sont dans la ligne du jeu de base, et les identifiants internes sous « Détails ». La correspondance manuelle montre d’abord les liens actuels.
+- Big Picture : la recherche et le filtre sont dans la barre du haut, la langue et la disposition dans les réglages. Un jeu à plusieurs disques n’a qu’une entrée « Disques… » dans son menu. Les réglages de l’app mobile s’ouvrent une partie à la fois.
+
+## Corrections
+
+- Une partie du texte de l'appli mobile s'affichait en anglais dans les autres langues.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
+Faites une sauvegarde avant de remplacer une version.
+
+## Changements
 
 **Audio des ROM**
 - L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
@@ -21,10 +33,6 @@ Faites une sauvegarde avant de remplacer une version.
 - Pour les jeux sur plusieurs disques, les fichiers de musique déjà présents sur un disque précédent ne sont pas relus.
 - Les jeux sur cartouche dont l'application connaît déjà la musique la jouent dès l'ouverture de la page du titre, sans attendre l'index.
 - Ajout de « Effacer l'index audio des ROM » (toutes ou par plateforme).
-
-## Corrections
-
-- Une partie du texte de l'appli mobile s'affichait en anglais dans les autres langues.
 
 # romexplorer 0.2.1 (alpha)
 

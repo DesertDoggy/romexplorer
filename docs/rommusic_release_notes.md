@@ -1,3 +1,11 @@
+# rommusic 0.2.2
+
+rommusic is released separately from romexplorer; these notes cover rommusic only.
+
+## Changes
+
+- **A tidier window.** The FLAC options are hidden when only original audio formats are written, and an input's remove button is bigger.
+
 # rommusic 0.2.1
 
 rommusic is released separately from romexplorer; these notes cover rommusic only.

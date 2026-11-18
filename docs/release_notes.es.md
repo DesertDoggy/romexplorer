@@ -1,7 +1,7 @@
 *Esta es una traducción de las notas de las versiones 0.2.1, 0.2.0 y 0.1.8. Las versiones anteriores
 están en [release_notes.md](release_notes.md) (inglés), que prevalece en caso de diferencia.*
 
-# romexplorer 0.2.2 (alpha)
+# romexplorer 0.3.0 (alpha)
 
 Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
 Haz una copia de seguridad antes de sustituir una versión.
@@ -14,6 +14,18 @@ Haz una copia de seguridad antes de sustituir una versión.
 - Las subpestañas de la colección para los archivos propios y para el material que no es juego son ahora dos menús desplegables.
 - Los ajustes muestran un nombre en el idioma de la interfaz, con la clave debajo. Guardar y restablecer solo aparecen cuando cambian algo, y los ajustes de otra pantalla se dejan en esa pantalla.
 - Las páginas de título y de lanzamiento solo muestran como botones las acciones principales. Los enlaces a títulos relacionados están en la fila del juego base y los ids internos en «Detalles». La correspondencia manual muestra primero los enlaces actuales.
+- Big Picture: la búsqueda y el filtro están en la barra superior, y el idioma y la disposición en los ajustes. Un juego con varios discos tiene una sola entrada «Discos…» en su menú. Los ajustes de la app móvil se abren por partes.
+
+## Correcciones
+
+- Parte del texto de la app del móvil aparecía en inglés en otros idiomas.
+
+# romexplorer 0.2.2 (alpha)
+
+Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
+Haz una copia de seguridad antes de sustituir una versión.
+
+## Cambios
 
 **Audio de las ROM**
 - El índice de música de las ROM puede leer varias ROM a la vez (4 por defecto, se cambia en los ajustes de audio).
@@ -21,10 +33,6 @@ Haz una copia de seguridad antes de sustituir una versión.
 - En los juegos de varios discos, ya no se vuelven a leer los archivos de música que tiene un disco anterior.
 - Los juegos de cartucho cuya música la aplicación ya conoce la reproducen en cuanto se abre la página del título, sin esperar al índice.
 - Se añadió «Borrar el índice de audio de las ROM» (todas o por plataforma).
-
-## Correcciones
-
-- Parte del texto de la app del móvil aparecía en inglés en otros idiomas.
 
 # romexplorer 0.2.1 (alpha)
 

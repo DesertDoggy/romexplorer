@@ -1,7 +1,7 @@
 *Questa è una traduzione delle note di rilascio 0.2.1, 0.2.0 e 0.1.8. Le versioni precedenti sono in
 [release_notes.md](release_notes.md) (inglese), che fa fede in caso di differenze.*
 
-# romexplorer 0.2.2 (alpha)
+# romexplorer 0.3.0 (alpha)
 
 Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
 aggiornamento. Fai un backup prima di sostituire una build.
@@ -14,6 +14,18 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Le sottoschede della collezione per i file locali e per il materiale non di gioco sono ora due menu a tendina.
 - Le impostazioni mostrano un nome nella lingua dell'interfaccia, con la chiave sotto. Salva e ripristina compaiono solo quando cambiano qualcosa, e le impostazioni di un'altra schermata restano lì.
 - Le pagine di titolo e di release mostrano come pulsanti solo le azioni principali. I link ai titoli correlati sono nella riga del gioco base e gli id interni in «Dettagli». L’abbinamento manuale mostra prima i link attuali.
+- Big Picture: ricerca e filtro sono nella barra in alto, lingua e disposizione nelle impostazioni. Un gioco con più dischi ha una sola voce «Dischi…» nel menu. Le impostazioni dell’app per telefono si aprono una parte alla volta.
+
+## Correzioni
+
+- Parte del testo dell'app per telefono era mostrata in inglese nelle altre lingue.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
+aggiornamento. Fai un backup prima di sostituire una build.
+
+## Modifiche
 
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
@@ -21,10 +33,6 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Nei giochi su più dischi, i file musicali già presenti su un disco precedente non vengono riletti.
 - I giochi su cartuccia di cui l'app conosce già la musica la riproducono appena si apre la pagina del titolo, senza attendere l'indice.
 - Aggiunto «Cancella l'indice audio delle ROM» (tutte o per piattaforma).
-
-## Correzioni
-
-- Parte del testo dell'app per telefono era mostrata in inglese nelle altre lingue.
 
 # romexplorer 0.2.1 (alpha)
 

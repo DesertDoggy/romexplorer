@@ -1,4 +1,4 @@
-# romexplorer 0.2.2 (alpha)
+# romexplorer 0.3.0 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before
 replacing a build.
@@ -11,6 +11,18 @@ replacing a build.
 - Collection's sub-tabs for local files and for non-game material are now two drop-down menus.
 - Settings show a name in the UI's language, with the key under it. Save and reset appear only when they would change something, and settings edited on another screen are left to that screen.
 - Title and release pages keep only their main actions as buttons. Links to related titles sit in the base game row, and the internal ids are under "Details". Manual match shows the current links first.
+- Big Picture: search and filter are in the top bar, and language and layout are in Settings. A game with several discs has one "Discs…" entry in its menu. The phone app's settings open one part at a time.
+
+## Bug fixes
+
+- Some of the phone app's text was shown in English in other languages.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha: the database schema may change between releases with no upgrade path. Back up before
+replacing a build.
+
+## Changes
 
 **ROM audio**
 - The ROM music index can read several ROMs at once (4 by default, set under Audio settings).
@@ -18,10 +30,6 @@ replacing a build.
 - On games with several discs, music files an earlier disc already has are not read again.
 - Cartridge games whose music the app already knows play it as soon as the title page opens, without waiting for the index.
 - "Clear ROM audio index" was added (all ROMs or one platform).
-
-## Bug fixes
-
-- Some of the phone app's text was shown in English in other languages.
 
 # romexplorer 0.2.1 (alpha)
 

@@ -293,10 +293,11 @@ pub fn SyncSheet() -> Element {
     }
 }
 
-/// The phone's settings, inside Big Picture's settings sheet: what goes into the synced copy,
-/// and what syncs by itself.
+/// The phone's settings, inside Big Picture's settings sheet, one part at a time (the sheet
+/// lists the parts): "server", "content" (what goes into the synced copy) or "auto" (what
+/// syncs by itself).
 #[component]
-pub fn PhoneSettings() -> Element {
+pub fn PhoneSettings(part: String) -> Element {
     #[cfg(feature = "mobile")]
     {
         use crate::api::companion::{self, Settings};
@@ -329,8 +330,9 @@ pub fn PhoneSettings() -> Element {
         ];
         let server = crate::api::endpoint().base;
         let signed_in = crate::api::ME().and_then(|m| m.user).map(|u| u.username);
+        let part = part.as_str();
         rsx! {
-            h4 { {state::tr("Server")} }
+            if part == "server" {
             if server.is_empty() {
                 p { class: "muted", {state::tr("None yet. Everything below works without one; add the server or a peer to sync from when you want to.")} }
                 button { class: "bp-choice primary", onclick: move |_| crate::ui::open_modal(|| rsx! { ServerSheet {} }), {state::tr("Set up the server")} }
@@ -344,6 +346,8 @@ pub fn PhoneSettings() -> Element {
                     button { class: "bp-choice", onclick: move |_| { spawn(async move { crate::api::sign_out().await; }); }, {state::tr("Sign out")} }
                 }
             }
+            }
+            if part == "content" {
             h4 { {state::tr("What to sync from each machine")} }
             MachineModes { on_change: move |m| { companion::save_modes(m); estimate.set(None); } }
             h4 { {state::tr("Tabs")} }
@@ -386,9 +390,7 @@ pub fn PhoneSettings() -> Element {
                     }
                 }
             }
-            button { class: if o.audio { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.options.audio = !s.options.audio; save(s); },
-                if o.audio { "✓ " } {state::tr("Audio (off on a phone by default; not synced yet)")}
-            }
+            // Audio is not synced yet: its switch comes back when it is (options.audio).
             div { class: "bp-actions",
                 button { class: "bp-choice",
                     onclick: move |_| { spawn(async move {
@@ -404,7 +406,8 @@ pub fn PhoneSettings() -> Element {
                     None => rsx! {},
                 }
             }
-            h4 { {state::tr("Syncing by itself")} }
+            }
+            if part == "auto" {
             button { class: if c.auto_sync { "bp-choice active" } else { "bp-choice" }, onclick: move |_| { let mut s = cfg(); s.auto_sync = !s.auto_sync; save(s); },
                 if c.auto_sync { "✓ " } {state::tr("Sync on start when the server can be reached (at most once a day)")}
             }
@@ -429,10 +432,12 @@ pub fn PhoneSettings() -> Element {
                 }
             }
             p { class: "muted", {state::tr("Metadata and art downloads run on the server or a peer. Start one from a title's or release's menu (long press or Y); the phone never starts one by itself.")} }
+            }
         }
     }
     #[cfg(not(feature = "mobile"))]
     {
+        let _ = part;
         rsx! {}
     }
 }

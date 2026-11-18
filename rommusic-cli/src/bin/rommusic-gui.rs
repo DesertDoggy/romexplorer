@@ -679,7 +679,7 @@ fn App() -> Element {
                             div { key: "{index}", class: "input", title: "{path.display()}",
                                 span { if path.is_dir() { "▸ " } else { "♪ " } "{name_of(path)}" }
                                 button {
-                                    class: "small",
+                                    class: "remove",
                                     disabled: running(),
                                     title: "Remove",
                                     onclick: move |_| { inputs.write().remove(index); },
@@ -839,29 +839,32 @@ fn OptionsPanel(initial: Settings, chosen_originals: Vec<String>, chosen_bios: S
                     span { class: "note", "tracks from each input (0: all)" }
                 }
 
-                h3 { "FLAC" }
-                div { class: "row",
-                    label { "Sample rate" }
-                    select {
-                        onchange: move |event| draft.write().rate = event.value(),
-                        for (value, label) in RATES {
-                            option { key: "{value}", value: "{value}", selected: s.rate == value, "{label}" }
+                // FLAC settings mean nothing when only the original audio formats are written.
+                if s.format != "original" {
+                    h3 { "FLAC" }
+                    div { class: "row",
+                        label { "Sample rate" }
+                        select {
+                            onchange: move |event| draft.write().rate = event.value(),
+                            for (value, label) in RATES {
+                                option { key: "{value}", value: "{value}", selected: s.rate == value, "{label}" }
+                            }
+                        }
+                        if s.rate == "custom" {
+                            input { r#type: "number", min: "8000", max: "192000", value: "{s.rate_hz}", oninput: move |event| draft.write().rate_hz = event.value().trim().parse().unwrap_or(44_100) }
                         }
                     }
-                    if s.rate == "custom" {
-                        input { r#type: "number", min: "8000", max: "192000", value: "{s.rate_hz}", oninput: move |event| draft.write().rate_hz = event.value().trim().parse().unwrap_or(44_100) }
-                    }
-                }
-                div { class: "row",
-                    label { "Bits" }
-                    select {
-                        onchange: move |event| draft.write().bits = event.value().parse().unwrap_or(0),
-                        for (value, label) in BITS {
-                            option { key: "{value}", value: "{value}", selected: s.bits == value, "{label}" }
+                    div { class: "row",
+                        label { "Bits" }
+                        select {
+                            onchange: move |event| draft.write().bits = event.value().parse().unwrap_or(0),
+                            for (value, label) in BITS {
+                                option { key: "{value}", value: "{value}", selected: s.bits == value, "{label}" }
+                            }
                         }
                     }
+                    div { class: "note", "As stored keeps each track's own rate. Other takes 8000 to 192000 Hz. The rate's own bits: 24 for DVD and Hi-res, 16 otherwise." }
                 }
-                div { class: "note", "As stored keeps each track's own rate. Other takes 8000 to 192000 Hz. The rate's own bits: 24 for DVD and Hi-res, 16 otherwise." }
 
                 h3 { "Cartridges" }
                 for (index, folder) in s.originals.iter().cloned().enumerate() {

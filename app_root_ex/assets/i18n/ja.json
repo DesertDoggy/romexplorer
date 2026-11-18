@@ -3172,5 +3172,8 @@
   "{n} job(s) queued on the server; sync to see the results": "サーバーに {n} 件のジョブを登録しました。結果は同期すると見られます",
   "{n} minutes ago": "{n} 分前",
   "Details": "詳細",
-  "Paste a page URL or type an id": "ページのURLかIDで指定"
+  "Paste a page URL or type an id": "ページのURLかIDで指定",
+  "search {n} items": "{n} 件を検索",
+  "What to sync": "同期する内容",
+  "Discs…": "ディスク…"
 }

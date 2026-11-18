@@ -1,7 +1,7 @@
 *Dies ist eine Übersetzung der Versionshinweise zu 0.2.1, 0.2.0 und 0.1.8. Ältere Versionen stehen in
 [release_notes.md](release_notes.md) (Englisch), die bei Abweichungen maßgeblich ist.*
 
-# romexplorer 0.2.2 (alpha)
+# romexplorer 0.3.0 (alpha)
 
 Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
 Sie ein Backup, bevor Sie einen Build ersetzen.
@@ -14,6 +14,18 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Die Unterreiter der Sammlung für eigene Dateien und für Material außer Spielen sind jetzt zwei Ausklappmenüs.
 - Einstellungen zeigen einen Namen in der Sprache der Oberfläche, den Schlüssel darunter. Speichern und Zurücksetzen erscheinen nur, wenn sie etwas ändern; auf anderen Seiten eingestellte Werte bleiben dort.
 - Titel- und Release-Seiten zeigen nur noch die wichtigsten Aktionen als Schaltflächen. Links zu verwandten Titeln stehen in der Zeile des Basisspiels, interne IDs unter „Details“. Der manuelle Abgleich zeigt zuerst die aktuellen Links.
+- Big Picture: Suche und Filter sind in der oberen Leiste, Sprache und Layout in den Einstellungen. Ein Spiel mit mehreren Discs hat im Menü nur noch den Eintrag „Discs…“. Die Einstellungen der Handy-App öffnen sich Teil für Teil.
+
+## Fehlerbehebungen
+
+- Einige Texte der Handy-App wurden in anderen Sprachen auf Englisch angezeigt.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
+Sie ein Backup, bevor Sie einen Build ersetzen.
+
+## Änderungen
 
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
@@ -21,10 +33,6 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Bei Spielen mit mehreren Discs werden Musikdateien, die schon auf einer früheren Disc liegen, nicht erneut gelesen.
 - Cartridge-Spiele, deren Musik die App bereits kennt, spielen sie ab, sobald die Titelseite geöffnet wird, ohne auf den Index zu warten.
 - „ROM-Audio-Index löschen“ wurde hinzugefügt (alle ROMs oder eine Plattform).
-
-## Fehlerbehebungen
-
-- Einige Texte der Handy-App wurden in anderen Sprachen auf Englisch angezeigt.
 
 # romexplorer 0.2.1 (alpha)
 

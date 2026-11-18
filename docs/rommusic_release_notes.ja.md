@@ -1,3 +1,11 @@
+# rommusic 0.2.2
+
+rommusic は romexplorer とは別にリリースします。このノートは rommusic だけの内容です。
+
+## 変更点
+
+- **画面を整理。** 原音形式だけを書き出すときは FLAC の設定を非表示に変更。入力の削除ボタンを大きく変更。
+
 # rommusic 0.2.1
 
 rommusic は romexplorer とは別にリリースします。このノートは rommusic だけの内容です。

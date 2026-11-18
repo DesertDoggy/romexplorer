@@ -1,7 +1,7 @@
 *Esta é uma tradução das notas das versões 0.2.1, 0.2.0 e 0.1.8. As versões anteriores estão em
 [release_notes.md](release_notes.md) (inglês), que prevalece em caso de diferença.*
 
-# romexplorer 0.2.2 (alpha)
+# romexplorer 0.3.0 (alpha)
 
 Alfa: o esquema da base de dados pode mudar entre versões sem forma de atualização. Faça uma cópia
 de segurança antes de substituir uma versão.
@@ -14,6 +14,18 @@ de segurança antes de substituir uma versão.
 - Os subseparadores da coleção para os ficheiros locais e para o material que não é jogo são agora dois menus pendentes.
 - As definições mostram um nome no idioma da interface, com a chave por baixo. Guardar e repor só aparecem quando alteram algo, e as definições de outro ecrã ficam nesse ecrã.
 - As páginas de título e de lançamento mostram como botões apenas as ações principais. As ligações para títulos relacionados estão na linha do jogo base e os ids internos em «Detalhes». A correspondência manual mostra primeiro as ligações atuais.
+- Big Picture: a pesquisa e o filtro estão na barra superior, e o idioma e a disposição nas definições. Um jogo com vários discos tem uma só entrada «Discos…» no menu. As definições da app móvel abrem-se uma parte de cada vez.
+
+## Correções
+
+- Parte do texto da app do telemóvel aparecia em inglês noutras línguas.
+
+# romexplorer 0.2.2 (alpha)
+
+Alfa: o esquema da base de dados pode mudar entre versões sem forma de atualização. Faça uma cópia
+de segurança antes de substituir uma versão.
+
+## Alterações
 
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
@@ -21,10 +33,6 @@ de segurança antes de substituir uma versão.
 - Nos jogos com vários discos, os ficheiros de música que um disco anterior já tem não voltam a ser lidos.
 - Os jogos em cartucho cuja música a aplicação já conhece reproduzem-na assim que a página do título abre, sem esperar pelo índice.
 - Adicionado «Limpar o índice de áudio das ROM» (todas ou por plataforma).
-
-## Correções
-
-- Parte do texto da app do telemóvel aparecia em inglês noutras línguas.
 
 # romexplorer 0.2.1 (alpha)
 
