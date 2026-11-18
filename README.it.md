@@ -101,21 +101,15 @@ avvio serve clic destro > Apri). Il primo avvio crea e avvia il proprio database
 
 ### Strumenti da riga di comando (chdlite)
 
-Si trascina un'immagine disco e si ottiene un CHD o un RVZ. `chdlite` (veloce) e `chdcomp` (il più
-compatto) funzionano in entrambi i sensi: un'immagine non compressa viene compressa, un `.chd` o un
-`.rvz` viene estratto. `chdread` mostra i metadati di un file e `chdhash` ne calcola l'hash. Ogni
-strumento fa una sola cosa, così un file trascinato sull'eseguibile fa la cosa giusta;
-`chdlite-gui` fa lo stesso in una finestra. Ogni opzione è disponibile anche come flag (`--help`).
-chdlite viene pubblicato separatamente: vedere
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite converte le immagini disco in CHD o RVZ e viceversa, ne legge i metadati e ne calcola
+l'hash, con trascina e rilascia, una finestra e un'app Android. È rilasciato separatamente: vedi
+[chdlite/README.it.md](chdlite/README.it.md).
 
 ### Strumento da riga di comando (rommusic)
 
-Si trascina su `rommusic` una ROM, un'immagine disco o una cartella estratta
-e scrive la musica di sottofondo del gioco in FLAC in una cartella accanto. Ogni opzione è
-disponibile anche come flag (`--help`). I sistemi supportati sono elencati in
-[Audio delle ROM](#audio-delle-rom). rommusic è rilasciato separatamente: vedi
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic scrive la musica di un gioco in FLAC dalla sua ROM o immagine disco, con trascina e
+rilascia, una finestra e un'app Android. È rilasciato separatamente: vedi
+[rommusic-cli/README.it.md](rommusic-cli/README.it.md).
 
 ### Chiavi dei provider
 
@@ -277,9 +271,12 @@ nel frattempo la sua pagina può riprodurre la musica di un altro gioco.
 |---|---|---|
 | Tracce audio CD | Qualsiasi gioco su CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast e altri | CHD, cue/bin, gdi |
 | L'archivio sonoro | Nintendo DS (musica in streaming e sequenziata), Nintendo 3DS (solo immagini decifrate) | .nds, .3ds/.cci |
+| Cartucce | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM, anche dentro zip o 7z |
+| File musicali su floppy | PC-98 | .d88, .fdi, .hdm e altri, anche dentro zip o 7z |
 
+- Anche su una piattaforma supportata, non tutti i giochi sono supportati, per motivi tecnici.
 - Le immagini disco dentro zip o 7z non vengono ancora lette. Le immagini cifrate non vengono lette.
-- La musica dei giochi su cartuccia e dei file musicali su disco è ancora in lavorazione.
+- I file musicali su CD e DVD sono ancora in lavorazione.
 
 ## Scheda RetroAchievements
 

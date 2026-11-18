@@ -1,33 +1,72 @@
 # rommusic
 
-ROM・ディスクイメージ・原音形式のファイルを `rommusic` にドロップすると、ゲームの音楽を FLAC で書き出します。
+ROM・ディスクイメージを `rommusic` にドロップすると、ゲームの音楽を FLAC で書き出します。
 romexplorer アプリが ROM の音楽を流すときと同じ読み込み・再生の仕組みを使います。
-romexplorer とは別にリリースします（バージョン 0.1.0）。
+romexplorer とは別にリリースします（バージョン 0.2.1）。
 
-[English](README.md)
+[English](README.md) · **日本語** · [Français](README.fr.md) · [Español](README.es.md) · [Italiano](README.it.md) · [Português](README.pt.md) · [Deutsch](README.de.md) · [한국어](README.ko.md) · [Polski](README.pl.md)
 
-## 使い方
+**ダウンロード:** [Rom Music のリリース](https://github.com/DesertDoggy/romexplorer/releases?q=m0) · **変更点:** [リリースノート](../docs/rommusic_release_notes.ja.md) · [romexplorer](../README.ja.md) の一部です
 
-**ドラッグ＆ドロップ**　ファイルやフォルダーを `rommusic.exe`（Linux・macOS では `rommusic`）にドロップします。
-それぞれの隣に `<名前> (music)` フォルダーを作り、次のファイルを書き出します。
+> **rommusic は ROM・BIOS・鍵の配布もダウンロードもしません。違法コピーを支援するものではありません。**
+> 自分で持っているゲームを自分で吸い出してお使いください。
 
-- `01 - <曲名>.flac` など：BGM です。元のサンプリングレートのまま、16 ビットで書き出します。ループする曲は、ゲームと同じようにループを 2 回流してフェードアウトします。
-- `index.txt`：曲ごとの番号・種類・長さ・ループの有無・元の形式です。
+## ウィンドウ版
 
-前回書き出したファイルがあれば置き換えます。
+`rommusic-gui`（macOS では `rommusic.app`、Linux では rommusic の AppImage）を開きます。
 
-ドロップしたときは、いつも下の既定の設定で FLAC を書き出します。ほかの設定はウィンドウ版かコマンドラインで指定します。
+1. ファイルかフォルダーを選びます。ウィンドウにドロップしても選べます。ROM・ディスクイメージ・ダンプしたゲームのフォルダーに対応します。
+2. **FLAC**・**Original audio**（元の形式）・**Both**（両方）を選びます。
+3. 出力先を選びます。空なら、それぞれの隣に書き出します。
+4. **Start** を押します。
 
-**ウィンドウ版**　`rommusic-gui` ではボタンで同じことができます。ファイルかフォルダーを選び（ウィンドウにドロップしても選べます）、**FLAC**・**Original audio**（原音）・**Both**（両方）と出力先を選んで **Start** を押します。出力先が空なら、それぞれの隣に書き出します。ジングルや効果音、サンプリングレート、カートリッジ用の原音ファイルのフォルダー、PS2 の BIOS、スーパーファミコンの実行時間は **Options** にあります。設定は次回も残ります。
+ジングル・効果音・ムービーの音声、曲数の上限、サンプリングレートとビット数、スーパーファミコンの実行（動かす秒数と、その間にスタートボタンを押すか）は **Options** にあります。設定は次回も残ります。
 
 **Android**　rommusic アプリ（Android 9 以降）も同じ画面です。最初の起動で「すべてのファイルへのアクセス」を求めます。ROM を読んで音楽を書き出すためです。ファイルとフォルダーはアプリ内のブラウザーで選びます。画面を消しても書き出しは続きます。
 
-**macOS・Linux のアプリ**　`rommusic.app`（macOS）と rommusic の AppImage（Linux）を開くとウィンドウが起動します。コマンドライン版も中に入っています。`rommusic.app/Contents/MacOS/rommusic` か、`rommusic.AppImage rommusic ...` で使えます。`rommusic.AppImage --install` でデスクトップのメニューに追加できます。macOS 版は公証していないので、最初は右クリック ›「開く」で起動します。
+**macOS・Linux**　`rommusic.AppImage --install` でデスクトップのメニューに追加できます。macOS 版は公証していないので、最初は右クリック ›「開く」で起動します。
 
-**コマンドライン**
+## 対応ゲーム
+
+| 機種 | ファイル | 音楽 |
+|---|---|---|
+| CD のゲーム：プレイステーション・サターン・メガ CD・PC エンジン CD・ネオジオ CD・ドリームキャストなど | CHD、CUE + BIN、GDI + BIN、ISO | CD の音声トラック、ディスク内の音楽ファイル（ADX・XA・AT3 など。CPK・AFS のアーカイブ内も可） |
+| プレイステーション2・PSP・ゲームキューブ・Wii・Xbox・Xbox 360 など | CHD、ISO、RVZ、WIA、GCZ、WBFS、CSO、ZSO、XISO、ダンプしたゲームのフォルダー | ディスク内の音楽ファイル（ADX・AT3・ATRAC3・WMA・XMA・BRSTM・HCA など。CPK・AFS・ARC・SZS のアーカイブ内も可） |
+| Wii U | WUA。WUD・WUX・タイトルフォルダーは隣に鍵があれば可 | ディスク内の音楽ファイル（BFSTM など） |
+| ニンテンドーDS | NDS | SDAT のサウンドアーカイブ（STRM のストリーム、SSEQ のシーケンス） |
+| ニンテンドー3DS | 3DS、CCI（復号済みのみ） | サウンドアーカイブ内の音楽ファイル（BCSTM など） |
+| ファミコン・ディスクシステム、ゲームボーイ・ゲームボーイカラー、ゲームボーイアドバンス、バーチャルボーイ、SG-1000・マスターシステム・ゲームギア・メガドライブ、PC エンジン・スーパーグラフィックス、MSX、ワンダースワン・ワンダースワンカラー、ネオジオポケット・ネオジオポケットカラー | ROM（zip・7z 内も可） | BGM のバイナリコード |
+| スーパーファミコン | ROM（zip・7z 内も可） | BGM のバイナリコード |
+| NINTENDO64 | ROM（zip・7z 内も可） | BGM のバイナリコード |
+| PC-98 | フロッピーイメージ（FDI・HDM・FDD など。zip・7z 内も可） | フロッピー内の PMD・FMP の音楽ファイル |
+
+対応機種でも、技術的な理由で対応していないゲームがあります。
+zip・7z に入ったディスクイメージ、暗号化されたイメージ、PS3・Vita・ダウンロード版のパッケージは読めません。
+
+## 出力
+
+それぞれの隣（または出力先）に `<名前> (music)` フォルダーを作ります。前回書き出したファイルは置き換えます。
+
+| 出力 | 内容 |
+|---|---|
+| **FLAC**（既定） | `01 - <曲名>.flac` など：BGM です。ループする曲はループを 2 回流してフェードアウトします。`index.txt` に曲の一覧を書きます。 |
+| **Original audio**（元の形式） | ゲームに入っている形式のままの音楽ファイルを `original` フォルダーに書き出します。CD の音声トラックとカートリッジの音楽にはないので、FLAC を使ってください。 |
+| **Both**（両方） | FLAC と元の形式の両方です。 |
+
+元の形式のファイルにはゲームのプログラムやデータが入っています。ROM と一緒に保管し、人に渡さないでください。
+
+## ドラッグ＆ドロップ
+
+ファイルやフォルダーを `rommusic.exe`（Linux・macOS では `rommusic`）にドロップします。
+既定の設定で FLAC を書き出します。ウィンドウ版で何も変えずに **Start** を押したときと同じです。
+
+## コマンドライン
+
+コマンドライン版は `rommusic` です（アプリの中では `rommusic.app/Contents/MacOS/rommusic`、
+または `rommusic.AppImage rommusic ...`）。ウィンドウ版の設定はすべてフラグで指定できます。
 
 ```
-rommusic [オプション] <ROM・ディスクイメージ・フォルダー・原音形式のファイル>...
+rommusic [オプション] <ROM・ディスクイメージ・フォルダー>...
 ```
 
 例：
@@ -35,19 +74,17 @@ rommusic [オプション] <ROM・ディスクイメージ・フォルダー・�
 ```
 rommusic "Hoge Quest (Japan).chd"
 rommusic --all --max 20 "Hoge Quest (Japan).chd"
-rommusic --originals D:\original-audio --out D:\music "Hoge Quest (Japan).nes"
+rommusic --out D:\music "Hoge Quest (Japan).nes"
 rommusic --hires "Hoge Quest (Japan).cue"
 rommusic --format both "Hoge Quest (Japan).sfc"
 ```
-
-## オプション
 
 | オプション | 内容 |
 |---|---|
 | `--all` | ジングル・効果音・ムービーの音声も書き出します。既定では BGM だけです。 |
 | `--max N` | 1 つにつき最大 N 曲までにします。 |
 | `--out DIR` | `<名前> (music)` フォルダーを、元のファイルの隣ではなく `DIR` に作ります。 |
-| `--rate native` | 既定です。デコードしたときのレートのままにします（下の表を参照）。 |
+| `--rate native` | 既定です。デコードしたときのレートのままにします。 |
 | `--cd` / `--rate cd` | 44.1 kHz・16 ビットにします。 |
 | `--dvd` / `--rate dvd` | 48 kHz・24 ビットにします。 |
 | `--hires` / `--rate hires` | 96 kHz・24 ビットにします。 |
@@ -56,8 +93,6 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 | `--format flac` | 既定です。FLAC だけを書き出します。 |
 | `--format original` | ゲームに入っている形式のまま `original` フォルダーに書き出します。FLAC は作りません。 |
 | `--format both` | FLAC と元の形式の両方を書き出します。 |
-| `--originals DIR` | 原音形式のファイル（NSF・SPC・GBS・HES・KSS・SGC。フォルダーでも zip でも可）のフォルダーです。指定したカートリッジに使います。ファイル名は関係ありません。複数指定できます。 |
-| `--ps2-bios FILE` | 自分で用意した PS2 の BIOS（4 MB）です。プレイステーションとプレイステーション2 の原音形式のファイル（PSF・PSF2）を流すのに使います。指定しなければ飛ばします。rommusic には付いていません。 |
 | `--seconds N` | スーファミ：音楽を取り出すまでにゲームを動かす秒数です（既定 20）。 |
 | `--start` | スーファミ：動かしている間、ときどきスタートボタンを押します。タイトル画面のあとで曲が始まるゲーム向けです。 |
 | `--list` | 曲の一覧を表示するだけで、何も書き出しません。ループする曲は 1 回分の長さと「loop」を表示します。ファイルではループを 2 回流してフェードアウトします。 |
@@ -69,62 +104,40 @@ rommusic --format both "Hoge Quest (Japan).sfc"
 レートをそろえたいときや、37.8 kHz のような珍しいレートが苦手なプレーヤー向けです。
 リサンプリングしたファイルは、コメントタグにそう記録します。
 
-`--format original` で書き出すもの：
+## 同梱ライブラリ
 
-- ディスクやフォルダーのゲーム：ディスクに入っている音楽ファイルそのもの（ADX・XA・AT3・BCSTM など）です。ディスク内のアーカイブに入っている場合は、アーカイブごと書き出します。
-- 原音形式のファイル：セットのファイル（NSF・SPC・GBS などとプレイリスト）です。zip のセットはそのまま書き出します。
-- スーファミのカートリッジ：ゲームを動かしたあとのサウンドチップの `.spc` です。
-- CD の音声トラックと、カートリッジのサウンド処理で鳴らす音楽には元のファイルがありません。FLAC を使ってください。
-
-元の形式のファイルにはゲームのプログラムやデータが入っています。ROM と一緒に保管し、人に渡さないでください。
-
-## 対応形式
-
-**ディスクイメージとフォルダー**　`.chd`、`.cue`/`.bin`、`.gdi`、`.iso`、`.img`、`.gcm`、`.rvz`、`.wia`、`.gcz`、`.wbfs`、`.cso`、`.zso`、XISO、ダンプしたゲームのフォルダーに対応します。
-Wii U は `.wua` に対応します。`.wud`・`.wux` とダウンロード版のタイトルフォルダーは、鍵（`.key` ファイル、または同じフォルダーの `keys.txt`）が隣にあれば読めます。rommusic に鍵は付いていません。
-
-| 音源 | 機種 | レート（native） |
-|---|---|---|
-| CD の音声トラック | プレイステーション・サターン・メガ CD・PC エンジン CD・ネオジオ CD・ドリームキャストなど | 44.1 kHz |
-| ディスク内の音楽ファイル（vgmstream でデコード。ATRAC3・WMA・XMA も可） | プレイステーション・PS2・PSP・サターン・ドリームキャスト・ゲームキューブ・Wii・Wii U・Xbox・Xbox 360 など | 元のまま |
-| ディスク内のよくあるアーカイブの中の音楽（CRI の CPK、AFS、ゲームキューブの .arc・.szs） | 同上 | 元のまま |
-
-**カートリッジ**
-
-| 機種 | 方法 | レート（native） |
-|---|---|---|
-| ニンテンドー DS | サウンドアーカイブ（SDAT）の音楽です。ストリームはそのまま、シーケンス音楽は DS と同じように音源で鳴らします。 | 元のまま（シーケンスは 48 kHz） |
-| ニンテンドー 3DS | 復号済みイメージの音楽ファイルです。暗号化されたイメージは読めません。 | 元のまま |
-| ゲームボーイアドバンス | ROM から直接流します。任天堂標準のサウンドエンジンを使うゲーム（全体のおよそ半数）が対象です。 | 48 kHz |
-| スーパーファミコン | 画面なしでゲームを数秒動かし、そのあとのサウンドチップをそのまま鳴らします。1 曲（たいていタイトル曲）になります。SA-1・スーパー FX・S-DD1 のゲームには対応しません。`--originals` にそのゲームの SPC のセットがあれば、全曲を書き出します。 | 32 kHz |
-| ファミコン・ディスクシステム、ゲームボーイ・ゲームボーイカラー、セガ・マークIII・ゲームギア・メガドライブ、PC エンジン、MSX、ワンダースワン・ワンダースワンカラー、バーチャルボーイ、ネオジオポケット | ROM から直接流します。rommusic に入っている音楽マップがあればそれを使い、なければゲームのサウンド処理を動かして曲を探します。ほかのファイルは要りません。`--originals` に合うセットがあれば、ROM だけでは見つからない曲も加わります。 | 44.1 kHz |
-| SG-1000・コレコビジョン・スーパーグラフィックス | `--originals` にあるそのゲームの SGC・KSS・HES のセットを使います。 | 44.1 kHz |
-
-**原音形式のファイル**　原音形式のファイルや zip を単体でドロップすると、そのまま流します。NSF・NSFE・SPC・GBS・HES・KSS・SGC・VGM・VGZ・GYM・AY・SAP と、NINTENDO64 の USF、プレイステーションの PSF、プレイステーション2 の PSF2、セガサターンの SSF、ドリームキャストの DSF、ゲームボーイアドバンスの GSF、ワンダースワンの WSR、ネオジオポケットとバーチャルボーイの VGM に対応します（セットのライブラリーファイルと一緒に）。
-PSF と PSF2 には、自分で用意した PS2 の BIOS を `--ps2-bios` で渡します。渡さなければ飛ばします。
-曲名と長さは、プレイリスト（`.m3u`）かファイル自身のタグから読みます。
-
-**zip と 7z**　zip のカートリッジは、ゲームボーイアドバンスとスーパーファミコン、それに `--originals` を使うときに読めます。
-zip のディスクイメージは読めません。先に展開してください。
-
-### まだ対応していないもの
-
-- ワンダースワンの ROM から直接の再生（WSR のセットを単体でドロップすれば流せます）
-- ネオジオポケット・バーチャルボーイの ROM から直接の再生（VGM のセットを単体でドロップすれば流せます）
-- NINTENDO64 の ROM から直接の再生（USF のセットを単体でドロップすれば流せます）
-- メガドライブ・スーパー 32X の ROM から直接の再生（VGM のセットを単体でドロップすれば流せます）
-- 任天堂標準以外のサウンドエンジンを使うゲームボーイアドバンスのゲーム
-- 3DS のシーケンス音楽
-- PS3・Vita、ダウンロード版のパッケージ
-- 鍵のない Wii U のディスクイメージ
-- 暗号化された 3DS のイメージ
-
-## 一緒に置くファイル
-
-`rommusic` と `rommusic-gui` は隣の `lib/<os>/<arch>/` からデコーダーを読み込みます。
-`rommusic`（音源チップのプレーヤー）、`rvgmstream`（ストリーム。FFmpeg を内蔵）、ディスクとアーカイブの読み込み（`chdman`・`dolphinrvz`・`cemuwua`・`exiso`・7-Zip）です。
-フォルダーごと置いてください。ライセンスは `lib/LICENSES/` にあります。
+| ライブラリ | ライセンス |
+|---|---|
+| [game-music-emu](https://github.com/libgme/game-music-emu) | [LGPL-2.1+](../app_root_ex/lib/LICENSES/gme.LICENSE) |
+| [Game_Music_Emu (kode54)](https://github.com/kode54/Game_Music_Emu) | [LGPL-2.1+](../app_root_ex/lib/LICENSES/gme-kode54.LICENSE) |
+| [agbplay](https://github.com/ipatix/agbplay) | [LGPL-3.0](../app_root_ex/lib/LICENSES/agbplay.LICENSE) |
+| [SSEQPlayer](https://github.com/kode54/SSEQPlayer) | [WTFPL](../app_root_ex/lib/LICENSES/SSEQPlayer.LICENSE) |
+| [lazyusf2](https://gitlab.com/kode54/lazyusf2) | [GPL-2.0+](../app_root_ex/lib/LICENSES/lazyusf2.LICENSE) |
+| [Highly Experimental](https://gitlab.com/kode54/highly_experimental) | [GPL-3.0](../app_root_ex/lib/LICENSES/highly_experimental.LICENSE) |
+| [Highly Theoretical](https://gitlab.com/kode54/highly_theoretical) | [GPL-3.0](../app_root_ex/lib/LICENSES/highly_theoretical.LICENSE) |
+| [mGBA](https://github.com/mgba-emu/mgba) | [MPL-2.0](../app_root_ex/lib/LICENSES/mgba.LICENSE) |
+| [Beetle WonderSwan](https://github.com/libretro/beetle-wswan-libretro) | [GPL-2.0+](../app_root_ex/lib/LICENSES/beetle-wswan.LICENSE) |
+| [libvgm](https://github.com/ValleyBell/libvgm) | [BSD-3-Clause, GPL-2.0+](../app_root_ex/lib/LICENSES/libvgm.LICENSE) |
+| [VGMTrans](https://github.com/vgmtrans/vgmtrans) | [zlib](../app_root_ex/lib/LICENSES/vgmtrans.LICENSE) |
+| [TinySoundFont](https://github.com/schellingb/TinySoundFont) | [MIT](../app_root_ex/lib/LICENSES/TinySoundFont.LICENSE) |
+| [98fmplayer](https://github.com/myon98/98fmplayer) | [BSD-2-Clause](../app_root_ex/lib/LICENSES/98fmplayer.LICENSE) |
+| [vgmstream](https://github.com/vgmstream/vgmstream) | [ISC](../app_root_ex/lib/LICENSES/vgmstream.LICENSE) |
+| [FFmpeg](https://github.com/FFmpeg/FFmpeg) | [LGPL-2.1+](../app_root_ex/lib/LICENSES/ffmpeg.LICENSE) |
+| [fmt](https://github.com/fmtlib/fmt) | [MIT](../app_root_ex/lib/LICENSES/fmt.LICENSE) |
+| [spdlog](https://github.com/gabime/spdlog) | [MIT](../app_root_ex/lib/LICENSES/spdlog.LICENSE) |
+| [unarr](https://github.com/selmf/unarr) | [LGPL-3.0](../app_root_ex/lib/LICENSES/unarr.LICENSE) |
+| [zlib](https://github.com/madler/zlib) | [zlib](../app_root_ex/lib/LICENSES/zlib.LICENSE) |
+| [chdman-simd](https://github.com/grouik1er-coder/chdman-simd) | [BSD-2-Clause](../app_root_ex/lib/LICENSES/chdman-simd.LICENSE) |
+| [MAME](https://github.com/mamedev/mame) | [GPL-2.0+](../app_root_ex/lib/LICENSES/mame.LICENSE) |
+| [libchdr](https://github.com/rtissera/libchdr) | [BSD-3-Clause](../app_root_ex/lib/LICENSES/libchdr.LICENSE) |
+| [Dolphin](https://github.com/dolphin-emu/dolphin) | [GPL-2.0+](../app_root_ex/lib/LICENSES/dolphin.LICENSE) |
+| [Cemu](https://github.com/cemu-project/Cemu) | [MPL-2.0](../app_root_ex/lib/LICENSES/cemu.LICENSE) |
+| [ZArchive](https://github.com/Exzap/ZArchive) | [MIT-0](../app_root_ex/lib/LICENSES/ZArchive.LICENSE) |
+| [zstd](https://github.com/facebook/zstd) | [BSD-3-Clause](../app_root_ex/lib/LICENSES/zstd.LICENSE) |
+| [extract-xiso](https://github.com/XboxDev/extract-xiso) | [BSD](../app_root_ex/lib/LICENSES/extract-xiso.LICENSE) |
+| [7-Zip-zstd](https://github.com/mcmilk/7-Zip-zstd) | [LGPL-2.1+](../app_root_ex/lib/LICENSES/7-Zip-zstd.LICENSE) |
+| [zlib-ng](https://github.com/zlib-ng/zlib-ng) | [zlib](../app_root_ex/lib/LICENSES/zlib-ng.LICENSE) |
 
 ## ライセンス
 
-romexplorer と同じ AGPL-3.0 です。同梱のライブラリはそれぞれのライセンスに従います（プレーヤーは LGPL と GPL-2.0 以降。`lib/LICENSES/` を参照）。
+romexplorer と同じ [AGPL-3.0](../LICENSE) です。
