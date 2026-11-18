@@ -8,6 +8,16 @@ de segurança antes de substituir uma versão.
 
 ## Alterações
 
+**Análise**
+- Adicionada «Análise rápida (alterados)»: também lê os ficheiros que mudaram de tamanho ou data.
+- Os hashes da análise definem-se em separado para ficheiros normais, ficheiros de arquivo e o conteúdo dos arquivos. Os ficheiros de arquivo usam sha1 e xxh3_128 por predefinição.
+
+**Cópia**
+- Uma cópia reiniciada verifica vários ficheiros já presentes no destino ao mesmo tempo.
+
+**Listas**
+- As vistas em cartões com muitas entradas abrem e deslizam mais depressa.
+
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
 - O índice de música das ROM lê só a cópia mais bem classificada de cada título, e as outras só se essa não tiver música.

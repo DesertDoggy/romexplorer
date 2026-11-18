@@ -39,7 +39,7 @@ const EDITORS: &[&str] = &[
     "grid_media_type", "hasheous_parallel_downloads", "playmatch_batch_size", "media_cache_tier1_max_mb", "media_cache_tier2_max_mb", "media_thumb_px", "media_thumb_quality",
     "ra_include_beaten_default", "allow_remote_launch", "release_edition_order", "release_kinds_default", "release_unlicensed", "ra_base_filter_default", "ra_source_default", "view_defaults",
     "media_thumb_format", "temp_dir_margin", "title_display_mode", "metadata_source_priority", "ui_colors", "ui_icons",
-    "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
+    "sheet_style", "chd_reader", "media_sync_after_pull", "media_provider_fallback", "search_translations", "backup_dir", "backup_keep", "backup_catalog", "scan_hashes", "archive_hashes", "archive_content_hashes", "scan_heuristics", "serial_match", "scan_pkg_titles", "media_reuse_existing",
     "copy_recent_destinations", "copy_populate_hash", "integrity_populate_hash", "copy_verify_default", "copy_lossy_warning", "ui_language", "platform_name_language",
     "media_download", "media_priority", "media_show", "media_client_keep", "media_list_cap",
     "audio_dsd_cache_format", "audio_cache_max_mb", "audio_ram_cache_mb", "audio_client_format", "audio_client_bitrate_kbps", "audio_fallback", "audio_title_sources", "audio_rom_kinds", "audio_rom_not_owned", "audio_keep_playing", "audio_rom_videos", "audio_rom_limiter", "audio_rom_loop_min_s", "audio_rom_bgm_min_s", "audio_rom_jingle_min_s", "audio_rom_index_parallel", "audio_rip_folders", "collection_default_tab", "collection_hidden_tabs", "copy_definitive", "definitive_fetch_versions", "platform_priority", "definitive_pc_max_age", "definitive_two_cover_layout",
@@ -116,6 +116,22 @@ const BOOL_KEYS: &[(&str, bool, &str, &str)] = &[
 const SCAN_HASHES: &[(&str, bool)] = &[("crc32", true), ("xxh3_128", true), ("md5", true), ("sha1", true), ("sha256", false), ("ra_hash", true)];
 /// The `SCAN_HASHES` DATs are matched by; one of them always stays on.
 const SCAN_HASHES_DAT: [&str; 3] = ["crc32", "md5", "sha1"];
+/// `archive_hashes`: an archive file's own bytes. DATs never list the archive file, so sha1
+/// and xxh3_128 by default; at least one stays on. The console's same list.
+const ARCHIVE_HASHES: &[(&str, bool)] = &[("crc32", false), ("xxh3_128", true), ("md5", false), ("sha1", true), ("sha256", false)];
+/// `archive_content_hashes`: what is inside an archive, which DATs match -- `SCAN_HASHES`'
+/// defaults without ra_hash, and one of `SCAN_HASHES_DAT` stays on.
+const ARCHIVE_CONTENT_HASHES: &[(&str, bool)] = &[("crc32", true), ("xxh3_128", true), ("md5", true), ("sha1", true), ("sha256", false)];
+
+/// A hash-set setting's checkboxes and the ones of which the last cannot be turned off.
+fn hash_set(key: &str) -> (&'static [(&'static str, bool)], &'static [&'static str]) {
+    const ARCHIVE_ALL: [&str; 5] = ["crc32", "xxh3_128", "md5", "sha1", "sha256"];
+    match key {
+        "archive_hashes" => (ARCHIVE_HASHES, &ARCHIVE_ALL),
+        "archive_content_hashes" => (ARCHIVE_CONTENT_HASHES, &SCAN_HASHES_DAT),
+        _ => (SCAN_HASHES, &SCAN_HASHES_DAT),
+    }
+}
 /// `serial_match`: key, default, label -- the same list as the web console's.
 const SERIAL_MATCH: &[(&str, bool, &str)] = &[
     ("cia", true, ".cia / .zcia (3DS)"),
@@ -271,15 +287,17 @@ fn initial(key: &str, value: &Value) -> Value {
         "backup_dir" => json!(value.as_str().unwrap_or("")),
         "backup_keep" => if value.is_null() { json!(0) } else { value.clone() },
         "copy_recent_destinations" | "audio_rip_folders" => json!(str_list(value)),
-        "scan_hashes" => {
+        "scan_hashes" | "archive_hashes" | "archive_content_hashes" => {
+            let (items, keep) = hash_set(key);
             let mut m = Map::new();
-            for (name, def) in SCAN_HASHES {
+            for (name, def) in items {
                 m.insert(name.to_string(), json!(value.get(name).and_then(Value::as_bool).unwrap_or(*def)));
             }
             // DATs are matched by crc32, md5 or sha1: a stored list without one (saved before
-            // the server refused that) opens with crc32 back on, as in the console.
-            if !SCAN_HASHES_DAT.iter().any(|k| m.get(*k).and_then(Value::as_bool) == Some(true)) {
-                m.insert("crc32".to_string(), json!(true));
+            // the server refused that) opens with crc32 back on, as in the console; an
+            // archive-file list with nothing on opens with sha1 on.
+            if !keep.iter().any(|k| m.get(*k).and_then(Value::as_bool) == Some(true)) {
+                m.insert(if key == "archive_hashes" { "sha1" } else { "crc32" }.to_string(), json!(true));
             }
             Value::Object(m)
         }
@@ -1030,17 +1048,20 @@ fn Editor(name: String, cur: Signal<Value>) -> Element {
                 input { r#type: "text", style: "min-width:420px", placeholder: "data/backups", value: "{current}", oninput: move |e| set(json!(e.value())) }
             }
         }
-        "scan_hashes" => {
+        "scan_hashes" | "archive_hashes" | "archive_content_hashes" => {
             // The last of crc32 / md5 / sha1 that is on can't be turned off: DATs are matched by
-            // those three (the server refuses a list without one). The console's same rule.
-            let dat_on: Vec<&str> = SCAN_HASHES_DAT.iter().copied().filter(|k| v.get(*k).and_then(Value::as_bool) == Some(true)).collect();
+            // those three (the server refuses a list without one); for the archive file, the
+            // last one of all. The console's same rule.
+            let (items, keep) = hash_set(&key);
+            let kept_on: Vec<&str> = keep.iter().copied().filter(|k| v.get(*k).and_then(Value::as_bool) == Some(true)).collect();
+            let note = if key == "archive_hashes" { "At least one stays on." } else { "At least one of crc32, md5 and sha1 stays on: DATs are matched by those." };
             rsx! {
                 div { class: "radios",
-                    for (name, _) in SCAN_HASHES {
-                        label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), disabled: dat_on.len() == 1 && dat_on[0] == *name, onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {name}" }
+                    for (name, _) in items {
+                        label { input { r#type: "checkbox", checked: v.get(*name).and_then(Value::as_bool).unwrap_or(false), disabled: kept_on.len() == 1 && kept_on[0] == *name, onchange: move |e| { let mut m = cur(); m[*name] = json!(e.checked()); cur.set(m); } } " {name}" }
                     }
                 }
-                {muted("At least one of crc32, md5 and sha1 stays on: DATs are matched by those.")}
+                {muted(note)}
             }
         }
         "serial_match" => rsx! {

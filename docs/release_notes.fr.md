@@ -8,6 +8,16 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
+**Analyse**
+- Ajout de « Analyse rapide (modifiés) » : elle lit aussi les fichiers dont la taille ou la date a changé.
+- Les hash de l'analyse se règlent séparément pour les fichiers ordinaires, les fichiers d'archive et le contenu des archives. Les fichiers d'archive utilisent sha1 et xxh3_128 par défaut.
+
+**Copie**
+- Une copie relancée vérifie plusieurs fichiers déjà présents à la destination à la fois.
+
+**Listes**
+- Les vues en cartes avec beaucoup d'entrées s'ouvrent et défilent plus vite.
+
 **Audio des ROM**
 - L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
 - L'index de musique des ROM ne lit que la copie la mieux classée de chaque titre, et les autres seulement si elle n'a pas de musique.

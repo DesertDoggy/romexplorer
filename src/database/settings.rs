@@ -245,6 +245,17 @@ pub const KEY_BACKUP_CATALOG: &str = "backup_catalog";
 /// `ra_hash` is honoured only where a RetroAchievements console id can be resolved; see
 /// [`scan_hashes`]. It is never computed for archive members.
 pub const KEY_SCAN_HASHES: &str = "scan_hashes";
+/// Which hashes a file scan computes over an archive file's own bytes (zip, 7z, CHD, RVZ, CSO,
+/// PBP): an object of `algorithm -> bool` over crc32, xxh3_128, md5, sha1 and sha256. Default
+/// sha1 and xxh3_128: DATs list what is inside an archive, never the archive file, so the
+/// file's hashes only identify it (sha1) and let a copy or integrity check compare it cheaply
+/// (xxh3_128). See [`archive_hashes`].
+pub const KEY_ARCHIVE_HASHES: &str = "archive_hashes";
+/// Which hashes a file scan computes over what is inside an archive -- a zip or 7z's members,
+/// a CHD/RVZ/CSO/PBP's image -- in the shape of [`KEY_ARCHIVE_HASHES`]. These are what DATs
+/// match, so the default is [`KEY_SCAN_HASHES`]'s (everything except sha256), and one of
+/// crc32, md5 and sha1 stays on. See [`archive_content_hashes`].
+pub const KEY_ARCHIVE_CONTENT_HASHES: &str = "archive_content_hashes";
 /// How many files a scan / a copy works on at once, per size tier (`api::parallel`):
 /// `{"mode": "auto"|"custom", "small": n, "medium": n, "large": n, "drive": "ssd"|"hdd"|"network"}`.
 /// Auto by default; `drive` absent detects the disk.
@@ -413,7 +424,7 @@ pub const KEY_DAT_SYNC_PLATFORMS: &str = "dat_sync_platforms";
 pub const DAT_SYNC_PLATFORM_MODES: [&str; 4] = ["all", "scanned", "scanned_strict", "manual"];
 
 /// Every key this project defines, with a one-line description for a settings UI.
-pub const KNOWN_KEYS: [(&str, &str); 109] = [
+pub const KNOWN_KEYS: [(&str, &str); 111] = [
     (KEY_BIGPICTURE_ICON_STYLE, "Big Picture: how the tab buttons' icons are drawn: color (default; each icon in its own colour) | outline (thin lines in the text colour)."),
     (crate::api::sets::KEY_COPY_DEFINITIVE, "What a set's definitive-version entry (added from Collection > Definitive) copies: best_held (default; the first version in the family's order you hold, its best release) | definitive_only (the definitive version when you hold it, else nothing of that game)."),
     (crate::database::title_family::KEY_FETCH_VERSIONS, "Collection > Definitive: where a family's other versions (older and newer, the base game too) come from. off (default): the catalogue's titles, and unowned versions only on platforms whose IGDB metadata is synced | per_title: for games held on disk, the whole family is fetched from IGDB by id, on any platform (versions on platforms you don't collect appear) | whole_platform (deprecated): per_title, and each platform such a version is on gets an IGDB platform sync."),
@@ -475,7 +486,9 @@ pub const KNOWN_KEYS: [(&str, &str); 109] = [
     (KEY_BACKUP_DIR, "Where backup zips are written. Empty = <data root>/backups."),
     (KEY_BACKUP_KEEP, "How many backups of each kind to keep (0 = all). Counted per kind, so a database backup never prunes a catalogue one."),
     (KEY_BACKUP_CATALOG, "Run a catalogue backup alongside each database backup. Off by default -- the catalogue is rebuilt by re-importing DATs, so it is the large derivable part and is worth backing up far less often. Media files are never backed up."),
-    (KEY_SCAN_HASHES, "Which hashes a file scan computes: object of crc32|xxh3_128|md5|sha1|sha256|ra_hash -> true/false. Default: everything except sha256. ra_hash needs a resolvable RetroAchievements console id and is skipped when there is none."),
+    (KEY_ARCHIVE_HASHES, "Which hashes a file scan computes over an archive file itself (zip, 7z, CHD, RVZ, CSO, PBP): object of crc32|xxh3_128|md5|sha1|sha256 -> true/false. Default: sha1 and xxh3_128."),
+    (KEY_ARCHIVE_CONTENT_HASHES, "Which hashes a file scan computes over what is inside an archive (the files in a zip or 7z, the image in a CHD, RVZ, CSO or PBP): object of crc32|xxh3_128|md5|sha1|sha256 -> true/false. Default: everything except sha256."),
+    (KEY_SCAN_HASHES, "Which hashes a file scan computes over a regular file (one that is not an archive): object of crc32|xxh3_128|md5|sha1|sha256|ra_hash -> true/false. Default: everything except sha256. ra_hash needs a resolvable RetroAchievements console id and is skipped when there is none."),
     (KEY_SCAN_PARALLEL, "How many files a scan hashes at the same time, by size: small up to 16 MiB, medium 16 MiB to 1 GiB, large 1 GiB and up. Auto picks from the disk, memory and cores (a spinning disk gets one big read at a time). Custom sets any size yourself, 1-64; a size left empty stays on auto. Only the reading and hashing run in parallel -- results are recorded one file at a time, in order. Drive says what the disk is (SSD / NVMe, HDD, network share) when detection gets it wrong; auto's numbers follow it. A ZFS pool counts as SSD when all its data disks are."),
     (KEY_COPY_PARALLEL, "How many files a copy works on at the same time, by the same sizes as scan_parallel_files. Auto takes the slower of the source and destination disks, and fewer when the copy converts (CHD / RVZ / zip / 7z compress on several threads of their own)."),
     (KEY_SERIAL_MATCH, "Lenient matching: formats no DAT hashes can be matched by their serial instead, and the link is marked as a serial match. {\"cia\", \"xiso\", \"wua\", \"zar\", \"vpk\", \"vita_folder\" (Vita app folders), \"nsp\" (Switch .nsp/.nsz, by the ticket or the [title id] in the name): true/false (default true), \"pkg\" (PS3, PSP and Vita packages), \"psv\" (Vita .psv and game-card images), \"ps_disc\" (PS1, PS2 and PS3 discs, PS3 game folders): true/false (default false, since DATs hash these), \"manifest\": use the serial in the romexplorer.json a copy here wrote (default true), \"file_name\": also use a serial spelled in the file name (default false), \"file_name_platforms\": {\"<platform id>\": true/false} to choose that per platform (a platform not listed follows file_name)}."),
@@ -789,8 +802,16 @@ pub const EXPLAIN: &[(&str, &[&str])] = &[
         "When one serial belongs to several releases, the region in the file name decides, then the source order under Metadata source priority. A game still tied is left unmatched.",
     ]),
     (KEY_SCAN_HASHES, &[
-        "Which hashes a file scan computes. Default: everything except sha256.",
+        "Which hashes a file scan computes over a regular file, one that is not an archive. Default: everything except sha256.",
         "Files are matched to DATs by crc32, md5 or sha1, so at least one of those three must stay on; xxh3_128, sha256 and ra_hash are extras. ra_hash (RetroAchievements) is skipped where the platform has no RetroAchievements console id.",
+    ]),
+    (KEY_ARCHIVE_HASHES, &[
+        "Which hashes a file scan computes over an archive file itself: a zip, 7z, CHD, RVZ, CSO or PBP. Default: sha1 and xxh3_128.",
+        "DATs list what is inside an archive, not the archive file, so these only identify the file and let a copy or integrity check compare it. Each one ticked is another pass over the whole file.",
+    ]),
+    (KEY_ARCHIVE_CONTENT_HASHES, &[
+        "Which hashes a file scan computes over what is inside an archive: the files in a zip or 7z, the image in a CHD, RVZ, CSO or PBP. Default: everything except sha256.",
+        "These are what DATs are matched by, so at least one of crc32, md5 and sha1 must stay on.",
     ]),
     (KEY_COPY_RECENT_DESTINATIONS, &[
         "The destination folders the copy dialog offers again, most recent first. Written by the app as you copy; remove the ones you no longer want, or reset to forget them all.",
@@ -926,7 +947,7 @@ pub fn group_of(key: &str) -> &'static str {
         KEY_BIGPICTURE_ICON_STYLE => "view",
         KEY_UI_LANGUAGE | KEY_PLATFORM_NAME_LANGUAGE | "title_display_mode" | "language_display" | "ui_colors" | "ui_icons" | "grid_media_type" => "display",
         "release_kinds_default" | "release_unlicensed" | KEY_COLLECTION_DEFAULT_TAB | KEY_COLLECTION_HIDDEN_TABS | "definitive_fetch_versions" | KEY_PLATFORM_PRIORITY | "definitive_pc_max_age" | "definitive_two_cover_layout" | "release_edition_order" | "view_defaults" | "region_priority" | "language_priority" | "canonical_name_priority" => "lists",
-        KEY_SCAN_HASHES | KEY_SCAN_HEURISTICS | KEY_SCAN_PKG_TITLES | KEY_SERIAL_MATCH | KEY_SCAN_PARALLEL | KEY_SHEET_STYLE | KEY_CHD_READER | "integrity_populate_hash" => "scan",
+        KEY_SCAN_HASHES | KEY_ARCHIVE_HASHES | KEY_ARCHIVE_CONTENT_HASHES | KEY_SCAN_HEURISTICS | KEY_SCAN_PKG_TITLES | KEY_SERIAL_MATCH | KEY_SCAN_PARALLEL | KEY_SHEET_STYLE | KEY_CHD_READER | "integrity_populate_hash" => "scan",
         k if k.starts_with("copy_") => "copy",
         KEY_GEMINI_MODEL => "ai",
         k if k.starts_with("ai_") => "ai",
@@ -964,6 +985,66 @@ pub async fn scan_hashes(pool: &MySqlPool) -> Result<(crate::rom::hash::HashFlag
         }
     }
     Ok((flags, on("ra_hash", true)))
+}
+
+/// The [`KEY_ARCHIVE_HASHES`] set. Never empty: a stored set with nothing on reads as the
+/// default.
+pub async fn archive_hashes(pool: &MySqlPool) -> Result<crate::rom::hash::HashFlags, DatabaseError> {
+    let v = get::<serde_json::Value>(pool, KEY_ARCHIVE_HASHES).await?.unwrap_or(serde_json::Value::Null);
+    Ok(archive_hashes_from(&v))
+}
+
+/// [`archive_hashes`] without a database.
+pub fn archive_hashes_from(v: &serde_json::Value) -> crate::rom::hash::HashFlags {
+    use crate::rom::hash::HashFlags;
+    let on = |key: &str, default: bool| v.get(key).and_then(|b| b.as_bool()).unwrap_or(default);
+    let mut flags = HashFlags::empty();
+    for (key, bit, default) in [
+        ("crc32", HashFlags::CRC32, false),
+        ("xxh3_128", HashFlags::XXH3_128, true),
+        ("md5", HashFlags::MD5, false),
+        ("sha1", HashFlags::SHA1, true),
+        ("sha256", HashFlags::SHA256, false),
+    ] {
+        if on(key, default) {
+            flags.insert(bit);
+        }
+    }
+    if flags.is_empty() {
+        HashFlags::SHA1 | HashFlags::XXH3_128
+    } else {
+        flags
+    }
+}
+
+/// The [`KEY_ARCHIVE_CONTENT_HASHES`] set. A stored set with none of crc32, md5 and sha1 on
+/// (the API refuses one) reads as the default.
+pub async fn archive_content_hashes(pool: &MySqlPool) -> Result<crate::rom::hash::HashFlags, DatabaseError> {
+    let v = get::<serde_json::Value>(pool, KEY_ARCHIVE_CONTENT_HASHES).await?.unwrap_or(serde_json::Value::Null);
+    Ok(archive_content_hashes_from(&v))
+}
+
+/// [`archive_content_hashes`] without a database.
+pub fn archive_content_hashes_from(v: &serde_json::Value) -> crate::rom::hash::HashFlags {
+    use crate::rom::hash::HashFlags;
+    let on = |key: &str, default: bool| v.get(key).and_then(|b| b.as_bool()).unwrap_or(default);
+    let mut flags = HashFlags::empty();
+    for (key, bit, default) in [
+        ("crc32", HashFlags::CRC32, true),
+        ("xxh3_128", HashFlags::XXH3_128, true),
+        ("md5", HashFlags::MD5, true),
+        ("sha1", HashFlags::SHA1, true),
+        ("sha256", HashFlags::SHA256, false),
+    ] {
+        if on(key, default) {
+            flags.insert(bit);
+        }
+    }
+    if flags.intersects(HashFlags::CRC32 | HashFlags::MD5 | HashFlags::SHA1) {
+        flags
+    } else {
+        HashFlags::CRC32 | HashFlags::XXH3_128 | HashFlags::MD5 | HashFlags::SHA1
+    }
 }
 
 /// The `chd_reader` setting, put into effect for this process (`chd_info::read_chd_metadata`
@@ -1392,6 +1473,21 @@ mod scan_setting_tests {
     /// the one that costs a whole extra pass and buys nothing `sha1` doesn't already give
     /// (`import.rs` dedups sha256 > sha1 > md5), and xxh3_128 is the cheapest of the set and
     /// was previously never computed at all.
+    #[test]
+    fn archive_hashes_default_to_sha1_and_xxh3() {
+        assert_eq!(archive_hashes_from(&serde_json::Value::Null), HashFlags::SHA1 | HashFlags::XXH3_128);
+        assert_eq!(archive_hashes_from(&serde_json::json!({"sha1": false, "xxh3_128": false})), HashFlags::SHA1 | HashFlags::XXH3_128);
+        assert_eq!(archive_hashes_from(&serde_json::json!({"crc32": true, "sha1": false})), HashFlags::CRC32 | HashFlags::XXH3_128);
+    }
+
+    #[test]
+    fn archive_content_hashes_default_to_the_scan_set() {
+        let default = HashFlags::CRC32 | HashFlags::XXH3_128 | HashFlags::MD5 | HashFlags::SHA1;
+        assert_eq!(archive_content_hashes_from(&serde_json::Value::Null), default);
+        assert_eq!(archive_content_hashes_from(&serde_json::json!({"crc32": false, "md5": false, "sha1": false})), default);
+        assert_eq!(archive_content_hashes_from(&serde_json::json!({"md5": false, "sha256": true})), HashFlags::CRC32 | HashFlags::XXH3_128 | HashFlags::SHA1 | HashFlags::SHA256);
+    }
+
     fn flags_from(json: serde_json::Value) -> (HashFlags, bool) {
         let on = |key: &str, default: bool| json.get(key).and_then(|b| b.as_bool()).unwrap_or(default);
         let mut flags = HashFlags::empty();

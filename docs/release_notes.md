@@ -5,6 +5,16 @@ replacing a build.
 
 ## Changes
 
+**Scan**
+- "Quick scan (changed)" was added: it also reads files whose size or date changed.
+- Scan hashes are set separately for regular files, archive files and what is inside archives. Archive files use sha1 and xxh3_128 by default.
+
+**Copy**
+- A copy started again checks the files already at the destination several at a time.
+
+**Lists**
+- Card grids with many entries open and scroll faster.
+
 **ROM audio**
 - The ROM music index can read several ROMs at once (4 by default, set under Audio settings).
 - The ROM music index reads only the best-ranked copy of each title, and other copies only when it has no music.

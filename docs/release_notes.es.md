@@ -8,6 +8,16 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
+**Escaneo**
+- Se añadió «Escaneo rápido (cambiados)»: también lee los archivos que cambiaron de tamaño o fecha.
+- Los hashes del escaneo se ajustan por separado para archivos normales, archivos comprimidos y su contenido. Los archivos comprimidos usan sha1 y xxh3_128 por defecto.
+
+**Copia**
+- Una copia iniciada de nuevo comprueba varios archivos ya presentes en el destino a la vez.
+
+**Listas**
+- Las vistas de tarjetas con muchas entradas se abren y desplazan más rápido.
+
 **Audio de las ROM**
 - El índice de música de las ROM puede leer varias ROM a la vez (4 por defecto, se cambia en los ajustes de audio).
 - El índice de música de las ROM lee solo la copia mejor clasificada de cada título, y las demás solo si esa no tiene música.
