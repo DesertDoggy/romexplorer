@@ -3170,5 +3170,7 @@
   "{n} days ago": "{n}일 전",
   "{n} hours ago": "{n}시간 전",
   "{n} job(s) queued on the server; sync to see the results": "서버에 작업 {n}개를 대기열에 넣었습니다. 결과는 동기화 후 확인하세요",
-  "{n} minutes ago": "{n}분 전"
+  "{n} minutes ago": "{n}분 전",
+  "Details": "세부 정보",
+  "Paste a page URL or type an id": "페이지 URL 붙여넣기 또는 ID 입력"
 }

@@ -13,6 +13,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Die Auftragsseite zeigt zuerst die Auftragsliste. Neue Aufträge starten über „Neuer Auftrag“.
 - Die Unterreiter der Sammlung für eigene Dateien und für Material außer Spielen sind jetzt zwei Ausklappmenüs.
 - Einstellungen zeigen einen Namen in der Sprache der Oberfläche, den Schlüssel darunter. Speichern und Zurücksetzen erscheinen nur, wenn sie etwas ändern; auf anderen Seiten eingestellte Werte bleiben dort.
+- Titel- und Release-Seiten zeigen nur noch die wichtigsten Aktionen als Schaltflächen. Links zu verwandten Titeln stehen in der Zeile des Basisspiels, interne IDs unter „Details“. Der manuelle Abgleich zeigt zuerst die aktuellen Links.
 
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).

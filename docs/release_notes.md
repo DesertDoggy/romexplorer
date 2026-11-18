@@ -10,6 +10,7 @@ replacing a build.
 - The Jobs page shows the job list first. New jobs start from "New job".
 - Collection's sub-tabs for local files and for non-game material are now two drop-down menus.
 - Settings show a name in the UI's language, with the key under it. Save and reset appear only when they would change something, and settings edited on another screen are left to that screen.
+- Title and release pages keep only their main actions as buttons. Links to related titles sit in the base game row, and the internal ids are under "Details". Manual match shows the current links first.
 
 **ROM audio**
 - The ROM music index can read several ROMs at once (4 by default, set under Audio settings).

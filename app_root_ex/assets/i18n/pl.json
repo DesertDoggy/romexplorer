@@ -3170,5 +3170,7 @@
   "{n} days ago": "{n} dni temu",
   "{n} hours ago": "{n} godz. temu",
   "{n} job(s) queued on the server; sync to see the results": "{n} zadań w kolejce na serwerze; zsynchronizuj, aby zobaczyć wyniki",
-  "{n} minutes ago": "{n} min temu"
+  "{n} minutes ago": "{n} min temu",
+  "Details": "Szczegóły",
+  "Paste a page URL or type an id": "Wklej adres strony lub wpisz id"
 }

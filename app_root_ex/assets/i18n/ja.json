@@ -3170,5 +3170,7 @@
   "{n} days ago": "{n} 日前",
   "{n} hours ago": "{n} 時間前",
   "{n} job(s) queued on the server; sync to see the results": "サーバーに {n} 件のジョブを登録しました。結果は同期すると見られます",
-  "{n} minutes ago": "{n} 分前"
+  "{n} minutes ago": "{n} 分前",
+  "Details": "詳細",
+  "Paste a page URL or type an id": "ページのURLかIDで指定"
 }

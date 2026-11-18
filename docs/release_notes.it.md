@@ -13,6 +13,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - La pagina dei processi mostra prima l'elenco dei processi. I nuovi si avviano da «Nuovo processo».
 - Le sottoschede della collezione per i file locali e per il materiale non di gioco sono ora due menu a tendina.
 - Le impostazioni mostrano un nome nella lingua dell'interfaccia, con la chiave sotto. Salva e ripristina compaiono solo quando cambiano qualcosa, e le impostazioni di un'altra schermata restano lì.
+- Le pagine di titolo e di release mostrano come pulsanti solo le azioni principali. I link ai titoli correlati sono nella riga del gioco base e gli id interni in «Dettagli». L’abbinamento manuale mostra prima i link attuali.
 
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).

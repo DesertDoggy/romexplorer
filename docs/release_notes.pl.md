@@ -13,6 +13,7 @@ zapasową przed podmianą wersji.
 - Strona zadań pokazuje najpierw listę zadań. Nowe zadania uruchamia się z „Nowe zadanie”.
 - Podzakładki kolekcji dla własnych plików i dla materiałów innych niż gry są teraz dwoma menu rozwijanymi.
 - Ustawienia pokazują nazwę w języku interfejsu, z kluczem pod spodem. Zapisz i resetuj pojawiają się tylko wtedy, gdy coś zmieniają, a ustawienia z innego ekranu zostają na tamtym ekranie.
+- Strony tytułu i wydania pokazują jako przyciski tylko główne działania. Linki do powiązanych tytułów są w wierszu gry bazowej, a wewnętrzne id w „Szczegóły”. Ręczne dopasowanie pokazuje najpierw obecne linki.
 
 **Dźwięk z ROM-ów**
 - Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).

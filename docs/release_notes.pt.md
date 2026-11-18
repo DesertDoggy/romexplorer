@@ -13,6 +13,7 @@ de segurança antes de substituir uma versão.
 - A página de tarefas mostra primeiro a lista de tarefas. As novas começam em «Nova tarefa».
 - Os subseparadores da coleção para os ficheiros locais e para o material que não é jogo são agora dois menus pendentes.
 - As definições mostram um nome no idioma da interface, com a chave por baixo. Guardar e repor só aparecem quando alteram algo, e as definições de outro ecrã ficam nesse ecrã.
+- As páginas de título e de lançamento mostram como botões apenas as ações principais. As ligações para títulos relacionados estão na linha do jogo base e os ids internos em «Detalhes». A correspondência manual mostra primeiro as ligações atuais.
 
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).

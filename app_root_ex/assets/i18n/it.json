@@ -3170,5 +3170,7 @@
   "{n} days ago": "{n} giorni fa",
   "{n} hours ago": "{n} ore fa",
   "{n} job(s) queued on the server; sync to see the results": "{n} processo/i in coda sul server; sincronizza per vedere i risultati",
-  "{n} minutes ago": "{n} minuti fa"
+  "{n} minutes ago": "{n} minuti fa",
+  "Details": "Dettagli",
+  "Paste a page URL or type an id": "Incolla l’URL di una pagina o scrivi un id"
 }

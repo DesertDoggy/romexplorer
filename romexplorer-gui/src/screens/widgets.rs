@@ -457,107 +457,6 @@ fn MatchDialog(kind: &'static str, id: u64, name: String, platform_id: Option<u6
 
     rsx! {
         h2 { "{heading}" }
-        div { class: "muted", {state::tr("Search a provider by name and link the right entry, paste its page URL, or type its id.")} " " b { {state::tr("local")} } " " {state::tr("searches what's already cached (bulk syncs, earlier lookups; no network, every provider incl. IGDB; the platform filter applies to TheGamesDB and RetroAchievements);")} " " b { {state::tr("online")} } " " {state::tr("asks the provider. Title-tier providers (IGDB, ScreenScraper, …) attach to the title; RetroAchievements / TheGamesDB attach to releases. A manual link is never replaced automatically; linking queues a metadata + art fetch.")} }
-        form { class: "inline", style: "margin:10px 0",
-            onsubmit: move |e| {
-                e.prevent_default();
-                let path = format!("/api/v1/providers/{}/search{}", chosen2, api::qs(&[("name", q()), ("platform", platform()), ("local", if where_() == "local" { "true".into() } else { String::new() })]));
-                results.set(Some(Ok(Vec::new())));
-                spawn(async move {
-                    match api::get(&path).await {
-                        Ok(v) => results.set(Some(Ok(api::items(&v)))),
-                        Err(e) => { results.set(None); ui::toast(e.message, true); }
-                    }
-                });
-            },
-            select { onchange: move |e| where_.set(e.value()),
-                option { value: "local", selected: where_() == "local", {state::tr("local")} }
-                option { value: "online", selected: where_() == "online", {state::tr("online")} }
-            }
-            select { onchange: move |e| provider.set(e.value()),
-                for p in choices.clone() { option { value: "{p}", selected: p == chosen, "{p}" } }
-            }
-            input { r#type: "text", value: "{q}", style: "min-width:260px", oninput: move |e| q.set(e.value()) }
-            select { onchange: move |e| platform.set(e.value()),
-                option { value: "", {state::tr("any platform")} }
-                for p in state::platforms() { option { value: "{u(&p, \"id\")}", selected: u(&p, "id").to_string() == platform(), "{s(&p, \"name\")}" } }
-            }
-            button { class: "btn small primary", {state::tr("search")} }
-        }
-        div {
-            match results() {
-                None => rsx! {},
-                Some(Err(e)) => rsx! { span { class: "bad", "{e}" } },
-                Some(Ok(hits)) if hits.is_empty() => rsx! { span { class: "muted", {state::tr("no results")} } },
-                Some(Ok(hits)) => rsx! {
-                    table { class: "grid",
-                        for h in hits {
-                            {
-                                let link = link_hit.clone();
-                                let (prov, pid) = (s(&h, "provider"), s(&h, "provider_id"));
-                                let url = s(&h, "url");
-                                rsx! {
-                                    tr {
-                                        td { Html { html: html::provider_icon(&prov) } " {pid}" }
-                                        td { "{s(&h, \"title\")}" }
-                                        td { class: "muted", "{s(&h, \"platform\")}" }
-                                        td { if !url.is_empty() { a { class: "link", href: "{url}", target: "_blank", rel: "noopener", {state::tr("page")} } } }
-                                        td { button { class: "btn small primary", onclick: move |_| link(prov.clone(), pid.clone()), {state::tr("link")} } }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-        }
-        form { class: "inline", style: "margin:10px 0",
-            onsubmit: move |e| {
-                e.prevent_default();
-                let u2 = page_url().trim().to_string();
-                if u2.is_empty() { ui::toast(state::tr("paste a URL"), true); return; }
-                spawn(async move {
-                    match api::post("/api/v1/providers/resolve-url", json!({ "url": u2 })).await {
-                        Ok(r) => resolved.set(Some(r)),
-                        Err(e) => { resolved.set(None); ui::toast(e.message, true); }
-                    }
-                });
-            },
-            span { class: "muted", {state::tr("or page URL:")} }
-            input { r#type: "text", placeholder: "https://www.igdb.com/games/… · thegamesdb.net/game.php?id=… · retroachievements.org/game/…", style: "min-width:420px", value: "{page_url}", oninput: move |e| page_url.set(e.value()) }
-            button { class: "btn small", {state::tr("resolve")} }
-        }
-        if let Some(r) = resolved() {
-            {
-                let (prov, pid) = (s(&r, "provider"), s(&r, "provider_id"));
-                let url = s(&r, "url");
-                let title = api::so(&r, "title").unwrap_or_else(|| state::tr("(not cached yet)"));
-                let link = link_url.clone();
-                rsx! {
-                    table { class: "grid", tr {
-                        td { Html { html: html::provider_icon(&prov) } " {prov}" }
-                        td { "{pid}" }
-                        td { "{title}" }
-                        td { if !url.is_empty() { a { class: "link", href: "{url}", target: "_blank", rel: "noopener", {state::tr("page")} } } }
-                        td { button { class: "btn small primary", onclick: move |_| link(prov.clone(), pid.clone()), {state::tr("link")} } }
-                    } }
-                }
-            }
-        }
-        form { class: "inline", style: "margin:10px 0",
-            onsubmit: move |e| {
-                e.prevent_default();
-                let v = id_value().trim().to_string();
-                if v.is_empty() { ui::toast(state::tr("type an id"), true); return; }
-                link_id(id_chosen.clone(), v);
-            },
-            span { class: "muted", {state::tr("or by id:")} }
-            select { onchange: move |e| id_provider.set(e.value()),
-                for p in all_names.clone() { option { value: "{p}", "{p}" } }
-            }
-            input { r#type: "text", placeholder: state::tr("provider id"), style: "width:140px", value: "{id_value}", oninput: move |e| id_value.set(e.value()) }
-            button { class: "btn small", {state::tr("link id")} }
-        }
         h3 { {state::tr("Current links")} }
         if current().is_empty() {
             span { class: "muted", {state::tr("none")} }
@@ -615,6 +514,112 @@ fn MatchDialog(kind: &'static str, id: u64, name: String, platform_id: Option<u6
                         }
                     }
                 }
+            }
+        }
+        h3 { {state::tr("Search")} }
+        div { class: "muted", {state::tr("Search a provider by name and link the right entry, paste its page URL, or type its id.")} " " b { {state::tr("local")} } " " {state::tr("searches what's already cached (bulk syncs, earlier lookups; no network, every provider incl. IGDB; the platform filter applies to TheGamesDB and RetroAchievements);")} " " b { {state::tr("online")} } " " {state::tr("asks the provider. Title-tier providers (IGDB, ScreenScraper, …) attach to the title; RetroAchievements / TheGamesDB attach to releases. A manual link is never replaced automatically; linking queues a metadata + art fetch.")} }
+        form { class: "inline", style: "margin:10px 0",
+            onsubmit: move |e| {
+                e.prevent_default();
+                let path = format!("/api/v1/providers/{}/search{}", chosen2, api::qs(&[("name", q()), ("platform", platform()), ("local", if where_() == "local" { "true".into() } else { String::new() })]));
+                results.set(Some(Ok(Vec::new())));
+                spawn(async move {
+                    match api::get(&path).await {
+                        Ok(v) => results.set(Some(Ok(api::items(&v)))),
+                        Err(e) => { results.set(None); ui::toast(e.message, true); }
+                    }
+                });
+            },
+            select { onchange: move |e| where_.set(e.value()),
+                option { value: "local", selected: where_() == "local", {state::tr("local")} }
+                option { value: "online", selected: where_() == "online", {state::tr("online")} }
+            }
+            select { onchange: move |e| provider.set(e.value()),
+                for p in choices.clone() { option { value: "{p}", selected: p == chosen, "{p}" } }
+            }
+            input { r#type: "text", value: "{q}", style: "min-width:260px", oninput: move |e| q.set(e.value()) }
+            select { onchange: move |e| platform.set(e.value()),
+                option { value: "", {state::tr("any platform")} }
+                for p in state::platforms() { option { value: "{u(&p, \"id\")}", selected: u(&p, "id").to_string() == platform(), "{s(&p, \"name\")}" } }
+            }
+            button { class: "btn small primary", {state::tr("search")} }
+        }
+        div {
+            match results() {
+                None => rsx! {},
+                Some(Err(e)) => rsx! { span { class: "bad", "{e}" } },
+                Some(Ok(hits)) if hits.is_empty() => rsx! { span { class: "muted", {state::tr("no results")} } },
+                Some(Ok(hits)) => rsx! {
+                    table { class: "grid",
+                        for h in hits {
+                            {
+                                let link = link_hit.clone();
+                                let (prov, pid) = (s(&h, "provider"), s(&h, "provider_id"));
+                                let url = s(&h, "url");
+                                rsx! {
+                                    tr {
+                                        td { Html { html: html::provider_icon(&prov) } " {pid}" }
+                                        td { "{s(&h, \"title\")}" }
+                                        td { class: "muted", "{s(&h, \"platform\")}" }
+                                        td { if !url.is_empty() { a { class: "link", href: "{url}", target: "_blank", rel: "noopener", {state::tr("page")} } } }
+                                        td { button { class: "btn small primary", onclick: move |_| link(prov.clone(), pid.clone()), {state::tr("link")} } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+        // Pasting a URL or typing an id is the rare way in: folded.
+        details { class: "more",
+            summary { {state::tr("Paste a page URL or type an id")} }
+            form { class: "inline", style: "margin:10px 0",
+                onsubmit: move |e| {
+                    e.prevent_default();
+                    let u2 = page_url().trim().to_string();
+                    if u2.is_empty() { ui::toast(state::tr("paste a URL"), true); return; }
+                    spawn(async move {
+                        match api::post("/api/v1/providers/resolve-url", json!({ "url": u2 })).await {
+                            Ok(r) => resolved.set(Some(r)),
+                            Err(e) => { resolved.set(None); ui::toast(e.message, true); }
+                        }
+                    });
+                },
+                span { class: "muted", {state::tr("or page URL:")} }
+                input { r#type: "text", placeholder: "https://www.igdb.com/games/… · thegamesdb.net/game.php?id=… · retroachievements.org/game/…", style: "min-width:420px", value: "{page_url}", oninput: move |e| page_url.set(e.value()) }
+                button { class: "btn small", {state::tr("resolve")} }
+            }
+            if let Some(r) = resolved() {
+                {
+                    let (prov, pid) = (s(&r, "provider"), s(&r, "provider_id"));
+                    let url = s(&r, "url");
+                    let title = api::so(&r, "title").unwrap_or_else(|| state::tr("(not cached yet)"));
+                    let link = link_url.clone();
+                    rsx! {
+                        table { class: "grid", tr {
+                            td { Html { html: html::provider_icon(&prov) } " {prov}" }
+                            td { "{pid}" }
+                            td { "{title}" }
+                            td { if !url.is_empty() { a { class: "link", href: "{url}", target: "_blank", rel: "noopener", {state::tr("page")} } } }
+                            td { button { class: "btn small primary", onclick: move |_| link(prov.clone(), pid.clone()), {state::tr("link")} } }
+                        } }
+                    }
+                }
+            }
+            form { class: "inline", style: "margin:10px 0",
+                onsubmit: move |e| {
+                    e.prevent_default();
+                    let v = id_value().trim().to_string();
+                    if v.is_empty() { ui::toast(state::tr("type an id"), true); return; }
+                    link_id(id_chosen.clone(), v);
+                },
+                span { class: "muted", {state::tr("or by id:")} }
+                select { onchange: move |e| id_provider.set(e.value()),
+                    for p in all_names.clone() { option { value: "{p}", "{p}" } }
+                }
+                input { r#type: "text", placeholder: state::tr("provider id"), style: "width:140px", value: "{id_value}", oninput: move |e| id_value.set(e.value()) }
+                button { class: "btn small", {state::tr("link id")} }
             }
         }
         div { style: "margin-top:10px;text-align:right", button { class: "btn small", onclick: move |_| ui::close_modal(), {state::tr("close")} } }

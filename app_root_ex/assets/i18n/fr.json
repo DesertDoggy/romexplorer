@@ -3170,5 +3170,7 @@
   "{n} days ago": "il y a {n} jours",
   "{n} hours ago": "il y a {n} heures",
   "{n} job(s) queued on the server; sync to see the results": "{n} tâche(s) en file sur le serveur ; synchronisez pour voir les résultats",
-  "{n} minutes ago": "il y a {n} minutes"
+  "{n} minutes ago": "il y a {n} minutes",
+  "Details": "Détails",
+  "Paste a page URL or type an id": "Coller l’URL d’une page ou saisir un id"
 }

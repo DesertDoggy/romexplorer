@@ -13,6 +13,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 - La página de tareas muestra primero la lista de tareas. Las nuevas se inician desde «Nueva tarea».
 - Las subpestañas de la colección para los archivos propios y para el material que no es juego son ahora dos menús desplegables.
 - Los ajustes muestran un nombre en el idioma de la interfaz, con la clave debajo. Guardar y restablecer solo aparecen cuando cambian algo, y los ajustes de otra pantalla se dejan en esa pantalla.
+- Las páginas de título y de lanzamiento solo muestran como botones las acciones principales. Los enlaces a títulos relacionados están en la fila del juego base y los ids internos en «Detalles». La correspondencia manual muestra primero los enlaces actuales.
 
 **Audio de las ROM**
 - El índice de música de las ROM puede leer varias ROM a la vez (4 por defecto, se cambia en los ajustes de audio).
