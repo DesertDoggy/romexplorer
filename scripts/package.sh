@@ -419,7 +419,7 @@ elif [[ "$KIND" == "rommusic" ]]; then
         note "lib/$OS/$ARCH/openssl/lib (for rommusic-gui)"
     fi
     mkdir -p "$APP/lib/LICENSES"
-    for l in gme gme-kode54 agbplay SSEQPlayer lazyusf2 highly_experimental highly_theoretical mgba beetle-wswan libvgm fmt vgmstream ffmpeg chdman-simd mame libchdr dolphin cemu ZArchive zstd extract-xiso 7-Zip-zstd zlib-ng; do
+    for l in gme gme-kode54 agbplay SSEQPlayer lazyusf2 highly_experimental highly_theoretical mgba beetle-wswan libvgm vgmtrans TinySoundFont spdlog unarr zlib 98fmplayer fmt vgmstream ffmpeg chdman-simd mame libchdr dolphin cemu ZArchive zstd extract-xiso 7-Zip-zstd zlib-ng; do
         [[ -f "$LIB_ROOT/LICENSES/$l.LICENSE" ]] && cp -a "$LIB_ROOT/LICENSES/$l.LICENSE" "$APP/lib/LICENSES/"
     done
     note "lib/LICENSES/"

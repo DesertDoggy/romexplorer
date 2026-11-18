@@ -128,9 +128,9 @@ invulgares como 37,8 kHz. Um ficheiro reamostrado indica-o na etiqueta de coment
 | [libvgm](https://github.com/ValleyBell/libvgm) | [BSD-3-Clause, GPL-2.0+](../app_root_ex/lib/LICENSES/libvgm.LICENSE) |
 | [VGMTrans](https://github.com/vgmtrans/vgmtrans) | [zlib](../app_root_ex/lib/LICENSES/vgmtrans.LICENSE) |
 | [TinySoundFont](https://github.com/schellingb/TinySoundFont) | [MIT](../app_root_ex/lib/LICENSES/TinySoundFont.LICENSE) |
-| [98fmplayer](https://github.com/myon98/98fmplayer) | [BSD-2-Clause](https://github.com/myon98/98fmplayer) |
-| [vgmstream](https://github.com/vgmstream/vgmstream) | [ISC](https://github.com/vgmstream/vgmstream/blob/master/COPYING) |
-| [FFmpeg](https://github.com/FFmpeg/FFmpeg) | [LGPL-2.1+](https://github.com/FFmpeg/FFmpeg/blob/master/LICENSE.md) |
+| [98fmplayer](https://github.com/myon98/98fmplayer) | [BSD-2-Clause](../app_root_ex/lib/LICENSES/98fmplayer.LICENSE) |
+| [vgmstream](https://github.com/vgmstream/vgmstream) | [ISC](../app_root_ex/lib/LICENSES/vgmstream.LICENSE) |
+| [FFmpeg](https://github.com/FFmpeg/FFmpeg) | [LGPL-2.1+](../app_root_ex/lib/LICENSES/ffmpeg.LICENSE) |
 | [fmt](https://github.com/fmtlib/fmt) | [MIT](../app_root_ex/lib/LICENSES/fmt.LICENSE) |
 | [spdlog](https://github.com/gabime/spdlog) | [MIT](../app_root_ex/lib/LICENSES/spdlog.LICENSE) |
 | [unarr](https://github.com/selmf/unarr) | [LGPL-3.0](../app_root_ex/lib/LICENSES/unarr.LICENSE) |
