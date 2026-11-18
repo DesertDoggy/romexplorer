@@ -17,6 +17,8 @@ zapasową przed podmianą wersji.
 
 **Listy**
 - Widoki kart z wieloma pozycjami otwierają się i przewijają szybciej.
+- Shift+klik zaznacza zakres, jak w Windows i macOS. Kliknięcie obok pola wyboru zaznacza wpis zamiast go otwierać.
+- Zaznaczanie wielu wpisów w kolejnych listach: połączone tytuły, zadania ekranu skanowania, źródła DAT, pliki ROM, BIOS, ROM-y z łatką, listy materiałów, wersje definitywne i zalogowane urządzenia.
 
 **Postęp**
 - Każde zadanie pokazuje, co robi, ile jest wszystkiego i jak daleko doszło, także przy przeszukiwaniu folderów, sprawdzaniu i krokach bazy danych.

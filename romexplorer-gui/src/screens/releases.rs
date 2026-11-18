@@ -283,11 +283,33 @@ pub fn Bios() -> Element {
             "dat" => api::uo(r, "release_id").map(|id| Route::Release { id }),
             _ => api::uo(r, "file_id").map(|id| Route::File { id }),
         })
-        .local(|r| if api::b(r, "held") { "local" } else { "" });
+        .local(|r| if api::b(r, "held") { "local" } else { "" })
+        // A held row is selected by its file; one not held by its DAT entry, marked with
+        // NOT_HELD so the two never collide. Only files can be copied.
+        .select(
+            |r| api::uo(r, "file_id").unwrap_or_else(|| u(r, "release_id") | BIOS_NOT_HELD),
+            vec![crate::components::SelAction::new(&state::tr("copy to…"), |ids: Vec<u64>| async move {
+                let files: Vec<u64> = ids.iter().copied().filter(|id| id & BIOS_NOT_HELD == 0).collect();
+                let skipped = ids.len() - files.len();
+                if files.is_empty() {
+                    ui::toast(state::tr("none of the selected BIOS files is on disk"), true);
+                    return false;
+                }
+                if skipped > 0 {
+                    ui::toast(state::trf("{n} not on disk left out", &[("n", &skipped.to_string())]), false);
+                }
+                let n = files.len();
+                super::copy::copy_dialog(super::copy::file_selection(files), state::trf("{n} selected {kind}", &[("n", &n.to_string()), ("kind", &state::kind_word("files", false))]));
+                false
+            })],
+        );
         Spec(Rc::new(spec))
     });
     rsx! { Grid { spec } }
 }
+
+/// The BIOS list's selection key for a DAT entry no file of yours matches (see its `select`).
+const BIOS_NOT_HELD: u64 = 1 << 62;
 
 #[component]
 pub fn Releases(q: String) -> Element {
@@ -730,6 +752,7 @@ fn LocalGame(game: Value, release: Value, up: Option<u64>, down: Option<u64>, on
                     spec.bare = true;
                     spec.search = false;
                     spec.page_size = 500;
+                    let spec = spec.select(|f| u(f, "id"), vec![super::copy::copy_action("files")]);
                     let head2 = head.clone();
                     rsx! {
                         div { style: "margin:8px 0 4px",

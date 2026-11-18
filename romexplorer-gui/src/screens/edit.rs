@@ -360,7 +360,27 @@ fn MergesPage(q: String) -> Element {
         .filters(vec![
             Filter::Select { key: "grade", label: state::tr("grade"), options: Rc::new(|| std::iter::once((String::new(), state::tr("any grade"))).chain(["name", "hash", "manual"].into_iter().map(|g| (g.to_string(), state::tr(g)))).collect()) },
             Filter::Check { key: "include_undone", label: state::tr("include decoupled"), off: String::new() },
-        ]);
+        ])
+        // The row button for several at once: each selected merge decoupled (a split put
+        // back), one request each; ones already undone fail and are counted.
+        .select(
+            |r| u(r, "id"),
+            vec![SelAction::new(&state::tr("decouple selected"), move |ids: Vec<u64>| async move {
+                if !ui::confirm(&state::trf("Decouple {n} merge(s)? Splits among them are put back.", &[("n", &ids.len().to_string())])).await {
+                    return false;
+                }
+                let (mut done, mut failed) = (0usize, 0usize);
+                for id in &ids {
+                    match api::post(&format!("/api/v1/catalog/titles/merges/{id}/decouple"), json!({})).await {
+                        Ok(_) => done += 1,
+                        Err(_) => failed += 1,
+                    }
+                }
+                ui::toast(state::trf("{n} done, {failed} failed", &[("n", &done.to_string()), ("failed", &failed.to_string())]), failed > 0);
+                bump(reload);
+                true
+            })],
+        );
         Spec(Rc::new(spec))
     });
     let into_title = state::trf("into title #{id}", &[("id", &only)]);

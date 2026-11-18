@@ -741,10 +741,13 @@ fn MergeSuggestions() -> Element {
         _ => (Vec::new(), 0),
     };
     // Ticked suggestions (igdb ids), for merging or dismissing several at once.
-    let mut picked = use_signal(Vec::<String>::new);
+    let mut picked = use_signal(std::collections::BTreeSet::<String>::new);
     let page_ids: Vec<String> = items.iter().map(|g| s(g, "igdb_id")).collect();
+    // Shift + click ticks the rows from the last one ticked to this one.
+    let ms_anchor = use_signal(|| None::<String>);
+    let page_keys = std::rc::Rc::new(page_ids.clone());
     let bulk = move |action: &'static str, all: bool, n: u64| {
-        let (st, ids) = (status(), picked());
+        let (st, ids) = (status(), picked().into_iter().collect::<Vec<_>>());
         spawn(async move {
             if all {
                 let q = if action == "accept" { state::trf("Merge all {n} suggestions? Each can be undone under Edit › Combined titles.", &[("n", &n.to_string())]) } else { state::trf("Dismiss all {n} suggestions?", &[("n", &n.to_string())]) };
@@ -761,7 +764,7 @@ fn MergeSuggestions() -> Element {
                         text.push_str(&format!(" — {}", state::trf("{n} could not be merged", &[("n", &failed.to_string())])));
                     }
                     ui::toast(text, failed > 0);
-                    picked.set(Vec::new());
+                    picked.set(Default::default());
                     offset.set(0);
                     page.restart();
                 }
@@ -789,7 +792,7 @@ fn MergeSuggestions() -> Element {
         p { class: "muted", {state::tr("Titles linked to the same IGDB game that weren't merged automatically: the link is only a name-search guess, or the titles are on different platforms (ports). Accept merges them into one title (renamed by region priority); dismiss keeps them apart.")} }
         div { class: "toolbar",
             for x in ["pending", "accepted", "dismissed"] {
-                button { class: if x == st { "btn small on" } else { "btn small" }, onclick: move |_| { status.set(x.to_string()); offset.set(0); picked.set(Vec::new()); }, {state::tr(x)} }
+                button { class: if x == st { "btn small on" } else { "btn small" }, onclick: move |_| { status.set(x.to_string()); offset.set(0); picked.set(Default::default()); }, {state::tr(x)} }
             }
             span { class: "muted", " {count_text}" }
         }
@@ -797,7 +800,7 @@ fn MergeSuggestions() -> Element {
             div { class: "toolbar",
                 label {
                     input { r#type: "checkbox", checked: !page_ids.is_empty() && page_ids.iter().all(|id| picked().contains(id)),
-                        onchange: { let page_ids = page_ids.clone(); move |e: Event<FormData>| picked.set(if e.checked() { page_ids.clone() } else { Vec::new() }) } }
+                        onchange: { let page_ids = page_ids.clone(); move |e: Event<FormData>| picked.set(if e.checked() { page_ids.iter().cloned().collect() } else { Default::default() }) } }
                     " " {state::tr("select this page")}
                 }
                 button { class: "btn small primary", disabled: picked().is_empty(), onclick: move |_| bulk("accept", false, 0), {state::tr("merge selected")} }
@@ -809,18 +812,18 @@ fn MergeSuggestions() -> Element {
         }
         table { class: "grid",
             if items.is_empty() { tr { td { class: "muted", {state::tr("none")} } } }
-            for g in items {
+            for (gi, g) in items.into_iter().enumerate() {
                 {
                     let igdb = s(&g, "igdb_id");
+                    let page_keys = page_keys.clone();
                     let reason = s(&g, "reason");
                     let titles = api::arr(&g, "titles").to_vec();
                     let first = titles.first().map(|t| s(t, "name")).unwrap_or_default();
-                    let (i1, i2, i3) = (igdb.clone(), igdb.clone(), igdb.clone());
-                    let ticked = picked().contains(&igdb);
+                    let (i1, i2) = (igdb.clone(), igdb.clone());
                     rsx! {
                         tr {
                             if st != "accepted" {
-                                td { input { r#type: "checkbox", checked: ticked, onchange: move |e: Event<FormData>| { let mut now = picked(); now.retain(|id| *id != i3); if e.checked() { now.push(i3.clone()); } picked.set(now); } } }
+                                td { PickBox { keys: page_keys, index: gi, picked: picked, anchor: ms_anchor } }
                             }
                             td {
                                 if igdb.starts_with("name:") { {state::tr("name match")} } else { a { class: "link", href: "https://www.igdb.com/search?q={api::encode(&first)}", target: "_blank", rel: "noopener", "IGDB {igdb}" } }
@@ -1129,6 +1132,78 @@ pub fn PlatformPicker(checked: Signal<std::collections::BTreeSet<u64>>, offered:
                     }
                 }
             }
+        }
+    }
+}
+
+// --- selecting rows of a hand-built table ---
+//
+// The `Grid` has its own selection. These are for the few tables built by hand whose rows
+// have an action worth running on several at once: a checkbox per row, one in the header for
+// all, and shift+click on a checkbox selecting the range from the last one ticked -- the
+// console's `wirePicks`.
+
+/// The text both UIs give a row's selection checkbox.
+pub const PICK_TITLE: &str = "select (shift+click selects a range)";
+
+/// One row's checkbox. `keys` is every row's key in table order; `anchor` the last key ticked.
+#[component]
+pub fn PickBox(keys: std::rc::Rc<Vec<String>>, index: usize, picked: Signal<std::collections::BTreeSet<String>>, anchor: Signal<Option<String>>) -> Element {
+    let key = keys.get(index).cloned().unwrap_or_default();
+    let on = picked.read().contains(&key);
+    let k2 = key.clone();
+    rsx! {
+        input { r#type: "checkbox", checked: on, title: state::tr(PICK_TITLE),
+            onclick: move |e: MouseEvent| {
+                e.stop_propagation();
+                if !e.modifiers().shift() { return; }
+                e.prevent_default();
+                let from = anchor.peek().as_ref().and_then(|a| keys.iter().position(|k| k == a));
+                match from {
+                    Some(f) => {
+                        let (lo, hi) = if f <= index { (f, index) } else { (index, f) };
+                        picked.write().extend(keys[lo..=hi].iter().cloned());
+                    }
+                    None => {
+                        picked.write().insert(key.clone());
+                        anchor.set(Some(key.clone()));
+                    }
+                }
+            },
+            onchange: move |e| {
+                if e.checked() { picked.write().insert(k2.clone()); } else { picked.write().remove(&k2); }
+                anchor.set(Some(k2.clone()));
+            },
+        }
+    }
+}
+
+/// The header checkbox: every row of the table, or none.
+#[component]
+pub fn PickAll(keys: std::rc::Rc<Vec<String>>, picked: Signal<std::collections::BTreeSet<String>>) -> Element {
+    let all = !keys.is_empty() && keys.iter().all(|k| picked.read().contains(k));
+    rsx! {
+        input { r#type: "checkbox", checked: all, title: state::tr("select all"),
+            onchange: move |e| {
+                let mut p = picked.write();
+                if e.checked() { p.extend(keys.iter().cloned()); } else { for k in keys.iter() { p.remove(k); } }
+            },
+        }
+    }
+}
+
+/// "{n} selected", the actions, and "clear" -- shown only while something is picked.
+#[component]
+pub fn PickBar(picked: Signal<std::collections::BTreeSet<String>>, children: Element) -> Element {
+    let n = picked.read().len();
+    if n == 0 {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "toolbar selbar",
+            span { class: "muted", {state::trf("{n} selected", &[("n", &n.to_string())])} } " "
+            {children}
+            button { class: "btn small", onclick: move |_| picked.write().clear(), {state::tr("clear")} }
         }
     }
 }

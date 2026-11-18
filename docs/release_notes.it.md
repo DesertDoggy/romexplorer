@@ -17,6 +17,8 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 **Elenchi**
 - Le viste a schede con molte voci si aprono e scorrono più velocemente.
+- Maiusc+clic seleziona un intervallo, come su Windows e macOS. Un clic accanto a una casella la spunta invece di aprire la voce.
+- Selezione multipla in altri elenchi: titoli uniti, job della schermata Scansione, fonti DAT, file ROM, BIOS, ROM patchate, elenchi di materiale, versioni definitive e dispositivi connessi.
 
 **Avanzamento**
 - Ogni processo mostra cosa sta facendo, il totale e a che punto è, anche durante l'esplorazione delle cartelle, i controlli e i passaggi del database.

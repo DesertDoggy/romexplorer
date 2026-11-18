@@ -17,6 +17,8 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 **Listen**
 - Kartenansichten mit vielen Einträgen öffnen und scrollen schneller.
+- Umschalt+Klick wählt einen Bereich aus, wie unter Windows und macOS. Ein Klick neben ein Kontrollkästchen wählt den Eintrag aus, statt ihn zu öffnen.
+- Mehrfachauswahl in weiteren Listen: zusammengeführte Titel, Jobs im Scan-Bildschirm, DAT-Quellen, ROM-Dateien, BIOS, gepatchte ROMs, Materiallisten, definitive Versionen und angemeldete Geräte.
 
 **Fortschritt**
 - Jeder Job zeigt, was er gerade tut, die Gesamtzahl und wie weit er ist, auch beim Durchsuchen von Ordnern, bei Prüfungen und Datenbankschritten.

@@ -225,6 +225,21 @@ pub fn Family(id: u64) -> Element {
         });
     spec.search = false;
     spec.page_size = 500;
+    // The versions picked: into a set, or copied, like titles anywhere else.
+    let mut spec = spec.select(
+        |r| u(r, "title_id"),
+        vec![
+            crate::components::SelAction::new(&state::tr("add to set"), |ids: Vec<u64>| async move {
+                super::common::pick_set(json!({ "title_ids": ids }), None);
+                false
+            }),
+            crate::components::SelAction::new(&state::tr("copy to…"), |ids: Vec<u64>| async move {
+                let n = ids.len();
+                super::copy::copy_dialog(super::copy::title_selection(ids), state::trf("{n} selected {kind}", &[("n", &n.to_string()), ("kind", &state::kind_word("titles", false))]));
+                false
+            }),
+        ],
+    );
     let mv = move_member.clone();
     spec.reorder = Some(Rc::new(move |row, after| mv(row, after)));
     let key = format!("{head}-{}", members.iter().map(|r| u(r, "title_id").to_string()).collect::<Vec<_>>().join("."));

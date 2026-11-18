@@ -227,7 +227,8 @@ fn TitlePage(id: u64) -> Element {
             })
             .link(|r| Some(Route::Release { id: u(r, "id") }))
             .local(common::held_class)
-            .context(|r, _| async move { common::release_context(u(&r, "id"), s(&r, "name"), None, None, None).await })
+            .context(|r, sel| async move { common::release_context(u(&r, "id"), s(&r, "name"), sel, None, None).await })
+            .select(|r| u(r, "id"), common::release_sel_actions())
             .cards("releases", common::release_card),
         )
     });

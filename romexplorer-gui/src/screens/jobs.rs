@@ -304,7 +304,7 @@ fn progress_bar(j: &Value, full: bool) -> String {
 }
 
 /// `POST /api/v1/jobs/clear` with `body`; says what happened. `true` when it went through.
-async fn clear_jobs(body: Value) -> bool {
+pub async fn clear_jobs(body: Value) -> bool {
     match api::post("/api/v1/jobs/clear", body).await {
         Ok(r) => {
             let (n, kept) = (u(&r, "removed").to_string(), u(&r, "kept"));

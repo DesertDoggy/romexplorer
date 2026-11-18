@@ -1549,7 +1549,7 @@
   "removed tag {tag}": "タグ {tag} を削除しました",
   "resolving…": "解決中…",
   "searching…": "検索中…",
-  "select (or ctrl+click the row / cover; ctrl+drag selects a rectangle)": "選択（行／カバーを Ctrl+クリック、Ctrl+ドラッグで範囲選択）",
+  "select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)": "選択（Ctrl+クリックで行／カバーを 1 つずつ、Shift+クリックで範囲、Ctrl+ドラッグで四角の中を選択）",
   "set under <a class=\"link\" onclick=\"go('config/mode')\">Config › Mode</a>": "<a class=\"link\" onclick=\"go('config/mode')\">設定 › モード</a> で設定します",
   "setup token -- create the admin account in the app (Config > Users)": "セットアップトークン — アプリで管理者アカウントを作成してください（設定 › ユーザー）",
   "shutting down — start romexplorer_server again to use the console.": "停止中 — コンソールを使うには romexplorer_server を再度起動してください。",
@@ -3083,5 +3083,17 @@
   "step {n} of {total}:": "ステップ {n}/{total}:",
   "waiting for the server to start the job": "サーバーがジョブを開始するのを待っています",
   "asking the server to refresh RetroAchievements progress": "サーバーに RetroAchievements の進捗更新を依頼しています",
-  "taking RetroAchievements progress into the copy": "RetroAchievements の進捗をコピーに反映しています"
+  "taking RetroAchievements progress into the copy": "RetroAchievements の進捗をコピーに反映しています",
+  "decouple selected": "選択したものを分離",
+  "Decouple {n} merge(s)? Splits among them are put back.": "{n} 件の統合を分離しますか？ その間の分割は元に戻ります。",
+  "{n} done, {failed} failed": "{n} 件完了、{failed} 件失敗",
+  "sync selected": "選択したものを同期",
+  "import downloaded (selected)": "ダウンロード済みをインポート（選択分）",
+  "none of the selected sources has downloaded files": "選択したソースにダウンロード済みのファイルはありません",
+  "select (shift+click selects a range)": "選択（Shift+クリックで範囲選択）",
+  "select all": "すべて選択",
+  "none of the selected BIOS files is on disk": "選択した BIOS ファイルはどれもディスクにありません",
+  "{n} not on disk left out": "ディスクにない {n} 件を除外しました",
+  "sign out selected": "選択したものをサインアウト",
+  "Sign {n} device(s) out? They will have to sign in again.": "{n} 台のデバイスをサインアウトしますか？ 再度サインインが必要になります。"
 }

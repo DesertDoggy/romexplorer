@@ -1549,7 +1549,7 @@
   "removed tag {tag}": "태그 {tag} 제거함",
   "resolving…": "확인 중…",
   "searching…": "검색 중…",
-  "select (or ctrl+click the row / cover; ctrl+drag selects a rectangle)": "선택 (또는 행 / 커버를 Ctrl+클릭, Ctrl+드래그로 사각형 선택)",
+  "select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)": "선택 (Ctrl+클릭은 행 / 커버 하나씩, Shift+클릭은 범위, Ctrl+드래그는 사각형 안을 선택)",
   "set under <a class=\"link\" onclick=\"go('config/mode')\">Config › Mode</a>": "<a class=\"link\" onclick=\"go('config/mode')\">구성 › 모드</a>에서 설정",
   "setup token -- create the admin account in the app (Config > Users)": "설정 토큰 -- 앱에서 관리자 계정을 만드십시오 (구성 > 사용자)",
   "shutting down — start romexplorer_server again to use the console.": "종료 중 — 콘솔을 사용하려면 romexplorer_server를 다시 시작하십시오.",
@@ -3083,5 +3083,17 @@
   "step {n} of {total}:": "단계 {n}/{total}:",
   "waiting for the server to start the job": "서버가 작업을 시작하기를 기다리는 중",
   "asking the server to refresh RetroAchievements progress": "서버에 RetroAchievements 진행도 갱신을 요청하는 중",
-  "taking RetroAchievements progress into the copy": "RetroAchievements 진행도를 사본에 반영하는 중"
+  "taking RetroAchievements progress into the copy": "RetroAchievements 진행도를 사본에 반영하는 중",
+  "decouple selected": "선택 항목 분리",
+  "Decouple {n} merge(s)? Splits among them are put back.": "통합 {n}건을 분리하시겠습니까? 그 사이의 분할은 되돌려집니다.",
+  "{n} done, {failed} failed": "{n}건 완료, {failed}건 실패",
+  "sync selected": "선택 항목 동기화",
+  "import downloaded (selected)": "다운로드한 항목 가져오기(선택)",
+  "none of the selected sources has downloaded files": "선택한 소스에 다운로드한 파일이 없습니다",
+  "select (shift+click selects a range)": "선택 (Shift+클릭으로 범위 선택)",
+  "select all": "모두 선택",
+  "none of the selected BIOS files is on disk": "선택한 BIOS 파일이 디스크에 하나도 없습니다",
+  "{n} not on disk left out": "디스크에 없는 {n}건은 제외했습니다",
+  "sign out selected": "선택 항목 로그아웃",
+  "Sign {n} device(s) out? They will have to sign in again.": "기기 {n}대를 로그아웃하시겠습니까? 다시 로그인해야 합니다."
 }

@@ -17,6 +17,8 @@ Faites une sauvegarde avant de remplacer une version.
 
 **Listes**
 - Les vues en cartes avec beaucoup d'entrées s'ouvrent et défilent plus vite.
+- Maj+clic sélectionne une plage, comme sous Windows et macOS. Un clic à côté d’une case la coche au lieu d’ouvrir l’entrée.
+- Sélection multiple dans d’autres listes : titres fusionnés, tâches de l’écran Analyse, sources DAT, fichiers ROM, BIOS, ROM patchées, listes de contenus, versions définitives et appareils connectés.
 
 **Progression**
 - Chaque tâche indique ce qu'elle fait, le total et où elle en est, y compris pendant le parcours des dossiers, les vérifications et les étapes de base de données.
