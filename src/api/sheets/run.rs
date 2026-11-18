@@ -146,11 +146,14 @@ async fn file_ids_for(app: &App, paths: &[PathBuf]) -> Result<Vec<(u64, PathBuf)
 
 /// Builds the sidecars a request asks for.
 pub async fn run_create(app: &App, req: &SheetCreateRequest, progress: &Progress) -> Result<SheetSummary> {
+    use crate::database::jobs::thousands;
+    progress.force(0, None, "finding dumps that need a sheet").await;
     let games = selected(app, req).await?;
     let total = games.len() as u64;
     let mut summary = SheetSummary::default();
     for (i, game_id) in games.iter().enumerate() {
-        progress.report(i as u64, Some(total), &format!("dump {} of {total}", i + 1)).await;
+        let counts = |s: &SheetSummary| format!("dump {} of {} ({} written, {} skipped)", thousands(i as u64 + 1), thousands(total), thousands(s.created), thousands(s.skipped.len() as u64));
+        progress.report(i as u64, Some(total), &counts(&summary)).await;
         let target = resolve(app, *game_id, req.target).await?;
         let candidate = match super::examine(app, *game_id, target).await {
             Ok(c) => c,
@@ -165,6 +168,7 @@ pub async fn run_create(app: &App, req: &SheetCreateRequest, progress: &Progress
             summary.skipped.push(format!("{}: {}", candidate.game_name, blocked.reason()));
             continue;
         }
+        progress.report(i as u64, Some(total), &format!("{}: {}", counts(&summary), candidate.game_name)).await;
 
         // Renaming first, because the sheet has to name the files as they will be, not as they
         // were. Only ever when asked, and only when the caller has seen the table.
@@ -239,13 +243,15 @@ pub async fn run_verify(app: &App, req: &SheetVerifyRequest, progress: &Progress
     if let Some(days) = req.older_than_days {
         query = query.bind(days);
     }
+    progress.force(0, None, if m3u { "listing playlists to check" } else { "listing sheets to check" }).await;
     let rows = query.bind(req.limit.unwrap_or(500).clamp(1, 100_000)).fetch_all(&app.pool).await?;
 
     let total = rows.len() as u64;
     let mut summary = VerifySummary::default();
     for (i, row) in rows.iter().enumerate() {
         let (id, path, content_id): (u64, String, u64) = (row.try_get("id")?, row.try_get("path")?, row.try_get("content_id")?);
-        progress.report(i as u64, Some(total), &format!("{} of {total}: {path}", i + 1)).await;
+        let tally = format!("{} verified, {} broken, {} fixed", crate::database::jobs::thousands(summary.verified), crate::database::jobs::thousands(summary.broken.len() as u64), crate::database::jobs::thousands(summary.fixed));
+        progress.report(i as u64, Some(total), &format!("{} of {} ({tally}): {path}", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(total))).await;
         match super::check_file(app, id, std::path::Path::new(&path), content_id).await {
             Ok(crate::rom::sheet_build::SheetVerdict::Verified) => {
                 summary.checked += 1;

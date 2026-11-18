@@ -20,6 +20,12 @@ mod bundled {
 /// Call once, first thing in `main`, before any thread exists (it may set an environment
 /// variable).
 pub fn ensure() -> Result<(), String> {
+    ensure_with(&|_| {})
+}
+
+/// [`ensure`], saying so when the first run unpacks the bundled libraries (a few seconds).
+#[cfg_attr(not(feature = "bundled-natives"), allow(unused_variables))]
+pub fn ensure_with(on_message: &dyn Fn(&str)) -> Result<(), String> {
     // The app has its libraries in the APK. The command-line tools on Android (a terminal app,
     // `adb shell`) are single files like the desktop ones, and unpack what they carry.
     #[cfg(target_os = "android")]
@@ -32,7 +38,7 @@ pub fn ensure() -> Result<(), String> {
         std::env::set_var("TMPDIR", std::env::temp_dir());
     }
     #[cfg(feature = "bundled-natives")]
-    unpack()?;
+    unpack(on_message)?;
     Ok(())
 }
 
@@ -82,7 +88,7 @@ fn link_apk_libraries() -> Result<(), String> {
 }
 
 #[cfg(feature = "bundled-natives")]
-fn unpack() -> Result<(), String> {
+fn unpack(on_message: &dyn Fn(&str)) -> Result<(), String> {
     use crate::settings::{data_dir, exe_dir};
 
     // An explicit root, or a `lib/` beside the executable, wins over the embedded copy.
@@ -100,10 +106,15 @@ fn unpack() -> Result<(), String> {
     let dir = root.join("lib").join(bundled::OS).join(bundled::ARCH);
     std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
-    for (name, raw_len, packed) in bundled::FILES {
+    let mut told = false;
+    for (index, (name, raw_len, packed)) in bundled::FILES.iter().enumerate() {
         let path = dir.join(name);
         if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == *raw_len) {
             continue;
+        }
+        if !told {
+            told = true;
+            on_message(&format!("first run: unpacking {} bundled libraries into {}", bundled::FILES.len() - index, dir.display()));
         }
         let bytes = zstd::decode_all(*packed).map_err(|err| format!("unpacking {name}: {err}"))?;
         // Written under a per-process name and renamed into place, so two chdlite processes

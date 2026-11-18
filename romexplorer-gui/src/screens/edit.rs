@@ -410,6 +410,8 @@ fn MergesPage(q: String) -> Element {
 #[component]
 pub fn EditOrders() -> Element {
     let reload = use_signal(|| 0u64);
+    // While "reset all" runs (it answers when done): what the button says instead.
+    let resetting = use_signal(|| false);
     let spec = use_hook(move || {
         let columns = vec![
             Column::render("title", &state::tr("title"), |r| rsx! { CellLink { to: Route::TitleDetail { id: u(r, "title_id") }, text: s(r, "title_name") } }),
@@ -441,17 +443,21 @@ pub fn EditOrders() -> Element {
         )
         .toolbar(move || {
             rsx! {
-                button { class: "btn small danger",
+                button { class: "btn small danger", disabled: resetting(),
                     onclick: move |_| {
                         spawn(async move {
                             if !ui::confirm(&state::tr("Put every title back in the default release order?")).await { return; }
-                            match api::post("/api/v1/catalog/titles/release-orders/clear", json!({ "all": true })).await {
+                            let mut resetting = resetting;
+                            resetting.set(true);
+                            let answer = api::post("/api/v1/catalog/titles/release-orders/clear", json!({ "all": true })).await;
+                            resetting.set(false);
+                            match answer {
                                 Ok(r) => { ui::toast(state::trf("reset {n} title(s)", &[("n", &u(&r, "cleared").to_string())]), false); bump(reload); }
                                 Err(e) => ui::toast(e.message, true),
                             }
                         });
                     },
-                    {state::tr("reset all")}
+                    if resetting() { {state::tr("Resetting every release order…")} } else { {state::tr("reset all")} }
                 }
             }
         });

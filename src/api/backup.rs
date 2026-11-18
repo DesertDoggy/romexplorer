@@ -522,8 +522,11 @@ pub async fn create(app: &App, kind: Kind, progress: &crate::database::jobs::Pro
     progress.force(total_rows.max(1), Some(total_rows.max(1)), "joining the tables into one file").await;
     let counts = counts.into_inner().unwrap();
     let mut tables = Vec::new();
+    let parts = wanted.len();
     for (i, table) in wanted.iter().enumerate() {
         let part = part_path(i);
+        let size = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        progress.report(i as u64, Some(parts as u64), &format!("joining table {} of {parts} ({table}, {})", i + 1, crate::database::jobs::human_bytes(size))).await;
         let joined = (|| -> std::result::Result<(), String> {
             let mut archive = zip::ZipArchive::new(std::fs::File::open(&part).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             let copied = zip.raw_copy_file(archive.by_index_raw(0).map_err(|e| e.to_string())?).map_err(|e| e.to_string());

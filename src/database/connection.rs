@@ -144,8 +144,19 @@ pub async fn probe(config: &DatabaseConfig) -> Result<DatabaseState, DatabaseErr
 /// [`sqlx::migrate!`]) that this pool's database hasn't already recorded as applied, then
 /// the data migrations done in Rust (`release_merge`, `release_editions`).
 pub async fn migrate(pool: &MySqlPool) -> Result<(), DatabaseError> {
+    use crate::common::startup;
+    // One at a time when there are any, so start-up can say which: the same migrations, in
+    // the same order, as one `run` would apply. No table yet (a new database): all pending.
+    let applied: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = TRUE").fetch_all(pool).await.unwrap_or_default().into_iter().collect();
+    let pending: Vec<&sqlx::migrate::Migration> = MIGRATOR.iter().filter(|m| !m.migration_type.is_down_migration() && !applied.contains(&m.version)).collect();
+    for (i, m) in pending.iter().enumerate() {
+        startup::report(format!("Applying schema update {} of {}: {}", i + 1, pending.len(), m.description));
+        MIGRATOR.run_to(m.version, pool).await.map_err(DatabaseError::from)?;
+    }
+    // Validates what was applied before, as it always did, and applies anything left.
     MIGRATOR.run(pool).await.map_err(DatabaseError::from)?;
     data_migrations(pool).await?;
+    startup::report("Checking the change tracking");
     // Here and not in `data_migrations`: it is DDL (columns, triggers), so it needs the same
     // rights the migrations do, and it only has anything to do when they changed the schema.
     super::sync_rev::ensure(pool, &crate::api::sync::tracked_tables()).await
@@ -154,21 +165,43 @@ pub async fn migrate(pool: &MySqlPool) -> Result<(), DatabaseError> {
 /// The data migrations done in Rust. Idempotent, and plain DML -- unlike [`MIGRATOR`], which
 /// opens with `CREATE TABLE IF NOT EXISTS _sqlx_migrations` even when nothing is pending.
 async fn data_migrations(pool: &MySqlPool) -> Result<(), DatabaseError> {
+    // Each said before it runs (`common::startup`): most do nothing after their first run,
+    // but one that has work can take a while, and start-up should say which it is.
+    const TOTAL: usize = 14;
+    let mut n = 0;
+    let mut step = |name: &str| {
+        n += 1;
+        crate::common::startup::report(format!("Data upgrade {n} of {TOTAL}: {name}"));
+    };
+    step("merging duplicate releases");
     super::release_merge::merge_duplicate_releases(pool).await?;
+    step("release editions");
     super::release_editions::backfill(pool).await?;
+    step("re-releases");
     super::release_editions::backfill_rereleases(pool).await?;
+    step("release variants");
     super::release_editions::backfill_variants(pool).await?;
+    step("queueing the demo repair");
     super::merge_audit::queue_demo_repair_once(pool).await?;
+    step("queueing the platform repair");
     super::merge_audit::queue_platform_repair_once(pool).await?;
+    step("queueing the lost IGDB link repair");
     super::merge_audit::queue_lost_igdb_repair_once(pool).await?;
+    step("queueing the unlicensed repair");
     super::merge_audit::queue_unlicensed_repair_once(pool).await?;
+    step("queueing the subset repair");
     super::merge_audit::queue_subset_repair_once(pool).await?;
+    step("settling merged suggestions");
     super::title_merge::settle_merged_suggestions_once(pool).await?;
+    step("moving colour releases");
     super::release_merge::move_color_releases_once(pool).await?;
+    step("logging past splits");
     super::title_merge::log_past_splits_once(pool).await?;
     // A collection's running number in front of a name ("0743 - ...") is no other game.
+    step("rechecking split names");
     super::title_review::recheck_split_names_once(pool, "split_names_release_numbers").await?;
     // Cheap (roms still on no platform only), and it catches what any path linked.
+    step("ROM platforms");
     let placed = super::import::confirm_rom_platforms(pool).await?;
     if placed > 0 {
         log::info!("{placed} rom(s) took their release's platform");

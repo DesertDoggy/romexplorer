@@ -24,7 +24,7 @@ use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 
 use crate::database::import::sha1_hex;
-use crate::database::jobs::Progress;
+use crate::database::jobs::{human_bytes, thousands, Progress};
 use crate::database::media_store::sanitize_component;
 use crate::database::settings as db_settings;
 
@@ -115,6 +115,7 @@ pub async fn run(app: &App, progress: &Progress) -> Result<AudioSyncSummary> {
             .map_err(|e| Error::unavailable(format!("{}: its audio list was not understood ({e}); is the server up to date?", source.name)))?;
         let got = page.items.len() as u32;
         summary.listed += u64::from(got);
+        progress.report(summary.listed, Some(page.total.max(1)), &format!("{}: reading its audio library: {} of {} listed", source.name, thousands(summary.listed), thousands(page.total))).await;
         wanted.extend(page.items.into_iter().filter(|t| !t.deleted && t.tags.as_deref().is_some_and(|tags| !tags.is_empty()) && Support::from_name(&t.support) != Support::Unsupported));
         offset += got;
         if got == 0 || u64::from(offset) >= page.total {
@@ -125,14 +126,15 @@ pub async fn run(app: &App, progress: &Progress) -> Result<AudioSyncSummary> {
     let total = wanted.len() as u64;
 
     for (i, track) in wanted.iter().enumerate() {
-        progress.report(i as u64, Some(total), &format!("{}: track {} of {total}, {} fetched -- {}", source.name, i + 1, summary.fetched, track.file_name)).await;
+        let at = format!("{}: track {} of {} ({} fetched)", source.name, thousands(i as u64 + 1), thousands(total), thousands(summary.fetched));
+        progress.report(i as u64, Some(total), &format!("{at}: {}", track.file_name)).await;
         let held: Option<(u64, String)> = sqlx::query_as("SELECT id, path FROM audio_files WHERE remote_source_id = ? AND remote_id = ? AND deleted = FALSE").bind(source_id).bind(track.id).fetch_optional(&app.pool).await?;
         if let Some((local_id, _)) = held.filter(|(_, path)| Path::new(path).is_file()) {
             summary.already_held += 1;
             summary.updated += u64::from(refresh(app, local_id, track).await?);
             continue;
         }
-        match fetch(app, source_id, track, &format, bitrate, &dest).await {
+        match fetch(app, source_id, track, &format, bitrate, &dest, progress, (i as u64, total, &at)).await {
             Ok((bytes, converted)) => {
                 summary.fetched += 1;
                 summary.converted += u64::from(converted);
@@ -238,8 +240,17 @@ async fn remove_copy(app: &App, local_id: u64, path: &Path, dest: &Path) -> Resu
 }
 
 /// Downloads one track and records it. Returns its size and whether the server converted it.
-async fn fetch(app: &App, source_id: u16, track: &AudioRow, format: &str, bitrate: u32, dest: &Path) -> Result<(u64, bool)> {
+/// `at` is where the run is (done, total, "<source>: track n of N (k fetched)"), for the
+/// per-track progress: "(converting)" while the server makes the copy, then "(downloading
+/// 12.0 MiB)".
+#[allow(clippy::too_many_arguments)]
+async fn fetch(app: &App, source_id: u16, track: &AudioRow, format: &str, bitrate: u32, dest: &Path, progress: &Progress, at: (u64, u64, &str)) -> Result<(u64, bool)> {
+    let (done, total, at) = at;
     let query = if format == "none" { String::new() } else { format!("?format={format}&bitrate={bitrate}") };
+    // The server converts before it sends anything, so the wait before the first byte is
+    // the conversion.
+    let waiting = if format == "none" || track.format.eq_ignore_ascii_case(format) { "requesting" } else { "converting" };
+    progress.report(done, Some(total), &format!("{at} ({waiting}): {}", track.file_name)).await;
     let mut response = super::media_sync::from_main(app, &format!("/api/v1/audio/{}/file{query}", track.id), None).await?;
     let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
     // A server too old to say what it sent sent the original.
@@ -257,6 +268,7 @@ async fn fetch(app: &App, source_id: u16, track: &AudioRow, format: &str, bitrat
         while let Some(chunk) = response.chunk().await.map_err(|e| Error::unavailable(format!("the server stopped sending: {e}")))? {
             file.write_all(&chunk).await.map_err(|e| Error::internal(format!("write {}: {e}", partial.display())))?;
             bytes += chunk.len() as u64;
+            progress.report(done, Some(total), &format!("{at} (downloading {}): {}", human_bytes(bytes), track.file_name)).await;
         }
         file.flush().await.map_err(|e| Error::internal(format!("write {}: {e}", partial.display())))?;
         Ok::<u64, Error>(bytes)

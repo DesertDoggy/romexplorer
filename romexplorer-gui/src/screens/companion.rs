@@ -273,8 +273,12 @@ pub fn SyncSheet() -> Element {
                 button { class: "bp-choice", disabled: busy || ra_busy(),
                     onclick: move |_| {
                         ra_busy.set(true);
+                        // Its progress on the status line, as a full sync's is.
+                        *SYNCING.write() = Some(companion::Progress::default());
                         spawn(async move {
-                            match companion::ra_sync(true).await {
+                            let result = companion::ra_sync(true, |p| *SYNCING.write() = Some(p)).await;
+                            *SYNCING.write() = None;
+                            match result {
                                 Ok(n) => crate::ui::toast(state::trf("RA progress synced ({n} games)", &[("n", &n.to_string())]), false),
                                 Err(e) => crate::ui::toast(e.message, true),
                             }

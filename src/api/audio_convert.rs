@@ -191,10 +191,81 @@ fn cache_name(id: u64, target: Target, modified: Option<chrono::NaiveDateTime>) 
     format!("{id}-{}-{stamp}.{}", target.tag(), target.ext())
 }
 
-/// One conversion at a time. A conversion uses a whole core for seconds; two listeners
-/// opening the same DSD album should queue, not each start encoding every track, and the
-/// second finds the first one's file when its turn comes.
-pub(crate) static CONVERTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// A conversion's turn: its track's own lock (the same track asked for twice waits for the
+/// one in progress, and then finds its file) and one of the shared slots. Dropped when the
+/// conversion ends -- it is moved into the blocking task, so a dropped request does not free
+/// it early.
+pub(crate) struct Turn {
+    _track: tokio::sync::OwnedMutexGuard<()>,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Conversions at once: half the cores (at least one). Each uses a whole core for seconds;
+/// different tracks run side by side, but a whole album asked for at once must not take
+/// every core from the rest of the server.
+fn slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(slot_count())))
+}
+
+fn slot_count() -> usize {
+    (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) / 2).max(1)
+}
+
+/// One lock per track (by its cache name), held only while someone wants it.
+fn track_locks() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
+    LOCKS.get_or_init(Default::default)
+}
+
+/// Requests waiting for a turn right now (`GET /audio/converting`).
+static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Waits for `key`'s turn: after a conversion of the same track in progress, then for a free
+/// slot. While it waits it counts in [`status`]'s `waiting`.
+pub(crate) async fn turn(key: &str) -> Turn {
+    let lock = {
+        let mut map = track_locks().lock().unwrap_or_else(|p| p.into_inner());
+        map.retain(|_, w| w.strong_count() > 0);
+        match map.get(key).and_then(std::sync::Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+                map.insert(key.to_string(), std::sync::Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    struct Counted;
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            WAITING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    // Counted only when it cannot start at once.
+    let counted = (lock.try_lock().is_err() || slots().available_permits() == 0).then(|| {
+        WAITING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Counted
+    });
+    let track = lock.lock_owned().await;
+    let slot = slots().clone().acquire_owned().await.expect("the conversion slots are never closed");
+    drop(counted);
+    Turn { _track: track, _slot: slot }
+}
+
+/// How busy conversion is: what a player shows while its track is being made ("waiting for
+/// another conversion" when `waiting` is not 0).
+#[derive(Debug, Clone, Serialize)]
+pub struct ConvertStatus {
+    pub running: usize,
+    pub waiting: usize,
+    pub slots: usize,
+}
+
+pub fn status() -> ConvertStatus {
+    let total = slot_count();
+    ConvertStatus { running: total.saturating_sub(slots().available_permits()), waiting: WAITING.load(std::sync::atomic::Ordering::Relaxed), slots: total }
+}
 
 /// The file for track `id`: the original, or its conversion -- made now if this is the
 /// first time it is asked for.
@@ -246,7 +317,7 @@ pub async fn serve(app: &App, id: u64, query: &FileQuery) -> Result<Served> {
 
     let dir = cache_dir(app).await;
     let cached = dir.join(cache_name(id, target, row.try_get("last_modified")?));
-    let _turn = CONVERTING.lock().await;
+    let _turn = turn(&cached.to_string_lossy()).await;
     if !cached.is_file() {
         let (source, out, is_dsd) = (path.clone(), cached.clone(), DSD.contains(&format.as_str()));
         // The turn goes with the conversion, so a dropped request does not free it early.
@@ -313,7 +384,8 @@ fn convert(source: &Path, out: &Path, target: Target, is_dsd: bool) -> std::resu
     let _ = std::fs::remove_file(&partial);
     let made = if is_dsd {
         // rdsd2pcm writes into a directory of its choosing, under a name of its choosing.
-        let scratch = dir.join(format!("dsd-{}", std::process::id()));
+        // Named after the output too: conversions of different tracks run side by side.
+        let scratch = dir.join(format!("dsd-{}-{}", std::process::id(), out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
         let _ = std::fs::remove_dir_all(&scratch);
         let result = match target {
             // 24-bit at twice the CD rate: what DSD64 holds that 16/44.1 would lose.

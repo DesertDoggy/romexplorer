@@ -125,6 +125,13 @@ pub enum Fetched {
 /// the body is read, so nothing is wasted on the provider's side. `force` always
 /// downloads. Returns the outcome and the file's current ETag / Last-Modified.
 pub async fn download_if_changed(http: &reqwest::Client, url: &str, dest: &Path, known: Option<&DumpFile>, force: bool, progress: &Progress, label: &str) -> Result<(Fetched, Option<String>, Option<String>), DatabaseError> {
+    download_counted(http, url, dest, known, force, progress, label, None).await
+}
+
+/// [`download_if_changed`], also adding each chunk's bytes to `counted`: for downloads that
+/// run side by side and report one total between them.
+#[allow(clippy::too_many_arguments)]
+async fn download_counted(http: &reqwest::Client, url: &str, dest: &Path, known: Option<&DumpFile>, force: bool, progress: &Progress, label: &str, counted: Option<&std::sync::atomic::AtomicU64>) -> Result<(Fetched, Option<String>, Option<String>), DatabaseError> {
     use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
     use tokio::io::AsyncWriteExt;
     // The shared client's 120 s timeout covers the whole response, body included, so a big
@@ -172,6 +179,9 @@ pub async fn download_if_changed(http: &reqwest::Client, url: &str, dest: &Path,
     while let Some(chunk) = tokio::time::timeout(DUMP_STALL, response.chunk()).await.map_err(|_| stalled(label, done))?? {
         file.write_all(&chunk).await?;
         done += chunk.len() as u64;
+        if let Some(counted) = counted {
+            counted.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         progress.report(done, total, &format!("{label}: {} of {}", mib(done), total.map(mib).unwrap_or_else(|| "?".to_string()))).await;
     }
     file.flush().await?;
@@ -232,7 +242,8 @@ pub async fn sync_thegamesdb_full(clients: &ProviderClients, http: &reqwest::Cli
     if backfill {
         log::info!("TheGamesDB dump unchanged; re-reading the local copy to fill in game platforms and regions");
     }
-    progress.force(0, None, "reading TheGamesDB dump").await;
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    progress.force(0, None, &format!("reading TheGamesDB dump ({})", mib(size))).await;
     let parse_path = path.clone();
     let dump: TgdbDump = tokio::task::spawn_blocking(move || -> Result<TgdbDump, DatabaseError> {
         let file = std::fs::File::open(&parse_path)?;
@@ -288,8 +299,12 @@ pub async fn sync_thegamesdb_full(clients: &ProviderClients, http: &reqwest::Cli
     }
     let platforms = by_platform.len() as u64;
     for (i, (platform, found)) in by_platform.into_iter().enumerate() {
-        progress.report(i as u64, Some(platforms), &format!("linking by name: {platform:?} ({} games)", found.len())).await;
-        summary.linked += super::thegamesdb_region::link_platform(pool, &regions, &priority, platform, &found).await?;
+        progress.force(i as u64, Some(platforms), &format!("linking by name: {platform:?} ({} games)", found.len())).await;
+        // Its own release-by-release reports fill this platform's share of the bar.
+        progress.set_inner_frame(Some(jobs::Frame { base: i as u64, span: 1, whole: platforms }));
+        let linked = super::thegamesdb_region::link_platform(pool, &regions, &priority, platform, &found, progress).await;
+        progress.set_inner_frame(None);
+        summary.linked += linked?;
         // The dump is TheGamesDB's whole list, so each platform's count is its total.
         let n = found.len() as u64;
         sync_state::record(pool, Provider::TheGamesDb, Some(platform), None, n, Some(n), true).await?;
@@ -400,6 +415,7 @@ fn hasheous_zip_url(name: &str) -> Result<String, DatabaseError> {
 /// `pages` = zips processed. Failed downloads don't stop the rest; the job fails at the end
 /// naming them, and a retry redoes only those (everything else is recorded as current).
 pub async fn sync_hasheous_dump(http: &reqwest::Client, pool: &MySqlPool, store: &RawStore, platform: Option<Platform>, mode: bulk::SyncMode, parallel: usize, progress: &Progress) -> Result<BulkSummary, DatabaseError> {
+    progress.force(0, None, "Hasheous: asking for the list of platform dumps").await;
     let all: Vec<HasheousZipInfo> = http.get(format!("{HASHEOUS_DUMPS_URL}/platforms?includeDetails=true")).send().await?.error_for_status()?.json().await?;
     let zips: Vec<HasheousZipInfo> = match platform {
         Some(p) => all.into_iter().filter(|z| platform_map::platform_from_dat_name(z.name.trim_end_matches(".zip")) == p).collect(),
@@ -410,6 +426,7 @@ pub async fn sync_hasheous_dump(http: &reqwest::Client, pool: &MySqlPool, store:
     }
     let dir = store.root().join("hasheous").join("dumps");
     let mut known: HashMap<String, DumpFile> = HashMap::new();
+    progress.force(0, None, &format!("Hasheous: comparing {} zip(s) with the copies here", zips.len())).await;
     for z in &zips {
         if let Some(k) = dump_file(pool, Provider::Hasheous, &z.name).await? {
             known.insert(z.name.clone(), k);
@@ -427,14 +444,17 @@ pub async fn sync_hasheous_dump(http: &reqwest::Client, pool: &MySqlPool, store:
     // Downloads run as tasks (dropping the set on cancel aborts them); processing happens
     // here, one zip at a time, as they arrive.
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel.max(1)));
+    // Bytes in so far across every download, against what Hasheous says the zips weigh.
+    let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let to_fetch: u64 = plan.iter().filter(|p| p.1).filter_map(|p| info.get(&p.0).and_then(|z| z.size_bytes)).sum();
     let mut downloads: tokio::task::JoinSet<(String, Result<(Option<String>, Option<String>, u64), DatabaseError>)> = tokio::task::JoinSet::new();
     let mut ready: std::collections::VecDeque<(String, Option<String>, Option<String>)> = std::collections::VecDeque::new();
     for (name, download, process) in &plan {
         if *download {
-            let (http, dest, name, url, semaphore) = (http.clone(), dir.join(name), name.clone(), hasheous_zip_url(name)?, semaphore.clone());
+            let (http, dest, name, url, semaphore, counted) = (http.clone(), dir.join(name), name.clone(), hasheous_zip_url(name)?, semaphore.clone(), fetched.clone());
             downloads.spawn(async move {
                 let _permit = semaphore.acquire_owned().await;
-                let result = download_if_changed(&http, &url, &dest, None, true, &Progress::none(), &name).await.map(|(fetched, etag, lm)| {
+                let result = download_counted(&http, &url, &dest, None, true, &Progress::none(), &name, Some(&counted)).await.map(|(fetched, etag, lm)| {
                     let bytes = match fetched {
                         Fetched::Downloaded { bytes } => bytes,
                         Fetched::Unchanged => 0,
@@ -457,7 +477,8 @@ pub async fn sync_hasheous_dump(http: &reqwest::Client, pool: &MySqlPool, store:
         while let Some((name, etag, last_modified)) = ready.pop_front() {
             let status = format!("Hasheous: {downloaded}/{to_download} downloaded ({}), {}/{to_process} processed; {} games, {} local matches, {} links -- {name}", mib(bytes), summary.pages, summary.games, summary.hashes, summary.linked);
             progress.report(summary.pages as u64, Some(to_process.max(1)), &status).await;
-            match process_hasheous_zip(pool, store, &dir.join(&name), &mut igdb_ids, progress, (summary.pages as u64, to_process.max(1), &status)).await {
+            let at = format!("Hasheous: zip {} of {to_process} ({downloaded}/{to_download} downloaded)", summary.pages + 1);
+            match process_hasheous_zip(pool, store, &dir.join(&name), &mut igdb_ids, progress, (summary.pages as u64, to_process.max(1), &at)).await {
                 Ok((games, hashes, links)) => {
                     summary.games += games;
                     summary.hashes += hashes;
@@ -472,7 +493,19 @@ pub async fn sync_hasheous_dump(http: &reqwest::Client, pool: &MySqlPool, store:
                 }
             }
         }
-        let Some(joined) = downloads.join_next().await else { break };
+        // Waiting on the downloads: what they have brought in so far, every second.
+        let joined = loop {
+            tokio::select! {
+                joined = downloads.join_next() => break joined,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    let running = downloads.len().min(parallel.max(1));
+                    let of = if to_fetch > 0 { format!(" / {}", mib(to_fetch)) } else { String::new() };
+                    let message = format!("Hasheous: downloading {running} zip(s), {}{of} ({downloaded} of {to_download} done)", mib(fetched.load(std::sync::atomic::Ordering::Relaxed)));
+                    progress.report(summary.pages as u64, Some(to_process.max(1)), &message).await;
+                }
+            }
+        };
+        let Some(joined) = joined else { break };
         let (name, result) = joined.map_err(|e| DatabaseError::Server(e.to_string()))?;
         match result {
             Ok((etag, last_modified, n)) => {
@@ -598,12 +631,16 @@ pub async fn match_hasheous_index(pool: &MySqlPool, store: &RawStore, scope: &st
 /// supplies the hash, the dump says which game that hash is. A Hasheous sync does the same
 /// while it reads a zip; this covers DATs imported after the zips were. No network.
 /// Returns how many contents were answered and the IGDB ids that linked something.
+///
+/// The caller's prefix says what this is ("matching against Hasheous dumps (3 of 3): "):
+/// the messages here say only which hash and the matches being recorded.
 pub async fn match_hasheous_index_catalog(pool: &MySqlPool, store: &RawStore, progress: &Progress) -> Result<(u64, BTreeSet<String>), DatabaseError> {
     if sqlx::query("SELECT 1 FROM hasheous_dump_roms LIMIT 1").fetch_optional(pool).await?.is_none() {
         return Ok((0, BTreeSet::new()));
     }
     let mut content_game: HashMap<u64, u64> = HashMap::new();
-    for algorithm in ["md5", "sha1"] {
+    for (n, algorithm) in ["md5", "sha1"].into_iter().enumerate() {
+        progress.force(0, None, &format!("{algorithm} ({} of 2)", n + 1)).await;
         let sql = format!(
             "SELECT h.content_id, MIN(r.game_id) AS game_id FROM hashes h \
              JOIN hasheous_dump_roms r ON r.algorithm = '{algorithm}' AND r.value_hex = h.value_hex \
@@ -615,7 +652,7 @@ pub async fn match_hasheous_index_catalog(pool: &MySqlPool, store: &RawStore, pr
             content_game.entry(row.try_get("content_id")?).or_insert(row.try_get("game_id")?);
         }
     }
-    record_index_matches(pool, store, content_game, progress, "Hasheous: matching the catalogue against the downloaded dumps").await
+    record_index_matches(pool, store, content_game, progress, "recording the matches").await
 }
 
 /// Records index matches (content -> `hasheous_dump_games` id). Returns how many contents
@@ -697,11 +734,13 @@ async fn index_hasheous_batch(pool: &MySqlPool, dump_name: &str, batch: &[Hasheo
 /// One Hasheous zip: parse its entries on a blocking thread (batches of 500 over a
 /// channel) and match/link each batch. Returns (games, contents matched, links).
 async fn process_hasheous_zip(pool: &MySqlPool, store: &RawStore, path: &Path, igdb_ids: &mut BTreeSet<String>, progress: &Progress, at: (u64, u64, &str)) -> Result<(u64, u64, u64), DatabaseError> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<HasheousDumpGame>>(4);
+    // Each batch goes with how far into the zip it reaches: (entries read, entries in all).
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Vec<HasheousDumpGame>, u64, u64)>(4);
     let read_path = path.to_path_buf();
     let reader = tokio::task::spawn_blocking(move || -> Result<(), DatabaseError> {
         let mut zip = zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(&read_path)?))?;
         let mut batch = Vec::with_capacity(500);
+        let entries = zip.len() as u64;
         for i in 0..zip.len() {
             let entry = zip.by_index(i)?;
             if !entry.name().to_ascii_lowercase().ends_with(".json") {
@@ -711,24 +750,27 @@ async fn process_hasheous_zip(pool: &MySqlPool, store: &RawStore, path: &Path, i
                 Ok(value) => batch.push(parse_hasheous_dump_game(&value)),
                 Err(e) => log::warn!("hasheous dump {}: entry {i}: {e}", read_path.display()),
             }
-            if batch.len() >= 500 && tx.blocking_send(std::mem::take(&mut batch)).is_err() {
+            if batch.len() >= 500 && tx.blocking_send((std::mem::take(&mut batch), i as u64 + 1, entries)).is_err() {
                 return Ok(());
             }
         }
         if !batch.is_empty() {
-            let _ = tx.blocking_send(batch);
+            let _ = tx.blocking_send((batch, entries, entries));
         }
         Ok(())
     });
     // This zip's rows in the hash index are replaced by what it holds now.
     let dump_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    progress.force(at.0, Some(at.1), &format!("{}: clearing the old index for {dump_name}", at.2)).await;
     sqlx::query("DELETE r FROM hasheous_dump_roms r JOIN hasheous_dump_games g ON g.id = r.game_id WHERE g.dump_name = ?").bind(&dump_name).execute(pool).await?;
     sqlx::query("DELETE FROM hasheous_dump_games WHERE dump_name = ?").bind(&dump_name).execute(pool).await?;
     let (mut games, mut hashes, mut links) = (0u64, 0u64, 0u64);
-    while let Some(batch) = rx.recv().await {
+    while let Some((batch, read, entries)) = rx.recv().await {
         games += batch.len() as u64;
+        let status = format!("{}: {} of {} entries, {} local matches -- {dump_name}", at.2, jobs::thousands(read), jobs::thousands(entries), jobs::thousands(hashes));
+        progress.report(at.0, Some(at.1), &status).await;
         index_hasheous_batch(pool, &dump_name, &batch).await?;
-        let (h, l) = apply_hasheous_batch(pool, store, &batch, igdb_ids, progress, at).await?;
+        let (h, l) = apply_hasheous_batch(pool, store, &batch, igdb_ids, progress, (at.0, at.1, &status)).await?;
         hashes += h;
         links += l;
     }

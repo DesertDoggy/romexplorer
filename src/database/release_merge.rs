@@ -243,8 +243,10 @@ pub async fn fold_patched_works(pool: &MySqlPool, progress: &super::jobs::Progre
     // needs a privilege the app's database user may not have.
     conn.execute("DELETE FROM release_merge").await?;
 
-    // 1. by name
-    progress.force(0, Some(2), "looking for versions of one patched work listed as releases of their own").await;
+    // 1. by name (the first half of the bar), 2. by content (the second).
+    use super::jobs::thousands;
+    const HALF: u64 = 1000;
+    progress.force(0, Some(2 * HALF), "looking for versions of one patched work listed as releases of their own").await;
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id, app_platform_id, name FROM `release` WHERE {patched} ORDER BY id"))).fetch_all(&mut *conn).await?;
     // (platform, work) -> (id, name, variant)
     let mut works: BTreeMap<(u16, String), Vec<(u64, String, Option<String>, String)>> = BTreeMap::new();
@@ -253,8 +255,13 @@ pub async fn fold_patched_works(pool: &MySqlPool, progress: &super::jobs::Progre
         let info = super::patch_names::analyze(&name);
         works.entry((r.try_get("app_platform_id")?, info.work.to_lowercase())).or_default().push((r.try_get("id")?, name, info.variant, info.work));
     }
-    for members in works.values().filter(|m| m.len() > 1) {
+    let groups: Vec<_> = works.values().filter(|m| m.len() > 1).collect();
+    let n = groups.len() as u64;
+    for (i, members) in groups.into_iter().enumerate() {
         let work = &members[0].3;
+        progress
+            .report(i as u64 * HALF / n.max(1), Some(2 * HALF), &format!("patched works: work {} of {} ({} folded): {work}", thousands(i as u64 + 1), thousands(n), thousands(summary.by_name)))
+            .await;
         let keep = members.iter().find(|(_, name, _, _)| name == work).unwrap_or(&members[0]).0;
         for (id, name, variant, _) in members {
             // Which build each file is: what the name said, or the name itself.
@@ -271,12 +278,16 @@ pub async fn fold_patched_works(pool: &MySqlPool, progress: &super::jobs::Progre
         sqlx::query("UPDATE IGNORE `release` SET name = ?, name_hash = ? WHERE id = ? AND name <> ?").bind(work).bind(super::import::sha1_hex(work)).bind(keep).bind(work).execute(&mut *conn).await?;
     }
     if summary.by_name > 0 {
+        progress.force(HALF, Some(2 * HALF), &format!("patched works: folding {} release(s) into their work", thousands(summary.by_name))).await;
         fold_works(&mut conn).await?;
     }
 
     // 2. by content: until nothing folds (a release folded into one that folds in turn).
-    progress.force(1, Some(2), "looking for patched releases that are another's ROMs under another name").await;
-    for _ in 0..5 {
+    progress.force(HALF, Some(2 * HALF), "looking for patched releases that are another's ROMs under another name").await;
+    for round in 0..5u64 {
+        progress
+            .force(HALF + round * HALF / 5, Some(2 * HALF), &format!("ROM matches: round {} of up to 5 ({} folded so far)", round + 1, thousands(summary.by_content)))
+            .await;
         conn.execute("DELETE FROM release_merge").await?;
         let mapped = sqlx::query(
             "INSERT INTO release_merge (old_id, new_id) SELECT pairs.small, MIN(pairs.big) FROM ( \
@@ -301,11 +312,14 @@ pub async fn fold_patched_works(pool: &MySqlPool, progress: &super::jobs::Progre
         if folding == 0 {
             break;
         }
+        progress
+            .force(HALF + round * HALF / 5, Some(2 * HALF), &format!("ROM matches: round {} of up to 5: folding {} release(s)", round + 1, thousands(folding as u64)))
+            .await;
         fold_works(&mut conn).await?;
         summary.by_content += folding as u64;
     }
     conn.execute("DELETE FROM release_merge").await?;
-    progress.force(2, Some(2), &format!("patched works: {} release(s) folded by name, {} by their ROMs", summary.by_name, summary.by_content)).await;
+    progress.force(2 * HALF, Some(2 * HALF), &format!("patched works: {} release(s) folded by name, {} by their ROMs", summary.by_name, summary.by_content)).await;
     Ok(summary)
 }
 

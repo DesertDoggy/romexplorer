@@ -199,7 +199,13 @@ fn part_path(dst: &Path) -> PathBuf {
 ///
 /// Only ones untouched for a while: another copy job into an overlapping folder (`/mnt/sd`
 /// and `/mnt/sd/roms` are different lanes) may be writing one right now.
+#[cfg(test)]
 fn sweep_parts(root: &Path, depth: u32) {
+    sweep_parts_counting(root, depth, &std::sync::atomic::AtomicU64::new(0));
+}
+
+/// [`sweep_parts`], adding each entry it looks at to `seen`, for a job to report.
+fn sweep_parts_counting(root: &Path, depth: u32, seen: &std::sync::atomic::AtomicU64) {
     const STALE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
     if depth > 6 {
         return;
@@ -207,6 +213,7 @@ fn sweep_parts(root: &Path, depth: u32) {
     let stale = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= STALE);
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for entry in entries.flatten() {
+        seen.fetch_add(1, Ordering::Relaxed);
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if path.is_dir() {
@@ -217,7 +224,7 @@ fn sweep_parts(root: &Path, depth: u32) {
                     let _ = std::fs::remove_dir_all(&path);
                 }
             } else {
-                sweep_parts(&path, depth + 1);
+                sweep_parts_counting(&path, depth + 1, seen);
             }
         } else if name.ends_with(PART_SUFFIX) && stale(&path) {
             let _ = std::fs::remove_file(&path);
@@ -340,8 +347,11 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
     // Every mount the job will read through, checked before anything is read. A mount aimed
     // at the wrong share passes `is_dir` and fails the probe, which is the failure worth
     // catching here rather than after a thousand wrong files.
+    progress.force(0, None, "listing the mounts").await;
     let mounts = mount::load(app, None).await?;
-    for m in &mounts {
+    let n_mounts = mounts.len();
+    for (i, m) in mounts.iter().enumerate() {
+        progress.force(i as u64, Some(n_mounts as u64), &format!("checking mount {} of {n_mounts}: {}", i + 1, m.local_path)).await;
         let check = mount::verify(app, m).await?;
         if !check.ok {
             return Err(Error::unavailable(format!("mount {} -> {}: {}", m.remote_prefix, m.local_path, check.detail)));
@@ -358,7 +368,7 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
     };
 
     progress.force(0, None, "planning").await;
-    let planned = plan::plan(app, req).await?;
+    let planned = plan::plan_reporting(app, req, progress).await?;
 
     if let Some(free) = planned.view.free_bytes {
         if free < planned.view.required_bytes {
@@ -371,7 +381,20 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         }
     }
 
-    sweep_parts(&root, 0);
+    {
+        // Over a share a deep destination takes a while to list: said as it goes.
+        let seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (counted, swept) = (Arc::clone(&seen), root.clone());
+        let what = |n: u64| format!("clearing stale part files in {}: {} entries looked at", root.display(), crate::database::jobs::thousands(n));
+        progress.force(0, None, &what(0)).await;
+        let mut sweep = tokio::task::spawn_blocking(move || sweep_parts_counting(&swept, 0, &counted));
+        loop {
+            tokio::select! {
+                _ = &mut sweep => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => progress.report(0, None, &what(seen.load(Ordering::Relaxed))).await,
+            }
+        }
+    }
 
     let mut summary = CopySummary {
         destination: root.display().to_string(),
@@ -570,10 +593,14 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         let first_turn = (0..3).find(|&i| left[i] > 0).unwrap_or(0);
         let (turn_tx, turn_rx) = tokio::sync::watch::channel(first_turn);
         progress.force(done.load(Ordering::Relaxed), Some(total_bytes), &format!("copying {n_work} file(s), up to {} small / {} medium / {} large at once", limits.small, limits.medium, limits.large)).await;
+        // The files being copied right now, each with its bytes, written beside the bar every
+        // second from a task of its own -- the loop below only wakes when a file ends.
+        let board = Arc::new(CopyBoard::default());
+        let _ticker = BoardTicker::start(&board, progress, Arc::clone(&done), total_bytes, n_work, serde_json::to_value(limits).unwrap_or_default());
         let mut running: FuturesUnordered<_> = work
             .iter()
             .map(|&file| {
-                let (gate, settings, cancel, done) = (&gate, &settings, &cancel, &done);
+                let (gate, settings, cancel, done, board) = (&gate, &settings, &cancel, &done, &board);
                 let mut turn = turn_rx.clone();
                 let my_turn = tier_index(file.weight);
                 async move {
@@ -582,11 +609,14 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
                     if cancel.is_set() {
                         return (file, Ok(CopyOutcome::Cancelled), None);
                     }
-                    let outcome = copy_one(app, file, settings, populate, container_flags, verify, cancel, progress, done, total_bytes).await;
+                    let ordinal = board.enter(file);
+                    let outcome = ON_BOARD.scope((Arc::clone(board), ordinal), copy_one(app, file, settings, populate, container_flags, verify, cancel, progress, done, total_bytes)).await;
+                    board.stage(ordinal, "check");
                     let checked = match &outcome {
                         Ok(CopyOutcome::Copied { converted, payload_converted, content_id, read_back, .. }) => Some(check_copy(app, file, verify, *converted, *payload_converted, *content_id, read_back.as_deref(), populate, container_flags).await),
                         _ => None,
                     };
+                    board.leave(ordinal);
                     (file, outcome, checked)
                 }
             })
@@ -697,7 +727,7 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         // What did land is recorded all the same: otherwise a later run finds it there,
         // takes it as done, and it is never registered at all.
         if req.mode.registers() {
-            if let Err(r) = register(app, &planned, &copied, &failed_items, &verified_files, &full_hashed).await {
+            if let Err(r) = register(app, &planned, &copied, &failed_items, &verified_files, &full_hashed, progress).await {
                 log::warn!("copy: registering the files copied before the failure: {}", r.message);
             }
         }
@@ -708,13 +738,14 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
     // playlist this run wrote (or found already there with the source's bytes): one the
     // conflict decisions kept, blocked or skipped is left as it is, and a cancelled run
     // rewrites none.
-    for file in planned.files.iter() {
+    let playlists: Vec<&PlannedCopy> = planned.files.iter().filter(|file| file.is_playlist && file.skip.is_none() && copied.iter().any(|(f, _)| std::ptr::eq(*f, *file))).collect();
+    let n_playlists = playlists.len();
+    for (i, file) in playlists.into_iter().enumerate() {
         if summary.cancelled || cancel.is_set() {
             break;
         }
-        if !file.is_playlist || file.skip.is_some() || !copied.iter().any(|(f, _)| std::ptr::eq(*f, file)) {
-            continue;
-        }
+        let name = file.destination.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        progress.report(done.load(Ordering::Relaxed), Some(total_bytes), &format!("rewriting playlist {} of {n_playlists}: {name}", i + 1)).await;
         if let Ok(text) = std::fs::read_to_string(&file.source.path) {
             // Every disc of the playlist's game, not only the first one it rides with: a
             // two-disc set converted to CHD had its second line left naming the old cue.
@@ -739,7 +770,7 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
     }
 
     if req.mode.registers() {
-        match register(app, &planned, &copied, &failed_items, &verified_files, &full_hashed).await {
+        match register(app, &planned, &copied, &failed_items, &verified_files, &full_hashed, progress).await {
             Ok((n, ra)) => {
                 summary.registered = n;
                 summary.ra_hashes_carried = ra;
@@ -1477,6 +1508,77 @@ async fn convert_disc(
     Ok(Some(CopyOutcome::Copied { bytes, converted: true, payload_converted: PAYLOAD_CONVERSION, content_id, read_back: None }))
 }
 
+tokio::task_local! {
+    /// The board a parallel copy's file is on, and its place there, for its `ProgressRelay`.
+    static ON_BOARD: (Arc<CopyBoard>, usize);
+}
+
+/// The files a parallel copy is working on right now: what the job row shows beside the bar,
+/// like a scan's (`files`, `running`, `limits`).
+#[derive(Default)]
+struct CopyBoard {
+    started: std::sync::atomic::AtomicUsize,
+    running: std::sync::Mutex<std::collections::BTreeMap<usize, crate::rom::multiple::RunningFile>>,
+}
+
+impl CopyBoard {
+    /// Puts `file` on the board; returns its place (1-based, in the order files started).
+    fn enter(&self, file: &PlannedCopy) -> usize {
+        let ordinal = self.started.fetch_add(1, Ordering::Relaxed) + 1;
+        let name = file.destination.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let stage = if file.format == OutputFormat::Same || file.source.member.is_some() { "copy" } else { "convert" };
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).insert(ordinal, crate::rom::multiple::RunningFile { name, size: file.weight, done: 0, stage: stage.to_string() });
+        ordinal
+    }
+
+    fn moved(&self, ordinal: usize, bytes: u64) {
+        if let Some(f) = self.running.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&ordinal) {
+            f.done = bytes;
+        }
+    }
+
+    fn stage(&self, ordinal: usize, stage: &str) {
+        if let Some(f) = self.running.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&ordinal) {
+            f.done = f.size;
+            f.stage = stage.to_string();
+        }
+    }
+
+    fn leave(&self, ordinal: usize) {
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&ordinal);
+    }
+}
+
+/// Writes a [`CopyBoard`] into the job every second -- "copying 12 of 300, 3 at once (3.1 GiB
+/// of 40 GiB): <name>" and the files themselves -- until dropped.
+struct BoardTicker(tokio::task::JoinHandle<()>);
+
+impl BoardTicker {
+    fn start(board: &Arc<CopyBoard>, progress: &Progress, done: Arc<std::sync::atomic::AtomicU64>, total: u64, n_work: usize, limits: serde_json::Value) -> Self {
+        let (board, progress) = (Arc::clone(board), progress.duplicate());
+        Self(tokio::spawn(async move {
+            use crate::database::jobs::{human_bytes, thousands};
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let files: Vec<crate::rom::multiple::RunningFile> = board.running.lock().unwrap_or_else(|p| p.into_inner()).values().cloned().collect();
+                let started = board.started.load(Ordering::Relaxed);
+                let now = done.load(Ordering::Relaxed);
+                // The file started last, named last: the row is cut at 255 characters.
+                let name = files.last().map(|f| format!(": {}", f.name)).unwrap_or_default();
+                let message = format!("copying {} of {}, {} at once ({} of {}){name}", thousands(started as u64), thousands(n_work as u64), files.len(), human_bytes(now), human_bytes(total));
+                let detail = serde_json::json!({ "files": files, "running": files.len(), "limits": limits });
+                progress.report_detail(now, Some(total), &message, &detail).await;
+            }
+        }))
+    }
+}
+
+impl Drop for BoardTicker {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Relays byte counts from the blocking copy back into the async `Progress` writer, which is
 /// the only side that may touch the database.
 /// Carries one file's progress from its blocking copy thread into the job's shared byte
@@ -1495,12 +1597,18 @@ impl ProgressRelay {
         // `Progress` is not `Clone`, and the relay only needs to write; a second `Progress`
         // on the same job row is the simplest thing that works.
         let relay_progress = progress.duplicate();
+        // Inside the parallel copy the file is on the board, and the board's ticker says
+        // which files and how far; a relay with no board says it itself.
+        let board = ON_BOARD.try_with(|(board, ordinal)| (Arc::clone(board), *ordinal)).ok();
         let handle = tokio::spawn(async move {
             let mut moved = 0u64;
             while let Some(n) = rx.recv().await {
                 moved += n;
                 let now = done.fetch_add(n, Ordering::Relaxed) + n;
-                relay_progress.report(now, Some(total), "copying").await;
+                match &board {
+                    Some((board, ordinal)) => board.moved(*ordinal, moved),
+                    None => relay_progress.report(now, Some(total), &format!("copying ({} of {})", crate::database::jobs::human_bytes(now), crate::database::jobs::human_bytes(total))).await,
+                }
             }
             moved
         });
@@ -1652,7 +1760,9 @@ async fn register(
     incomplete: &std::collections::HashSet<usize>,
     verified: &std::collections::HashSet<(usize, u64)>,
     full_hashed: &std::collections::HashSet<(usize, u64)>,
+    progress: &Progress,
 ) -> Result<(u64, u64)> {
+    use crate::database::jobs::thousands;
     use std::collections::HashMap;
 
     if copied.is_empty() {
@@ -1681,7 +1791,9 @@ async fn register(
         m
     });
 
-    for (file, converted) in copied {
+    let n_copied = copied.len() as u64;
+    for (i, (file, converted)) in copied.iter().enumerate() {
+        progress.report(i as u64, Some(n_copied), &format!("recording copied files: {} of {}", thousands(i as u64 + 1), thousands(n_copied))).await;
         let Some(parent) = file.destination.parent().map(Path::to_path_buf) else { continue };
         let directory_id = match dir_of.get(&parent) {
             Some(id) => *id,
@@ -1720,7 +1832,9 @@ async fn register(
         registered += 1;
     }
 
-    for (index, file_ids) in per_item {
+    let n_items = per_item.len() as u64;
+    for (i, (index, file_ids)) in per_item.into_iter().enumerate() {
+        progress.report(i as u64, Some(n_items), &format!("recording copied games: {} of {}", thousands(i as u64 + 1), thousands(n_items))).await;
         let Some(item) = planned.items.get(index) else { continue };
         // The rom's own main file at its new home: the destination of whichever planned entry
         // was the item's `main_path`, else the first one that landed.

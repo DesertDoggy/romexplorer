@@ -32,7 +32,7 @@ use sqlx::Row;
 use crate::common::models::Platform;
 use crate::database::directories::{self as db_dirs, Directory};
 use crate::database::import::sha1_hex;
-use crate::database::jobs::FileScanMode;
+use crate::database::jobs::{thousands, FileScanMode};
 use crate::database::providers::raw_store::RawStore;
 use crate::database::providers::{cache, Provider};
 use crate::database::settings;
@@ -764,11 +764,6 @@ async fn adopt_files_below(pool: &MySqlPool, dir: &Directory) -> Result<u64> {
     Ok(ours.len() as u64)
 }
 
-async fn local_file_is_live(pool: &MySqlPool, path: &str) -> Result<bool> {
-    let row = sqlx::query("SELECT deleted FROM local_files WHERE path_hash = ?").bind(sha1_hex(path)).fetch_optional(pool).await?;
-    Ok(matches!(row, Some(r) if !r.try_get::<bool, _>("deleted").unwrap_or(true)))
-}
-
 /// `local_rom.main_path` equal to a path (bound twice): the case-insensitive comparison finds
 /// the row through the column's prefix index (`idx_lrom_main_path`), the byte comparison keeps
 /// `A.gb` and `a.gb` apart -- two files on Linux, and two `local_files` rows everywhere
@@ -1068,25 +1063,164 @@ pub async fn run_file_scan(app: &App, req: &FileScanRequest, progress: &crate::d
     run_file_scan_since(app, req, None, progress).await
 }
 
-/// Whether a full scan that began at `since` already read the file at `path`: its row is
-/// live, was fully checked after `since`, and the file is the size and age the row says.
-/// Only a plain file can be judged this way (a folder candidate is always read again).
-async fn read_since(pool: &MySqlPool, path: &std::path::Path, since: chrono::NaiveDateTime) -> Result<bool> {
-    let Ok(meta) = std::fs::metadata(path) else { return Ok(false) };
-    if !meta.is_file() {
-        return Ok(false);
+/// A file scan's steps, for `jobs::Steps` (keys the jobs screens translate by).
+const SCAN_STEPS: [(&str, &str); 6] = [
+    ("scan_walk", "walking the folder"),
+    ("scan_precheck", "checking the files found"),
+    ("scan_hash", "reading and hashing"),
+    ("scan_playlists", "playlists and system files"),
+    ("scan_missing", "marking missing files"),
+    ("scan_links", "dropping stale release links"),
+];
+
+/// One candidate as measured before hashing: its bytes for the bar (a bundle folder's
+/// total), and for a plain file its length and modified time, which the pre-check compares
+/// with the database instead of reading them from disk a second time.
+struct Measured {
+    bytes: u64,
+    file: Option<(u64, Option<chrono::NaiveDateTime>)>,
+}
+
+/// [`Measured`] for each of `paths`, in order: sixteen lookups at a time (over a network
+/// share each is a round trip, and one at a time was most of a minute on a large library),
+/// reporting "measuring 4,100 of 9,880 files (12.3 GiB so far)" every second.
+async fn measure_candidates(paths: Vec<PathBuf>, progress: &crate::database::jobs::Progress) -> Result<Vec<Measured>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let n = paths.len() as u64;
+    let done = std::sync::Arc::new(AtomicU64::new(0));
+    let bytes = std::sync::Arc::new(AtomicU64::new(0));
+    let (done_w, bytes_w) = (std::sync::Arc::clone(&done), std::sync::Arc::clone(&bytes));
+    let message = |d: u64, b: u64| format!("measuring {} of {} files ({} so far)", thousands(d), thousands(n), human_bytes(b));
+    progress.force(0, Some(n), &message(0, 0)).await;
+    let mut handle = tokio::task::spawn_blocking(move || {
+        let one = |path: &PathBuf| {
+            let measured = match std::fs::metadata(path) {
+                Ok(m) if m.is_file() => Measured { bytes: m.len(), file: Some((m.len(), m.modified().ok().map(|t| chrono::DateTime::<chrono::Utc>::from(t).naive_utc()))) },
+                _ => Measured { bytes: candidate_bytes(path), file: None },
+            };
+            done_w.fetch_add(1, Ordering::Relaxed);
+            bytes_w.fetch_add(measured.bytes, Ordering::Relaxed);
+            measured
+        };
+        match rayon::ThreadPoolBuilder::new().num_threads(16).build() {
+            Ok(pool) => pool.install(|| {
+                use rayon::prelude::*;
+                paths.par_iter().map(one).collect::<Vec<_>>()
+            }),
+            Err(_) => paths.iter().map(one).collect(),
+        }
+    });
+    loop {
+        tokio::select! {
+            joined = &mut handle => return joined.map_err(|e| Error::internal(format!("measure task: {e}"))),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                let d = done.load(Ordering::Relaxed);
+                progress.report(d, Some(n), &message(d, bytes.load(Ordering::Relaxed))).await;
+            }
+        }
     }
-    let row = sqlx::query("SELECT size, last_modified FROM local_files WHERE path_hash = ? AND deleted = FALSE AND last_full_check > ?").bind(sha1_hex(&path.display().to_string())).bind(since).fetch_optional(pool).await?;
-    let Some(row) = row else { return Ok(false) };
-    let size: Option<u64> = row.try_get("size")?;
-    let recorded: Option<chrono::NaiveDateTime> = row.try_get("last_modified")?;
-    let modified = meta.modified().ok().map(|t| chrono::DateTime::<chrono::Utc>::from(t).naive_utc());
-    // The column keeps whole seconds; the file system keeps more.
-    let same_age = match (recorded, modified) {
-        (Some(a), Some(b)) => (a - b).num_seconds().abs() <= 1,
-        _ => true,
+}
+
+/// What `local_files` holds for one path (by `path_hash`), as a scan's pre-check reads it: a
+/// thousand paths to a query, where it used to be one query per candidate.
+#[derive(Debug, Clone, Copy)]
+struct Recorded {
+    /// `deleted = FALSE`.
+    live: bool,
+    size: Option<u64>,
+    last_modified: Option<chrono::NaiveDateTime>,
+    last_full_check: Option<chrono::NaiveDateTime>,
+}
+
+impl Recorded {
+    /// The file on disk is the size and age the row says. The column keeps whole seconds;
+    /// the file system keeps more.
+    fn unchanged(&self, len: u64, modified: Option<chrono::NaiveDateTime>) -> bool {
+        let same_age = match (self.last_modified, modified) {
+            (Some(a), Some(b)) => (a - b).num_seconds().abs() <= 1,
+            _ => true,
+        };
+        self.size == Some(len) && same_age
+    }
+}
+
+/// [`Recorded`] rows for `hashes` (sha1 of the path, see `sha1_hex`), a thousand to a query.
+async fn recorded_rows(pool: &MySqlPool, hashes: &[String]) -> Result<HashMap<String, Recorded>> {
+    let mut out = HashMap::with_capacity(hashes.len());
+    for chunk in hashes.chunks(1000) {
+        let sql = format!("SELECT path_hash, deleted, size, last_modified, last_full_check FROM local_files WHERE path_hash IN ({})", vec!["?"; chunk.len()].join(","));
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for hash in chunk {
+            query = query.bind(hash);
+        }
+        for row in query.fetch_all(pool).await? {
+            let recorded = Recorded { live: !row.try_get::<bool, _>("deleted")?, size: row.try_get("size")?, last_modified: row.try_get("last_modified")?, last_full_check: row.try_get("last_full_check")? };
+            out.insert(row.try_get("path_hash")?, recorded);
+        }
+    }
+    Ok(out)
+}
+
+/// Which candidates a scan does not read again, a thousand candidates at a time with one
+/// query per thousand paths, reporting each: "checking which files are already recorded:
+/// 1,204 of 9,880 (312 new): <name>".
+///
+/// - a new-files-only scan skips a file with a live row, and a folder game whose every file
+///   has a live row of the same size (a folder has no row of its own);
+/// - a full scan started again at `since` skips a plain file whose live row was fully checked
+///   after `since` and is the size and age the file is: the earlier run read it.
+async fn precheck(pool: &MySqlPool, mode: FileScanMode, since: Option<chrono::NaiveDateTime>, candidates: &[RomCandidate], measured: &[Measured], progress: &crate::database::jobs::Progress) -> Result<Vec<bool>> {
+    let n = candidates.len();
+    let mut skip = vec![false; n];
+    let resume = match (mode, since) {
+        (FileScanMode::NewOnly, _) => None,
+        (FileScanMode::Full, Some(since)) => Some(since),
+        // Every other mode reads every candidate.
+        _ => return Ok(skip),
     };
-    Ok(size == Some(meta.len()) && same_age)
+    let what = if resume.is_some() { "checking what an earlier run already read" } else { "checking which files are already recorded" };
+    let mut skipped = 0u64;
+    progress.force(0, Some(n as u64), &format!("{what}: 0 of {}", thousands(n as u64))).await;
+    const CHUNK: usize = 1000;
+    for (c, chunk) in candidates.chunks(CHUNK).enumerate() {
+        let base = c * CHUNK;
+        // Each candidate's paths to look up: its own, or a folder game's files with their
+        // sizes on disk (`None`: unreadable, so the folder is not taken as recorded).
+        let paths: Vec<Vec<(String, Option<u64>)>> = chunk
+            .iter()
+            .map(|candidate| {
+                if resume.is_none() && candidate.kind == rom_scan::CandidateKind::DirectoryBundle {
+                    crate::rom::platforms::directory_payload_paths(&candidate.path).into_iter().map(|f| (sha1_hex(&f.display().to_string()), std::fs::metadata(&f).ok().map(|m| m.len()))).collect()
+                } else {
+                    vec![(sha1_hex(&candidate.path.display().to_string()), None)]
+                }
+            })
+            .collect();
+        let hashes: Vec<String> = paths.iter().flatten().map(|(h, _)| h.clone()).collect();
+        let rows = recorded_rows(pool, &hashes).await?;
+        for (j, candidate) in chunk.iter().enumerate() {
+            let i = base + j;
+            let row = paths[j].first().and_then(|(h, _)| rows.get(h));
+            skip[i] = match resume {
+                None if candidate.kind == rom_scan::CandidateKind::DirectoryBundle => !paths[j].is_empty() && paths[j].iter().all(|(h, len)| len.is_some() && rows.get(h).is_some_and(|r| r.live && r.size == *len)),
+                None => row.is_some_and(|r| r.live),
+                // A `FileScanMode::Changed` scan slots in beside these: skip a plain file whose
+                // live row is `unchanged` (size and `last_modified`, as below, from
+                // `measured[i].file`), without the `last_full_check` condition.
+                Some(since) => match (row, measured[i].file) {
+                    (Some(r), Some((len, modified))) => r.live && r.last_full_check.is_some_and(|t| t > since) && r.unchanged(len, modified),
+                    _ => false,
+                },
+            };
+            if skip[i] {
+                skipped += 1;
+            }
+            let name = candidate.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let tally = if resume.is_some() { format!("{} already read", thousands(skipped)) } else { format!("{} new", thousands(i as u64 + 1 - skipped)) };
+            progress.report(i as u64 + 1, Some(n as u64), &format!("{what}: {} of {} ({tally}): {name}", thousands(i as u64 + 1), thousands(n as u64))).await;
+        }
+    }
+    Ok(skip)
 }
 
 /// [`run_file_scan`] as a job runs it. `since` is when the job was queued: a full scan
@@ -1119,6 +1253,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     // directory's from now on: a quick scan skips them as known, a rehash reads only its own
     // directory's rows, and the hash match after the scan looks only at this directory's --
     // so left with the folder above, they were never read or matched from here.
+    progress.force(0, None, &format!("preparing: taking over files a scan of a folder above {} recorded", dir.path)).await;
     let adopted = adopt_files_below(&app.pool, &dir).await?;
     if adopted > 0 {
         log::info!("scan of {}: took over {adopted} file(s) a scan of a folder above it recorded", dir.path);
@@ -1126,6 +1261,8 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     if req.mode == FileScanMode::Rehash {
         return rehash(app, &dir, forced, flags, summary, progress).await;
     }
+    let mut steps = crate::database::jobs::Steps::new(progress, &SCAN_STEPS, &dir.path);
+    steps.start(1).await;
     // A full scan marks what it did not see as missing at the end, not everything up front:
     // marking first left a whole library "missing" for as long as the scan ran, and for good
     // when it never finished (cancelled, server restarted). What this scan records gets
@@ -1141,6 +1278,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
         None
     };
 
+    progress.force(0, None, &format!("preparing: platforms of the folders in {}", dir.path)).await;
     let layout = match forced {
         Some(p) => PlatformLayout::Forced(p),
         None => PlatformLayout::SeparatedBySubdir(configured_subfolder_platforms(app, &dir).await?),
@@ -1153,8 +1291,10 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     };
     let (ext_heuristics, path_heuristics) = settings::scan_heuristics(&app.pool).await?;
     let files_seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let folder_seen = std::sync::Arc::new(std::sync::Mutex::new(PathBuf::new()));
     // Directories configured below this one keep their own settings in a scan from here:
     // their type, platform and whether their files are roms, and their rows stay theirs.
+    progress.force(0, None, &format!("preparing: directories configured below {}", dir.path)).await;
     let children = configured_below(&app.pool, &dir).await?;
     let configured: Vec<rom_scan::ConfiguredDir> = children.iter().map(|c| rom_scan::ConfiguredDir { path: PathBuf::from(&c.dir.path), dir_type: c.dir_type, platform: c.platform }).collect();
     let ctx = ScanContext {
@@ -1163,6 +1303,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
         heuristics: HeuristicFlags::new(ext_heuristics, path_heuristics),
         shapes: Vec::new(),
         files_seen: Some(std::sync::Arc::clone(&files_seen)),
+        folder_seen: Some(std::sync::Arc::clone(&folder_seen)),
         configured: std::sync::Arc::new(configured),
     };
     progress.force(0, None, &format!("walking {}", dir.path)).await;
@@ -1175,7 +1316,10 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
             joined = &mut walking => break joined.map_err(|e| Error::internal(format!("scan task: {e}")))?,
             _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
                 let seen = files_seen.load(std::sync::atomic::Ordering::Relaxed);
-                progress.force(0, None, &format!("walking {}: {seen} file(s) found so far", dir.path)).await;
+                // The folder last: a deep path is what the 255-character row cuts.
+                let folder = folder_seen.lock().unwrap_or_else(|p| p.into_inner()).display().to_string();
+                let place = if folder.is_empty() { String::new() } else { format!(", in {folder}") };
+                progress.force(0, None, &format!("walking: {} file(s) found so far{place}", crate::database::jobs::thousands(seen))).await;
             }
         }
     };
@@ -1191,36 +1335,37 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
         system_files.push((path.display().to_string(), system_type_name(found.file_type), platform.map(|p| p.igdb_id())));
         walk.rom_candidates.push(RomCandidate { path, kind: rom_scan::CandidateKind::Unknown, platform_hint: platform });
     }
-    progress.force(0, None, &format!("walked {}: {} file(s) found, {} to look at", dir.path, files_seen.load(std::sync::atomic::Ordering::Relaxed), walk.rom_candidates.len())).await;
+    let found = files_seen.load(std::sync::atomic::Ordering::Relaxed);
+    progress.force(0, None, &format!("walked {}: {} file(s) found, {} to look at", dir.path, thousands(found), thousands(walk.rom_candidates.len() as u64))).await;
+    steps.done(format!("{} file(s) found, {} to look at", thousands(found), thousands(walk.rom_candidates.len() as u64))).await;
     summary.candidates = walk.rom_candidates.len() as u64;
     summary.playlists_seen = walk.playlists.len() as u64;
 
-    let sizes: Vec<u64> = walk.rom_candidates.iter().map(|c| candidate_bytes(&c.path)).collect();
-    let total_bytes: u64 = sizes.iter().sum();
+    steps.start(2).await;
     let n = walk.rom_candidates.len();
+    // The walk lists without a lookup per entry (over a share each is a round trip), so the
+    // sizes are read here: several at once, which a share answers far faster than one by one.
+    let measured = measure_candidates(walk.rom_candidates.iter().map(|c| c.path.clone()).collect(), progress).await?;
+    let sizes: Vec<u64> = measured.iter().map(|m| m.bytes).collect();
+    let total_bytes: u64 = sizes.iter().sum();
 
     // A new-files-only scan skips what is already recorded: decided before anything is
-    // hashed, so the prefetch never reads a file the loop will not record.
-    let mut skip = vec![false; n];
-    if req.mode == FileScanMode::NewOnly {
-        for (i, candidate) in walk.rom_candidates.iter().enumerate() {
-            skip[i] = if candidate.kind == rom_scan::CandidateKind::DirectoryBundle { bundle_is_recorded(&app.pool, &candidate.path).await? } else { local_file_is_live(&app.pool, &candidate.path.display().to_string()).await? };
-        }
-    }
-    // A full scan started again goes on from where it was (`run_file_scan_since`).
-    if let (FileScanMode::Full, Some(since)) = (req.mode, since) {
-        let mut resumed = 0u64;
-        for (i, candidate) in walk.rom_candidates.iter().enumerate() {
-            if read_since(&app.pool, &candidate.path, since).await? {
-                skip[i] = true;
-                resumed += 1;
-            }
-        }
-        if resumed > 0 {
-            progress.force(0, None, &format!("going on from an earlier run of this scan: {resumed} of {n} file(s) already read")).await;
-        }
-    }
+    // hashed, so the prefetch never reads a file the loop will not record. A full scan
+    // started again goes on from where it was (`run_file_scan_since`).
+    let skip = precheck(&app.pool, req.mode, since, &walk.rom_candidates, &measured, progress).await?;
     summary.skipped_existing = skip.iter().filter(|s| **s).count() as u64;
+    let checked_note = match (req.mode, since) {
+        (FileScanMode::NewOnly, _) => format!("{} of {} already recorded", thousands(summary.skipped_existing), thousands(n as u64)),
+        (FileScanMode::Full, Some(_)) => format!("{} of {} already read by an earlier run", thousands(summary.skipped_existing), thousands(n as u64)),
+        _ => format!("{} file(s), {}", thousands(n as u64), human_bytes(total_bytes)),
+    };
+    if let (FileScanMode::Full, Some(_)) = (req.mode, since) {
+        if summary.skipped_existing > 0 {
+            progress.force(0, None, &format!("going on from an earlier run of this scan: {} of {} file(s) already read", thousands(summary.skipped_existing), thousands(n as u64))).await;
+        }
+    }
+    steps.done(checked_note).await;
+    steps.start(3).await;
     let style = super::sheets::style_setting(app).await?;
     let limits = settings::parallel_files(&app.pool, settings::KEY_SCAN_PARALLEL).await?.resolve_for(std::path::PathBuf::from(&dir.path), flags, crate::rom::operation::JobStages::default()).await?;
     progress.force(0, Some(total_bytes), &format!("hashing up to {} small / {} medium / {} large file(s) at once", limits.small, limits.medium, limits.large)).await;
@@ -1309,25 +1454,45 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     }
     // Stopped before the final message, so a late tick cannot write over it.
     report.finish().await;
-    for playlist in &walk.playlists {
-        let step = Step { progress, done_bytes: total_bytes, total_bytes, file_bytes: 0, label: "playlists".to_string() };
+    steps.done(format!("{} hashed, {} error(s)", thousands(summary.files_hashed), thousands(summary.errors.len() as u64))).await;
+
+    steps.start(4).await;
+    let n_playlists = walk.playlists.len() as u64;
+    for (i, playlist) in walk.playlists.iter().enumerate() {
+        let name = playlist.m3u_path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let label = format!("playlist {} of {}: {name}", thousands(i as u64 + 1), thousands(n_playlists));
+        progress.report(i as u64, Some(n_playlists), &label).await;
+        let step = Step { progress, done_bytes: i as u64, total_bytes: n_playlists, file_bytes: 1, label };
         let owner = owner_of(&children, &playlist.m3u_path);
         let platform = owner.and_then(|c| c.platform).or(forced).unwrap_or(Platform::Unknown);
         if let Err(e) = apply_playlist(&app.pool, owner.map_or(&dir, |c| &c.dir), playlist, platform, flags, &mut summary, &step).await {
             summary.errors.push(format!("{}: playlist: {e}", playlist.m3u_path.display()));
         }
     }
-    for (path, kind, platform) in &system_files {
+    let n_system = system_files.len() as u64;
+    for (i, (path, kind, platform)) in system_files.iter().enumerate() {
+        progress.report(i as u64, Some(n_system), &format!("noting system files: {} of {}", thousands(i as u64 + 1), thousands(n_system))).await;
         sqlx::query("UPDATE local_files SET system_type = ?, system_platform = ? WHERE path_hash = ? AND deleted = FALSE").bind(kind).bind(platform).bind(sha1_hex(path)).execute(&app.pool).await?;
     }
+    steps.done(format!("{} playlist(s), {} system file(s)", thousands(n_playlists), thousands(n_system))).await;
+
+    steps.start(5).await;
     if let Some(started) = full_scan_started {
-        summary.marked_missing = mark_unseen_missing(&app.pool, dir.id, started).await?;
+        summary.marked_missing = mark_unseen_missing(&app.pool, dir.id, started, progress).await?;
         // The directories below were walked too, so what they did not see is gone as well.
         for child in &children {
-            summary.marked_missing += mark_unseen_missing(&app.pool, child.dir.id, started).await?;
+            summary.marked_missing += mark_unseen_missing(&app.pool, child.dir.id, started, progress).await?;
         }
+        steps.done(format!("{} gone", thousands(summary.marked_missing))).await;
+    } else {
+        steps.done("skipped".to_string()).await;
     }
+
+    steps.start(6).await;
+    progress.force(0, None, "dropping release links of replaced files").await;
     summary.release_links_dropped = drop_unbacked_release_links(&app.pool, &std::mem::take(&mut summary.replaced_roms)).await?;
+    steps.done(format!("{} dropped", thousands(summary.release_links_dropped))).await;
+    steps.finish();
     (summary.chd_compared, summary.chd_not_compared, summary.chd_reader_differences) = crate::rom::chd_info::take_check_report();
     let chd_note = if summary.chd_reader_differences.is_empty() { String::new() } else { format!(", {} CHD(s) read differently by the built-in reader and chdman (listed in the result; please report)", summary.chd_reader_differences.len()) };
     let message = format!("done: {n} candidate(s), {} hashed, {} skipped, {} error(s){}{chd_note}", summary.files_hashed, summary.skipped_existing, summary.errors.len(), warnings_note(&summary));
@@ -1500,7 +1665,7 @@ async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: Hash
         let cfg = settings::serial_match(pool).await?;
         if !cfg.formats.is_empty() {
             progress.force(0, None, &format!("{name}: serial match for {} game(s) no hash matched", unlinked.len())).await;
-            let (linked, _) = crate::database::serial_match::match_games(pool, &unlinked, &cfg, &source_order).await?;
+            let (linked, _) = crate::database::serial_match::match_games(pool, &unlinked, &cfg, &source_order, progress).await?;
             for &game_id in &linked {
                 let releases: Vec<u64> = sqlx::query_scalar("SELECT release_id FROM local_release_games WHERE game_id = ? ORDER BY release_id").bind(game_id).fetch_all(pool).await?;
                 for release_id in releases {
@@ -1510,6 +1675,7 @@ async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: Hash
             unlinked.retain(|g| !linked.contains(g));
         }
     }
+    progress.force(0, None, "giving ROMs their release's platform").await;
     crate::database::import::confirm_rom_platforms(pool).await?;
     rescan.unmatched = unlinked.len() as u64;
 
@@ -1569,7 +1735,8 @@ async fn describe_link(pool: &MySqlPool, game_id: u64, release_id: u64) -> Resul
 /// `<=`, not `<`: the stamps are whole seconds, so a file checked by the previous scan in the
 /// very second this one started would otherwise never count as unseen. What this scan itself
 /// recorded in that second is caught too, and let go again by being on disk.
-async fn mark_unseen_missing(pool: &MySqlPool, directory_id: u64, started: chrono::NaiveDateTime) -> Result<u64> {
+async fn mark_unseen_missing(pool: &MySqlPool, directory_id: u64, started: chrono::NaiveDateTime, progress: &crate::database::jobs::Progress) -> Result<u64> {
+    progress.force(0, None, "listing the files this scan did not see").await;
     let unseen: Vec<(u64, String)> = sqlx::query_as("SELECT id, path FROM local_files WHERE directory_id = ? AND deleted = FALSE AND (last_full_check IS NULL OR last_full_check <= ?)")
         .bind(directory_id)
         .bind(started)
@@ -1577,7 +1744,17 @@ async fn mark_unseen_missing(pool: &MySqlPool, directory_id: u64, started: chron
         .await?;
     // Gone only when the system says so: an unreadable path (a permission, a share that
     // dropped for a moment) is not a deleted file.
-    let gone: Vec<u64> = unseen.into_iter().filter(|(_, path)| std::fs::metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)).map(|(id, _)| id).collect();
+    let n = unseen.len() as u64;
+    let mut gone: Vec<u64> = Vec::new();
+    for (i, (id, path)) in unseen.into_iter().enumerate() {
+        if std::fs::metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+            gone.push(id);
+        }
+        progress.report(i as u64 + 1, Some(n), &format!("checking {} unrecorded files still exist: {} of {} ({} gone)", thousands(n), thousands(i as u64 + 1), thousands(n), thousands(gone.len() as u64))).await;
+    }
+    if !gone.is_empty() {
+        progress.force(n, Some(n), &format!("marking {} file(s) missing", thousands(gone.len() as u64))).await;
+    }
     for part in gone.chunks(1000) {
         let list = part.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_files SET deleted = TRUE WHERE id IN ({list})"))).execute(pool).await?;
@@ -1619,24 +1796,6 @@ fn owner_of<'a>(children: &'a [ConfiguredChild], path: &Path) -> Option<&'a Conf
     children.iter().find(|c| db_dirs::path_contains(&c.dir.path, &path))
 }
 
-/// Whether a folder game is already recorded as it is: every file in it has a live row of
-/// the same size. A folder has no row of its own, so asking for its path found nothing and
-/// a new-files-only scan read every folder game again.
-async fn bundle_is_recorded(pool: &MySqlPool, dir: &Path) -> Result<bool> {
-    let files = crate::rom::platforms::directory_payload_paths(dir);
-    if files.is_empty() {
-        return Ok(false);
-    }
-    for file in files {
-        let Ok(meta) = std::fs::metadata(&file) else { return Ok(false) };
-        let size: Option<u64> = sqlx::query_scalar("SELECT size FROM local_files WHERE path_hash = ? AND deleted = FALSE").bind(sha1_hex(&file.display().to_string())).fetch_optional(pool).await?;
-        if size != Some(meta.len()) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
 /// The platforms configured on `dir`'s immediate subfolders, by folder name: the hint each
 /// subfolder's files get in a scan of `dir` (a folder's name is the fallback hint).
 async fn configured_subfolder_platforms(app: &App, dir: &Directory) -> Result<HashMap<String, Platform>> {
@@ -1666,6 +1825,7 @@ fn candidate_bytes(path: &std::path::Path) -> u64 {
 }
 
 async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: HashFlags, mut summary: ScanSummary, progress: &crate::database::jobs::Progress) -> Result<ScanSummary> {
+    progress.force(0, None, &format!("listing the recorded files of {}", dir.path)).await;
     let rows = sqlx::query("SELECT id, path, archive_format, size FROM local_files WHERE directory_id = ? AND deleted = FALSE ORDER BY id").bind(dir.id).fetch_all(&app.pool).await?;
     summary.candidates = rows.len() as u64;
     let n = rows.len();
@@ -1675,7 +1835,10 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
     let multiple = Multiple::new(limits);
     let _stop_on_drop = CancelOnDrop(multiple.clone());
     let mut jobs = Vec::new();
-    for row in rows {
+    // Gone files are marked a thousand to a statement after the loop, not one by one.
+    let mut gone: Vec<u64> = Vec::new();
+    for (i, row) in rows.into_iter().enumerate() {
+        progress.report(i as u64, Some(n as u64), &format!("checking {} of {} recorded files exist ({} missing)", thousands(i as u64 + 1), thousands(n as u64), thousands(gone.len() as u64))).await;
         let id: u64 = row.try_get("id")?;
         let path: String = row.try_get("path")?;
         let archive_format: Option<String> = row.try_get("archive_format")?;
@@ -1689,13 +1852,18 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
                 continue;
             }
             _ => {
-                sqlx::query("UPDATE local_files SET deleted = TRUE WHERE id = ?").bind(id).execute(&app.pool).await?;
+                gone.push(id);
                 summary.marked_missing += 1;
                 continue;
             }
         };
         // Each recorded file on its own: a sheet's tracks are rows of their own here.
         jobs.push((first_folder(Path::new(&dir.path), &p), Job { input: p, args: scan_args(Detect::Verify(forced), flags, style, true), size, tag: (path, archive_format) }));
+    }
+    for part in gone.chunks(1000) {
+        progress.force(n as u64, Some(n as u64), &format!("marking {} recorded file(s) missing", thousands(gone.len() as u64))).await;
+        let list = part.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE local_files SET deleted = TRUE WHERE id IN ({list})"))).execute(&app.pool).await?;
     }
     // Missing and unreadable files are not read again, so they are not in the count either;
     // the final summary still lists them.
@@ -1740,7 +1908,8 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
         report.set(format!("{finished} of {wanted} rehashed"), format!(", last: {name}"));
     }
     report.finish().await;
-    link_sheet_tracks(&app.pool, dir.id).await?;
+    link_sheet_tracks(&app.pool, dir.id, progress).await?;
+    progress.force(0, None, "dropping release links of replaced files").await;
     summary.release_links_dropped = drop_unbacked_release_links(&app.pool, &std::mem::take(&mut summary.replaced_roms)).await?;
     let message = format!("done: {n} file(s), {} rehashed, {} missing, {} error(s){}", summary.files_hashed, summary.marked_missing, summary.errors.len(), warnings_note(&summary));
     progress.finish(total_bytes, Some(total_bytes), &message, &job_result(&summary)).await;
@@ -1749,7 +1918,8 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
 
 /// A cue / gdi / ccd sheet's contents are its tracks: links each sheet rom's sheet content
 /// to its other files' (named as the files are), like an archive's members.
-async fn link_sheet_tracks(pool: &MySqlPool, directory_id: u64) -> Result<()> {
+async fn link_sheet_tracks(pool: &MySqlPool, directory_id: u64, progress: &crate::database::jobs::Progress) -> Result<()> {
+    progress.force(0, None, "linking sheet tracks: listing the sheets").await;
     let sheets = sqlx::query(
         "SELECT DISTINCT lr.id, lr.main_path FROM local_rom lr JOIN local_rom_files lrf ON lrf.rom_id = lr.id JOIN local_files f ON f.id = lrf.file_id \
          WHERE f.directory_id = ? AND lr.deleted = FALSE AND (lr.main_path LIKE '%.cue' OR lr.main_path LIKE '%.gdi' OR lr.main_path LIKE '%.ccd')",
@@ -1757,9 +1927,12 @@ async fn link_sheet_tracks(pool: &MySqlPool, directory_id: u64) -> Result<()> {
     .bind(directory_id)
     .fetch_all(pool)
     .await?;
-    for sheet in sheets {
+    let n = sheets.len() as u64;
+    for (i, sheet) in sheets.into_iter().enumerate() {
         let rom_id: u64 = sheet.try_get("id")?;
         let main_path: String = sheet.try_get("main_path")?;
+        let name = main_path.rsplit(['/', '\\']).next().unwrap_or(&main_path);
+        progress.report(i as u64, Some(n), &format!("linking sheet tracks: sheet {} of {}: {name}", thousands(i as u64 + 1), thousands(n))).await;
         let files = sqlx::query("SELECT f.path, f.content_id FROM local_rom_files lrf JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE WHERE lrf.rom_id = ?").bind(rom_id).fetch_all(pool).await?;
         let Some(sheet_content) = files.iter().find(|f| f.try_get::<String, _>("path").is_ok_and(|p| p == main_path)).and_then(|f| f.try_get::<u64, _>("content_id").ok()) else { continue };
         for f in &files {
@@ -1806,7 +1979,7 @@ async fn rom_release_matches(pool: &MySqlPool, scope: &str, progress: &crate::da
     type Lines = (std::collections::BTreeSet<u64>, Vec<u8>);
     let mut per_rom: HashMap<u64, (String, HashMap<u64, Lines>)> = HashMap::new();
     for (i, chunk) in rom_ids.chunks(1000).enumerate() {
-        progress.report((i * 1000) as u64, Some(n_roms.max(1)), &format!("DAT resolve: finding which DAT lines the files are, {} of {n_roms} rom(s)", i * 1000)).await;
+        progress.report((i * 1000) as u64, Some(n_roms.max(1)), &format!("DAT resolve: finding which DAT lines the files are, {} of {} rom(s)", thousands((i * 1000) as u64), thousands(n_roms))).await;
         let roms = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         // The same line reached twice (a file and its member) counts once: `lines` is a set.
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -1822,6 +1995,9 @@ async fn rom_release_matches(pool: &MySqlPool, scope: &str, progress: &crate::da
         )))
         .fetch_all(pool)
         .await?;
+        let done = (i * 1000 + chunk.len()) as u64;
+        let message = format!("DAT resolve: finding which DAT lines the files are, {} of {} rom(s)", thousands(done), thousands(n_roms));
+        if done == n_roms { progress.force(done, Some(n_roms), &message).await } else { progress.report(done, Some(n_roms), &message).await }
         for r in rows {
             let file_name: String = r.try_get("file_name")?;
             let entry = per_rom.entry(r.try_get("rom_id")?).or_insert_with(|| (r.try_get("main_path").unwrap_or_default(), HashMap::new()));
@@ -2001,6 +2177,9 @@ async fn unmatched_kinds(pool: &MySqlPool, games: &[u64], progress: &crate::data
         )))
         .fetch_all(pool)
         .await?;
+        let done = (i * 1000 + chunk.len()) as u64;
+        let message = format!("sorting the {} unmatched game(s) by kind: {}", thousands(n), thousands(done));
+        if done == n { progress.force(done, Some(n), &message).await } else { progress.report(done, Some(n), &message).await }
         let mut last: Option<u64> = None;
         for (game, path, platform) in rows {
             if last == Some(game) {
@@ -2023,7 +2202,7 @@ async fn unmatched_kinds(pool: &MySqlPool, games: &[u64], progress: &crate::data
 /// `name`/`fuzzy` ones when PlayMatch runs (its follow-up is the name search that re-makes
 /// them); then, with DAT on, the DAT links themselves. Manual and exact links always stay.
 /// Provider links are soft-deleted, so a re-made one revives its row.
-pub async fn unlink_for_rematch(pool: &MySqlPool, scope: &str, req: &HashMatchRequest) -> Result<()> {
+pub async fn unlink_for_rematch(pool: &MySqlPool, scope: &str, req: &HashMatchRequest, progress: &crate::database::jobs::Progress) -> Result<()> {
     let games = format!("SELECT DISTINCT lgr.game_id FROM local_game_roms lgr JOIN local_rom_files lrf ON lrf.rom_id = lgr.rom_id JOIN local_files f ON f.id = lrf.file_id WHERE f.directory_id IN ({scope})");
     let mut confidences: Vec<&str> = Vec::new();
     if req.to_hasheous || req.to_playmatch {
@@ -2032,8 +2211,15 @@ pub async fn unlink_for_rematch(pool: &MySqlPool, scope: &str, req: &HashMatchRe
     if req.to_playmatch {
         confidences.extend(["'name'", "'fuzzy'"]);
     }
+    let statements = if confidences.is_empty() { 0 } else { 2 } + usize::from(req.to_dat);
+    let mut statement = 0;
+    let mut say = |what: &str| {
+        statement += 1;
+        format!("Hash match all: removing {what} ({statement} of {statements})")
+    };
     if !confidences.is_empty() {
         let list = confidences.join(", ");
+        progress.force(0, None, &say("the title links")).await;
         // A title's links only through the game's own releases. A DLC, update, hack or demo
         // file (`APART_SQL`) re-links its own release, never the title, so resetting the
         // title for it lost the title's link for good.
@@ -2044,6 +2230,7 @@ pub async fn unlink_for_rematch(pool: &MySqlPool, scope: &str, req: &HashMatchRe
         )))
         .execute(pool)
         .await?;
+        progress.force(0, None, &say("the release links")).await;
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE release_provider_links rpl JOIN local_release_games lrg ON lrg.release_id = rpl.release_id \
              SET rpl.deleted = TRUE WHERE rpl.deleted = FALSE AND rpl.confidence IN ({list}) AND lrg.game_id IN ({games})"
@@ -2052,6 +2239,7 @@ pub async fn unlink_for_rematch(pool: &MySqlPool, scope: &str, req: &HashMatchRe
         .await?;
     }
     if req.to_dat {
+        progress.force(0, None, &say("the DAT links")).await;
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM local_release_games WHERE game_id IN ({games})"))).execute(pool).await?;
     }
     Ok(())
@@ -2482,6 +2670,61 @@ async fn link_game(pool: &MySqlPool, game_id: u64, release_id: u64, platform_id:
 /// **one** `provider_query` per provider carrying the whole id list (that provider's lane
 /// fetches them in list requests), and every searchable provider gets a by-name job for the
 /// matched titles still without a link to it.
+/// A hash match's steps, for `jobs::Steps`: only the ones the request runs are listed. A
+/// listed step that turns out to have nothing to do (no games left to look up, a service
+/// unavailable) is still started and ended, with the note "skipped".
+struct MatchSteps<'a> {
+    steps: crate::database::jobs::Steps<'a>,
+    keys: Vec<&'static str>,
+}
+
+impl<'a> MatchSteps<'a> {
+    const ALL: [(&'static str, &'static str); 14] = [
+        ("match_unlink", "removing the links to make again"),
+        ("match_dat_resolve", "DAT resolve"),
+        ("match_ra_hashes", "RetroAchievements hashes"),
+        ("match_dat", "DAT match"),
+        ("match_serial", "serial match"),
+        ("match_rom_platforms", "ROM platforms"),
+        ("match_kinds", "sorting what no DAT matched"),
+        ("match_targets", "finding the games to look up"),
+        ("match_dumps", "Hasheous downloaded dumps"),
+        ("match_lookups", "Hasheous lookups"),
+        ("match_playmatch", "own tables and PlayMatch"),
+        ("match_linking", "linking what the lookups found"),
+        ("match_followups", "follow-up jobs"),
+        ("match_platforms", "file platforms"),
+    ];
+
+    fn new(progress: &'a crate::database::jobs::Progress, req: &HashMatchRequest, scope: &str) -> Self {
+        let lookups = req.to_hasheous || req.to_playmatch;
+        let listed: Vec<(&'static str, &'static str)> = Self::ALL
+            .into_iter()
+            .filter(|(key, _)| match *key {
+                "match_unlink" => req.all,
+                "match_dat_resolve" | "match_serial" => req.to_dat,
+                "match_targets" | "match_dumps" | "match_lookups" | "match_playmatch" | "match_linking" | "match_followups" => lookups,
+                _ => true,
+            })
+            .collect();
+        Self { steps: crate::database::jobs::Steps::new(progress, &listed, scope), keys: listed.iter().map(|(k, _)| *k).collect() }
+    }
+
+    async fn start(&mut self, key: &str) {
+        if let Some(i) = self.keys.iter().position(|k| *k == key) {
+            self.steps.start(i + 1).await;
+        }
+    }
+
+    async fn done(&mut self, note: String) {
+        self.steps.done(note).await;
+    }
+
+    fn finish(&self) {
+        self.steps.finish();
+    }
+}
+
 pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate::database::jobs::Progress) -> Result<MatchSummary> {
     use crate::database::jobs as db_jobs;
     use crate::database::providers::raw_store::RawStore;
@@ -2490,18 +2733,30 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
 
     let (dir, _) = load_directory(app, req.directory_id).await?;
     let pool = &app.pool;
+    progress.force(0, None, &format!("preparing: the directories below {}", dir.path)).await;
     let scope = directory_scope(pool, &dir).await?;
+    let use_hash_services = req.to_hasheous || req.to_playmatch;
+    let mut phases = MatchSteps::new(progress, req, &dir.path);
     if req.all {
+        phases.start("match_unlink").await;
         progress.force(0, None, "Hash match all: removing the links this run will make again").await;
-        unlink_for_rematch(pool, &scope, req).await?;
+        unlink_for_rematch(pool, &scope, req, progress).await?;
+        phases.done(String::new()).await;
     }
     let (roms_merged, games_merged) = if req.to_dat {
-        resolve_by_dat(pool, &scope, progress).await?
+        phases.start("match_dat_resolve").await;
+        let merged = resolve_by_dat(pool, &scope, progress).await?;
+        phases.done(format!("{} rom(s) joined, {} game(s) merged", thousands(merged.0), thousands(merged.1))).await;
+        merged
     } else {
         (0, 0)
     };
     // Roms whose RetroAchievements hash the scan worked out, to the RA game with that hash.
-    let ra_rom_links = cache::link_ra_rom_hashes(pool, Some(&scope), None).await?;
+    phases.start("match_ra_hashes").await;
+    let ra_rom_links = cache::link_ra_rom_hashes_reporting(pool, Some(&scope), None, progress).await?;
+    phases.done(format!("{} link(s)", thousands(ra_rom_links))).await;
+    phases.start("match_dat").await;
+    progress.force(0, None, "listing the directory's games").await;
     // `linked` comes back with the row rather than from a `SELECT 1` per game: it is what
     // decides whether a game is work at all, so knowing it up front is what lets the progress
     // count the games that actually need matching instead of counting every game and racing
@@ -2529,10 +2784,10 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
     let source_order = settings::release_source_priority(pool).await?;
     let best_sql = best_release_sql(&source_order);
     let linked_note = if summary.already_linked > 0 { format!(", {} already linked", summary.already_linked) } else { String::new() };
-    progress.force(0, Some(n_todo.max(1)), &format!("DAT match: {n_todo} of {n_games} game(s) need a match{linked_note}")).await;
+    progress.force(0, Some(n_todo.max(1)), &format!("DAT match: {} of {} game(s) need a match{linked_note}", thousands(n_todo), thousands(n_games))).await;
     for (i, game_id) in todo.into_iter().enumerate() {
         progress
-            .report(i as u64, Some(n_todo.max(1)), &format!("DAT match: {} of {n_todo} to match, {} matched{linked_note}", i + 1, summary.matched))
+            .report(i as u64, Some(n_todo.max(1)), &format!("DAT match: {} of {} to match, {} matched{linked_note}", thousands(i as u64 + 1), thousands(n_todo), thousands(summary.matched)))
             .await;
         if !req.to_dat {
             unlinked.push(game_id);
@@ -2546,23 +2801,36 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             None => unlinked.push(game_id),
         }
     }
+    phases.done(format!("{} matched, {} already linked", thousands(summary.matched), thousands(summary.already_linked))).await;
     // Lenient matching: what no hash matched, by serial, for the formats the setting allows.
-    if req.to_dat && !unlinked.is_empty() {
-        let cfg = settings::serial_match(pool).await?;
-        if !cfg.formats.is_empty() {
-            progress.force(0, None, &format!("serial match: {} unmatched game(s)", unlinked.len())).await;
-            let (linked, outcome) = crate::database::serial_match::match_games(pool, &unlinked, &cfg, &source_order).await?;
-            unlinked.retain(|g| !linked.contains(g));
-            summary.matched += outcome.matched;
-            summary.serial_matched = outcome.matched;
-            summary.serial_ambiguous = outcome.ambiguous;
+    if req.to_dat {
+        phases.start("match_serial").await;
+        let mut note = "skipped".to_string();
+        if !unlinked.is_empty() {
+            progress.force(0, None, "serial match: reading its settings").await;
+            let cfg = settings::serial_match(pool).await?;
+            if !cfg.formats.is_empty() {
+                progress.force(0, None, &format!("serial match: {} unmatched game(s)", thousands(unlinked.len() as u64))).await;
+                let (linked, outcome) = crate::database::serial_match::match_games(pool, &unlinked, &cfg, &source_order, progress).await?;
+                unlinked.retain(|g| !linked.contains(g));
+                summary.matched += outcome.matched;
+                summary.serial_matched = outcome.matched;
+                summary.serial_ambiguous = outcome.ambiguous;
+                note = format!("{} linked, {} ambiguous", thousands(outcome.matched), thousands(outcome.ambiguous));
+            }
         }
+        phases.done(note).await;
     }
     // Games linked before this loop (a multi-disc game joined from its discs by the DAT
     // resolve) were skipped above as linked, and kept the platform the scan guessed: none.
-    crate::database::import::confirm_rom_platforms(pool).await?;
+    phases.start("match_rom_platforms").await;
+    progress.force(0, None, "giving ROMs their release's platform").await;
+    let confirmed = crate::database::import::confirm_rom_platforms(pool).await?;
+    phases.done(format!("{} ROM(s)", thousands(confirmed))).await;
     summary.unmatched = unlinked.len() as u64;
+    phases.start("match_kinds").await;
     summary.unmatched_by_kind = unmatched_kinds(pool, &unlinked, progress).await?;
+    phases.done(format!("{} unmatched", thousands(summary.unmatched))).await;
 
     // The hash-lookup services also serve games a DAT already identified: their cross
     // references are how those get their IGDB/RA/... ids. Take every game in the directory
@@ -2571,10 +2839,10 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
     // somewhere else (a TheGamesDB name match, a bulk sync) is not a reason to skip the
     // lookup: on the live catalogue it left 2013 of 7533 games never asked. Keyed on the
     // lookup rather than on the links so a re-run asks nothing twice.
-    let use_hash_services = req.to_hasheous || req.to_playmatch;
     let mut targets: Vec<u64> = unlinked.clone();
     let mut targeted: std::collections::HashSet<u64> = targets.iter().copied().collect();
     if use_hash_services {
+        phases.start("match_targets").await;
         progress.force(0, None, &format!("finding the games to look up ({} matched by DAT, {} not)", summary.matched, summary.unmatched)).await;
         let ttl = settings::cache_ttl_days(pool).await?;
         // Two hundred and fifty games at a time, each batch a handful of plain lookups by
@@ -2583,7 +2851,7 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
         let n_all = all_games.len() as u64;
         const STEP: usize = 250;
         for (i, chunk) in all_games.chunks(STEP).enumerate() {
-            progress.report((i * STEP) as u64, Some(n_all.max(1)), &format!("finding the games to look up: {} of {n_all} game(s), {} so far", i * STEP, targets.len())).await;
+            progress.report((i * STEP) as u64, Some(n_all.max(1)), &format!("finding the games to look up: {} of {} game(s), {} so far", thousands((i * STEP) as u64), thousands(n_all), thousands(targets.len() as u64))).await;
             let ids = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
             // The batch's DAT-linked games, their releases, and their files here.
             let rows: Vec<(u64, u64, u64, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -2664,7 +2932,10 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
                     summary.hasheous_for_linked += 1;
                 }
             }
+            let done = (i * STEP + chunk.len()) as u64;
+            progress.report(done, Some(n_all.max(1)), &format!("finding the games to look up: {} of {} game(s), {} so far", thousands(done), thousands(n_all), thousands(targets.len() as u64))).await;
         }
+        phases.done(format!("{} game(s) to look up", thousands(targets.len() as u64))).await;
     }
 
     if use_hash_services && !targets.is_empty() {
@@ -2684,6 +2955,7 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
         // hash in the database. Answer what they can answer before anything goes to the
         // network: the loop below then finds those files cached and asks Hasheous only for
         // what the dumps do not have.
+        phases.start("match_dumps").await;
         if hasheous_on {
             use crate::database::providers::dumps;
             if let Err(e) = dumps::ensure_hasheous_index(pool, &store, progress).await {
@@ -2694,7 +2966,11 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
                 Ok(n) => log::info!("hash_match: {n} file(s) answered from the downloaded Hasheous dumps"),
                 Err(e) => log::warn!("hash_match: matching against the downloaded Hasheous dumps failed: {e}"),
             }
+            phases.done(String::new()).await;
+        } else {
+            phases.done("skipped".to_string()).await;
         }
+        phases.start("match_lookups").await;
         let mut cross_refs: HashMap<Provider, Vec<String>> = HashMap::new();
 
         // The lookups run as passes over the whole set rather than file by file. One loop
@@ -2786,6 +3062,8 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             }
         }
 
+        phases.done(if hasheous_on { format!("{} asked, {} hit(s), {} from cache", thousands(summary.hasheous_lookups), thousands(summary.hasheous_hits), thousands(summary.hasheous_cached)) } else { "skipped".to_string() }).await;
+        phases.start("match_playmatch").await;
         // --- Local identity, then PlayMatch for what is still unidentified. Ids our own
         // tables know by exact hash fill in without a request; PlayMatch is a second opinion
         // on the ids (it often has IGDB where Hasheous reports none) and is asked only while
@@ -2877,6 +3155,8 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             }
         }
 
+        phases.done(format!("{} filled locally, {} asked, {} hit(s)", thousands(summary.local_links_filled), thousands(summary.playmatch_lookups), thousands(summary.playmatch_hits))).await;
+        phases.start("match_linking").await;
         // Cross references that found no release at lookup time (the release was built
         // afterwards, or the answer came from cache) are linked now.
         let n_files = files.len() as u64;
@@ -2895,6 +3175,8 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             }
         }
 
+        phases.done(String::new()).await;
+        phases.start("match_followups").await;
         // Follow-ups, whichever hash service matched (Hasheous alone too, so its matches also
         // get IGDB data and art): one by-id job per provider with the ids every service
         // reported...
@@ -2944,21 +3226,31 @@ pub async fn run_hash_match(app: &App, req: &HashMatchRequest, progress: &crate:
             db_jobs::enqueue(pool, request.job_type(), request.payload()).await?;
             summary.followups_enqueued += 1;
         }
+        phases.done(format!("{} job(s)", thousands(summary.followups_enqueued))).await;
+    } else if use_hash_services {
+        for key in ["match_dumps", "match_lookups", "match_playmatch", "match_linking", "match_followups"] {
+            phases.start(key).await;
+            phases.done("skipped".to_string()).await;
+        }
     }
     // A match gives a rom its platform (above); its files' contents, and what is inside
     // them, were hashed before anyone knew and still say "unknown" -- a PS2 CHD and its inner
     // image both. In bulk at the end so games linked by an earlier run are covered too.
-    progress.force(0, None, "giving the matched files their platform").await;
+    phases.start("match_platforms").await;
+    progress.force(0, None, "giving the matched files their platform (1 of 2)").await;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE content c JOIN local_files f ON f.content_id = c.id AND f.directory_id IN ({scope}) JOIN local_rom_files lrf ON lrf.file_id = f.id          JOIN local_rom lr ON lr.id = lrf.rom_id AND lr.deleted = FALSE AND lr.app_platform_id <> 0 SET c.app_platform_id = lr.app_platform_id WHERE c.app_platform_id = 0"
     )))
     .execute(pool)
     .await?;
+    progress.force(0, None, "giving the matched files their platform: their members (2 of 2)").await;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE content c JOIN content_contents cc ON cc.child_content_id = c.id JOIN content pc ON pc.id = cc.parent_content_id AND pc.app_platform_id <> 0          JOIN local_files f ON f.content_id = pc.id AND f.directory_id IN ({scope}) SET c.app_platform_id = pc.app_platform_id WHERE c.app_platform_id = 0"
     )))
     .execute(pool)
     .await?;
+    phases.done(String::new()).await;
+    phases.finish();
     // The biggest groups of what no DAT matched, so the line says what they are.
     let kinds = summary.unmatched_by_kind.iter().take(3).map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ");
     let kinds = if kinds.is_empty() { String::new() } else { format!(" (mostly {kinds})") };
@@ -2977,23 +3269,35 @@ fn gap_fill_providers(app: &App) -> Vec<Provider> {
     [Provider::Igdb, Provider::TheGamesDb, Provider::RetroAchievements, Provider::SteamGridDb, Provider::ScreenScraper, Provider::MobyGames].into_iter().filter(|p| app.clients().is_available(*p)).collect()
 }
 
-/// Providers already linked (any confidence) to the releases/titles a content belongs to.
-async fn linked_providers(pool: &MySqlPool, content_id: u64) -> Result<std::collections::HashSet<String>> {
-    let rows = sqlx::query(
-        "SELECT tpl.provider FROM release_contents rc JOIN title_releases tr ON tr.release_id = rc.release_id JOIN title_provider_links tpl ON tpl.title_id = tr.title_id AND tpl.deleted = FALSE WHERE rc.content_id = ? \
-         UNION SELECT rpl.provider FROM release_contents rc JOIN release_provider_links rpl ON rpl.release_id = rc.release_id AND rpl.deleted = FALSE WHERE rc.content_id = ?",
-    )
-    .bind(content_id)
-    .bind(content_id)
+/// Providers already linked (any confidence) to the releases/titles each of `contents`
+/// belongs to: one query for a page of contents, where it was one per content.
+async fn linked_providers(pool: &MySqlPool, contents: &[u64]) -> Result<HashMap<u64, std::collections::HashSet<String>>> {
+    let mut out: HashMap<u64, std::collections::HashSet<String>> = HashMap::new();
+    if contents.is_empty() {
+        return Ok(out);
+    }
+    let list = contents.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let rows: Vec<(u64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT rc.content_id, tpl.provider FROM release_contents rc JOIN title_releases tr ON tr.release_id = rc.release_id JOIN title_provider_links tpl ON tpl.title_id = tr.title_id AND tpl.deleted = FALSE WHERE rc.content_id IN ({list}) \
+         UNION SELECT rc.content_id, rpl.provider FROM release_contents rc JOIN release_provider_links rpl ON rpl.release_id = rc.release_id AND rpl.deleted = FALSE WHERE rc.content_id IN ({list})"
+    )))
     .fetch_all(pool)
     .await?;
-    rows.iter().map(|r| Ok(r.try_get::<String, _>("provider")?)).collect()
+    for (content, provider) in rows {
+        out.entry(content).or_default().insert(provider);
+    }
+    Ok(out)
 }
 
 /// Contents to gap-fill: in the local collection, matched to a catalog release by exact
 /// hash, with a hash and a file name/size (PlayMatch needs both), not asked within the TTL,
 /// and still missing an id for at least one usable provider. `limit` 0 = all.
 pub async fn playmatch_fill_candidates(app: &App, limit: u64) -> Result<Vec<u64>> {
+    playmatch_fill_candidates_reporting(app, limit, &crate::database::jobs::Progress::none()).await
+}
+
+/// [`playmatch_fill_candidates`] inside a job, saying how far the paging got.
+async fn playmatch_fill_candidates_reporting(app: &App, limit: u64, progress: &crate::database::jobs::Progress) -> Result<Vec<u64>> {
     let pool = &app.pool;
     let providers = gap_fill_providers(app);
     if providers.is_empty() {
@@ -3002,7 +3306,9 @@ pub async fn playmatch_fill_candidates(app: &App, limit: u64) -> Result<Vec<u64>
     let ttl_days = settings::cache_ttl_days(pool).await?;
     let mut out = Vec::new();
     let mut after = 0u64;
+    let mut checked = 0u64;
     loop {
+        progress.force(0, None, &format!("PlayMatch gap fill: finding candidates, {} files checked, {} need a lookup", thousands(checked), thousands(out.len() as u64))).await;
         let rows = sqlx::query(
             // A file's own content, and an archive's largest member (see `lookup_contents`).
             "SELECT DISTINCT x.content_id FROM ( \
@@ -3021,10 +3327,13 @@ pub async fn playmatch_fill_candidates(app: &App, limit: u64) -> Result<Vec<u64>
         if rows.is_empty() {
             return Ok(out);
         }
-        for row in &rows {
-            let content_id: u64 = row.try_get("content_id")?;
+        let page: Vec<u64> = rows.iter().map(|r| r.try_get("content_id")).collect::<std::result::Result<_, _>>()?;
+        let linked = linked_providers(pool, &page).await?;
+        let none = std::collections::HashSet::new();
+        for content_id in page {
             after = content_id;
-            let linked = linked_providers(pool, content_id).await?;
+            checked += 1;
+            let linked = linked.get(&content_id).unwrap_or(&none);
             if providers.iter().any(|p| !linked.contains(p.name())) {
                 out.push(content_id);
                 if limit > 0 && out.len() as u64 >= limit {
@@ -3052,11 +3361,13 @@ pub async fn playmatch_fill(app: &App, limit: u64, progress: &crate::database::j
     let clients = app.clients();
     let client = clients.playmatch.as_ref().ok_or_else(|| Error::unavailable("playmatch client unavailable"))?;
     let providers = gap_fill_providers(app);
-    let candidates = playmatch_fill_candidates(app, limit).await?;
+    let candidates = playmatch_fill_candidates_reporting(app, limit, progress).await?;
     let mut summary = GapFillSummary { candidates: candidates.len() as u64, ..Default::default() };
     let store = RawStore::new(app.paths.provider_cache_dir(), settings::raw_retention(pool).await?);
     let mut items: Vec<(String, crate::database::providers::playmatch::IdentifyRequest)> = Vec::new();
-    for content_id in &candidates {
+    let n_candidates = candidates.len() as u64;
+    for (i, content_id) in candidates.iter().enumerate() {
+        progress.report(i as u64, Some(n_candidates), &format!("PlayMatch gap fill: preparing request {} of {}", thousands(i as u64 + 1), thousands(n_candidates))).await;
         let request = cache::playmatch_request_for_content(pool, *content_id).await?;
         if request.has_hash() && request.file_name.is_some() && request.file_size.is_some() {
             items.push((content_id.to_string(), request));

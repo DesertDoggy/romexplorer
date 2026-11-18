@@ -299,7 +299,7 @@ async fn find(app: &App, e: &EntryDoc) -> Result<std::result::Result<(EntryKind,
     })
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRequest {
     pub file: SetFile,
     /// Only these sets of the file (by name); all when empty.
@@ -326,25 +326,64 @@ pub struct SetImported {
     pub missing: Vec<Missing>,
 }
 
-/// Puts the file's sets into this catalogue: each into the live set of its name (made when
-/// there is none, with the file's description), its entries in the file's order after what
-/// the set holds. Nothing is removed.
-pub async fn import(app: &App, req: &ImportRequest) -> Result<Vec<SetImported>> {
+/// Checks a sets file before its import is queued: a wrong file comes back on the request
+/// that sent it, not as a failed job.
+pub fn check(req: &ImportRequest) -> Result<()> {
     if req.file.format != FORMAT {
         return Err(Error::invalid("that is not a romexplorer sets file"));
     }
     if req.file.version > 1 {
         return Err(Error::invalid(format!("this sets file is version {}; this romexplorer reads version 1", req.file.version)));
     }
+    Ok(())
+}
+
+/// Queues the import as a `set_import` job: finding every entry is a few queries each, and a
+/// file of thousands of entries took minutes inside one request that said nothing.
+pub async fn queue_import(app: &App, req: &ImportRequest) -> Result<u64> {
+    check(req)?;
+    let payload = serde_json::to_value(req).map_err(|e| Error::internal(format!("sets file: {e}")))?;
+    Ok(crate::database::jobs::enqueue(&app.pool, crate::database::jobs::JobType::SetImport, payload).await?)
+}
+
+/// What a `set_import` job leaves as its result: each set as it came out.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportSummary {
+    pub sets: Vec<SetImported>,
+}
+
+pub fn one_liner(s: &ImportSummary) -> String {
+    use crate::database::jobs::thousands;
+    let added: u64 = s.sets.iter().map(|x| x.added).sum();
+    let missing: usize = s.sets.iter().map(|x| x.missing.len()).sum();
+    format!("{} set(s) imported: {} entries added, {} not found", s.sets.len(), thousands(added), thousands(missing as u64))
+}
+
+/// Puts the file's sets into this catalogue: each into the live set of its name (made when
+/// there is none, with the file's description), its entries in the file's order after what
+/// the set holds. Nothing is removed.
+pub async fn import(app: &App, req: &ImportRequest, progress: &crate::database::jobs::Progress) -> Result<ImportSummary> {
+    use crate::database::jobs::thousands;
+    check(req)?;
+    let docs: Vec<&SetDoc> = req.file.sets.iter().filter(|s| req.names.is_empty() || req.names.contains(&s.name)).collect();
+    let total: u64 = docs.iter().map(|d| d.entries.len() as u64).sum();
+    let mut done_entries = 0u64;
     let mut out = Vec::new();
-    for doc in req.file.sets.iter().filter(|s| req.names.is_empty() || req.names.contains(&s.name)) {
+    for (i, doc) in docs.iter().enumerate() {
+        let head = format!("set {} of {}", i + 1, docs.len());
+        progress.force(done_entries, Some(total), &format!("{head}: preparing the set {}", doc.name)).await;
         let existing: Option<u64> = sqlx::query_scalar("SELECT id FROM collection_sets WHERE name = ? AND deleted = FALSE ORDER BY id LIMIT 1").bind(doc.name.trim()).fetch_optional(&app.pool).await?;
         let (set_id, created) = match existing {
             Some(id) => (id, false),
             None => (sets::create(app, &SetSpec { name: doc.name.clone(), description: doc.description.clone() }).await?.id, true),
         };
         let mut done = SetImported { name: doc.name.clone(), set_id, created, added: 0, already: 0, missing: Vec::new() };
-        for e in &doc.entries {
+        let n = doc.entries.len() as u64;
+        for (j, e) in doc.entries.iter().enumerate() {
+            let matched = j as u64 - done.missing.len() as u64;
+            progress
+                .report(done_entries + j as u64, Some(total), &format!("{head}: entry {} of {} ({} matched) {}", thousands(j as u64 + 1), thousands(n), thousands(matched), doc.name))
+                .await;
             match find(app, e).await? {
                 Ok((kind, id, row_key)) => match match row_key {
                     Some(row_key) => sets::add_title_rows(app, set_id, &[romexplorer_types::copy::TitleRowRef { title_id: id.parse().unwrap_or(0), row_key }]).await?,
@@ -356,10 +395,12 @@ pub async fn import(app: &App, req: &ImportRequest) -> Result<Vec<SetImported>> 
                 Err(reason) => done.missing.push(Missing { kind: e.kind().to_string(), name: e.label(), reason }),
             }
         }
+        done_entries += n;
+        progress.force(done_entries, Some(total), &format!("{head}: ordering the set ({} matched) {}", thousands(n - done.missing.len() as u64), doc.name)).await;
         sets::resolve(app, &[set_id]).await?;
         out.push(done);
     }
-    Ok(out)
+    Ok(ImportSummary { sets: out })
 }
 
 #[cfg(test)]

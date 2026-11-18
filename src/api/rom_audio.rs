@@ -21,10 +21,10 @@ use sqlx::Row;
 
 use romexplorer_types::jobs::{FileScanMode, RomAudioIndexRequest};
 
-use crate::database::jobs::Progress;
+use crate::database::jobs::{thousands, Progress};
 use crate::database::settings as db_settings;
 use crate::rom::rom_audio::{self, FoundTrack, SoundKind, Thresholds, TrackLocation};
-use crate::rom::{audio_decode, gme, rip_match, rip_sets, rom_songs};
+use crate::rom::{audio_decode, rip_match, rip_sets, rom_songs};
 use crate::rom::{vgmstream, xaac};
 
 use super::audio::AudioRow;
@@ -485,8 +485,7 @@ async fn owns_rip_sets(app: &App, rom_id: u64, folder: &Path) -> Result<bool> {
 /// The rip library from `audio_rip_folders`, fingerprinted; empty when there is none or the
 /// player is not built. Fingerprints are cached beside the media.
 async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Library> {
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-    progress.report(0, None, "reading the original audio format sets").await;
+    progress.force(0, None, "reading the original audio format sets").await;
     let folders: Vec<PathBuf> = db_settings::get::<Vec<String>>(&app.pool, db_settings::KEY_AUDIO_RIP_FOLDERS).await?.unwrap_or_default().into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
     if folders.is_empty() || !rip_sets::available() {
         return Ok(rip_match::Library::build(&[], None, |_, _| {}));
@@ -494,15 +493,22 @@ async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Librar
     let cache = app.paths.media_dir().join("_rip_library.json");
     // Sets new since the last run are read whole: the job shows how far it is, and a cancel
     // ends the run here (the reading finishes on its own and is cached for next time).
-    let counts = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
-    let seen = counts.clone();
+    // (listing?, found or done, total, set name)
+    let state = Arc::new(std::sync::Mutex::new((true, 0usize, 0usize, String::new())));
+    let seen = state.clone();
     let mut task = tokio::task::spawn_blocking(move || {
-        rip_match::Library::build(&folders, Some(&cache), |done, total| {
-            seen.0.store(done, Relaxed);
-            seen.1.store(total, Relaxed);
+        rip_match::Library::build_with(&folders, Some(&cache), |step| {
+            let mut s = seen.lock().unwrap_or_else(|p| p.into_inner());
+            match step {
+                rip_match::BuildStep::Listing { found } => *s = (true, found, 0, String::new()),
+                rip_match::BuildStep::Reading { done, total, set } => {
+                    let name = set.and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    *s = (false, done, total, name);
+                }
+            }
         })
     });
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
             built = &mut task => return built.map_err(|e| Error::internal(format!("ROM audio task: {e}"))),
@@ -510,9 +516,12 @@ async fn rip_library(app: &App, progress: &Progress) -> Result<rip_match::Librar
                 if progress.cancelled().await {
                     return Ok(rip_match::Library::build(&[], None, |_, _| {}));
                 }
-                let (done, total) = (counts.0.load(Relaxed) as u64, counts.1.load(Relaxed) as u64);
-                if total > 0 {
-                    progress.report(done, Some(total), &format!("reading the original audio format sets: {done} of {total}")).await;
+                let (listing, done, total, name) = state.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                if listing {
+                    progress.report(done as u64, None, &format!("reading the original audio format sets: {} set(s) found so far", thousands(done as u64))).await;
+                } else {
+                    let at = if name.is_empty() { String::new() } else { format!(": {name}") };
+                    progress.report(done as u64, Some(total as u64), &format!("reading the original audio format sets: {} of {}{at}", thousands(done as u64), thousands(total as u64))).await;
                 }
             }
         }
@@ -624,6 +633,7 @@ impl Drop for Reading {
 const ROM_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
 pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Progress) -> Result<IndexSummary> {
+    progress.force(0, None, "looking for a PS2 BIOS").await;
     provide_ps2_bios(app).await?;
     let quick = request.mode == FileScanMode::NewOnly;
     let mut summary = IndexSummary { mode: if quick { "new_only" } else { "full" }.to_string(), ..Default::default() };
@@ -639,6 +649,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     // Smallest first: cartridges and small discs are playable within minutes, and big disc
     // images, which take longest to read, come last. A ROM with no file sizes recorded goes
     // last too, not first.
+    progress.force(0, None, "listing ROMs").await;
     let all = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT r.id, r.main_path, {ROM_PLATFORM}, s.files, s.bytes FROM local_rom r \
          LEFT JOIN (SELECT rf.rom_id, COUNT(*) AS files, CAST(SUM(f.size) AS UNSIGNED) AS bytes FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id AND f.deleted = FALSE GROUP BY rf.rom_id) s ON s.rom_id = r.id \
@@ -651,17 +662,20 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     let mut roms = Vec::with_capacity(all.len());
     let checking = all.len() as u64;
     for (i, row) in all.into_iter().enumerate() {
-        if i % 500 == 0 {
-            progress.report(i as u64, Some(checking), &format!("checking which ROMs have music this can read: {i} of {checking}")).await;
-        }
         let files: i64 = row.try_get::<Option<i64>, _>("files")?.unwrap_or(0);
-        if readable(app, &library, row.try_get("id")?, &row.try_get::<String, _>("main_path")?, platform_of(&row)?, files).await? {
+        let main_path = row.try_get::<String, _>("main_path")?;
+        let name = Path::new(&main_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| main_path.clone());
+        progress
+            .report(i as u64, Some(checking), &format!("checking which ROMs have music this can read: {} of {} ({} readable): {name}", thousands(i as u64 + 1), thousands(checking), thousands(roms.len() as u64)))
+            .await;
+        if readable(app, &library, row.try_get("id")?, &main_path, platform_of(&row)?, files).await? {
             roms.push(row);
         } else {
             summary.skipped_unsupported += 1;
         }
     }
     if quick {
+        progress.force(checking, Some(checking.max(1)), "counting ROMs already indexed").await;
         summary.skipped_existing = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM local_rom r WHERE r.deleted = FALSE{scope} AND EXISTS (SELECT 1 FROM rom_audio_index i WHERE i.rom_id = r.id AND {})", indexed_for_good())))
             .fetch_one(&app.pool)
             .await?
@@ -674,7 +688,7 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
     }
     let chosen = choose_library_sets(app, progress, &library, &roms).await?;
     let parallel = db_settings::rom_audio_index_parallel(&app.pool).await?;
-    let plan = plan_copies(app, &roms).await?;
+    let plan = plan_copies(app, progress, &roms).await?;
     let run = Run {
         app,
         request,
@@ -701,10 +715,17 @@ pub async fn run_index(app: &App, request: &RomAudioIndexRequest, progress: &Pro
             break;
         }
         let mut todo = Vec::with_capacity(units.len());
-        for mut unit in units {
+        let unit_count = units.len() as u64;
+        for (u, mut unit) in units.into_iter().enumerate() {
             unit.roms.retain(|i| !mapped.roms.contains(i));
             if unit.roms.is_empty() {
                 continue;
+            }
+            if level > 0 {
+                let name = unit.roms.first().and_then(|&i| roms[i].try_get::<String, _>("main_path").ok()).map(|p| Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(p)).unwrap_or_default();
+                progress
+                    .report(run.done(), Some(total), &format!("copy {} of each title: checking whether a better copy has music, {} of {}: {name}", level + 1, thousands(u as u64 + 1), thousands(unit_count)))
+                    .await;
             }
             if mapped.covers(&unit) || (level > 0 && outranked(app, &unit).await?) {
                 let skipped = unit.roms.len() as u64;
@@ -1097,7 +1118,24 @@ impl Run<'_> {
                     let tracks = cell
                         .get_or_try_init(|| async {
                             let (path, t) = (set.clone(), thresholds);
-                            match tokio::task::spawn_blocking(move || rip_sets::index_set(&path, &t, |_| {})).await {
+                            let set_name = set.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| set.display().to_string());
+                            let file = Arc::new(std::sync::Mutex::new(String::new()));
+                            let reading_file = file.clone();
+                            progress.report(self.done(), Some(total), &format!("ROM {n} of {total}: {label}: reading the original audio format set {set_name}")).await;
+                            let mut task = tokio::task::spawn_blocking(move || {
+                                rip_sets::index_set(&path, &t, |rel| *reading_file.lock().unwrap_or_else(|p| p.into_inner()) = rel.to_string())
+                            });
+                            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                            let read = loop {
+                                tokio::select! {
+                                    read = &mut task => break read,
+                                    _ = tick.tick() => {
+                                        let now = file.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                                        progress.report(self.done(), Some(total), &format!("ROM {n} of {total}: {label}: set {set_name}: {now}")).await;
+                                    }
+                                }
+                            };
+                            match read {
                                 Ok(tracks) => Ok(tracks),
                                 // A set that panics its reader is left out; the rest still count.
                                 Err(e) if e.is_panic() => {
@@ -1156,20 +1194,29 @@ impl Run<'_> {
 /// plays) and every ROM in no title; step 1 the second-best copies, and so on. A title page
 /// plays one copy, so a later copy is read only when every copy above it gave no music
 /// ([`outranked`]).
-async fn plan_copies(app: &App, roms: &[sqlx::mysql::MySqlRow]) -> Result<Vec<Vec<Unit>>> {
+async fn plan_copies(app: &App, progress: &Progress, roms: &[sqlx::mysql::MySqlRow]) -> Result<Vec<Vec<Unit>>> {
     let ids: Vec<u64> = roms.iter().map(|r| r.try_get::<u64, _>("id")).collect::<std::result::Result<_, _>>()?;
     let mut game_of: HashMap<u64, u64> = HashMap::new();
-    for chunk in ids.chunks(1000) {
+    let rom_count = ids.len() as u64;
+    for (c, chunk) in ids.chunks(1000).enumerate() {
+        let at = (c * 1000) as u64;
+        progress.report(at, Some(rom_count), &format!("ranking copies: finding the games of ROMs {} to {} of {}", thousands(at + 1), thousands(at + chunk.len() as u64), thousands(rom_count))).await;
         let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         let rows: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT rom_id, MIN(game_id) FROM local_game_roms WHERE rom_id IN ({list}) GROUP BY rom_id"))).fetch_all(&app.pool).await?;
         game_of.extend(rows);
     }
     let games: Vec<u64> = game_of.values().copied().collect::<HashSet<_>>().into_iter().collect();
     // Each title's games, best-ranked first.
+    progress.force(0, None, "ranking copies: loading the release ranking").await;
     let rank = super::catalog::ReleaseRank::load(app).await?;
     let mut ranked: HashMap<u64, Vec<u64>> = HashMap::new();
     let mut titles_of: HashMap<u64, Vec<u64>> = HashMap::new();
-    for chunk in games.chunks(1000) {
+    let game_count = games.len() as u64;
+    for (c, chunk) in games.chunks(1000).enumerate() {
+        let at = (c * 1000) as u64;
+        progress
+            .report(at, Some(game_count), &format!("ranking copies: games {} to {} of {} ({} title(s) ranked)", thousands(at + 1), thousands(at + chunk.len() as u64), thousands(game_count), thousands(ranked.len() as u64)))
+            .await;
         let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         let pairs: Vec<(u64, u64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT DISTINCT lrg.game_id, tr.title_id FROM local_release_games lrg JOIN title_releases tr ON tr.release_id = lrg.release_id WHERE lrg.game_id IN ({list})"
@@ -2100,7 +2147,7 @@ pub async fn serve(app: &App, id: u64, level: bool) -> Result<Served> {
     if let Some(bytes) = super::audio_ram::get(&name) {
         return Ok(served(Some(bytes)));
     }
-    let _turn = super::audio_convert::CONVERTING.lock().await;
+    let _turn = super::audio_convert::turn(&name).await;
     // Made while this request waited its turn.
     if let Some(bytes) = super::audio_ram::get(&name) {
         return Ok(served(Some(bytes)));

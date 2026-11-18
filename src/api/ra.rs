@@ -880,6 +880,19 @@ pub async fn badge_mosaic(app: &App, game_id: u32) -> Result<Option<PathBuf>> {
 /// involved), each once into the media cache. Returns how many were fetched; one that fails
 /// is left for the next caller.
 async fn download_media(app: &App, paths: Vec<String>) -> u64 {
+    download_media_reporting(app, paths, None).await
+}
+
+/// [`download_media`], reporting each file as it is done on `report`'s
+/// (progress, done, total, label): "<label>: badge 140 of 300".
+async fn download_media_reporting(app: &App, paths: Vec<String>, report: Option<(&crate::database::jobs::Progress, u64, u64, &str)>) -> u64 {
+    let n = paths.len() as u64;
+    let mut done = 0u64;
+    let say = |done: u64| async move {
+        if let Some((progress, at, total, label)) = report {
+            progress.report(at, Some(total), &format!("{label}: badge {} of {}", crate::database::jobs::thousands(done), crate::database::jobs::thousands(n))).await;
+        }
+    };
     let root = match media_root(app).await {
         Ok(root) => root,
         Err(e) => {
@@ -892,6 +905,8 @@ async fn download_media(app: &App, paths: Vec<String>) -> u64 {
     for path in paths {
         let local = media_file(app, &root, &path).await;
         if local.is_file() {
+            done += 1;
+            say(done).await;
             continue;
         }
         let (http, url, sem) = (app.http.clone(), RaClient::media_url(&path), semaphore.clone());
@@ -903,8 +918,10 @@ async fn download_media(app: &App, paths: Vec<String>) -> u64 {
         });
     }
     let mut fetched = 0;
-    while let Some(done) = set.join_next().await {
-        fetched += u64::from(done.unwrap_or(false));
+    while let Some(ok) = set.join_next().await {
+        fetched += u64::from(ok.unwrap_or(false));
+        done += 1;
+        say(done).await;
     }
     fetched
 }
@@ -955,7 +972,12 @@ pub async fn update_badges(app: &App, request: &RaBadgesRequest, progress: &crat
     let user = client(app)?.username().to_string();
     let mut summary = BadgesSummary { scope: request.scope.clone(), ..Default::default() };
     progress.force(0, None, "refreshing the account's progress").await;
-    crate::database::providers::ra_account::sync(&app.clients(), &app.pool, &crate::database::jobs::Progress::none()).await?;
+    // Its own reports, under a prefix that says which step of this job they are.
+    progress.set_prefix(Some("refreshing the account's progress: ".to_string()));
+    let synced = crate::database::providers::ra_account::sync(&app.clients(), &app.pool, progress).await;
+    progress.set_prefix(None);
+    synced?;
+    progress.force(0, None, "finding the games to update").await;
     let games: Vec<u64> = if request.scope == "owned" {
         sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT game_id FROM ({LOCAL_RA}) l ORDER BY game_id"))).fetch_all(&app.pool).await?
     } else {
@@ -998,7 +1020,9 @@ pub async fn update_badges(app: &App, request: &RaBadgesRequest, progress: &crat
         let names: Vec<&str> = list.iter().filter_map(|a| a.badge_name.as_deref()).collect();
         summary.badges += names.len() as u64;
         let paths = names.iter().flat_map(|b| [format!("Badge/{b}.png"), format!("Badge/{b}_lock.png")]).collect();
-        summary.downloaded += download_media(app, paths).await;
+        let label = format!("game {} of {total}", i + 1);
+        summary.downloaded += download_media_reporting(app, paths, Some((progress, i as u64, total, &label))).await;
+        progress.report(i as u64, Some(total), &format!("{label}: building mosaic")).await;
         if let Some(file) = badge_mosaic(app, game_id).await? {
             summary.mosaics += 1;
             prune_mosaics(&file, &format!("{safe_user}_{game_id}_"));

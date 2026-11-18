@@ -2704,14 +2704,14 @@ async fn phase_thegamesdb_regions(env: &Env, report: &mut Report) {
         let link = |release: u64| async move { sqlx::query_scalar::<_, String>("SELECT provider_id FROM release_provider_links WHERE release_id = ? AND provider = 'thegamesdb' AND deleted = FALSE").bind(release).fetch_optional(pool).await };
         // The Japanese entry last, as a dump in id order would have it.
         let all = [candidate("990001", 1, 50), candidate("990003", 6, 13), candidate("990002", 6, 28)];
-        link_platform(pool, &regions, &priority, Platform::GameBoy, &all).await.map_err(de)?;
+        link_platform(pool, &regions, &priority, Platform::GameBoy, &all, &romexplorer::database::jobs::Progress::none()).await.map_err(de)?;
         let first = (link(usa).await.map_err(e)?, link(japan).await.map_err(e)?, link(europe).await.map_err(e)?, link(world).await.map_err(e)?);
         // A later pass that only saw the US entry (a partial sync) leaves Japan alone.
-        link_platform(pool, &regions, &priority, Platform::GameBoy, &[candidate("990001", 1, 50)]).await.map_err(de)?;
+        link_platform(pool, &regions, &priority, Platform::GameBoy, &[candidate("990001", 1, 50)], &romexplorer::database::jobs::Progress::none()).await.map_err(de)?;
         let japan_after_partial = link(japan).await.map_err(e)?;
         // A manual link is never moved.
         sqlx::query("UPDATE release_provider_links SET provider_id = '990001', confidence = 'manual' WHERE release_id = ? AND provider = 'thegamesdb'").bind(europe).execute(pool).await.map_err(e)?;
-        link_platform(pool, &regions, &priority, Platform::GameBoy, &all).await.map_err(de)?;
+        link_platform(pool, &regions, &priority, Platform::GameBoy, &all, &romexplorer::database::jobs::Progress::none()).await.map_err(de)?;
         let europe_manual = link(europe).await.map_err(e)?;
         let want = (Some("990001".to_string()), Some("990002".to_string()), Some("990003".to_string()), Some("990001".to_string()));
         let checks = [
@@ -2746,7 +2746,7 @@ async fn phase_thegamesdb_regions(env: &Env, report: &mut Report) {
         let regions = TgdbRegions::from_lists(&[(6, "PAL".into())], &[(28, "Japan".into()), (50, "USA".into())]);
         let priority: Vec<String> = ["US", "EU", "JP"].iter().map(|s| s.to_string()).collect();
         // Only the Japanese release is picked (a set holding just it).
-        let (linked, cached) = link_releases(pool, &regions, &priority, &[japan]).await.map_err(de)?;
+        let (linked, cached) = link_releases(pool, &regions, &priority, &[japan], &romexplorer::database::jobs::Progress::none()).await.map_err(de)?;
         let link = |release: u64| async move { sqlx::query_scalar::<_, String>("SELECT provider_id FROM release_provider_links WHERE release_id = ? AND provider = 'thegamesdb' AND deleted = FALSE").bind(release).fetch_optional(pool).await };
         let (l_japan, l_usa, l_europe) = (link(japan).await.map_err(e)?, link(usa).await.map_err(e)?, link(europe).await.map_err(e)?);
         let checks = [
@@ -4183,7 +4183,7 @@ async fn phase_bulk(env: &Env, report: &mut Report) {
     if clients.is_available(Provider::RetroAchievements) {
         step(report, "retroachievements by_platform (one console, with hashes)", async {
             let (console_id, console_name) = bulk::ra_console_id_for(clients, platform).await.map_err(|e| e.to_string())?.ok_or("RA has no such console")?;
-            let s = bulk::sync_retroachievements_console(clients, pool, store, console_id, Some(platform), bulk::SyncMode::Redownload).await.map_err(|e| e.to_string())?;
+            let s = bulk::sync_retroachievements_console(clients, pool, store, console_id, Some(platform), bulk::SyncMode::Redownload, &romexplorer::database::jobs::Progress::none()).await.map_err(|e| e.to_string())?;
             Ok(((), format!("{platform:?} = RA console {console_id} ({console_name}): {} games, {} md5 hashes, {} linked to catalog releases by md5", s.games, s.hashes, s.linked)))
         })
         .await;

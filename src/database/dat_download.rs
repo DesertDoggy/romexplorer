@@ -108,6 +108,19 @@ pub struct DownloadOptions {
 }
 
 impl DownloadOptions {
+    /// A phase change on the job's row (no-op without one).
+    async fn say(&self, message: &str) {
+        if let Some(progress) = &self.progress {
+            progress.force(0, None, message).await;
+        }
+    }
+
+    /// One item of a list on the job's row, throttled.
+    async fn tick(&self, done: usize, total: usize, message: &str) {
+        if let Some(progress) = &self.progress {
+            progress.report(done as u64, Some(total as u64), message).await;
+        }
+    }
     /// Whether a DAT named `name` (a file, a pack member or a header name) is for one of
     /// [`Self::platforms`]. A name no platform is known for is always wanted: nothing says
     /// it isn't for a platform you have.
@@ -278,16 +291,17 @@ fn fetch_err(context: &str, err: impl std::fmt::Display) -> DatabaseError {
 }
 
 /// Streams `url` to `dest` via a `.part` temp file, returning the byte count.
-async fn download_to(client: &Client, url: &str, dest: &Path, referer: Option<&str>, options: &DownloadOptions) -> Result<u64, DatabaseError> {
+/// `which` goes after the byte count on the row: " (file 12 of 97)", or "".
+async fn download_to(client: &Client, url: &str, dest: &Path, referer: Option<&str>, options: &DownloadOptions, which: &str) -> Result<u64, DatabaseError> {
     let mut request = client.get(url);
     if let Some(referer) = referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
     let response = request.send().await.map_err(|e| fetch_err(url, e))?.error_for_status().map_err(|e| fetch_err(url, e))?;
-    write_response(response, dest, options).await
+    write_response(response, dest, options, which).await
 }
 
-async fn write_response(mut response: reqwest::Response, dest: &Path, options: &DownloadOptions) -> Result<u64, DatabaseError> {
+async fn write_response(mut response: reqwest::Response, dest: &Path, options: &DownloadOptions, which: &str) -> Result<u64, DatabaseError> {
     use tokio::io::AsyncWriteExt;
     let part = dest.with_extension(format!("{}.part", dest.extension().and_then(|e| e.to_str()).unwrap_or("bin")));
     if let Some(parent) = dest.parent() {
@@ -313,7 +327,7 @@ async fn write_response(mut response: reqwest::Response, dest: &Path, options: &
         total += chunk.len() as u64;
         if let Some(progress) = &options.progress {
             let of = expected.map(|e| format!(" of {}", super::jobs::human_bytes(e))).unwrap_or_default();
-            progress.report(total, expected, &format!("downloading {name}: {}{of}", super::jobs::human_bytes(total))).await;
+            progress.report(total, expected, &format!("downloading {}{of}{which}: {name}", super::jobs::human_bytes(total))).await;
         }
     }
     file.flush().await?;
@@ -396,35 +410,38 @@ async fn github_list(client: &Client, repo: &str, dir: &str) -> Result<Vec<Githu
 }
 
 async fn fetch_github_dir(client: &Client, repo: &str, dirs: &[&str], extensions: &[&str], out_dir: &Path, options: &DownloadOptions) -> Result<Vec<Downloaded>, DatabaseError> {
-    let mut out = Vec::new();
-    let mut fetched = 0usize;
+    let what = repo.rsplit('/').next().unwrap_or(repo);
+    // Every folder's listing first, so each file can say where it is of the whole.
+    let mut files = Vec::new();
     for (index, dir) in dirs.iter().enumerate() {
         // Subdirectories mirror upstream's layout (mame-redump's MAME/ and Tosec/).
         let sub_dir = if index == 0 { out_dir.to_path_buf() } else { out_dir.join(dir.rsplit('/').next().unwrap_or(dir)) };
         std::fs::create_dir_all(&sub_dir)?;
+        options.say(&format!("{what}: listing {dir} ({} of {})", index + 1, dirs.len())).await;
         let listing = github_list(client, repo, dir).await?;
-        for entry in listing.into_iter().filter(|e| e.kind == "file" && extensions.iter().any(|x| e.name.to_ascii_lowercase().ends_with(x))) {
-            if let Some(limit) = options.limit {
-                if fetched >= limit {
-                    return Ok(out);
-                }
-            }
-            if !options.wants(&entry.name) {
-                continue;
-            }
-            let dest = sub_dir.join(safe_file_name(&entry.name));
-            let existing = std::fs::metadata(&dest).map(|m| m.len()).ok();
-            if !options.force && existing == Some(entry.size) {
-                out.push(Downloaded { path: dest, fresh: false, bytes: entry.size });
-                fetched += 1;
-                continue;
-            }
-            let Some(url) = entry.download_url else { continue };
-            let bytes = download_to(client, &url, &dest, None, options).await?;
-            out.push(Downloaded { path: dest, fresh: true, bytes });
-            fetched += 1;
-            tokio::time::sleep(options.courtesy_delay).await;
+        files.extend(listing.into_iter().filter(|e| e.kind == "file" && extensions.iter().any(|x| e.name.to_ascii_lowercase().ends_with(x)) && options.wants(&e.name)).map(|e| (sub_dir.clone(), e)));
+    }
+    let total = options.limit.map_or(files.len(), |l| l.min(files.len()));
+    let mut out = Vec::new();
+    let (mut downloaded, mut here) = (0usize, 0usize);
+    for (n, (sub_dir, entry)) in files.into_iter().enumerate() {
+        if n >= total {
+            break;
         }
+        let which = format!(" (file {} of {})", super::jobs::thousands(n as u64 + 1), super::jobs::thousands(total as u64));
+        options.tick(n, total, &format!("{what}: checking file {} of {}, {downloaded} downloaded, {here} already here: {}", super::jobs::thousands(n as u64 + 1), super::jobs::thousands(total as u64), entry.name)).await;
+        let dest = sub_dir.join(safe_file_name(&entry.name));
+        let existing = std::fs::metadata(&dest).map(|m| m.len()).ok();
+        if !options.force && existing == Some(entry.size) {
+            out.push(Downloaded { path: dest, fresh: false, bytes: entry.size });
+            here += 1;
+            continue;
+        }
+        let Some(url) = entry.download_url else { continue };
+        let bytes = download_to(client, &url, &dest, None, options, &which).await?;
+        out.push(Downloaded { path: dest, fresh: true, bytes });
+        downloaded += 1;
+        tokio::time::sleep(options.courtesy_delay).await;
     }
     Ok(out)
 }
@@ -449,6 +466,7 @@ async fn fetch_retrobios(client: &Client, out_dir: &Path, options: &DownloadOpti
     const REPO: &str = "Abdess/retrobios";
     const FILE_PATH: &str = "database.json";
     let url = format!("https://api.github.com/repos/{REPO}/commits?path={FILE_PATH}&per_page=1");
+    options.say("retrobios: asking GitHub for the latest database.json").await;
     let commits: Vec<GithubCommit> = client.get(&url).header(reqwest::header::ACCEPT, "application/vnd.github+json").send().await.map_err(|e| fetch_err(&url, e))?.error_for_status().map_err(|e| fetch_err(&url, e))?.json().await.map_err(|e| fetch_err(&url, e))?;
     let Some(commit) = commits.first() else { return Err(DatabaseError::Fetch("retrobios: no commits returned".to_string())) };
     let stamp: String = commit.commit.committer.date.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -458,7 +476,7 @@ async fn fetch_retrobios(client: &Client, out_dir: &Path, options: &DownloadOpti
         return Ok(vec![Downloaded { path: dest, fresh: false, bytes }]);
     }
     let raw_url = format!("https://raw.githubusercontent.com/{REPO}/{}/{FILE_PATH}", commit.sha);
-    let bytes = download_to(client, &raw_url, &dest, None, options).await?;
+    let bytes = download_to(client, &raw_url, &dest, None, options, "").await?;
     Ok(vec![Downloaded { path: dest, fresh: true, bytes }])
 }
 
@@ -475,6 +493,7 @@ lazy_static! {
 
 async fn fetch_redump(client: &Client, out_dir: &Path, options: &DownloadOptions) -> Result<Vec<Downloaded>, DatabaseError> {
     const DOWNLOADS_URL: &str = "https://redump.info/downloads";
+    options.say("redump: reading the downloads page").await;
     let page = client.get(DOWNLOADS_URL).send().await.map_err(|e| fetch_err(DOWNLOADS_URL, e))?.error_for_status().map_err(|e| fetch_err(DOWNLOADS_URL, e))?.text().await.map_err(|e| fetch_err(DOWNLOADS_URL, e))?;
 
     let links = redump_links(&page);
@@ -484,10 +503,15 @@ async fn fetch_redump(client: &Client, out_dir: &Path, options: &DownloadOptions
 
     let mut out = Vec::new();
     let mut fetched = 0usize;
-    for (kind, code) in links {
+    let total = links.len();
+    let (mut downloaded, mut here) = (0usize, 0usize);
+    for (n, (kind, code)) in links.into_iter().enumerate() {
         if options.limit.map(|l| fetched >= l).unwrap_or(false) {
             break;
         }
+        let which = format!(" (file {} of {})", super::jobs::thousands(n as u64 + 1), super::jobs::thousands(total as u64));
+        let what = if kind == "bios" { format!("{code} BIOS") } else { code.clone() };
+        options.tick(n, total, &format!("redump: checking {what} ({} of {}), {downloaded} downloaded, {here} already here", super::jobs::thousands(n as u64 + 1), super::jobs::thousands(total as u64))).await;
         let url = format!("https://redump.info/{kind}/{code}");
         // The dated filename is only in the headers, so ask for them first and skip the
         // download when that file is already here.
@@ -507,9 +531,11 @@ async fn fetch_redump(client: &Client, out_dir: &Path, options: &DownloadOptions
                 let dest = out_dir.join(safe_file_name(&name));
                 if !options.force && dest.is_file() {
                     out.push(Downloaded { path: dest.clone(), fresh: false, bytes: std::fs::metadata(&dest)?.len() });
+                    here += 1;
                 } else {
-                    let bytes = write_response(response, &dest, options).await?;
+                    let bytes = write_response(response, &dest, options, &which).await?;
                     out.push(Downloaded { path: dest, fresh: true, bytes });
+                    downloaded += 1;
                 }
                 fetched += 1;
                 tokio::time::sleep(options.courtesy_delay).await;
@@ -522,9 +548,11 @@ async fn fetch_redump(client: &Client, out_dir: &Path, options: &DownloadOptions
         let dest = out_dir.join(safe_file_name(&filename));
         if !options.force && dest.is_file() {
             out.push(Downloaded { path: dest.clone(), fresh: false, bytes: std::fs::metadata(&dest)?.len() });
+            here += 1;
         } else {
-            let bytes = download_to(client, &url, &dest, Some(DOWNLOADS_URL), options).await?;
+            let bytes = download_to(client, &url, &dest, Some(DOWNLOADS_URL), options, &which).await?;
             out.push(Downloaded { path: dest, fresh: true, bytes });
+            downloaded += 1;
         }
         fetched += 1;
         tokio::time::sleep(options.courtesy_delay).await;
@@ -561,13 +589,16 @@ async fn fetch_no_intro(client: &Client, out_dir: &Path, options: &DownloadOptio
     let mut form_html = String::new();
     for attempt in 0..3u32 {
         if attempt > 0 {
+            options.say(&format!("no-intro: datomatic had no daily form, waiting {}s before trying again", 10 * attempt)).await;
             tokio::time::sleep(Duration::from_secs(10 * attempt as u64)).await;
         }
+        options.say(&format!("no-intro: asking datomatic for the daily pack (try {} of 3)", attempt + 1)).await;
         form_html = no_intro_page(&flow, &form_url).await?;
         // A new session first gets the terms page: one form posting its csrf token and an
         // "I accept" button back to the same URL. Accepting sets the session cookie a
         // browser keeps; then the page asked for is served.
         if let Some(token) = no_intro_terms_token(&form_html) {
+            options.say(&format!("no-intro: accepting datomatic's terms (try {} of 3)", attempt + 1)).await;
             tokio::time::sleep(Duration::from_secs(2)).await;
             let accepted = flow.post(&form_url).header(reqwest::header::REFERER, &form_url).form(&[("csrf_token", token.as_str()), ("terms_accept", "I accept")]).send().await.map_err(|e| fetch_err(&form_url, e))?;
             // Read to the end, so the session the accept sets is in place before the next request.
@@ -599,6 +630,7 @@ async fn fetch_no_intro(client: &Client, out_dir: &Path, options: &DownloadOptio
         form = form.text(field, "Ok");
     }
     form = form.text(submit_name, "Request");
+    options.say("no-intro: waiting for datomatic to build the pack").await;
     let prepare = flow.post(&form_url).header(reqwest::header::REFERER, &form_url).multipart(form).send().await.map_err(|e| fetch_err(&form_url, e))?;
     // The job page: behind a redirect, or (since 2026-11) the answer itself.
     let (manager_url, manager_html) = match prepare.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()).map(|s| s.to_string()) {
@@ -626,13 +658,14 @@ async fn fetch_no_intro(client: &Client, out_dir: &Path, options: &DownloadOptio
     for (name, value) in no_intro_hidden_inputs(&manager_html) {
         form = form.text(name, value);
     }
+    options.say("no-intro: asking datomatic for the built pack").await;
     let response = flow.post(&manager_url).header(reqwest::header::REFERER, &manager_url).multipart(form).send().await.map_err(|e| fetch_err(&manager_url, e))?;
     let filename = content_disposition_filename(response.headers()).ok_or_else(|| DatabaseError::Fetch("no-intro: the download response had no filename".to_string()))?;
     let dest = out_dir.join(safe_file_name(&filename));
     if !options.force && dest.is_file() {
         return Ok(vec![Downloaded { path: dest.clone(), fresh: false, bytes: std::fs::metadata(&dest)?.len() }]);
     }
-    let bytes = write_response(response, &dest, options).await?;
+    let bytes = write_response(response, &dest, options, "").await?;
     let _ = client;
     Ok(vec![Downloaded { path: dest, fresh: true, bytes }])
 }
@@ -755,10 +788,12 @@ async fn fetch_tosec(client: &Client, out_dir: &Path, options: &DownloadOptions)
     }
     const BASE: &str = "https://www.tosecdev.org";
     let downloads_url = format!("{BASE}/downloads");
+    options.say("tosec: reading the downloads page").await;
     let html = client.get(&downloads_url).send().await.map_err(|e| fetch_err(&downloads_url, e))?.error_for_status().map_err(|e| fetch_err(&downloads_url, e))?.text().await.map_err(|e| fetch_err(&downloads_url, e))?;
     // Highest date wins (ids aren't issued in date order).
     let latest = RE_CATEGORY.captures_iter(&html).map(|c| (c[3].to_string(), c[1].to_string())).max().map(|(_, path)| path).ok_or_else(|| DatabaseError::Fetch("tosec: no dated release category found".to_string()))?;
     let category_url = format!("{BASE}{latest}");
+    options.say("tosec: reading the latest release's page").await;
     let category_html = client.get(&category_url).send().await.map_err(|e| fetch_err(&category_url, e))?.text().await.map_err(|e| fetch_err(&category_url, e))?;
     let href = RE_COMPLETE.captures(&category_html).map(|c| html_unescape(&c[1])).ok_or_else(|| DatabaseError::Fetch("tosec: \"Complete\" pack link not found".to_string()))?;
     let download_url = if href.starts_with("http") {
@@ -768,13 +803,14 @@ async fn fetch_tosec(client: &Client, out_dir: &Path, options: &DownloadOptions)
     } else {
         format!("{category_url}{href}")
     };
+    options.say("tosec: asking for the complete pack").await;
     let response = client.get(&download_url).send().await.map_err(|e| fetch_err(&download_url, e))?.error_for_status().map_err(|e| fetch_err(&download_url, e))?;
     let filename = content_disposition_filename(response.headers()).ok_or_else(|| DatabaseError::Fetch("tosec: the download response had no filename".to_string()))?;
     let dest = out_dir.join(safe_file_name(&filename));
     if !options.force && dest.is_file() {
         return Ok(vec![Downloaded { path: dest.clone(), fresh: false, bytes: std::fs::metadata(&dest)?.len() }]);
     }
-    let bytes = write_response(response, &dest, options).await?;
+    let bytes = write_response(response, &dest, options, "").await?;
     Ok(vec![Downloaded { path: dest, fresh: true, bytes }])
 }
 

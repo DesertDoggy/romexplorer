@@ -16,23 +16,6 @@ use crate::html::{self, badge, esc};
 use crate::state;
 use crate::ui::{self, Html, Explain};
 
-/// A typed job row's progress: the same bar the jobs list draws.
-pub fn progress_html(j: &JobRow) -> String {
-    let msg = j.progress_message.clone().unwrap_or_default();
-    if j.progress_done.is_none() && msg.is_empty() {
-        return String::new();
-    }
-    let bar = match (j.progress_done, j.progress_total) {
-        (Some(d), Some(t)) if t > 0 => {
-            let pct = (100.0 * d as f64 / t as f64).floor().min(100.0) as u64;
-            format!("<div class=\"pbar\"><div style=\"width:{pct}%\"></div></div><span class=\"num\">{pct}%</span>")
-        }
-        (Some(d), _) => format!("<span class=\"num\">{d}</span>"),
-        _ => String::new(),
-    };
-    format!("<div class=\"prog\" title=\"{}\">{bar}<span class=\"muted\">{}</span></div>", esc(&msg), esc(&msg.chars().take(90).collect::<String>()))
-}
-
 /// A job's `result` (the worker's summary struct as JSON) rendered generically: `[name,
 /// count]` lists as a collapsed per-table breakdown with a total, other lists joined, scalars
 /// as key/value. Empty things are skipped so "nothing was skipped" takes no row.
@@ -120,7 +103,8 @@ pub fn JobWatch(job_id: u64, #[props(default)] on_done: Option<EventHandler<JobR
         div { class: "prog",
             Html { html: badge(&format!("#{job_id} {} · {}", j.job_type.name(), j.status), cls) }
             " "
-            Html { html: progress_html(&j) }
+            // The same cell as the jobs list: bar, step marks, time, and the details button.
+            super::jobs::JobProgress { job: serde_json::to_value(&j).unwrap_or_default() }
         }
         if !err.is_empty() { div { class: "bad", "{err}" } }
         if !error().is_empty() { div { class: "bad", "{error}" } }
@@ -396,7 +380,7 @@ fn ConfigFileCard() -> Element {
                         }
                     }
                     span { class: "grow" }
-                    button { class: "btn primary", disabled: busy(), onclick: import, {state::tr("import")} }
+                    button { class: "btn primary", disabled: busy(), onclick: import, if busy() { {state::tr("Importing the configuration…")} } else { {state::tr("import")} } }
                 }
             }
             if !sections.is_empty() {

@@ -22,7 +22,8 @@ use romexplorer::rom::multiple::{Limits, Multiple};
 
 use serde::{Deserialize, Serialize};
 
-use crate::job::{plan, run_one, Event, JobSpec, Mode, Planned, Writing};
+use crate::classify::{parallel_map, Input};
+use crate::job::{plan, run_one, Event, JobSpec, Mode, Planned, Progress, Writing};
 use crate::settings::Settings;
 
 pub const WORKER_FLAG: &str = "--job";
@@ -38,8 +39,10 @@ enum WorkerLine {
 
 #[derive(Debug, Clone)]
 pub enum BatchEvent {
+    /// What the batch itself is doing before any job starts ("planning outputs: 120 of 500").
+    Status(String),
     Started { index: usize },
-    Progress { index: usize, percent: f32 },
+    Progress { index: usize, progress: Progress },
     Message { index: usize, text: String },
     Finished { index: usize, result: Result<String, String> },
 }
@@ -53,6 +56,9 @@ pub struct Batch {
     /// Ctrl-C cancels the batch the way the cancel flag does, rather than ending the process
     /// with its outputs half-written (the console tools).
     pub ctrl_c_cancels: bool,
+    /// What [`crate::classify::classify_all`] already made of inputs, so their jobs do not
+    /// read them again.
+    pub classified: HashMap<PathBuf, Input>,
 }
 
 /// Runs the batch, blocking until every job has finished or been cancelled. `on_event` is
@@ -74,9 +80,12 @@ pub fn run(batch: &Batch, cancel: &AtomicBool, on_event: &(dyn Fn(BatchEvent) + 
     let mut specs: Vec<JobSpec> = batch
         .inputs
         .iter()
-        .map(|input| JobSpec { mode: batch.mode, input: input.clone(), settings: batch.settings.clone(), threads: (threads > 0).then_some(threads), output_stem: None })
+        .map(|input| JobSpec {
+            classified: batch.classified.get(input).cloned(),
+            ..JobSpec::new(batch.mode, input.clone(), batch.settings.clone(), (threads > 0).then_some(threads))
+        })
         .collect();
-    let clashes = if specs.len() > 1 { separate_outputs(&mut specs) } else { vec![None; specs.len()] };
+    let clashes = if specs.len() > 1 { separate_outputs(&mut specs, &|text| on_event(BatchEvent::Status(text))) } else { vec![None; specs.len()] };
     // Every job one size: chdlite's limit is one number of files, not a number per size.
     let items: Vec<(u64, (usize, JobSpec, Option<String>))> = specs.into_iter().zip(clashes).enumerate().map(|(index, (spec, clash))| (1, (index, spec, clash))).collect();
 
@@ -171,7 +180,7 @@ pub fn run(batch: &Batch, cancel: &AtomicBool, on_event: &(dyn Fn(BatchEvent) + 
 
 fn forward(index: usize, event: Event, on_event: &dyn Fn(BatchEvent)) {
     match event {
-        Event::Progress(percent) => on_event(BatchEvent::Progress { index, percent }),
+        Event::Progress(progress) => on_event(BatchEvent::Progress { index, progress }),
         Event::Message(text) => on_event(BatchEvent::Message { index, text }),
         Event::Output(_) | Event::Scratch(_) => {}
     }
@@ -181,16 +190,39 @@ fn forward(index: usize, event: Event, on_event: &dyn Fn(BatchEvent)) {
 /// (`Game (2).chd`); one whose file names come from the content, which cannot be renamed, gets
 /// the error it fails with instead. Earlier inputs keep their names. Names are compared
 /// ignoring case, as the file systems that ignore it would.
-fn separate_outputs(specs: &mut [JobSpec]) -> Vec<Option<String>> {
+///
+/// The plans are worked out several at a time first (each reads its input's header, or lists
+/// a disc's content), saying "planning outputs: 120 of 500 (name)".
+fn separate_outputs(specs: &mut [JobSpec], on_progress: &(dyn Fn(String) + Sync)) -> Vec<Option<String>> {
     fn key(path: &Path) -> String {
         path.to_string_lossy().to_lowercase()
     }
+    let plans: Vec<Planned> = if matches!(specs.first().map(|spec| spec.mode), Some(Mode::Read | Mode::Hash)) {
+        // Writes nothing: nothing to plan.
+        vec![Planned::Nothing; specs.len()]
+    } else {
+        let total = romexplorer::database::jobs::thousands(specs.len() as u64);
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        let last = Mutex::new(None::<std::time::Instant>);
+        on_progress(format!("planning outputs: 0 of {total}"));
+        parallel_map(specs, 8, |spec| {
+            let planned = plan(spec);
+            let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+            let mut last = last.lock().unwrap();
+            if last.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(100)) {
+                *last = Some(std::time::Instant::now());
+                let name = spec.input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                on_progress(format!("planning outputs: {} of {total} ({name})", romexplorer::database::jobs::thousands(done as u64)));
+            }
+            planned
+        })
+    };
     // Every output path; every output's folder + stem; the folder + stem of outputs whose
     // extension is not known yet.
     let (mut paths, mut stems, mut unknown) = (HashSet::new(), HashSet::new(), HashSet::new());
     let mut clashes = vec![None; specs.len()];
-    for (index, spec) in specs.iter_mut().enumerate() {
-        match plan(spec) {
+    for ((index, spec), planned) in specs.iter_mut().enumerate().zip(plans) {
+        match planned {
             Planned::Nothing => {}
             Planned::Named { dir, stem, extension } => {
                 let taken = |stem: &str| {
@@ -333,7 +365,7 @@ mod tests {
     use super::*;
 
     fn spec(input: PathBuf, settings: &Settings) -> JobSpec {
-        JobSpec { mode: Mode::Lite, input, settings: settings.clone(), threads: Some(1), output_stem: None }
+        JobSpec::new(Mode::Lite, input, settings.clone(), Some(1))
     }
 
     #[test]
@@ -349,13 +381,13 @@ mod tests {
         let mut settings = Settings::default();
         settings.output.dir = dir.join("out").to_string_lossy().into_owned();
         let mut specs = vec![spec(a.clone(), &settings), spec(b.clone(), &settings)];
-        assert_eq!(separate_outputs(&mut specs), vec![None, None]);
+        assert_eq!(separate_outputs(&mut specs, &|_| {}), vec![None, None]);
         assert_eq!(specs[0].output_stem, None);
         assert_eq!(specs[1].output_stem.as_deref(), Some("game (2)"));
 
         // Each beside its own input: nothing to tell apart.
         let mut specs = vec![spec(a, &Settings::default()), spec(b, &Settings::default())];
-        separate_outputs(&mut specs);
+        separate_outputs(&mut specs, &|_| {});
         assert!(specs.iter().all(|spec| spec.output_stem.is_none()));
         let _ = std::fs::remove_dir_all(&dir);
     }

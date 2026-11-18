@@ -222,6 +222,8 @@ pub fn Audio() -> Element {
         });
     };
     let mut clear_platform = use_signal(String::new);
+    // While the clear runs (it answers when done): what the button says instead, and disabled.
+    let mut clearing = use_signal(|| false);
     let clear_index = move |_| {
         spawn(async move {
             let platform = clear_platform();
@@ -230,7 +232,10 @@ pub fn Audio() -> Element {
                 return;
             }
             let body = json!({ "platform": platform.parse::<u64>().ok() });
-            match api::post("/api/v1/audio/rom/clear", body).await {
+            clearing.set(true);
+            let answer = api::post("/api/v1/audio/rom/clear", body).await;
+            clearing.set(false);
+            match answer {
                 Ok(r) => {
                     ui::toast(state::trf("{n} ROM(s) cleared", &[("n", &u(&r, "cleared").to_string())]), false);
                     bump(reload);
@@ -261,7 +266,7 @@ pub fn Audio() -> Element {
                     option { value: "", {state::tr("all platforms")} }
                     for p in state::platforms().into_iter().filter(|p| u(p, "id") != 0) { option { value: "{u(&p, \"id\")}", {state::platform_label(&s(&p, "name"))} } }
                 }
-                button { class: "btn", r#type: "button", title: state::tr("forget the music found in ROMs (all, or one platform's) so the next index, new only included, reads them again; kinds you set on their tracks are cleared too"), onclick: clear_index, {state::tr("Clear ROM audio index")} }
+                button { class: "btn", r#type: "button", title: state::tr("forget the music found in ROMs (all, or one platform's) so the next index, new only included, reads them again; kinds you set on their tracks are cleared too"), onclick: clear_index, disabled: clearing(), if clearing() { {state::tr("Clearing the music index…")} } else { {state::tr("Clear ROM audio index")} } }
             }
             if let Some(id) = job() {
                 JobWatch { key: "{id}", job_id: id, on_done: move |_| bump(reload) }
@@ -299,6 +304,16 @@ pub fn PagePlayer(query: String) -> Element {
     let resource = playlist;
     // `None` until it has loaded.
     let loaded = playlist.read().clone();
+    // The first answer can wait on the page's cartridges being indexed (a known music map is
+    // read while the page waits): said, rather than an empty space, once it takes a moment.
+    let mut slow = use_signal(|| false);
+    use_hook(move || {
+        spawn(async move {
+            ui::sleep(700).await;
+            slow.set(true);
+        });
+    });
+    let waiting = loaded.is_none() && slow();
     let start_host = host.clone();
     use_effect(use_reactive!(|loaded| {
         let Some(playlist) = loaded else { return };
@@ -332,6 +347,7 @@ pub fn PagePlayer(query: String) -> Element {
             "mute": state::tr("mute"), "playlist": state::tr("playlist"), "position": state::tr("position"), "play / pause": state::tr("play / pause"),
             "volume": state::tr("volume"), "normalise": state::tr("normalise"), "normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)": state::tr("normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)"),
             "crossfade": state::tr("crossfade"), "crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)": state::tr("crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)"),
+            "Converting for playback…": state::tr("Converting for playback…"), "Waiting for another conversion…": state::tr("Waiting for another conversion…"),
         });
         // "Don't play this track" and "restore" come back here as messages, and are recorded
         // for this page's title.
@@ -402,7 +418,11 @@ pub fn PagePlayer(query: String) -> Element {
     });
     // An empty element the script draws the bar into. It holds nothing Dioxus renders, so a
     // re-render leaves what the script put there alone.
-    rsx! { div { id: "{host}" } Html { html: String::new() } {indexing} {switch} }
+    rsx! {
+        div { id: "{host}" } Html { html: String::new() }
+        if waiting { div { class: "toolbar rx-indexing muted", {state::tr("Indexing this game's music…")} } }
+        {indexing} {switch}
+    }
 }
 
 /// A playlist track with the URL this app reads it from.

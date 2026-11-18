@@ -123,10 +123,17 @@ pub enum JobType {
     /// banks and records each track, so a title page can play them like a CD player.
     /// Payload: [`RomAudioIndexRequest`].
     RomAudioIndex,
+    /// Throws this machine's catalogue away so a main server's can take its place
+    /// (`api::sources::clear_catalog`), queued by a save that designates a main server or
+    /// switches to client mode. Payload `{"source_id": u16, "media": "relink"|"redownload"}`.
+    CatalogClear,
+    /// Reads a collection-sets file into this catalogue (`api::set_file::import`), entry by
+    /// entry. Payload: `{"file": <sets file>, "names": [..]}`.
+    SetImport,
 }
 
 impl JobType {
-    pub const ALL: [JobType; 38] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate, JobType::RomAudioIndex];
+    pub const ALL: [JobType; 40] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate, JobType::RomAudioIndex, JobType::CatalogClear, JobType::SetImport];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -168,6 +175,8 @@ impl JobType {
             Self::ArtworkExport => "artwork_export",
             Self::AiBatchRate => "ai_batch_rate",
             Self::RomAudioIndex => "rom_audio_index",
+            Self::CatalogClear => "catalog_clear",
+            Self::SetImport => "set_import",
         }
     }
 
@@ -266,6 +275,10 @@ pub struct JobRow {
     pub claimed_at: Option<NaiveDateTime>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    /// Seconds since it started: up to now while it runs, up to its end once finished; none
+    /// while it waits. The UIs show it, and the time left from it and the bar.
+    #[serde(default)]
+    pub elapsed_secs: Option<u64>,
     /// 0 = background; higher first, in the lane's fast slot.
     pub priority: u16,
     /// Waits its turn: starts only when nothing else is running or waiting, rather than

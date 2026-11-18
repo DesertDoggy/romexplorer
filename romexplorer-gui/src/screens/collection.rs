@@ -1018,6 +1018,8 @@ fn SetsFileCard(on_done: EventHandler<()>) -> Element {
     let mut ticked = use_signal(std::collections::BTreeSet::<String>::new);
     let mut result = use_signal(Vec::<Value>::new);
     let mut busy = use_signal(|| false);
+    // The import runs as a job (`set_import`): followed here until it ends, then its result.
+    let mut watch = use_signal(|| None::<u64>);
     let open = move |_| {
         let Some(file) = chosen() else {
             ui::toast(state::tr("choose a file"), true);
@@ -1051,15 +1053,27 @@ fn SetsFileCard(on_done: EventHandler<()>) -> Element {
         spawn(async move {
             match api::post("/api/v1/sets/import", json!({ "file": doc, "names": names })).await {
                 Ok(r) => {
-                    ui::toast(state::tr("sets imported"), false);
-                    result.set(r.as_array().cloned().unwrap_or_default());
+                    result.set(Vec::new());
                     read.set(None);
-                    on_done.call(());
+                    watch.set(Some(u(&r, "job_id")));
                 }
-                Err(e) => ui::toast(e.message, true),
+                Err(e) => {
+                    ui::toast(e.message, true);
+                    busy.set(false);
+                }
             }
-            busy.set(false);
         });
+    };
+    let finished = move |j: romexplorer_types::jobs::JobRow| {
+        busy.set(false);
+        watch.set(None);
+        if j.status == "done" {
+            ui::toast(state::tr("sets imported"), false);
+            result.set(j.result.as_ref().and_then(|r| r.get("sets")).and_then(Value::as_array).cloned().unwrap_or_default());
+            on_done.call(());
+        } else {
+            ui::toast(j.last_error.clone().unwrap_or_else(|| j.status.clone()), true);
+        }
     };
     let missing: Vec<(String, String, String, String)> = result().iter().flat_map(|x| api::arr(x, "missing").iter().map(|m| (s(x, "name"), s(m, "kind"), s(m, "name"), s(m, "reason"))).collect::<Vec<_>>()).collect();
     rsx! {
@@ -1094,6 +1108,7 @@ fn SetsFileCard(on_done: EventHandler<()>) -> Element {
                     button { class: "btn primary", disabled: busy(), onclick: import, {state::tr("import")} }
                 }
             }
+            if let Some(id) = watch() { super::backup::JobWatch { key: "{id}", job_id: id, on_done: finished } }
             if !result().is_empty() {
                 table { class: "grid",
                     thead { tr { th { {state::trc("sets", "set")} } th { class: "num", {state::tr("added")} } th { class: "num", {state::tr("already there")} } th { class: "num", {state::tr("not found")} } } }

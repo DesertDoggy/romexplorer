@@ -28,7 +28,7 @@ use sqlx::Row;
 
 use super::error::DatabaseError;
 use super::import::sha1_hex;
-use super::jobs::{Frame, Progress};
+use super::jobs::{thousands, Frame, Progress};
 use super::matching;
 
 /// IGDB link confidences the automatic pass merges on, as a SQL list. `name` is in: it is a
@@ -1377,6 +1377,9 @@ pub async fn dedupe_by_igdb_in(pool: &MySqlPool, only: Option<&str>, progress: &
     }
     let igdb: BTreeMap<String, Vec<u64>> = shared_groups(pool, &sql, only).await?.into_iter().filter(|(_, titles)| scope.touches(titles)).collect();
     s.shared_ids = igdb.len() as u64;
+    // One IGDB game's pass (a manual link): only that game's titles can have been merged, so
+    // only their suggestions need settling -- not every pending one in the catalogue.
+    let group: Option<Vec<u64>> = only.map(|_| igdb.values().flatten().copied().collect());
     merge_shared(pool, igdb, "igdb", "IGDB games shared by several titles", &mut s, progress).await?;
     if only.is_none() {
         step(45, 20);
@@ -1403,12 +1406,13 @@ pub async fn dedupe_by_igdb_in(pool: &MySqlPool, only: Option<&str>, progress: &
     }
     step(85, 10);
     // Suggestions whose titles are one by now (merged by hand, or by this pass) are done.
-    settle_merged_suggestions(pool, None).await?;
+    progress.force(0, None, "suggestions: settling the ones already merged").await;
+    settle_merged_suggestions(pool, group.as_deref()).await?;
     s.suggestions = refresh_suggestions(pool, only, progress, scope).await?;
     if only.is_none() {
         step(95, 5);
         progress.force(0, None, "suggestions: Japanese names without a link").await;
-        s.suggestions += suggest_by_name(pool, scope).await?;
+        s.suggestions += suggest_by_name(pool, scope, progress).await?;
         // The review queue's kinds; the first pass after they came in looks at everything.
         const REVIEW_ONCE: &str = "title_review_0068";
         let first = sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(REVIEW_ONCE).fetch_optional(pool).await?.is_none();
@@ -1438,7 +1442,8 @@ pub fn suffix_match<'a>(jp_name: &str, known: &'a HashMap<String, u64>) -> Optio
 /// Suggestions (not merges) for titles no hash links to anything: a Japan-only title without
 /// an IGDB link whose name ends with an IGDB-linked title's name on the same platform
 /// ("Shin Legend of Hogehoge II" / "Legend of Hogehoge II"). Keyed `name:<title id>`, reason `name_suffix`.
-async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, DatabaseError> {
+async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope, progress: &Progress) -> Result<u64, DatabaseError> {
+    progress.force(0, None, "suggestions: Japanese names: reading the titles linked to IGDB").await;
     let mut known: HashMap<u16, HashMap<String, u64>> = HashMap::new();
     for r in sqlx::query(
         "SELECT DISTINCT r.app_platform_id, t.id, t.norm_name FROM title t JOIN title_provider_links tpl ON tpl.title_id = t.id AND tpl.provider = 'igdb' AND tpl.deleted = FALSE \
@@ -1449,6 +1454,7 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
     {
         known.entry(r.try_get("app_platform_id")?).or_default().insert(r.try_get("norm_name")?, r.try_get("id")?);
     }
+    progress.force(0, None, "suggestions: Japanese names: finding the Japan-only titles without a link").await;
     let candidates = sqlx::query(
         "SELECT t.id, t.norm_name, MIN(r.app_platform_id) AS platform, CAST(SUM(COALESCE(r.region, '') <> 'JP') AS SIGNED) AS non_jp, COUNT(DISTINCT r.app_platform_id) AS platforms \
          FROM title t JOIN title_releases tr ON tr.title_id = t.id JOIN `release` r ON r.id = tr.release_id AND r.deleted = FALSE \
@@ -1458,15 +1464,18 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
     .fetch_all(pool)
     .await?;
     let ids: Vec<u64> = candidates.iter().filter_map(|c| c.try_get::<u64, _>("id").ok()).chain(known.values().flat_map(|k| k.values().copied())).collect::<BTreeSet<_>>().into_iter().collect();
+    progress.force(0, None, "suggestions: Japanese names: reading which titles must stay apart").await;
     let apart = Apart::load(pool, &ids, &set_versions(pool).await?).await?;
     let mut groups: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
-    for c in candidates {
+    let n = candidates.len() as u64;
+    for (i, c) in candidates.into_iter().enumerate() {
+        let name: String = c.try_get("norm_name")?;
+        progress.report(i as u64, Some(n), &format!("suggestions: Japanese name {} of {} ({} suggested): {name}", thousands(i as u64 + 1), thousands(n), thousands(groups.len() as u64))).await;
         // Only titles touched since the last pass (the others were looked at then).
         if !scope.has(c.try_get("id")?) {
             continue;
         }
         let platform: u16 = c.try_get("platform")?;
-        let name: String = c.try_get("norm_name")?;
         if let Some((_, target)) = known.get(&platform).and_then(|k| suffix_match(&name, k)) {
             let id: u64 = c.try_get("id")?;
             if !apart.may_join(id, target) {
@@ -1475,7 +1484,9 @@ async fn suggest_by_name(pool: &MySqlPool, scope: &PassScope) -> Result<u64, Dat
             groups.entry(target).or_default().insert(id);
         }
     }
-    for (target, jp) in &groups {
+    let saving = groups.len() as u64;
+    for (g, (target, jp)) in groups.iter().enumerate() {
+        progress.report(g as u64, Some(saving), &format!("suggestions: Japanese names: saving suggestion {} of {}", thousands(g as u64 + 1), thousands(saving))).await;
         let ids: Vec<u64> = std::iter::once(*target).chain(jp.iter().copied()).collect::<BTreeSet<u64>>().into_iter().collect();
         sqlx::query(
             "INSERT INTO title_merge_suggestions (igdb_id, title_ids, reason) VALUES (?, ?, 'name_suffix') ON DUPLICATE KEY UPDATE \

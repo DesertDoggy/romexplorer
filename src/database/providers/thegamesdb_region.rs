@@ -181,10 +181,11 @@ pub struct Candidate {
 /// that fits at least as well keeps it -- so a sync that pages through only part of a
 /// platform cannot swap a good link for a worse one. Stronger links (hash, exact, manual) are
 /// never touched. Returns how many entries linked something.
-pub async fn link_platform(pool: &MySqlPool, regions: &TgdbRegions, priority: &[String], platform: Platform, games: &[Candidate]) -> Result<u64, DatabaseError> {
+pub async fn link_platform(pool: &MySqlPool, regions: &TgdbRegions, priority: &[String], platform: Platform, games: &[Candidate], progress: &crate::database::jobs::Progress) -> Result<u64, DatabaseError> {
     if games.is_empty() || platform == Platform::Unknown {
         return Ok(0);
     }
+    progress.force(0, None, &format!("linking by name ({platform:?}): reading the releases' names")).await;
     let index = ExactNameIndex::load(pool, platform).await?;
     let release_regions: HashMap<u64, Option<String>> = sqlx::query("SELECT id, region FROM `release` WHERE deleted = FALSE AND app_platform_id = ?")
         .bind(platform.igdb_id())
@@ -205,7 +206,9 @@ pub async fn link_platform(pool: &MySqlPool, regions: &TgdbRegions, priority: &[
     let mut linked: HashSet<&str> = HashSet::new();
     let mut release_ids: Vec<u64> = by_release.keys().copied().collect();
     release_ids.sort_unstable();
-    for release_id in release_ids {
+    let n = release_ids.len() as u64;
+    for (i, release_id) in release_ids.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("linking by name ({platform:?}): release {} of {} ({} linked)", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(n), crate::database::jobs::thousands(linked.len() as u64))).await;
         let codes = release_codes(release_regions.get(&release_id).and_then(|r| r.as_deref()));
         let mut candidates = by_release[&release_id].clone();
         // Deterministic among equals: the lowest id.
@@ -257,7 +260,7 @@ async fn replaces_current(pool: &MySqlPool, regions: &TgdbRegions, priority: &[S
 ///
 /// Matches the cached title only (the dump's alternate names aren't kept per game here).
 /// Returns how many releases it linked, and whether anything is cached to link from at all.
-pub async fn link_releases(pool: &MySqlPool, regions: &TgdbRegions, priority: &[String], release_ids: &[u64]) -> Result<(u64, bool), DatabaseError> {
+pub async fn link_releases(pool: &MySqlPool, regions: &TgdbRegions, priority: &[String], release_ids: &[u64], progress: &crate::database::jobs::Progress) -> Result<(u64, bool), DatabaseError> {
     use super::super::matching::util::norm_key;
     let cached = sqlx::query("SELECT 1 FROM thegamesdb_games WHERE deleted = FALSE AND app_platform_id IS NOT NULL LIMIT 1").fetch_optional(pool).await?.is_some();
     if release_ids.is_empty() || !cached {
@@ -273,7 +276,11 @@ pub async fn link_releases(pool: &MySqlPool, regions: &TgdbRegions, priority: &[
         }
     }
     let mut linked = 0u64;
+    let total = release_ids.len() as u64;
+    let mut done = 0u64;
+    let th = crate::database::jobs::thousands;
     for (platform, releases) in by_platform {
+        progress.force(done, Some(total), &format!("linking to TheGamesDB: release {} of {}: reading its list for platform {platform}", th(done + 1), th(total))).await;
         // That platform's cached entries by normalized name.
         let mut by_name: HashMap<String, Vec<(i64, Option<u32>, Option<u32>)>> = HashMap::new();
         let rows = sqlx::query("SELECT provider_id, title, region_id, country_id FROM thegamesdb_games WHERE deleted = FALSE AND app_platform_id = ?").bind(platform).fetch_all(pool).await?;
@@ -285,6 +292,8 @@ pub async fn link_releases(pool: &MySqlPool, regions: &TgdbRegions, priority: &[
             }
         }
         for (release_id, norm_name, region) in releases {
+            progress.report(done, Some(total), &format!("linking to TheGamesDB: release {} of {} ({} linked)", th(done + 1), th(total), th(linked))).await;
+            done += 1;
             let Some(found) = by_name.get(&norm_name) else { continue };
             let codes = release_codes(region.as_deref());
             let mut best: Option<(i64, (u8, usize))> = None;

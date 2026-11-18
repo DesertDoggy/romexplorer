@@ -242,13 +242,17 @@ pub struct Outcome {
 
 /// Tries each of `games` (none linked to a release yet) by serial; returns the games it
 /// linked, and counts.
-pub async fn match_games(pool: &MySqlPool, games: &[u64], cfg: &SerialMatch, source_order: &[String]) -> Result<(Vec<u64>, Outcome), DatabaseError> {
+/// Reports "serial match: game 1,200 of 6,400 (85 linked)" as it goes.
+pub async fn match_games(pool: &MySqlPool, games: &[u64], cfg: &SerialMatch, source_order: &[String], progress: &crate::database::jobs::Progress) -> Result<(Vec<u64>, Outcome), DatabaseError> {
+    use crate::database::jobs::thousands;
     let mut linked = Vec::new();
     let mut outcome = Outcome::default();
     if cfg.formats.is_empty() {
         return Ok((linked, outcome));
     }
-    for &game_id in games {
+    let n = games.len() as u64;
+    for (i, &game_id) in games.iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("serial match: game {} of {} ({} linked)", thousands(i as u64 + 1), thousands(n), thousands(outcome.matched))).await;
         let files = sqlx::query(
             "SELECT f.path, lr.app_platform_id FROM local_game_roms lgr JOIN local_rom lr ON lr.id = lgr.rom_id AND lr.deleted = FALSE \
              JOIN local_rom_files lrf ON lrf.rom_id = lr.id JOIN local_files f ON f.id = lrf.file_id AND f.deleted = FALSE WHERE lgr.game_id = ? ORDER BY f.path",

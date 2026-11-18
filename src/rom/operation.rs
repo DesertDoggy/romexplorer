@@ -1349,6 +1349,7 @@ impl Single {
             collected,
             archive_counter: Arc::clone(&archive_counter),
             finished_bytes: 0,
+            file_count: content.files.len(),
         };
 
         let target = sink.plan.archive_target;
@@ -1419,7 +1420,7 @@ impl Single {
         let target = plan.archive_target.expect("dolphin route needs a target");
         let output = plan.archive_output.clone().expect("archive output planned");
         let options = plan.archive_options.clone().expect("archive options planned");
-        let mut sink = SinkImpl { plan, progress, hash_flags, pipes: Vec::new(), collected, archive_counter: Arc::new(AtomicU64::new(0)), finished_bytes: 0 };
+        let mut sink = SinkImpl { plan, progress, hash_flags, pipes: Vec::new(), collected, archive_counter: Arc::new(AtomicU64::new(0)), finished_bytes: 0, file_count: 1 };
         let mut pipeline = sink.begin(0, file)?;
         let mut failure: Option<ContentError> = None;
         let mut pushed = 0u64;
@@ -1542,10 +1543,18 @@ struct SinkImpl<'p, 'a> {
     archive_counter: Arc<AtomicU64>,
     /// Bytes of the content files already finished.
     finished_bytes: u64,
+    /// How many content files there are, for "file 3 of 25: Track 03.bin".
+    file_count: usize,
 }
 
 impl ContentSink for SinkImpl<'_, '_> {
     fn begin(&mut self, index: usize, file: &ContentFile) -> Result<ChunkPipeline, ContentError> {
+        // Which file of a multi-file disc is being read, so a long one is not just a percent.
+        if self.file_count > 1 {
+            let stage = if self.plan.input.is_archive() && self.plan.stages.extract.is_ok() { Stage::Extract } else { Stage::Hash };
+            let message = format!("file {} of {}: {}", index + 1, self.file_count, file.name);
+            self.progress.emit(stage, Some(&message));
+        }
         let mut sinks = Vec::new();
         let converter = if index == 0 { self.plan.converter.take() } else { None };
         if let Some(dir) = &self.plan.write_dir {

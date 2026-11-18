@@ -162,24 +162,6 @@ pub fn dat_material(source: Source, header_name: &str, entry_name: &str) -> Opti
     platform_map::material_from_dat_name(header_name, tosec_style).or_else(|| platform_map::material_from_dat_name(member, tosec_style))
 }
 
-/// The DATs in `path` that were imported before releases recorded what kind of material they
-/// are, and that list something other than software: their pack member names (the file's own
-/// name for a plain DAT). Importing just those again stamps their releases; an import is an
-/// upsert, so nothing else about them changes.
-pub async fn unclassified_members(pool: &MySqlPool, source: Source, path: &std::path::Path) -> Result<Vec<String>, DatabaseError> {
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-    let is_zip = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("zip"));
-    let members: Vec<String> = if is_zip { super::dat_parse::list_dat_members(path)? } else { vec![file_name.clone()] };
-    let wanted: Vec<String> = members.into_iter().filter(|m| dat_material(source, "", m).is_some()).collect();
-    if wanted.is_empty() {
-        return Ok(wanted);
-    }
-    let Some(row) = sqlx::query("SELECT id FROM sources WHERE name = ?").bind(source.name()).fetch_optional(pool).await? else { return Ok(Vec::new()) };
-    let source_id: u8 = row.try_get("id")?;
-    let unstamped: std::collections::HashSet<String> = sqlx::query_scalar("SELECT file_hash FROM dat_imports WHERE source_id = ? AND material IS NULL").bind(source_id).fetch_all(pool).await?.into_iter().collect();
-    Ok(wanted.into_iter().filter(|m| unstamped.contains(&sha1_hex(&if is_zip { format!("{file_name}::{m}") } else { m.clone() }))).collect())
-}
-
 fn tosec_category(header_name: &str) -> Option<String> {
     header_name.rsplit_once(" - ").map(|(_, c)| c.trim().to_string())
 }
@@ -488,6 +470,9 @@ pub struct EntryProgress<'a> {
     pub progress: &'a super::jobs::Progress,
     pub label: String,
     pub before: u64,
+    /// How much of `total` this DAT takes: its entry count, or (a pack, whose entry counts
+    /// are not known before its DATs are read) its uncompressed size.
+    pub span: u64,
     pub total: u64,
 }
 
@@ -534,13 +519,17 @@ pub async fn import_dat_reporting(pool: &MySqlPool, source: Source, entry_name: 
         for chunk in drafts.chunks(options.batch_size.max(1)) {
             if let Some(r) = report {
                 let entries = if drafts_total == 0 { 0 } else { summary.games * drafts_done / drafts_total };
-                r.progress.report(r.before + entries, Some(r.total), &format!("{}, {entries} of {} entries", r.label, summary.games)).await;
+                let within = if summary.games == 0 { 0 } else { (r.span as u128 * entries as u128 / summary.games as u128) as u64 };
+                r.progress.report(r.before + within, Some(r.total), &format!("{}, {} of {} entries", r.label, super::jobs::thousands(entries), super::jobs::thousands(summary.games))).await;
             }
             import_chunk(&mut tx, source_id, source, *platform, chunk, &key, &mut summary, &mut listed).await?;
             drafts_done += chunk.len() as u64;
         }
     }
 
+    if let Some(r) = report {
+        r.progress.force(r.before + r.span, Some(r.total), &format!("{}, setting aside files the DAT dropped", r.label)).await;
+    }
     supersede_unlisted(&mut tx, source_id, &key, dat, &listed, &mut summary).await?;
 
     // Record the import.
@@ -694,24 +683,6 @@ async fn fold_platformless(pool: &MySqlPool, source_id: u8, platform: Platform, 
         }
     }
     Ok(folded)
-}
-
-/// The DATs in `path` imported before their system had a platform here (or before the name
-/// was understood): their pack member names (the file's own name for a plain DAT). Importing
-/// them again puts their releases on the platform, and the old rows fold into the new ones.
-pub async fn misplaced_members(pool: &MySqlPool, source: Source, path: &std::path::Path) -> Result<Vec<String>, DatabaseError> {
-    let Some(row) = sqlx::query("SELECT id FROM sources WHERE name = ?").bind(source.name()).fetch_optional(pool).await? else { return Ok(Vec::new()) };
-    let source_id: u8 = row.try_get("id")?;
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as("SELECT file_hash, dat_name FROM dat_imports WHERE source_id = ? AND app_platform_id = 0").bind(source_id).fetch_all(pool).await?;
-    // Retrobios and multi-system DATs name a system per game: never misplaced as a whole.
-    let wanted: std::collections::HashSet<String> = rows.into_iter().filter(|(_, name)| name.as_deref().is_some_and(|n| platform_map::platform_from_dat_name(n) != Platform::Unknown)).map(|(h, _)| h).collect();
-    if wanted.is_empty() {
-        return Ok(Vec::new());
-    }
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-    let is_zip = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("zip"));
-    let members: Vec<String> = if is_zip { super::dat_parse::list_dat_members(path)? } else { vec![file_name.clone()] };
-    Ok(members.into_iter().filter(|m| wanted.contains(&sha1_hex(&if is_zip { format!("{file_name}::{m}") } else { m.clone() }))).collect())
 }
 
 /// Scanned roms the scan could not place (platform `Unknown`) that are now linked to a release
@@ -1167,43 +1138,83 @@ async fn import_chunk(tx: &mut Transaction<'_, MySql>, source_id: u8, source: So
     Ok(())
 }
 
-/// Convenience: parse and import one DAT file/pack from disk. `member_filter` picks pack
-/// members (see [`super::dat_parse::parse_dat_path`]). Returns one summary per parsed dat.
-/// Whether every DAT in `path` (the file itself, or each `.dat`/`.xml` member of a zip pack,
-/// named as `import_path` records them) already has a `dat_imports` row for `source`. Lets
-/// a `dat_sync` that was interrupted between download and import pick the downloaded but
-/// never-imported files up again, instead of importing only freshly downloaded ones.
-/// Members `wanted` leaves out (other platforms', under `dat_sync_platforms`) don't count.
-pub async fn is_imported(pool: &MySqlPool, source: Source, path: &std::path::Path, wanted: &(dyn Fn(&str) -> bool + Sync)) -> Result<bool, DatabaseError> {
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-    let names: Vec<String> = if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
-        let archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
-        archive
-            .file_names()
-            .filter(|m| {
-                let lower = m.to_ascii_lowercase();
-                (lower.ends_with(".dat") || lower.ends_with(".xml")) && wanted(m)
-            })
-            .map(|m| format!("{file_name}::{m}"))
-            .collect()
-    } else {
-        vec![file_name]
-    };
-    if names.is_empty() {
-        return Ok(true);
-    }
-    // Read-only: a source that has no row yet has imported nothing.
-    let Some(row) = sqlx::query("SELECT id FROM sources WHERE name = ?").bind(source.name()).fetch_optional(pool).await? else { return Ok(false) };
-    let source_id: u8 = row.try_get("id")?;
-    let sql = format!("SELECT COUNT(*) AS n FROM dat_imports WHERE source_id = ? AND file_hash IN ({})", in_list(names.len()));
-    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(source_id);
-    for name in &names {
-        query = query.bind(sha1_hex(name));
-    }
-    let n: i64 = query.fetch_one(pool).await?.try_get("n")?;
-    Ok(n as usize >= names.len())
+/// What `dat_imports` holds for one source, read once so that checking each of a source's
+/// files (412 of redump's) is a look-up rather than two or three queries per file.
+#[derive(Debug, Default)]
+pub struct ImportedDats {
+    /// `None`: the source has no row yet, so it has imported nothing.
+    source_id: Option<u8>,
+    /// Every imported DAT's `file_hash`.
+    all: HashSet<String>,
+    /// Imported before releases recorded what kind of material they are (`material IS NULL`).
+    unstamped: HashSet<String>,
+    /// Imported on no platform although their name says one (see [`ImportedDats::check`]).
+    misplaced: HashSet<String>,
 }
 
+/// One downloaded file against [`ImportedDats`]: whether every DAT in it is imported, and
+/// the ones to import again.
+#[derive(Debug, Default)]
+pub struct FileCheck {
+    pub imported: bool,
+    /// Pack member names (the file's own name for a plain DAT) to import again.
+    pub again: Vec<String>,
+}
+
+/// [`ImportedDats`] for `source`.
+pub async fn imported_dats(pool: &MySqlPool, source: Source) -> Result<ImportedDats, DatabaseError> {
+    // Read-only: a source that has no row yet has imported nothing.
+    let Some(row) = sqlx::query("SELECT id FROM sources WHERE name = ?").bind(source.name()).fetch_optional(pool).await? else { return Ok(ImportedDats::default()) };
+    let source_id: u8 = row.try_get("id")?;
+    let rows: Vec<(String, Option<String>, u16, Option<String>)> =
+        sqlx::query_as("SELECT file_hash, dat_name, app_platform_id, material FROM dat_imports WHERE source_id = ?").bind(source_id).fetch_all(pool).await?;
+    let mut out = ImportedDats { source_id: Some(source_id), ..Default::default() };
+    for (hash, name, platform, material) in rows {
+        if material.is_none() {
+            out.unstamped.insert(hash.clone());
+        }
+        // Retrobios and multi-system DATs name a system per game: never misplaced as a whole.
+        if platform == 0 && name.as_deref().is_some_and(|n| platform_map::platform_from_dat_name(n) != Platform::Unknown) {
+            out.misplaced.insert(hash.clone());
+        }
+        out.all.insert(hash);
+    }
+    Ok(out)
+}
+
+impl ImportedDats {
+    /// `path` (the file itself, or each `.dat`/`.xml` member of a zip pack, named as
+    /// `import_path` records them), lists its members once and answers:
+    ///
+    /// - whether every DAT in it already has a `dat_imports` row. Lets a `dat_sync` that was
+    ///   interrupted between download and import pick the downloaded but never-imported files
+    ///   up again. Members `wanted` leaves out (other platforms', under `dat_sync_platforms`)
+    ///   don't count.
+    /// - the DATs to import again: ones imported before releases recorded what kind of
+    ///   material they are and that list something other than software (importing them again
+    ///   stamps their releases; an import is an upsert, so nothing else changes), and ones
+    ///   imported before their system had a platform here (importing them again puts their
+    ///   releases on it, and the old rows fold into the new ones).
+    pub fn check(&self, source: Source, path: &std::path::Path, wanted: &(dyn Fn(&str) -> bool + Sync)) -> Result<FileCheck, DatabaseError> {
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let is_zip = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+        let members: Vec<String> = if is_zip { super::dat_parse::list_dat_members(path)? } else { vec![file_name.clone()] };
+        let hash_of = |m: &str| sha1_hex(&if is_zip { format!("{file_name}::{m}") } else { m.to_string() });
+        let hashes: Vec<String> = members.iter().map(|m| hash_of(m)).collect();
+        let mut counted = members.iter().zip(&hashes).filter(|(m, _)| !is_zip || wanted(m)).peekable();
+        let imported = counted.peek().is_none() || (self.source_id.is_some() && counted.all(|(_, h)| self.all.contains(h)));
+        let again = members
+            .iter()
+            .zip(&hashes)
+            .filter(|(m, h)| (dat_material(source, "", m).is_some() && self.unstamped.contains(*h)) || self.misplaced.contains(*h))
+            .map(|(m, _)| m.clone())
+            .collect();
+        Ok(FileCheck { imported, again })
+    }
+}
+
+/// Convenience: parse and import one DAT file/pack from disk. `member_filter` picks pack
+/// members (see [`super::dat_parse::parse_dat_path`]). Returns one summary per parsed dat.
 pub async fn import_path(pool: &MySqlPool, source: Source, path: &std::path::Path, member_filter: &(dyn Fn(&str) -> bool + Sync), options: &ImportOptions) -> Result<Vec<(String, ImportSummary)>, DatabaseError> {
     import_path_reporting(pool, source, path, member_filter, options, None).await
 }
@@ -1233,61 +1244,141 @@ pub async fn import_path_reporting(
                 .to_string(),
         ));
     }
-    let entries = super::dat_parse::parse_dat_path(path, member_filter)?;
-    let mut out = Vec::with_capacity(entries.len());
-    let total = entries.len() as u64;
-    // Entries, not DATs, are the scale: the DATs of a pack run from ten entries to a hundred
-    // thousand, and a file that is one DAT has no other scale at all.
-    let all_entries: u64 = entries.iter().map(|e| e.dat.games.len() as u64).sum();
-    let mut entries_done = 0u64;
+    let is_zip = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    let mut out = Vec::new();
     let mut failed: Vec<String> = Vec::new();
-    for (n, entry) in entries.into_iter().enumerate() {
-        let report = progress.map(|(progress, label)| EntryProgress {
-            progress,
-            label: if total > 1 { format!("{label}: {} ({} of {total})", entry.name, n + 1) } else { label.to_string() },
-            before: entries_done,
-            total: all_entries.max(1),
-        });
-        if let Some(r) = &report {
-            r.progress.force(r.before, Some(r.total), &r.label).await;
+    let total: u64;
+    if is_zip {
+        // A pack is read one DAT at a time on a blocking thread and handed over as each is
+        // parsed, so importing starts with the first DAT instead of after all 4,700 of
+        // TOSEC's have been read; the reader stays a few DATs ahead. The scale is the
+        // members' uncompressed size, which the zip's directory gives before any is read.
+        let pack = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if let Some((progress, label)) = progress {
+            progress.force(0, None, &format!("{label}: reading {pack}: listing its DATs")).await;
         }
-        let started = std::time::Instant::now();
-        // Each DAT is one transaction, so one that lost a lock to another job (two DAT
-        // syncs at once) was rolled back whole and is simply run again.
-        let mut attempt = 0u32;
-        let result = loop {
-            match import_dat_reporting(pool, source, &entry.name, &entry.dat, options, report.as_ref()).await {
-                Err(e) if e.is_lock_conflict() && attempt < 4 => {
-                    attempt += 1;
-                    log::info!("dat import: {} hit a lock held by another job ({e}); trying again ({attempt} of 4)", entry.name);
-                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+        let listed = {
+            let path = path.to_path_buf();
+            tokio::task::spawn_blocking(move || super::dat_parse::list_dat_members_sized(&path)).await.map_err(|e| DatabaseError::Config(format!("reading {pack}: {e}")))??
+        };
+        let wanted: Vec<super::dat_parse::DatMember> = listed.into_iter().filter(|m| member_filter(&m.name)).collect();
+        total = wanted.len() as u64;
+        let sizes: Vec<u64> = wanted.iter().map(|m| m.size.max(1)).collect();
+        let whole: u64 = sizes.iter().sum::<u64>().max(1);
+        let names: Vec<String> = wanted.into_iter().map(|m| m.name).collect();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Result<super::dat_parse::ParsedDatEntry, DatabaseError>)>(4);
+        let reader = {
+            let path = path.to_path_buf();
+            let names = names.clone();
+            tokio::task::spawn_blocking(move || super::dat_parse::parse_zip_members(&path, &names, |n, parsed| tx.blocking_send((n, parsed)).is_ok()))
+        };
+        let mut before = 0u64;
+        loop {
+            let next = match rx.try_recv() {
+                Ok(next) => Some(next),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => None,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    // The reader is behind: say which DAT it is reading, not the last import.
+                    if let Some((progress, label)) = progress {
+                        let n = out.len() + failed.len();
+                        if let Some(name) = names.get(n) {
+                            let message = format!("{label}: reading {pack}: DAT {} of {} ({name})", super::jobs::thousands(n as u64 + 1), super::jobs::thousands(total));
+                            progress.force(before, Some(whole), &message).await;
+                        }
+                    }
+                    rx.recv().await
                 }
-                other => break other,
+            };
+            let Some((n, parsed)) = next else { break };
+            let span = sizes[n];
+            match parsed {
+                Ok(entry) => {
+                    let label = progress.map(|(_, label)| if total > 1 { format!("{label}: {} ({} of {})", entry.name, super::jobs::thousands(n as u64 + 1), super::jobs::thousands(total)) } else { label.to_string() });
+                    match import_one(pool, source, &entry, options, progress.map(|(p, _)| p), label, before, span, whole).await {
+                        Ok(summary) => out.push((entry.name, summary)),
+                        Err(e) => failed.push(format!("{}: {e}", entry.name)),
+                    }
+                }
+                Err(e) => {
+                    log::warn!("dat import: {pack}::{} would not read: {e}", names[n]);
+                    failed.push(format!("{pack}::{}: {e}", names[n]));
+                }
             }
-        };
-        // One DAT that will not go in does not stop the rest of a pack (TOSEC's has 4,700).
-        let summary = match result {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("dat import: {} failed: {e}", entry.name);
-                failed.push(format!("{}: {e}", entry.name));
-                entries_done += entry.dat.games.len() as u64;
-                continue;
-            }
-        };
-        entries_done += entry.dat.games.len() as u64;
-        // Where a slow import's time goes is otherwise invisible: a pack's summaries are
-        // logged together when it ends, so nothing says which DAT took the minutes.
-        let took = started.elapsed();
-        if took.as_secs() >= 5 {
-            log::info!("dat import: {} took {:.1}s ({} games, {} files, {} new content)", entry.name, took.as_secs_f64(), summary.games, summary.files, summary.content_new);
+            before += span;
         }
-        out.push((entry.name, summary));
+        match reader.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(e) => return Err(DatabaseError::Config(format!("reading {pack}: {e}"))),
+        }
+    } else {
+        let entries = {
+            let path = path.to_path_buf();
+            let name = path.display().to_string();
+            tokio::task::spawn_blocking(move || super::dat_parse::parse_dat_path(&path, &|_| true)).await.map_err(|e| DatabaseError::Config(format!("reading {name}: {e}")))??
+        };
+        total = entries.len() as u64;
+        // Entries, not DATs, are the scale: one DAT can be 70,000 entries.
+        let all_entries: u64 = entries.iter().map(|e| e.dat.games.len() as u64).sum::<u64>().max(1);
+        let mut before = 0u64;
+        for (n, entry) in entries.into_iter().enumerate() {
+            let span = entry.dat.games.len() as u64;
+            let label = progress.map(|(_, label)| if total > 1 { format!("{label}: {} ({} of {total})", entry.name, n + 1) } else { label.to_string() });
+            match import_one(pool, source, &entry, options, progress.map(|(p, _)| p), label, before, span, all_entries).await {
+                Ok(summary) => out.push((entry.name, summary)),
+                Err(e) => failed.push(format!("{}: {e}", entry.name)),
+            }
+            before += span;
+        }
     }
     if !failed.is_empty() {
         return Err(DatabaseError::Partial(format!("{} of {total} DAT(s) failed to import: {}", failed.len(), failed.join("; "))));
     }
     Ok(out)
+}
+
+
+/// One parsed DAT of [`import_path_reporting`]: imported (tried again when it lost a lock to
+/// another job), with its progress placed at `before..before + span` of `total`.
+#[allow(clippy::too_many_arguments)]
+async fn import_one(
+    pool: &MySqlPool,
+    source: Source,
+    entry: &super::dat_parse::ParsedDatEntry,
+    options: &ImportOptions,
+    progress: Option<&super::jobs::Progress>,
+    label: Option<String>,
+    before: u64,
+    span: u64,
+    total: u64,
+) -> Result<ImportSummary, DatabaseError> {
+    let report = progress.zip(label).map(|(progress, label)| EntryProgress { progress, label, before, span, total: total.max(1) });
+    if let Some(r) = &report {
+        r.progress.force(r.before, Some(r.total), &r.label).await;
+    }
+    let started = std::time::Instant::now();
+    // Each DAT is one transaction, so one that lost a lock to another job (two DAT
+    // syncs at once) was rolled back whole and is simply run again.
+    let mut attempt = 0u32;
+    let result = loop {
+        match import_dat_reporting(pool, source, &entry.name, &entry.dat, options, report.as_ref()).await {
+            Err(e) if e.is_lock_conflict() && attempt < 4 => {
+                attempt += 1;
+                log::info!("dat import: {} hit a lock held by another job ({e}); trying again ({attempt} of 4)", entry.name);
+                tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+            }
+            other => break other,
+        }
+    };
+    // One DAT that will not go in does not stop the rest of a pack (TOSEC's has 4,700).
+    let summary = result.inspect_err(|e| log::warn!("dat import: {} failed: {e}", entry.name))?;
+    // Where a slow import's time goes is otherwise invisible: a pack's summaries are
+    // logged together when it ends, so nothing says which DAT took the minutes.
+    let took = started.elapsed();
+    if took.as_secs() >= 5 {
+        log::info!("dat import: {} took {:.1}s ({} games, {} files, {} new content)", entry.name, took.as_secs_f64(), summary.games, summary.files, summary.content_new);
+    }
+    Ok(summary)
 }
 
 #[cfg(test)]

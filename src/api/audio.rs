@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 use crate::database::import::sha1_hex;
-use crate::database::jobs::Progress;
+use crate::database::jobs::{thousands, Progress, Steps, WalkCount};
 
 use super::{clamp_page, like_pattern, App, Error, Result};
 
@@ -110,9 +110,10 @@ fn extension_of(path: &Path) -> Option<String> {
 /// Every audio file under `root`, at any depth. Unreadable directories are skipped and
 /// reported rather than ending the walk; symlinked directories are not followed, so a loop
 /// in the tree cannot hang it.
-fn walk(root: &Path, files: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
+fn walk(root: &Path, files: &mut Vec<PathBuf>, errors: &mut Vec<String>, count: &WalkCount) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        count.enter(&dir);
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e) => {
@@ -127,6 +128,7 @@ fn walk(root: &Path, files: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
                 stack.push(path);
             } else if kind.is_file() && extension_of(&path).is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.as_str())) {
                 files.push(path);
+                count.found(1);
             }
         }
     }
@@ -150,39 +152,48 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
     let quick = request.mode == FileScanMode::NewOnly;
     let mut summary = AudioScanSummary { mode: if quick { "new_only" } else { "full" }.to_string(), folders: roots.iter().map(|r| r.display().to_string()).collect(), ..Default::default() };
 
-    progress.force(0, None, "walking the audio folders").await;
+    let mut steps = Steps::new(progress, &[("audio_walk", "Walk the audio folders"), ("audio_read", "Read tags"), ("audio_loudness", "Measure loudness")], if quick { "new files" } else { "every file" });
+    steps.start(1).await;
     let (files, walk_errors) = {
         let roots = roots.clone();
-        tokio::task::spawn_blocking(move || {
-            let (mut files, mut errors) = (Vec::new(), Vec::new());
-            for root in &roots {
-                if root.is_dir() {
-                    walk(root, &mut files, &mut errors);
-                } else {
-                    errors.push(format!("{} is not a folder on this machine", root.display()));
+        let count = WalkCount::new();
+        let walker = count.clone();
+        count
+            .report_while(progress, "walking the audio folders", "file(s)", move || {
+                let (mut files, mut errors) = (Vec::new(), Vec::new());
+                for root in &roots {
+                    if root.is_dir() {
+                        walk(root, &mut files, &mut errors, &walker);
+                    } else {
+                        errors.push(format!("{} is not a folder on this machine", root.display()));
+                    }
                 }
-            }
-            files.sort();
-            (files, errors)
-        })
-        .await
-        .map_err(|e| Error::internal(format!("audio walk task: {e}")))?
+                files.sort();
+                (files, errors)
+            })
+            .await
+            .map_err(|e| Error::internal(format!("audio walk task: {e}")))?
     };
     summary.errors = walk_errors;
     summary.files_seen = files.len() as u64;
+    steps.done(format!("{} file(s) found", thousands(summary.files_seen))).await;
+    steps.start(2).await;
 
     // A full scan marks everything gone first and un-marks what the walk finds, the way the
     // ROM scan does: what is left marked is what is no longer there.
     if !quick {
         // Not the copies fetched from a main server (`audio_sync`): those may live outside
         // the scanned folders, and that job is what keeps them.
+        progress.force(0, Some(files.len() as u64), "marking files to re-check").await;
         sqlx::query("UPDATE audio_files SET deleted = TRUE WHERE deleted = FALSE AND remote_id IS NULL").execute(&app.pool).await?;
     }
     let total = files.len() as u64;
     for (i, path) in files.iter().enumerate() {
         let text = path.display().to_string();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| text.clone());
-        progress.report(i as u64, Some(total), &format!("file {} of {total}: {name}", i + 1)).await;
+        progress
+            .report(i as u64, Some(total), &format!("file {} of {} ({} read, {} already known): {name}", thousands(i as u64 + 1), thousands(total), thousands(summary.files_read), thousands(summary.skipped_existing)))
+            .await;
         let hash = sha1_hex(&text);
         if quick && sqlx::query("SELECT 1 FROM audio_files WHERE path_hash = ? AND deleted = FALSE").bind(&hash).fetch_optional(&app.pool).await?.is_some() {
             summary.skipped_existing += 1;
@@ -246,9 +257,14 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
         summary.files_read += 1;
     }
     if !quick {
+        progress.force(total, Some(total.max(1)), "counting files no longer there").await;
         summary.marked_missing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM audio_files WHERE deleted = TRUE").fetch_one(&app.pool).await?.max(0) as u64;
     }
+    steps.done(format!("{} read, {} already known", thousands(summary.files_read), thousands(summary.skipped_existing))).await;
+    steps.start(3).await;
     summary.loudness_measured = measure_loudness(app, progress).await?;
+    steps.done(format!("{} measured", thousands(summary.loudness_measured))).await;
+    steps.finish();
     progress.force(total, Some(total.max(1)), &one_liner(&summary)).await;
     Ok(summary)
 }
@@ -261,33 +277,41 @@ pub async fn run_scan(app: &App, request: &AudioScanRequest, progress: &Progress
 /// first) and so plays un-normalised, as does anything unsupported. A client's fetched
 /// copies carry the server's measurement and are not re-measured.
 async fn measure_loudness(app: &App, progress: &Progress) -> Result<u64> {
+    use futures_util::StreamExt;
+    progress.force(0, None, "measuring loudness: finding files not measured yet").await;
     let pending: Vec<(u64, String)> =
         sqlx::query_as("SELECT id, path FROM audio_files WHERE deleted = FALSE AND (loudness_lufs IS NULL OR sound_end_ms IS NULL) AND remote_id IS NULL AND support <> 'unsupported' AND format NOT IN ('dsf', 'dff') ORDER BY id").fetch_all(&app.pool).await?;
     if pending.is_empty() {
         return Ok(0);
     }
     let total = pending.len() as u64;
-    // Half the cores: a scan runs beside whatever else the machine is doing.
+    // Half the cores: a scan runs beside whatever else the machine is doing. The stream
+    // keeps that many decodes in flight and hands back each result as it lands, so the bar
+    // moves per file instead of waiting for every file to be handed out first.
     let workers = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) / 2).max(1);
-    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(workers));
-    let mut tasks = tokio::task::JoinSet::new();
-    for (id, path) in pending {
-        let permit = gate.clone().acquire_owned().await.map_err(|e| Error::internal(format!("loudness gate: {e}")))?;
-        tasks.spawn_blocking(move || {
-            let _permit = permit;
-            (id, crate::rom::audio_decode::measure(Path::new(&path)))
-        });
-    }
+    let mut results = futures_util::stream::iter(pending.into_iter().map(|(id, path)| {
+        tokio::task::spawn_blocking(move || {
+            let measured = crate::rom::audio_decode::measure(Path::new(&path));
+            (id, path, measured)
+        })
+    }))
+    .buffer_unordered(workers);
     let (mut done, mut measured) = (0u64, 0u64);
-    while let Some(result) = tasks.join_next().await {
+    while let Some(result) = results.next().await {
         done += 1;
-        if let Ok((id, Some(m))) = result {
-            sqlx::query("UPDATE audio_files SET loudness_lufs = ?, sound_end_ms = ? WHERE id = ?").bind(m.lufs).bind(m.sound_end_ms).bind(id).execute(&app.pool).await?;
-            if m.lufs.is_some() {
-                measured += 1;
+        let name = match result {
+            Ok((id, path, m)) => {
+                if let Some(m) = m {
+                    sqlx::query("UPDATE audio_files SET loudness_lufs = ?, sound_end_ms = ? WHERE id = ?").bind(m.lufs).bind(m.sound_end_ms).bind(id).execute(&app.pool).await?;
+                    if m.lufs.is_some() {
+                        measured += 1;
+                    }
+                }
+                Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path)
             }
-        }
-        progress.report(done, Some(total), &format!("measuring loudness: file {done} of {total}")).await;
+            Err(_) => String::new(),
+        };
+        progress.report(done, Some(total), &format!("measuring loudness: file {} of {} ({} measured): {name}", thousands(done), thousands(total), thousands(measured))).await;
     }
     Ok(measured)
 }
@@ -1071,7 +1095,7 @@ mod tests {
         std::fs::write(deep.join("unknown.dsf"), b"DSD ").unwrap();
 
         let (mut files, mut errors) = (Vec::new(), Vec::new());
-        walk(&root, &mut files, &mut errors);
+        walk(&root, &mut files, &mut errors, &WalkCount::new());
         files.sort();
         let names: Vec<String> = files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names.len(), 3, "{names:?}");
