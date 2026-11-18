@@ -145,19 +145,14 @@ impl Layout {
             Layout::Multi => "Grid",
         })
     }
-    fn next(self) -> Self {
-        match self {
-            Layout::Auto => Layout::Single,
-            Layout::Single => Layout::Multi,
-            Layout::Multi => Layout::Auto,
-        }
-    }
 }
 
 static LAYOUT: GlobalSignal<Layout> = Signal::global(|| Layout::Auto);
 /// The item the focus is on, for the details panel.
 static FOCUSED: GlobalSignal<Option<Item>> = Signal::global(|| None);
 /// Search and filters per list tab, kept while Big Picture is open.
+/// The open list's item count, for the search box in the top bar.
+static LIST_TOTAL: GlobalSignal<u64> = Signal::global(|| 0);
 static QUERIES: GlobalSignal<std::collections::HashMap<String, ListQuery>> = Signal::global(std::collections::HashMap::new);
 
 #[derive(Clone, PartialEq, Default, Debug)]
@@ -614,14 +609,24 @@ fn item_menu(item: Item, x: f64, y: f64) {
                     spawn(async move { open_with_menu(x, y, head, ("game_id", g)).await });
                 }));
             }
-            for (n, rom) in t.discs.iter().copied() {
-                items.push(MenuItem::new(state::trf("Start disc {n}", &[("n", &n.to_string())]), move || {
-                    spawn(async move { launch(vec![("rom_id", rom)], None).await });
-                }));
-                let head = format!("{} · {}", item.name, state::trf("disc {n}", &[("n", &n.to_string())]));
-                items.push(MenuItem::new(state::trf("Open disc {n} with…", &[("n", &n.to_string())]), move || {
-                    let head = head.clone();
-                    spawn(async move { open_with_menu(x, y, head, ("rom_id", rom)).await });
+            // One entry for the discs, however many: their own menu has a Start and an
+            // Open with… for each.
+            if !t.discs.is_empty() {
+                let discs = t.discs.clone();
+                let name = item.name.clone();
+                items.push(MenuItem::new(state::tr("Discs…"), move || {
+                    let mut menu = vec![MenuItem::head(name.clone())];
+                    for (n, rom) in discs.iter().copied() {
+                        menu.push(MenuItem::new(state::trf("Start disc {n}", &[("n", &n.to_string())]), move || {
+                            spawn(async move { launch(vec![("rom_id", rom)], None).await });
+                        }));
+                        let head = format!("{} · {}", name, state::trf("disc {n}", &[("n", &n.to_string())]));
+                        menu.push(MenuItem::new(state::trf("Open disc {n} with…", &[("n", &n.to_string())]), move || {
+                            let head = head.clone();
+                            spawn(async move { open_with_menu(x, y, head, ("rom_id", rom)).await });
+                        }));
+                    }
+                    ui::open_menu(x, y, menu);
                 }));
             }
         }
@@ -824,7 +829,9 @@ pub fn BigPictureShell() -> Element {
         document::Style { {BP_CSS} }
         div { class: "bp layout-{layout.key()} icons-{icon_style()}", onclick: move |_| ui::close_menu(),
             div { class: "bp-top",
-                button { id: "bp-back", class: "bp-btn", title: state::tr("back (B)"),
+                // On a list there is nowhere to go back to on screen (B still leaves Big Picture on a
+                // desktop, through this button), so it shows only on a page.
+                button { id: "bp-back", class: "bp-btn", title: state::tr("back (B)"), hidden: on_list,
                     onclick: move |_| {
                         if on_list || !navigator().can_go_back() {
                             // The phone's lists are its home: there is nowhere further back.
@@ -847,8 +854,8 @@ pub fn BigPictureShell() -> Element {
                     }
                 }
                 span { class: "bp-spacer" }
-                button { class: "bp-btn bp-tool bp-flag", title: state::tr("Language"), onclick: move |_| ui::open_modal(|| rsx! { LanguageSheet {} }), {language_flag()} }
-                button { class: "bp-btn bp-layout", title: state::tr("layout"), onclick: move |_| { let n = LAYOUT().next(); *LAYOUT.write() = n; set_pref(PREF_LAYOUT, n.key()); ui::toast(n.label(), false); }, "▦" }
+                // Language and cover layout are in the settings sheet.
+                if on_list { ListTools { key: "{current}", tab: current.clone() } }
                 if cfg!(feature = "mobile") {
                     button { class: "bp-btn bp-tool", title: state::tr("Sync"), onclick: move |_| ui::open_modal(|| rsx! { super::companion::SyncSheet {} }), {icon("sync")} }
                     button { class: "bp-btn bp-tool", title: state::tr("Settings"), onclick: move |_| ui::open_modal(|| rsx! { Settings {} }), {icon("settings")} }
@@ -908,30 +915,36 @@ fn LanguageChoices() -> Element {
     }
 }
 
-#[component]
-fn LanguageSheet() -> Element {
-    rsx! {
-        SheetHead { title: state::tr("Language") }
-        div { class: "bp-sheet", LanguageChoices {} }
-    }
-}
-
-/// The top bar's language button: the current language's flag.
-fn language_flag() -> String {
-    let code = state::setting("ui_language").as_str().unwrap_or("en").to_string();
-    let flag = crate::html::lang_flag(&code);
-    if flag.is_empty() { code.to_uppercase() } else { flag }
-}
+/// The phone's settings parts: the sheet lists them and opens one at a time.
+const PHONE_PARTS: [(&str, &str); 4] = [("display", "Display"), ("server", "Server"), ("content", "What to sync"), ("auto", "Syncing by itself")];
 
 #[component]
 fn Settings() -> Element {
     // The icon style and language are settings: show a choice as soon as it is saved.
     let _ = state::LOADED();
     let mut start = use_signal(|| false);
+    // On the phone: which part is open (None lists them). The desktop sheet is short enough
+    // to show whole.
+    let mut part = use_signal(|| None::<&'static str>);
     use_future(move || async move { start.set(starts_in_big_picture().await) });
+    let display = CAN_START || part() == Some("display");
     rsx! {
         SheetHead { title: if CAN_START { state::tr("Big Picture settings") } else { state::tr("Settings") } }
         div { class: "bp-sheet",
+            if !CAN_START {
+                match part() {
+                    None => rsx! {
+                        for (key, label) in PHONE_PARTS {
+                            button { key: "{key}", class: "bp-choice", onclick: move |_| part.set(Some(key)), {state::tr(label)} " ›" }
+                        }
+                    },
+                    Some(key) => {
+                        let label = PHONE_PARTS.iter().find(|(k, _)| *k == key).map(|(_, l)| *l).unwrap_or("");
+                        rsx! { button { class: "bp-choice", onclick: move |_| part.set(None), "◀ " {state::tr(label)} } }
+                    }
+                }
+            }
+            if display {
             p { class: "muted", {state::tr("Saved on this device only.")} }
             h4 { {state::tr("Language")} }
             LanguageChoices {}
@@ -956,6 +969,7 @@ fn Settings() -> Element {
                     {state::tr(l)}
                 }
             }
+            }
             if CAN_START {
                 h4 { {state::tr("Starting")} }
                 button { class: if start() { "bp-choice active" } else { "bp-choice" },
@@ -965,8 +979,8 @@ fn Settings() -> Element {
                 h4 { {state::tr("Emulators")} }
                 p { class: "muted", {state::tr("Start uses each platform's default emulator. Choose the defaults in Config › Emulators, or from Open with… on any game.")} }
                 button { class: "bp-choice", onclick: move |_| { ui::close_modal(); navigator().push(Route::ConfigEmulators {}); }, {state::tr("Config › Emulators")} }
-            } else {
-                super::companion::PhoneSettings {}
+            } else if let Some(p) = part().filter(|p| *p != "display") {
+                super::companion::PhoneSettings { part: p.to_string() }
             }
         }
     }
@@ -1027,9 +1041,10 @@ fn BpList(tab: String) -> Element {
     let mut more2 = more.clone();
     let shown = items.read().len() as u64;
     let n = total();
-    let tab_for_tools = tab.clone();
+    if *LIST_TOTAL.peek() != n {
+        *LIST_TOTAL.write() = n;
+    }
     rsx! {
-        Toolbar { tab: tab_for_tools, total: n }
         div { class: "bp-body",
             div { class: "bp-items",
                 if let Some(e) = error() { div { class: "card bad", "{e}" } }
@@ -1044,33 +1059,36 @@ fn BpList(tab: String) -> Element {
     }
 }
 
+/// Search and Filter for the open list, in the top bar: the search box opens in place, the
+/// item count is its placeholder, and the filter count is a badge. Clearing is in the
+/// filter sheet and the search box's own ✕.
 #[component]
-fn Toolbar(tab: String, total: u64) -> Element {
-    let key = tab.clone();
-    let q = QUERIES.read().get(&key).cloned().unwrap_or_default();
+fn ListTools(tab: String) -> Element {
+    let q = QUERIES.read().get(&tab).cloned().unwrap_or_default();
     let mut searching = use_signal(|| false);
     let ra = tab.starts_with("ra-");
     let filters = q.count();
+    let total = LIST_TOTAL();
     let tab_search = tab.clone();
+    let tab_typed = tab.clone();
     let tab_filter = tab.clone();
-    let tab_clear = tab.clone();
     rsx! {
-        div { class: "bp-toolbar",
-            button { id: "bp-search", class: "bp-btn", onclick: move |_| searching.set(!searching()), "🔍 " {state::tr("Search")} }
-            if searching() || !q.search.is_empty() {
-                input { r#type: "search", class: "bp-search", autofocus: true, value: "{q.search}", placeholder: state::tr("search"),
-                    onchange: move |e| { let tab = tab_search.clone(); QUERIES.write().entry(tab).or_default().search = e.value(); },
-                }
+        if searching() || !q.search.is_empty() {
+            input { r#type: "search", class: "bp-search", autofocus: true, value: "{q.search}",
+                placeholder: state::trf("search {n} items", &[("n", &total.to_string())]),
+                onchange: move |e| { let tab = tab_search.clone(); QUERIES.write().entry(tab).or_default().search = e.value(); },
+                // The box's own ✕ empties it without a change event.
+                oninput: move |e| { if e.value().is_empty() { let tab = tab_typed.clone(); QUERIES.write().entry(tab).or_default().search.clear(); } },
+                onblur: move |_| searching.set(false),
             }
-            if !ra {
-                button { id: "bp-filter", class: "bp-btn", onclick: move |_| { let tab = tab_filter.clone(); ui::open_modal(move || rsx! { FilterSheet { tab: tab.clone() } }); },
-                    "⚲ " {state::tr("Filter")} if filters > 0 { " ({filters})" }
-                }
+        }
+        button { id: "bp-search", class: "bp-btn bp-tool", title: state::trf("search {n} items", &[("n", &total.to_string())]), onclick: move |_| searching.set(!searching()), "🔍" }
+        if !ra {
+            button { id: "bp-filter", class: "bp-btn bp-tool bp-badged", title: state::tr("Filter"),
+                onclick: move |_| { let tab = tab_filter.clone(); ui::open_modal(move || rsx! { FilterSheet { tab: tab.clone() } }); },
+                "⚲"
+                if filters > 0 { span { class: "bp-badge", "{filters}" } }
             }
-            if filters > 0 || !q.search.is_empty() {
-                button { class: "bp-btn", onclick: move |_| { QUERIES.write().remove(&tab_clear); searching.set(false); }, {state::tr("Clear")} }
-            }
-            span { class: "muted", {state::trf("{n} items", &[("n", &total.to_string())])} }
         }
     }
 }

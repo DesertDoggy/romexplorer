@@ -40,6 +40,12 @@ select:disabled, input:disabled, textarea:disabled { opacity:.55; }
    page's light text on the platform's white popup, i.e. invisible. */
 select option, select optgroup { background:#0f1114; color:var(--fg); }
 .toolbar input[type=text] { min-width:240px; }
+.toolbar .filters { display:contents; }
+.toolbar .morefilters { flex-basis:100%; display:flex; flex-wrap:wrap; gap:8px 20px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:#15181d; }
+.morefilters .fgroup { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.morefilters .fgroup > .ghead { color:var(--dim); font-size:11px; text-transform:uppercase; flex-basis:100%; }
+.fchip { display:inline-flex; gap:6px; align-items:center; border:1px solid var(--line); border-radius:12px; padding:2px 6px 2px 10px; font-size:12px; max-width:320px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.fchip b { cursor:pointer; color:var(--dim); } .fchip b:hover { color:var(--fg); }
 button.btn, .btn { background:#2b3441; color:var(--fg); border:1px solid #3a4658; border-radius:4px; padding:5px 10px; cursor:pointer; font:inherit; }
 button.btn:hover { background:#354052; }
 button.btn.primary { background:#2f5f8f; border-color:#3d76ad; }
@@ -244,6 +250,7 @@ input[type=color] { width:44px; height:26px; padding:0; border:1px solid var(--l
   .setrow { display: grid; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
   .setrow:first-of-type { border-top: none; }
   .setrow .setname { padding-top: 4px; overflow-wrap: anywhere; }
+.setrow .setkey { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .setrow .setact { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
   .setrow.wide .editor { grid-column: 1 / -1; grid-row: 2; }
   .setrow.wide .setact { grid-column: 3; grid-row: 1; }
@@ -865,6 +872,22 @@ function displayColumns() {
 const FACET_KEYS = ['genre_major', 'genre_major_logic', 'genres', 'genre_logic', 'franchises', 'franchise_logic', 'companies', 'company_logic', 'keywords', 'keyword_logic', 'tags', 'tag_logic', 'tag_source', 'region', 'language'].concat(DISPLAY_KEYS);
 function facetParams(st) { const o = {}; for (const k of FACET_KEYS) if (st.filters[k]) o[k] = st.filters[k]; return o; }
 
+// Lists with more filters than `over` show only `primary` in the toolbar; the rest fold
+// behind "More filters", by group, and show as chips while set. (The app's PRIMARY_FILTERS,
+// FILTER_GROUPS.)
+const FILTER_FOLD = { over: 6, primary: ['platform', 'held', 'kinds', 'genre_major'], groups: [['Where', ['held', 'machine', 'view', 'source', 'provider']], ['Kind', ['kinds', 'material', 'hide_minor', 'one_per_group']], ['Metadata', ['genre_major', 'genres', 'franchises', 'companies', 'keywords', 'tags', 'tag_source', 'region', 'language']]] };
+function filterGroup(key) { const g = FILTER_FOLD.groups.find(([, keys]) => keys.includes(key)); return g ? g[0] : key.startsWith('display_') ? 'Display' : 'Other'; }
+// A folded filter's chip while it is set to something other than where the list started:
+// "label: value"; '' when it isn't.
+function filterChip(f, filters, reset) {
+  const v = filters[f.key] || '';
+  if (!v || v === reset) return '';
+  if (f.type === 'select') { const box = document.createElement('select'); box.innerHTML = f.options(); if (box.options.length <= 1) return ''; const o = [...box.options].find(x => x.value === v); return `${f.label}: ${o ? o.textContent : v}`; }
+  if (f.type === 'check') return v === 'true' ? f.label : '';
+  if (f.type === 'combo') { const names = v.split(',').filter(Boolean).map(x => { const o = f.options().find(y => String(y.value) === x); return o ? o.label : x; }); return `${f.label}: ${names.length > 2 ? `${names[0]}, ${names[1]} +${names.length - 2}` : names.join(', ')}`; }
+  if (f.type === 'checks') { if (v === f.none) return ''; const all = f.options().concat(f.extra ? f.extra() : []); return `${f.label}: ${v.split(',').map(x => (all.find(o => o[0] === x) || [x, x])[1]).join(', ')}`; }
+  return '';
+}
 function makeGrid(container, spec) {
   const modes = spec.modes || [['list', tr('list')], ['grid', tr('grid')]];
   const initialMode = spec.gridKey ? (sessionViews[spec.gridKey] || viewDefaults[viewKeyOf(spec)] || VIEW_FALLBACK[viewKeyOf(spec)] || 'grid') : 'list';
@@ -883,12 +906,61 @@ function makeGrid(container, spec) {
   // What the list is (spec.explain: language-file keys, their texts one after another).
   if (spec.explain) { const keys = [].concat(spec.explain); const text = keys.map(k => t(k, '')).filter(Boolean).join('\n\n'); if (text) tb.appendChild(el(`<span>${info(text.split(/\n\s*\n/).map(x => `<p>${esc(x)}</p>`).join(''))}</span>`)); }
   if (spec.search !== false) { const inp = el(`<input type="text" placeholder="${tr('search…')}">`); inp.value = st.search; let timer = null; inp.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { st.search = inp.value; st.offset = 0; load(); }, 300); }; tb.appendChild(inp); }
-  for (const f of spec.filters || []) {
-    if (f.type === 'select') { const sel = el(`<select title="${esc(f.label)}"></select>`); sel.innerHTML = f.options(); if (st.filters[f.key]) sel.value = st.filters[f.key]; sel.onchange = () => { st.filters[f.key] = sel.value; st.offset = 0; load(); }; tb.appendChild(sel); }
-    if (f.type === 'check') { const l = el(`<label class="muted"><input type="checkbox" ${st.filters[f.key] === 'true' ? 'checked' : ''}> ${esc(f.label)}</label>`); l.firstElementChild.onchange = e => { st.filters[f.key] = e.target.checked ? 'true' : (f.offValue ?? ''); st.offset = 0; load(); }; if (f.visible && !f.visible()) l.style.display = 'none'; tb.appendChild(l); }
-    if (f.type === 'combo') { tb.appendChild(comboBox(f, st.filters, () => { st.offset = 0; load(); })); }
-    if (f.type === 'checks') { tb.appendChild(checksBox(f, st.filters, () => { st.offset = 0; load(); })); }
+  // Filters. A list with many folds all but FILTER_FOLD.primary behind "More filters", by
+  // group, with a chip for each folded one that is set. (The app's grid does the same.)
+  const filters = spec.filters || [];
+  const fold = filters.length > FILTER_FOLD.over && filters.some(f => FILTER_FOLD.primary.includes(f.key));
+  const fspan = el('<span class="filters"></span>');
+  tb.appendChild(fspan);
+  let moreOpen = false;
+  // A widget's own change leaves the widgets as they are (an open tick-box list stays open);
+  // clearing a chip redraws them, so the folded widget shows the cleared value too.
+  const changed = () => { st.offset = 0; syncChips(); load(); };
+  const widget = f => {
+    if (f.type === 'select') {
+      const sel = el(`<select title="${esc(f.label)}"></select>`); sel.innerHTML = f.options();
+      // A choice of one (the Machine filter on a machine with no others) is no filter.
+      if (sel.options.length <= 1) return null;
+      if (st.filters[f.key]) sel.value = st.filters[f.key]; sel.onchange = () => { st.filters[f.key] = sel.value; changed(); }; return sel;
+    }
+    if (f.type === 'check') { const l = el(`<label class="muted"><input type="checkbox" ${st.filters[f.key] === 'true' ? 'checked' : ''}> ${esc(f.label)}</label>`); l.firstElementChild.onchange = e => { st.filters[f.key] = e.target.checked ? 'true' : (f.offValue ?? ''); changed(); }; if (f.visible && !f.visible()) l.style.display = 'none'; return l; }
+    if (f.type === 'combo') return comboBox(f, st.filters, changed);
+    if (f.type === 'checks') return checksBox(f, st.filters, changed);
+    return null;
+  };
+  const add = (parent, f) => { const w = widget(f); if (w) parent.appendChild(w); };
+  const folded = filters.filter(f => !FILTER_FOLD.primary.includes(f.key));
+  let more = null, chipSpan = null, panel = null;
+  function syncChips() {
+    if (!fold) return;
+    const chips = folded.map(f => [f, filterChip(f, st.filters, (spec.initialFilters || {})[f.key] || '')]).filter(([, text]) => text);
+    more.textContent = tr('More filters') + (chips.length ? ` (${chips.length})` : '') + ' ▾';
+    more.classList.toggle('on', moreOpen);
+    chipSpan.innerHTML = '';
+    for (const [f, text] of chips) {
+      const chip = el(`<span class="fchip" title="${esc(text)}">${esc(text)}<b title="${esc(tr('clear'))}">✕</b></span>`);
+      chip.querySelector('b').onclick = () => { st.filters[f.key] = (spec.initialFilters || {})[f.key] || ''; st.offset = 0; renderFilters(); load(); };
+      chipSpan.appendChild(chip);
+    }
   }
+  function renderFilters() {
+    fspan.innerHTML = '';
+    if (!fold) { for (const f of filters) add(fspan, f); return; }
+    for (const f of filters.filter(f => FILTER_FOLD.primary.includes(f.key))) add(fspan, f);
+    more = el('<button class="btn small"></button>');
+    more.onclick = () => { moreOpen = !moreOpen; panel.style.display = moreOpen ? '' : 'none'; syncChips(); };
+    chipSpan = el('<span class="filters"></span>');
+    panel = el(`<div class="morefilters"${moreOpen ? '' : ' style="display:none"'}></div>`);
+    for (const group of ['Where', 'Kind', 'Metadata', 'Display', 'Other']) {
+      const members = folded.filter(f => filterGroup(f.key) === group);
+      const g = el(`<div class="fgroup"><div class="ghead">${esc(trc('filtergroup', group))}</div></div>`);
+      for (const f of members) add(g, f);
+      if (g.children.length > 1) panel.appendChild(g);
+    }
+    fspan.append(more, chipSpan, panel);
+    syncChips();
+  }
+  renderFilters();
   const sizeSel = el('<select><option>25</option><option>50</option><option>100</option><option>200</option><option>500</option></select>');
   sizeSel.value = String(st.limit); sizeSel.onchange = () => { st.limit = Number(sizeSel.value); st.offset = 0; load(); }; tb.appendChild(sizeSel);
   if (spec.gridKey) {
@@ -1144,24 +1216,34 @@ function attachContext(elem, getItems) {
   elem.addEventListener('contextmenu', async (ev) => {
     ev.preventDefault(); ev.stopPropagation();
     const items = await getItems(); if (!items || !items.length) return;
-    // An item with `children` is a fold: clicking it shows them indented under it (and hides
-    // them again), with the menu left open.
-    const open = new Set();
-    const render = () => {
-      ctx.innerHTML = items.map((it, i) => it.children ? `<div class="fold" data-i="${i}">${open.has(i) ? '▾' : '▸'} ${esc(it.label)}</div>` + (open.has(i) ? it.children.map((c, j) => `<div class="sub" data-i="${i}" data-j="${j}">${esc(c.label)}</div>`).join('') : '')
-        : `<div class="${it.head ? 'head' : ''}" data-i="${i}">${esc(it.label)}</div>`).join('');
-      for (const d of ctx.querySelectorAll('div[data-i]')) {
-        const i = Number(d.dataset.i), it = d.dataset.j !== undefined ? items[i].children[Number(d.dataset.j)] : items[i];
-        if (it.children) d.onclick = e => { e.stopPropagation(); if (open.has(i)) open.delete(i); else open.add(i); render(); };
-        else if (!it.head) d.onclick = () => { ctx.style.display = 'none'; it.action(); };
-      }
-      ctx.style.maxHeight = `calc(100vh - ${parseFloat(ctx.style.top) || 0}px - 8px)`;
-    };
-    ctx.style.top = '0px'; render();
-    ctx.style.display = 'block';
-    ctx.style.left = Math.min(ev.clientX, window.innerWidth - ctx.offsetWidth - 8) + 'px'; ctx.style.top = Math.min(ev.clientY, window.innerHeight - ctx.offsetHeight - 8) + 'px';
-    ctx.style.maxHeight = `calc(100vh - ${parseFloat(ctx.style.top)}px - 8px)`;
+    showMenu(ev.clientX, ev.clientY, items);
   });
+}
+// The menu at (x, y): the right-click menu, and the drop-downs a button opens (the Collection
+// sub-tab groups, "New job"). items = [{label, head, action, children}]
+function showMenu(x, y, items) {
+  // An item with `children` is a fold: clicking it shows them indented under it (and hides
+  // them again), with the menu left open.
+  const open = new Set();
+  const render = () => {
+    ctx.innerHTML = items.map((it, i) => it.children ? `<div class="fold" data-i="${i}">${open.has(i) ? '▾' : '▸'} ${esc(it.label)}</div>` + (open.has(i) ? it.children.map((c, j) => `<div class="sub" data-i="${i}" data-j="${j}">${esc(c.label)}</div>`).join('') : '')
+      : `<div class="${it.head ? 'head' : ''}" data-i="${i}">${esc(it.label)}</div>`).join('');
+    for (const d of ctx.querySelectorAll('div[data-i]')) {
+      const i = Number(d.dataset.i), it = d.dataset.j !== undefined ? items[i].children[Number(d.dataset.j)] : items[i];
+      if (it.children) d.onclick = e => { e.stopPropagation(); if (open.has(i)) open.delete(i); else open.add(i); render(); };
+      else if (!it.head) d.onclick = () => { ctx.style.display = 'none'; it.action(); };
+    }
+    ctx.style.maxHeight = `calc(100vh - ${parseFloat(ctx.style.top) || 0}px - 8px)`;
+  };
+  ctx.style.top = '0px'; render();
+  ctx.style.display = 'block';
+  ctx.style.left = Math.min(x, window.innerWidth - ctx.offsetWidth - 8) + 'px'; ctx.style.top = Math.min(y, window.innerHeight - ctx.offsetHeight - 8) + 'px';
+  ctx.style.maxHeight = `calc(100vh - ${parseFloat(ctx.style.top)}px - 8px)`;
+}
+// A button that opens `items()` as a menu under itself.
+function menuUnder(button, items) {
+  const r = button.getBoundingClientRect();
+  showMenu(r.left, r.bottom + 2, items());
 }
 // Any other in-app link (inline onclick="go('...')": crumbs, title links, set lists, lookup
 // results, DB tables): ctrl/cmd/shift-click and middle-click open a new tab, right-click
@@ -1349,13 +1431,12 @@ async function matchDialog(kind, id, name, platformId, links, onDone) {
   const online = new Set(providers.filter(p => p.query_by_name && p.available).map(p => p.name));
   const localOk = providers.filter(p => !['hasheous', 'playmatch'].includes(p.name)).map(p => p.name);
   const box = openModal(`<h2>${trf('Manual match — {name}', { name: esc(name) })}</h2>
+    <h3>${tr('Current links')}</h3><div id="mm-links"></div>
+    <h3>${tr('Search')}</h3>
     <div class="muted">${tr("Search a provider by name and link the right entry, paste its page URL, or type its id. <b>local</b> searches what's already cached (bulk syncs, earlier lookups; no network, every provider incl. IGDB; the platform filter applies to TheGamesDB and RetroAchievements); <b>online</b> asks the provider. Title-tier providers (IGDB, ScreenScraper, …) attach to the title; RetroAchievements / TheGamesDB attach to releases. A manual link is never replaced automatically; linking queues a metadata + art fetch.")}</div>
     <form class="inline" id="mm-search" style="margin:10px 0"><select name="where"><option value="local">${tr('local')}</option><option value="online">${tr('online')}</option></select><select name="provider"></select><input type="text" name="name" value="${esc(name)}" style="min-width:260px"><select name="platform">${platformOptions(platformId || '', tr('any platform'))}</select><button class="btn small primary">${tr('search')}</button></form>
     <div id="mm-results"></div>
-    <form class="inline" id="mm-url" style="margin:10px 0"><span class="muted">${tr('or page URL:')}</span><input type="text" name="url" placeholder="https://www.igdb.com/games/… · thegamesdb.net/game.php?id=… · retroachievements.org/game/…" style="min-width:420px"><button class="btn small">${tr('resolve')}</button></form>
-    <div id="mm-resolved"></div>
-    <form class="inline" id="mm-id" style="margin:10px 0"><span class="muted">${tr('or by id:')}</span><select name="provider">${providers.map(p => `<option value="${p.name}">${esc(p.name)}</option>`).join('')}</select><input type="text" name="provider_id" placeholder="${tr('provider id')}" style="width:140px"><button class="btn small">${tr('link id')}</button></form>
-    <h3>${tr('Current links')}</h3><div id="mm-links"></div>
+    <details class="more"><summary>${tr('Paste a page URL or type an id')}</summary><form class="inline" id="mm-url" style="margin:10px 0"><span class="muted">${tr('or page URL:')}</span><input type="text" name="url" placeholder="https://www.igdb.com/games/… · thegamesdb.net/game.php?id=… · retroachievements.org/game/…" style="min-width:420px"><button class="btn small">${tr('resolve')}</button></form><div id="mm-resolved"></div><form class="inline" id="mm-id" style="margin:10px 0"><span class="muted">${tr('or by id:')}</span><select name="provider">${providers.map(p => `<option value="${p.name}">${esc(p.name)}</option>`).join('')}</select><input type="text" name="provider_id" placeholder="${tr('provider id')}" style="width:140px"><button class="btn small">${tr('link id')}</button></form></details>
     <div style="margin-top:10px;text-align:right"><button class="btn small" id="mm-close">${tr('close')}</button></div>`);
   const base = '/api/v1/catalog/' + kind + '/' + id + '/links';
   const renderLinks = (ls) => { box.querySelector('#mm-links').innerHTML = ls.length ? '<table class="grid">' + ls.map(p => `<tr><td>${providerIcon(p.provider)} ${esc(p.provider)}</td><td>${p.url ? `<a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.provider_id)}</a>` : esc(p.provider_id)}</td><td>${badge(p.confidence, 'dim')} ${p.via === 'title' && kind === 'releases' ? badge(tr('via title'), 'dim') : ''}${p.via === 'release' && kind === 'titles' ? badge(trf('via release #{id}', { id: p.release_id }), 'dim') : ''}</td><td><button class="btn small" data-change="${esc(p.provider)}" title="${tr('search this provider for the right entry; linking it replaces this link, whatever matched it (a hash match too)')}">${tr('change…')}</button> <button class="btn small" data-unlink="${esc(p.provider)}" data-via="${esc(p.via)}" data-rel="${p.release_id || ''}">${tr('unlink')}</button></td></tr>`).join('') + '</table>' : `<span class="muted">${tr('none')}</span>`;
@@ -2400,6 +2481,29 @@ function platformLabel(name) { if (platformNameLanguage === 'en' || !vocab) retu
 // Sub-routes reachable by link but not shown as a subtab.
 const HIDDEN_SUBS = { ra: ['game'] };
 const SUBS = { edit: [['keywords', 'Keyword tags'], ['dictionary', 'Name dictionary'], ['merges', 'Combined titles'], ['orders', 'Manual order'], ['merge_review', 'Merge review'], ['aspect_review', 'Aspect review']], ra: [['titles', 'Titles'], ['mastery', 'Mastery'], ['complete', 'Complete'], ['beat', 'Beat'], ['in_progress', 'In progress'], ['to_play', 'To be played']], collection: [['crossplatform', 'Cross-platform'], ['definitive', 'Definitive'], ['titles', 'Titles'], ['releases', 'Releases'], ['games', 'Games'], ['roms', 'Roms'], ['files', 'Files'], ['contents', 'Contents'], ['sets', 'Sets'], ['audio', 'Audio'], ['multimedia', 'Multimedia'], ['documents', 'Documents'], ['source', 'Source code'], ['etc', 'Etc'], ['patches', 'Patches'], ['bios', 'BIOS / firmware']], config: [['directories', 'Directories'], ['emulators', 'Emulators'], ['copy', 'Copy'], ['storage', 'Storage'], ['settings', 'Settings'], ['settings_json', 'Settings (JSON)'], ['server', 'Server'], ['backup', 'Backup'], ['share', 'Share'], ['mode', 'Mode'], ['users', 'Users'], ['credentials', 'Provider credentials'], ['ai', 'AI'], ['advanced', 'Advanced']], data: [['providers', 'Providers'], ['dats', 'DATs'], ['db', 'DB']] };
+// Sub-tabs shown as one drop-down button instead of a row of their own: Collection's views of
+// the files on hand, and its material that isn't games. The button says the group's name, or
+// the open sub-tab's when it is one of them. (The app's SUB_GROUPS.)
+const SUB_GROUPS = { collection: [['local', 'Files', ['games', 'roms', 'files', 'contents']], ['material', 'Material', ['audio', 'multimedia', 'documents', 'source', 'etc', 'patches', 'bios']]] };
+function subnavHtml(tab, sub, subs) {
+  const groups = SUB_GROUPS[tab] || [];
+  const grouped = new Set(groups.flatMap(g => g[2]));
+  const button = (k, l) => `<button data-sub="${k}" class="${k === sub ? 'active' : ''}" onclick="go('${tab}/${k}')">${esc(t('sub.' + tab + '.' + k, l))}</button>`;
+  let html = subs.filter(([k]) => !grouped.has(k)).map(([k, l]) => button(k, l)).join('');
+  for (const [g, label, keys] of groups) {
+    const members = subs.filter(([k]) => keys.includes(k));
+    if (members.length === 1) { html += button(...members[0]); continue; }
+    if (!members.length) continue;
+    const open = members.find(([k]) => k === sub);
+    const shown = open ? t('sub.' + tab + '.' + open[0], open[1]) : t('subgroup.' + tab + '.' + g, label);
+    html += `<button data-subgroup="${g}" class="${open ? 'active' : ''}" onclick="event.stopPropagation(); menuUnder(this, () => subgroupItems('${tab}', '${g}'))">${esc(shown)} ▾</button>`;
+  }
+  return html;
+}
+function subgroupItems(tab, g) {
+  const [, label, keys] = SUB_GROUPS[tab].find(x => x[0] === g);
+  return [{ label: t('subgroup.' + tab + '.' + g, label), head: true }].concat(visibleSubs(tab).filter(([k]) => keys.includes(k)).map(([k, l]) => ({ label: t('sub.' + tab + '.' + k, l), action: () => go(tab + '/' + k) })));
+}
 // Explanations kept in the language files by key (`explain.*`, `tabinfo.*`): a "!" that
 // opens the key's text, one paragraph per blank-line-separated block; nothing when the file
 // has no text for it.
@@ -2449,7 +2553,7 @@ function route() {
   lastRouteHash = key; routeKey = key; gridsLoading = 0;
   for (const b of document.querySelectorAll('#nav button')) b.classList.toggle('active', b.dataset.tab === tab);
   const subnav = document.getElementById('subnav');
-  if (SUBS[tab]) { subnav.style.display = ''; subnav.innerHTML = subs.map(([k, l]) => `<button data-sub="${k}" class="${k === sub ? 'active' : ''}" onclick="go('${tab}/${k}')">${esc(t('sub.' + tab + '.' + k, l))}</button>`).join('') + subtabExplain(tab); } else subnav.style.display = 'none';
+  if (SUBS[tab]) { subnav.style.display = ''; subnav.innerHTML = subnavHtml(tab, sub, subs) + subtabExplain(tab); } else subnav.style.display = 'none';
   view.innerHTML = `<div class="muted">${tr('loading…')}</div>`;
   const screens = {
     status: showStatus, scan: showScan, jobs: showJobs, schedules: showSchedules, about: showAbout,
@@ -3648,10 +3752,11 @@ async function showTitle(id) {
   view.innerHTML = `
     <div class="crumbs"><a onclick="go('collection/titles')">${tr('Titles')}</a> › ${esc(t.display_name || t.name)}</div>
     <div class="two">
-      <div class="card">${t.cover_media_id ? `<img class="hero" src="${mediaUrl(t.cover_media_id)}" alt="">` : ''}<h2>${esc(t.display_name || t.name)}${t.display_name && t.display_name !== t.name ? ` <span class="localname" style="font-size:15px">${esc(t.name)}</span>` : ''} ${titleKindBadge(t)} ${statusBadges(t)} <button class="btn small" id="match">${tr('manual match…')}</button> <button class="btn small" id="refresh" title="${tr('queue metadata/art fetches for this title at high priority')}">${tr('refresh metadata')}</button> <button class="btn small" id="family" title="${tr('this game, its base game and its ports / remakes / DLC, in the Titles list')}">${tr('base game &amp; ports / remakes')}</button> <button class="btn small" id="t-family" title="${tr("this game's versions in definitive order (Collection › Definitive)")}">${tr('definitive version')}</button> <button class="btn small" id="merges" title="${tr('titles combined into this one (Edit › Combined titles), to split them apart again')}">${tr('combined titles')}</button></h2>
-        <div class="kv"><div>${tr('collection id')}</div><div>${t.id} <span class="muted">${tr('(this app’s title id)')}</span></div><div>${tr('IGDB id')}</div><div>${(() => { const l = (t.provider_links || []).find(x => x.provider === 'igdb'); return l ? `${l.url ? `<a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.provider_id)}</a>` : esc(l.provider_id)} ${badge(l.confidence, ['exact', 'hash', 'manual'].includes(l.confidence) ? 'ok' : 'warn')}` : `<span class="muted">${tr('not linked')}</span>`; })()}</div><div>${tr('normalized')}</div><div class="mono">${esc(t.norm_name)}</div><div>${tr('base game')}</div><div>${t.basegame_title_id ? `<span class="link" onclick="go('collection/titles/${t.basegame_title_id}')">${esc(t.basegame_name || t.basegame_title_id)}</span> ${platformBadges(t.basegame_platforms)} ${cbadge('category', t.category)}` : '—'} ${t.basegame_locked ? badge(tr('set by you'), 'warn') + ' ' : ''}<button class="btn small" id="bg-edit" title="${tr('what this title is (port, remaster, remake, edition, …) and of which game')}">${tr('edit base game…')}</button> <button class="btn small" id="bg-add" title="${tr('make another title a port, remake, remaster or edition of this one')}">${tr('add port / remake…')}</button>${t.basegame_locked ? ` <button class="btn small" id="bg-reset" title="${tr('back to the base game and category IGDB gives')}">${tr('reset to IGDB')}</button>` : ''}</div>${(t.siblings || []).length ? `<div>${tr('other versions')}</div><div>${familyRefs(t.siblings)}</div>` : ''}${(t.bundle_games || []).length ? `<div>${tr('games in this collection')}</div><div>${familyRefs(t.bundle_games)}</div>` : ''}${(t.in_bundles || []).length ? `<div>${tr('in collections')}</div><div>${familyRefs(t.in_bundles)}</div>` : ''}${(t.derived || []).length ? `<div>${tr('ports, remakes and add-ons')}</div><div>${t.derived.map(d => `<div><span class="link" onclick="go('collection/titles/${d.id}')">${esc(d.name)}</span> ${cbadge('category', d.category)} ${platformBadges(d.platforms)}</div>`).join('')}</div>` : ''}
+      <div class="card">${t.cover_media_id ? `<img class="hero" src="${mediaUrl(t.cover_media_id)}" alt="">` : ''}<h2>${esc(t.display_name || t.name)}${t.display_name && t.display_name !== t.name ? ` <span class="localname" style="font-size:15px">${esc(t.name)}</span>` : ''} ${titleKindBadge(t)} ${statusBadges(t)} <button class="btn small" id="match">${tr('manual match…')}</button> <button class="btn small" id="refresh" title="${tr('queue metadata/art fetches for this title at high priority')}">${tr('refresh metadata')}</button></h2>
+        <div class="kv"><div>${tr('IGDB id')}</div><div>${(() => { const l = (t.provider_links || []).find(x => x.provider === 'igdb'); return l ? `${l.url ? `<a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.provider_id)}</a>` : esc(l.provider_id)} ${badge(l.confidence, ['exact', 'hash', 'manual'].includes(l.confidence) ? 'ok' : 'warn')}` : `<span class="muted">${tr('not linked')}</span>`; })()}</div><div>${tr('base game')}</div><div>${t.basegame_title_id ? `<span class="link" onclick="go('collection/titles/${t.basegame_title_id}')">${esc(t.basegame_name || t.basegame_title_id)}</span> ${platformBadges(t.basegame_platforms)} ${cbadge('category', t.category)}` : '—'} ${t.basegame_locked ? badge(tr('set by you'), 'warn') + ' ' : ''}<button class="btn small" id="bg-edit" title="${tr('what this title is (port, remaster, remake, edition, …) and of which game')}">${tr('edit base game…')}</button> <button class="btn small" id="bg-add" title="${tr('make another title a port, remake, remaster or edition of this one')}">${tr('add port / remake…')}</button>${t.basegame_locked ? ` <button class="btn small" id="bg-reset" title="${tr('back to the base game and category IGDB gives')}">${tr('reset to IGDB')}</button>` : ''}<div class="muted"><span class="link" id="family" title="${tr('this game, its base game and its ports / remakes / DLC, in the Titles list')}">${tr('base game &amp; ports / remakes')}</span> · <span class="link" id="t-family" title="${tr("this game's versions in definitive order (Collection › Definitive)")}">${tr('definitive version')}</span></div></div>${(t.siblings || []).length ? `<div>${tr('other versions')}</div><div>${familyRefs(t.siblings)}</div>` : ''}${(t.bundle_games || []).length ? `<div>${tr('games in this collection')}</div><div>${familyRefs(t.bundle_games)}</div>` : ''}${(t.in_bundles || []).length ? `<div>${tr('in collections')}</div><div>${familyRefs(t.in_bundles)}</div>` : ''}${(t.derived || []).length ? `<div>${tr('ports, remakes and add-ons')}</div><div>${t.derived.map(d => `<div><span class="link" onclick="go('collection/titles/${d.id}')">${esc(d.name)}</span> ${cbadge('category', d.category)} ${platformBadges(d.platforms)}</div>`).join('')}</div>` : ''}
         <div>${tr('genres')}</div><div>${tags(t.genres, g => badge(g.name + ' · ' + g.source))}</div><div>${tr('franchises')}</div><div>${tags(t.franchises, g => badge(g.name + ' · ' + g.source))}</div><div>${tr('companies')}</div><div>${tags(t.companies, c => badge(c.name + ' (' + c.role + ') · ' + c.source))}</div>
-        <div>${tr('keywords')}</div><div>${tags(t.keywords || [], k => k.source === 'user' ? `<span class="badge ok">${esc(k.name)} <span class="link" data-unkw="${esc(k.name)}" title="${tr('remove this tag')}">✕</span></span>` : badge(k.name + ' · ' + k.source))} <button class="btn small" id="addkw">${tr('add keyword tag…')}</button> <button class="btn small" id="title-addset" title="${tr('adds the title: its best release, one you have first, whenever the set is opened or copied')}">${tr('add to set…')}</button></div><div>${tr('localized titles')}</div><div>${t.locales.length ? t.locales.map(l => `<div>${cbadge('language', l.language, langLabel(l.language) + (l.region ? '/' + l.region : ''))} ${esc(l.name)} <span class="muted">· ${esc(l.source)}</span></div>`).join('') : '—'}<div>${t.locales_locked ? `${badge(tr('set by you'), 'warn')} ` : ''}<button class="btn small" id="edit-locales">${tr('edit…')}</button>${t.locales_locked ? ` <button class="btn small" id="unlock-locales" title="${tr('drop your names and take IGDB’s again')}">${tr('unlock')}</button>` : ''}</div></div><div>${tr('alternative titles')}</div><div>${(t.alt_names || []).length ? t.alt_names.map(a => `<div>${esc(a.name)} <span class="muted">${a.comment ? '· ' + esc(a.comment) + ' ' : ''}· ${esc(a.source)}</span> <span class="link" data-unalt="${esc(a.name)}" title="${tr('remove this alternative title')}">✕</span></div>`).join('') : '—'}</div></div></div>
+        <div>${tr('keywords')}</div><div>${tags(t.keywords || [], k => k.source === 'user' ? `<span class="badge ok">${esc(k.name)} <span class="link" data-unkw="${esc(k.name)}" title="${tr('remove this tag')}">✕</span></span>` : badge(k.name + ' · ' + k.source))} <button class="btn small" id="addkw">${tr('add keyword tag…')}</button> <button class="btn small" id="title-addset" title="${tr('adds the title: its best release, one you have first, whenever the set is opened or copied')}">${tr('add to set…')}</button></div><div>${tr('localized titles')}</div><div>${t.locales.length ? t.locales.map(l => `<div>${cbadge('language', l.language, langLabel(l.language) + (l.region ? '/' + l.region : ''))} ${esc(l.name)} <span class="muted">· ${esc(l.source)}</span></div>`).join('') : '—'}<div>${t.locales_locked ? `${badge(tr('set by you'), 'warn')} ` : ''}<button class="btn small" id="edit-locales">${tr('edit…')}</button>${t.locales_locked ? ` <button class="btn small" id="unlock-locales" title="${tr('drop your names and take IGDB’s again')}">${tr('unlock')}</button>` : ''}</div></div><div>${tr('alternative titles')}</div><div>${(t.alt_names || []).length ? t.alt_names.map(a => `<div>${esc(a.name)} <span class="muted">${a.comment ? '· ' + esc(a.comment) + ' ' : ''}· ${esc(a.source)}</span> <span class="link" data-unalt="${esc(a.name)}" title="${tr('remove this alternative title')}">✕</span></div>`).join('') : '—'}</div></div>
+        <details class="more"><summary>${tr('Details')}</summary><div class="kv"><div>${tr('collection id')}</div><div>${t.id} <span class="muted">${tr('(this app’s title id)')}</span> <span class="link" id="merges" title="${tr('titles combined into this one (Edit › Combined titles), to split them apart again')}">${tr('combined titles')}</span></div><div>${tr('normalized')}</div><div class="mono">${esc(t.norm_name)}</div></div></details></div>
       <div class="card"><h2>${tr('Web pages')}</h2>${t.provider_links.length ? '<table class="grid">' + t.provider_links.map(p => `<tr><td>${providerIcon(p.provider)} ${esc(p.provider)}</td><td>${p.url ? `<a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>` : '<span class="muted">#' + esc(p.provider_id) + '</span>'}</td><td>${badge(p.confidence, 'dim')} ${p.via === 'release' ? badge(trf('via release #{id}', { id: p.release_id }), 'dim') : ''}</td></tr>`).join('') + '</table>' : `<span class="muted">${tr('not matched to any provider yet')}</span>`}
         <h2 style="margin-top:12px">${tr('Media')} <button class="btn small" id="page-art">${tr('download art…')}</button> <button class="btn small" id="page-export">${tr('export art…')}</button></h2><div id="media-slots"></div></div>
     </div>
@@ -3750,8 +3855,9 @@ async function showRelease(id) {
   view.innerHTML = `
     <div class="crumbs"><a onclick="go('collection/releases')">${tr('Releases')}</a> › ${r.title_id ? `<a onclick="go('collection/titles/${r.title_id}')">${esc(r.title_name || tr('title'))}</a> › ` : ''}${esc(r.name)}</div>
     <div class="two">
-      <div class="card">${r.cover_media_id ? `<img class="hero" src="${mediaUrl(r.cover_media_id)}" alt="">` : ''}<h2>${esc(releaseDisplayName(r))}${releaseSubName(r) ? ` <span class="localname" style="font-size:15px">${esc(releaseSubName(r))}</span>` : ''} ${statusBadges(r)} ${releaseChips(r)} <button class="btn small" id="addset">${tr('add to set…')}</button> <button class="btn small" id="match">${tr('manual match…')}</button> ${r.title_id ? `<button class="btn small" id="split" title="${tr('give this release a title of its own, apart from the others it is listed with')}">${tr('split into its own title')}</button> <button class="btn small" id="movetitle">${tr('move to another title…')}</button> ` : ''}<button class="btn small" id="refresh" title="${tr("queue metadata/art fetches for this release's title at high priority")}">${tr('refresh metadata')}</button></h2>
-        <div class="kv"><div>${tr('collection id')}</div><div>${r.id} <span class="muted">${tr('(this app’s release id; DATs give their entries no ids — see sources and serial)')}</span></div><div>${tr('localized title')}</div><div>${r.local_title ? esc(r.local_title) : '<span class="muted">—</span>'}</div>${(r.ra_games || []).length ? `<div>RetroAchievements</div><div>${r.ra_games.map(g => `<span class="lb ra">RA</span> <span class="link" onclick="go('ra/game/${g.id}')">${esc(g.title || trf('RA game {id}', { id: g.id }))}</span>${g.achievements != null ? ` <span class="muted">${trf('{n} achievements', { n: g.achievements })}</span>` : ''}`).join('<br>')}</div>` : ''}<div>${tr('platform')}</div><div>${cbadge('platform', r.platform || String(r.platform_id))}</div><div>${tr('region')}</div><div>${regionBadges(r.region) || '—'}</div><div>${tr('languages')}</div><div>${releaseLangBadges(r) || '—'} <span id="lang-tools"></span></div>${r.base || isPatched(r) || ['patch', 'trainer', 'save', 'mappack'].includes(r.material) ? `<div>${tr('made from')}</div><div id="base-row"></div>` : ''}<div>${tr('year / date')}</div><div>${r.year || '—'} ${r.released_on ? '· ' + esc(r.released_on) : ''}</div><div>${tr('revision')}</div><div>${esc(r.revision || '—')}</div><div>${tr('serial')}</div><div>${esc(r.serial || '—')} ${r.provider_serials.map(s => badge(s.source + ': ' + s.name)).join('')}</div><div>${tr('category')}</div><div>${esc(r.category || '—')}</div><div>${tr('discs')}</div><div>${r.disc_count}</div><div>${tr('players')}</div><div>${r.min_players || '—'}–${r.max_players || '—'}</div><div>${tr('sources')}</div><div>${sourceBadges(r.source) || '—'}</div><div>${tr('flags')}</div><div>${flags.length ? flags.map(f => badge(f, 'warn')).join('') : '—'}</div><div>${tr('ratings')}</div><div>${r.ratings.length ? r.ratings.map(x => badge(x.source + ' ' + x.name)).join('') : '—'}</div><div>${tr('sets')}</div><div>${r.sets.length ? r.sets.map(s => `<span class="link" onclick="go('collection/sets/${s.id}')">${esc(s.name)}</span> <span class="muted">#${s.position}</span>`).join(', ') : '—'}</div></div></div>
+      <div class="card">${r.cover_media_id ? `<img class="hero" src="${mediaUrl(r.cover_media_id)}" alt="">` : ''}<h2>${esc(releaseDisplayName(r))}${releaseSubName(r) ? ` <span class="localname" style="font-size:15px">${esc(releaseSubName(r))}</span>` : ''} ${statusBadges(r)} ${releaseChips(r)} <button class="btn small" id="addset">${tr('add to set…')}</button> <button class="btn small" id="match">${tr('manual match…')}</button> <button class="btn small" id="refresh" title="${tr("queue metadata/art fetches for this release's title at high priority")}">${tr('refresh metadata')}</button></h2>
+        <div class="kv"><div>${tr('localized title')}</div><div>${r.local_title ? esc(r.local_title) : '<span class="muted">—</span>'}</div>${(r.ra_games || []).length ? `<div>RetroAchievements</div><div>${r.ra_games.map(g => `<span class="lb ra">RA</span> <span class="link" onclick="go('ra/game/${g.id}')">${esc(g.title || trf('RA game {id}', { id: g.id }))}</span>${g.achievements != null ? ` <span class="muted">${trf('{n} achievements', { n: g.achievements })}</span>` : ''}`).join('<br>')}</div>` : ''}<div>${tr('platform')}</div><div>${cbadge('platform', r.platform || String(r.platform_id))}</div><div>${tr('region')}</div><div>${regionBadges(r.region) || '—'}</div><div>${tr('languages')}</div><div>${releaseLangBadges(r) || '—'} <span id="lang-tools"></span></div>${r.base || isPatched(r) || ['patch', 'trainer', 'save', 'mappack'].includes(r.material) ? `<div>${tr('made from')}</div><div id="base-row"></div>` : ''}<div>${tr('year / date')}</div><div>${r.year || '—'} ${r.released_on ? '· ' + esc(r.released_on) : ''}</div><div>${tr('revision')}</div><div>${esc(r.revision || '—')}</div><div>${tr('serial')}</div><div>${esc(r.serial || '—')} ${r.provider_serials.map(s => badge(s.source + ': ' + s.name)).join('')}</div><div>${tr('category')}</div><div>${esc(r.category || '—')}</div><div>${tr('discs')}</div><div>${r.disc_count}</div><div>${tr('players')}</div><div>${r.min_players || '—'}–${r.max_players || '—'}</div><div>${tr('sources')}</div><div>${sourceBadges(r.source) || '—'}</div><div>${tr('flags')}</div><div>${flags.length ? flags.map(f => badge(f, 'warn')).join('') : '—'}</div><div>${tr('ratings')}</div><div>${r.ratings.length ? r.ratings.map(x => badge(x.source + ' ' + x.name)).join('') : '—'}</div><div>${tr('sets')}</div><div>${r.sets.length ? r.sets.map(s => `<span class="link" onclick="go('collection/sets/${s.id}')">${esc(s.name)}</span> <span class="muted">#${s.position}</span>`).join(', ') : '—'}</div></div>
+        <details class="more"><summary>${tr('Details')}</summary><div class="kv"><div>${tr('collection id')}</div><div>${r.id} <span class="muted">${tr('(this app’s release id; DATs give their entries no ids — see sources and serial)')}</span></div>${r.title_id ? `<div>${tr('title')}</div><div><span class="link" id="split" title="${tr('give this release a title of its own, apart from the others it is listed with')}">${tr('split into its own title')}</span> · <span class="link" id="movetitle">${tr('move to another title…')}</span></div>` : ''}</div></details></div>
       <div class="card"><h2>${tr('Web pages')}</h2>${r.provider_links.length ? '<table class="grid">' + r.provider_links.map(p => `<tr><td>${providerIcon(p.provider)} ${esc(p.provider)}</td><td>${p.url ? `<a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>` : '#' + esc(p.provider_id)}</td><td>${badge(p.confidence, 'dim')} ${p.via === 'title' ? badge(tr('via title'), 'dim') : ''}</td></tr>`).join('') + '</table>' : `<span class="muted">${tr('none')}</span>`}
         <h2 style="margin-top:12px">${tr('Media')} <button class="btn small" id="page-art">${tr('download art…')}</button> <button class="btn small" id="page-export">${tr('export art…')}</button></h2><div id="media-slots"></div></div>
     </div>
@@ -5686,7 +5792,10 @@ async function settingsPage(json, group) {
 // Config › Settings as a form: a card per section, a row per setting. Each row is the key,
 // its stored/default badge and a "!" for what it does; the editor; save / reset. Long notes
 // an editor carries move into the row's "!" too.
-function settingsForm(list, group) {
+function settingsForm(all, group) {
+  // The form leaves out keys set on another screen (each section names those screens once)
+  // and values that are not preferences; the JSON view still has them. (The app's form_hides.)
+  const list = all.filter(s => !formHides(s.key));
   const sections = settingGroups(list);
   const active = sections.some(g => g.id === group) ? group : (sections[0] || {}).id;
   view.innerHTML = `${sectionTabs(sections, active, 'config/settings')}<div class="card"><h2>${tr('Settings')} ${info(`<p>${trf('Changes apply after saving. "reset to default" removes the stored value. The {link} shows the stored values as they are.', { link: `<span class="link" onclick="go('config/settings_json')">${tr('JSON view')}</span>` })}</p>`)}</h2>
@@ -5695,7 +5804,12 @@ function settingsForm(list, group) {
   const groups = new Map();
   for (const s of list) {
     const g = s.group || 'other';
-    if (!groups.has(g)) { const card = el(`<div class="card setgroup" data-group="${esc(g)}"><h2>${esc(tr(s.group_label || 'Other'))}</h2><div class="rows"></div></div>`); host.appendChild(card); groups.set(g, card); }
+    if (!groups.has(g)) {
+      const links = [];
+      for (const x of all.filter(x => (x.group || 'other') === g && formHides(x.key))) { const at = screenOfKey(x.key) || (['instance_mode', 'catalog_from'].includes(x.key) ? ['config/mode', 'Config › Mode'] : null); if (at && !links.some(l => l[1] === at[1])) links.push(at); }
+      const more = links.length ? `<p class="muted">${tr('More of this section is set under')} ${links.map(([route, label]) => `<a class="link" onclick="go('${route}')">${esc(tr(label))}</a>`).join(', ')}</p>` : '';
+      const card = el(`<div class="card setgroup" data-group="${esc(g)}"><h2>${esc(tr(s.group_label || 'Other'))}</h2>${more}<div class="rows"></div></div>`); host.appendChild(card); groups.set(g, card);
+    }
     groups.get(g).querySelector('.rows').appendChild(settingRow(s, active));
   }
   // Wide editors (lists, tables) get a line of their own once they are measurable.
@@ -5708,10 +5822,16 @@ function settingsForm(list, group) {
   document.getElementById('setfilter').oninput = e => showSection(host, active, e.target.value.trim().toLowerCase());
 }
 
+// A setting's name as the form shows it: `setting.<key>` in the language file, else the key.
+function settingLabel(key) { return t('setting.' + key, key); }
+function formHides(key) { return !!screenOfKey(key) || ['instance_mode', 'catalog_from', 'instance_id', 'ai_cost_warning_seen', 'copy_recent_destinations'].includes(key); }
+// One setting on the form: its name (the key under it), stored/default badge and "!"; the
+// editor; save while the editor differs from what is stored, reset while a value is stored.
 function settingRow(s, section) {
   const updated = s.updated_at ? trf('updated {date}', { date: fmtDate(s.updated_at) }) : '';
-  const row = el(`<div class="setrow" data-search="${esc((s.key + ' ' + (s.description || '')).toLowerCase())}">
-    <div class="setname" title="${esc(updated)}"><span class="mono">${esc(s.key)}</span> ${s.value === null ? badge(tr('default'), 'dim') : badge(tr('set'), 'ok')}${(s.explain || []).length ? info(s.explain.map(x => `<p>${esc(tr(x))}</p>`).join('')) : s.description ? info(`<p>${esc(tr(s.description))}</p>`) : ''}</div>
+  const label = settingLabel(s.key);
+  const row = el(`<div class="setrow" data-search="${esc((s.key + ' ' + label + ' ' + (s.description || '')).toLowerCase())}">
+    <div class="setname" title="${esc(updated)}"><b>${esc(label)}</b> ${s.value === null ? badge(tr('default'), 'dim') : badge(tr('set'), 'ok')}${(s.explain || []).length ? info(s.explain.map(x => `<p>${esc(tr(x))}</p>`).join('')) : s.description ? info(`<p>${esc(tr(s.description))}</p>`) : ''}${label !== s.key ? `<div class="mono setkey">${esc(s.key)}</div>` : ''}</div>
     <div class="editor"></div>
     <div class="setact"><button class="btn small primary">${tr('save')}</button><button class="btn small danger" title="${tr('reset to default')}">${tr('reset')}</button></div></div>`);
   const holder = row.querySelector('.editor'), name = row.querySelector('.setname'), act = row.querySelector('.setact');
@@ -5735,6 +5855,13 @@ function settingRow(s, section) {
     else name.insertAdjacentHTML('beforeend', info(notes.join('')));
   }
   const [save, reset] = act.querySelectorAll('button');
+  if (s.value === null) reset.style.display = 'none';
+  if (editor && !editor.readonly) {
+    const start = JSON.stringify(editor.get() ?? null);
+    const sync = () => { save.style.display = JSON.stringify(editor.get() ?? null) === start ? 'none' : ''; };
+    sync();
+    for (const ev of ['input', 'change', 'click']) holder.addEventListener(ev, () => setTimeout(sync, 0));
+  }
   const done = async msg => { toast(msg); await loadUiSettings(); settingsPage(false, section); };
   save.onclick = async () => {
     const v = editor.get();
@@ -5756,19 +5883,28 @@ async function showAbout() {
   view.innerHTML = `<div class="card"><h2>romexplorer ${esc(a.version)}</h2><p class="muted">${tr('Release notes')}</p><div class="notes">${a.notes_html}</div></div>`;
 }
 
+// The Jobs page's "New job ▾" menu: [group, [[form, label]]]. (The app's JOB_MENU.)
+const JOB_MENU = [
+  ['Catalogue', [['dat_sync', 'DAT sync'], ['provider_request', 'Metadata request'], ['display_data', 'Display data']]],
+  ['Media', [['media', 'Media download'], ['ra_badges', 'RetroAchievements data']]],
+  ['Files', [['integrity', 'Integrity check'], ['sheets', 'Cue sheet and playlist check'], ['scan', 'Scan / hash match…']]],
+];
 async function showJobs() {
   const dirs = await api('/api/v1/directories').catch(() => []);
   const integrity = await api('/api/v1/integrity').catch(() => ({}));
   const providers = await api('/api/v1/providers').catch(() => []);
   const dirOpts = dirs.map(d => `<option value="${d.id}">${esc(d.path)}</option>`).join('');
   view.innerHTML = `
-    <div class="card"><p class="muted">${tr('Scans and hash matches have their own tab, with the files being read right now:')} <a class="link" href="#scan">${tr('Scan')}</a></p></div>
-    <div class="card"><h2>${tr('DAT sync')} ${explainKey('explain.jobs.other')}</h2><form class="inline" id="otherform">
+    <div class="card"><h2>${tr('Jobs')} ${explainKey('explain.jobs.list')}</h2>
+      <div class="toolbar"><button class="btn primary" type="button" id="newjob">${tr('New job')} ▾</button><button class="btn small" type="button" id="jobclear">${tr('clear from the list')} ▾</button></div>
+      <div id="grid"></div></div>
+    <div id="jobforms" style="display:none">
+    <div class="card" data-form="dat_sync"><h2>${tr('DAT sync')} ${explainKey('explain.jobs.other')}</h2><form class="inline" id="otherform">
       <label>${tr('DAT source')}<select name="source"><option value="">${tr('all sources')}</option>${vocab.jobs.dat_sources.map(s => `<option>${esc(s)}</option>`).join('')}</select></label>
       <button class="btn" data-job="dat_sync" type="button">${tr('DAT sync (download + import)')}</button>
       <div id="dat-plats" style="flex-basis:100%"></div>
     </form></div>
-    <div class="card"><h2>${tr('Media download')}</h2>
+    <div class="card" data-form="media"><h2>${tr('Media download')}</h2>
     <form class="inline" id="mediaform">
       <label>${tr('media for')}<select name="scope"><option value="owned">${tr('owned games')}</option><option value="all">${tr('the whole catalogue')}</option></select></label>
       <label>${tr('platform')}<select name="platform">${platformOptions('', tr('all platforms'))}</select></label>
@@ -5780,15 +5916,15 @@ async function showJobs() {
     <form class="inline" style="margin-top:8px">
       <button class="btn" data-job="media_relayout" type="button" title="${tr('move media the app stored in its own folder into the Platform/Title/Region layout and into the configured image / video / audio dirs (only app-written files; user files are never touched)')}">${tr('media relayout')}</button>
     </form></div>
-    <div class="card"><h2>${tr('RetroAchievements data')}</h2>
+    <div class="card" data-form="ra_badges"><h2>${tr('RetroAchievements data')}</h2>
     <form class="inline" id="rabadgeform">
       <label>${tr('RetroAchievements games')}<select name="scope"><option value="played">${tr('played by the account')}</option><option value="owned">${tr('owned games')}</option></select></label>
       <button class="btn" data-job="ra_badges" type="button">${tr('RA badges download/update')}</button>
       ${explainKey('explain.jobs.ra_badges')}
     </form>
     </div>
-    <div class="card" id="reqcard"></div>
-    <div class="card"><h2>${tr('Integrity check')}</h2>
+    <div class="card" id="reqcard" data-form="provider_request"></div>
+    <div class="card" data-form="integrity"><h2>${tr('Integrity check')}</h2>
       <p class="muted">${tr("Reads each file this machine holds once and compares it with the hash the catalogue records for those bytes: the one set for the integrity check (")}<b>${esc(integrity.populate || '')}</b>${tr(") when the catalogue has it, otherwise the cheapest one it has on this machine (")}<b>${esc((integrity.compare_order || []).join(' → '))}</b>${tr("). After such a fallback it also records ")}<b>${esc(integrity.populate || '')}</b>${tr(" off the same read, once the file has matched, so later checks use it. Least recently checked first, so short runs repeated over time sweep the whole collection; a file that fails isn't stamped, so it stays at the front of the queue. Choose the hash under Config › Settings › Scanning & files (integrity_populate_hash).")}</p>
       <form class="inline" id="integrityform">
         <label>${tr('directory')}<select name="directory_id"><option value="">${tr('every directory')}</option>${dirOpts}</select></label>
@@ -5796,7 +5932,7 @@ async function showJobs() {
         <label>${tr('not checked for (days)')}<input name="days" type="number" min="0" style="width:90px" placeholder="${tr('any')}"></label>
         <button class="btn" type="submit">${tr('check now')}</button>
       </form></div>
-    <div class="card"><h2>${tr('Cue sheet and playlist check')}</h2>
+    <div class="card" data-form="sheets"><h2>${tr('Cue sheet and playlist check')}</h2>
       <p class="muted">${tr('A cue/bin set is the one dump shape whose index is a separate file, so losing it loses the dump: the tracks are still there, but nothing says what they are or what order they go in.')} <b>${tr('Create')}</b> ${tr('rebuilds that index for every dump whose tracks are all present and whose sheet is not — track lengths are arithmetic, types are a two-byte read, and the gaps, which cannot be recovered from the bytes at all, are resolved by trying each convention and keeping whichever reproduces what the DAT records. A dump missing anything other than its sheet is skipped, as is one that already has it.')}</p>
       <p class="muted"><b>${tr('Check')}</b> ${tr("re-reads the sheets already here. A sheet that parses, names files that are present and divides into whole sectors is sound; one that also matches the DAT byte for byte is verified. The two are kept apart on purpose — a sheet can play perfectly and not be Redump's, and that is never called broken. Least recently checked first, so short runs repeated over time sweep everything.")}</p>
       <form class="inline" id="sheetform">
@@ -5811,7 +5947,7 @@ async function showJobs() {
         <button class="btn" type="button" data-sheetall="m3u">${tr('create every missing playlist')}</button>
         <span class="muted">${tr('Neither renames anything — that is only ever offered on one dump at a time, with the table in front of you.')}</span>
       </div></div>
-    <div class="card"><h2>${tr('Display data')}</h2>
+    <div class="card" data-form="display_data"><h2>${tr('Display data')}</h2>
     <form class="inline" id="displayform">
       <span>${tr('display data from')}</span>
       <label><input type="checkbox" name="sfo" checked> ${tr("PS3 games' PARAM.SFO")}</label>
@@ -5821,13 +5957,18 @@ async function showJobs() {
       <button class="btn" data-job="display_data" type="button">${tr('collect display data')}</button>
     </form>
     </div>
-    <div class="card"><h2>${tr('Jobs')} ${explainKey('explain.jobs.list')}</h2>
-      <div class="toolbar" id="jobclear"><span class="muted">${tr('clear from the list:')}</span><button class="btn small" data-clear="done">${tr('done')}</button><button class="btn small" data-clear="failed">${tr('failed')}</button><button class="btn small" data-clear="cancelled">${tr('cancelled')}</button><button class="btn small" data-clear="">${tr('all finished')}</button></div>
-      <div id="grid"></div></div>`;
-  const enqueue = async (body) => { try { const r = await api('/api/v1/jobs', { method: 'POST', body }); toast(trf('enqueued {type} #{id}', { type: r.job_type, id: r.id })); grid.reload(); refreshHeader(); } catch (err) { toast(err.message, true); } };
+    </div>`;
+  // "New job ▾": each form opens as a dialog over the list. The cards are built once with the
+  // page and moved into the dialog, so what was picked stays for the next time.
+  const jobForms = {};
+  for (const c of view.querySelectorAll('#jobforms [data-form]')) jobForms[c.dataset.form] = c;
+  const openJobForm = kind => { const box = openModal(''); box.appendChild(jobForms[kind]); };
+  document.getElementById('newjob').onclick = ev => { ev.stopPropagation(); menuUnder(ev.currentTarget, () => JOB_MENU.flatMap(([group, forms]) => [{ label: trc('jobgroup', group), head: true }].concat(forms.map(([kind, label]) => ({ label: tr(label), action: () => kind === 'scan' ? go('scan') : openJobForm(kind) }))))); };
+  // A job started from a dialog: the list shows it, and the dialog closes.
+  const enqueue = async (body) => { try { const r = await api('/api/v1/jobs', { method: 'POST', body }); toast(trf('enqueued {type} #{id}', { type: r.job_type, id: r.id })); closeModal(); grid.reload(); refreshHeader(); } catch (err) { toast(err.message, true); } };
   // A client installation may not build the catalogue: the server refuses those jobs, so
   // say so on the button rather than after the click.
-  api('/api/v1/mode').then(m => { if (m.mode !== 'client') return; for (const b of view.querySelectorAll('[data-job]')) if ((vocab.jobs.catalog_writing || []).includes(b.dataset.job)) { b.disabled = true; b.title = tr('refused in client mode: the catalogue comes from the main server'); } }).catch(() => {});
+  api('/api/v1/mode').then(m => { if (m.mode !== 'client') return; for (const b of Object.values(jobForms).flatMap(c => [...c.querySelectorAll('[data-job]')])) if ((vocab.jobs.catalog_writing || []).includes(b.dataset.job)) { b.disabled = true; b.title = tr('refused in client mode: the catalogue comes from the main server'); } }).catch(() => {});
   document.getElementById('integrityform').onsubmit = ev => {
     ev.preventDefault();
     const f = new FormData(ev.target), n = k => { const v = Number(f.get(k)); return v > 0 ? v : null; };
@@ -5896,11 +6037,11 @@ async function showJobs() {
       grid.reload(); refreshHeader();
     } catch (err) { toast(err.message, true); }
   };
-  for (const b of document.querySelectorAll('#jobclear [data-clear]')) b.onclick = () => {
-    const status = b.dataset.clear;
+  const clearBy = status => {
     if (!confirm(status ? trf('Clear every {status} job from the list?', { status: tr(status) }) : tr('Clear every finished job (done, failed, cancelled) from the list?'))) return;
-    clearJobs(status ? { statuses: [status] } : {}, b);
+    clearJobs(status ? { statuses: [status] } : {}, document.getElementById('jobclear'));
   };
+  document.getElementById('jobclear').onclick = ev => { ev.stopPropagation(); menuUnder(ev.currentTarget, () => [['done', tr('done')], ['failed', tr('failed')], ['cancelled', tr('cancelled')], ['', tr('all finished')]].map(([st, label]) => ({ label, action: () => clearBy(st) }))); };
   jobsTimer = setInterval(() => { if (location.hash.replace(/^#/, '') === 'jobs') { grid.reload(); refreshHeader(); } }, 2000);
 }
 // Scan: scans and hash matches only, with the files a running scan is reading right now,

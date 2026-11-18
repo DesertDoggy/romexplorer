@@ -8,6 +8,14 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Modifiche
 
+**Schermate**
+- Gli elenchi con molti filtri ne mostrano quattro; gli altri sono in «Altri filtri», e quelli in uso compaiono come etichette da togliere.
+- La pagina dei processi mostra prima l'elenco dei processi. I nuovi si avviano da «Nuovo processo».
+- Le sottoschede della collezione per i file locali e per il materiale non di gioco sono ora due menu a tendina.
+- Le impostazioni mostrano un nome nella lingua dell'interfaccia, con la chiave sotto. Salva e ripristina compaiono solo quando cambiano qualcosa, e le impostazioni di un'altra schermata restano lì.
+- Le pagine di titolo e di release mostrano come pulsanti solo le azioni principali. I link ai titoli correlati sono nella riga del gioco base e gli id interni in «Dettagli». L’abbinamento manuale mostra prima i link attuali.
+- Big Picture: ricerca e filtro sono nella barra in alto, lingua e disposizione nelle impostazioni. Un gioco con più dischi ha una sola voce «Dischi…» nel menu. Le impostazioni dell’app per telefono si aprono una parte alla volta.
+
 **Scansione**
 - Aggiunta «Scansione rapida (modificati)»: legge anche i file con dimensione o data cambiate.
 - Gli hash della scansione si impostano separatamente per file normali, file d'archivio e contenuto degli archivi. I file d'archivio usano sha1 e xxh3_128 come predefinito.
@@ -32,6 +40,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Correzioni
 
+- Parte del testo dell'app per telefono era mostrata in inglese nelle altre lingue.
 - L'avanzamento della scansione audio si fermava durante la misura del volume.
 - L'avanzamento dell'indice musicale delle ROM si muoveva solo ogni 500 ROM.
 

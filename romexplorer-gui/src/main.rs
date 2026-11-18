@@ -492,6 +492,40 @@ fn subtabs(tab: &str) -> Vec<(&'static str, &'static str, Route)> {
     }
 }
 
+/// Sub-tabs shown as one drop-down button instead of a row of their own: Collection's views of
+/// the files on hand, and its material that isn't games. The button says the group's name, or
+/// the open sub-tab's when it is one of them. (The console's SUB_GROUPS.)
+const SUB_GROUPS: [(&str, &str, &str, &[&str]); 2] = [
+    ("collection", "local", "Files", &["games", "roms", "files", "contents"]),
+    ("collection", "material", "Material", &["audio", "multimedia", "documents", "source", "etc", "patches", "bios"]),
+];
+
+enum SubEntry {
+    Tab(&'static str, &'static str, Route),
+    Group(&'static str, &'static str, Vec<(&'static str, &'static str, Route)>),
+}
+
+/// The subtab row: the shown sub-tabs, with each group of two or more as one drop-down after
+/// the ungrouped ones (a group with one shown member is a plain tab).
+fn subnav_entries(tab: &str) -> Vec<SubEntry> {
+    let subs = subtabs(tab);
+    let groups: Vec<_> = SUB_GROUPS.iter().filter(|(t, ..)| *t == tab).collect();
+    let grouped = |k: &str| groups.iter().any(|(_, _, _, keys)| keys.contains(&k));
+    let mut out: Vec<SubEntry> = subs.iter().filter(|(k, ..)| !grouped(k)).map(|(k, l, r)| SubEntry::Tab(k, l, r.clone())).collect();
+    for (_, g, label, keys) in groups {
+        let mut members: Vec<_> = subs.iter().filter(|(k, ..)| keys.contains(k)).cloned().collect();
+        match members.len() {
+            0 => {}
+            1 => {
+                let (k, l, r) = members.remove(0);
+                out.push(SubEntry::Tab(k, l, r));
+            }
+            _ => out.push(SubEntry::Group(g, label, members)),
+        }
+    }
+    out
+}
+
 /// The header's "!": every top tab and what it is for (`tabinfo.<tab>` in the language file).
 #[component]
 fn HeaderExplain() -> Element {
@@ -626,10 +660,36 @@ fn Shell() -> Element {
             }
             if !subtabs(tab).is_empty() {
                 nav { class: "sub", id: "subnav",
-                    for (key, label, to) in subtabs(tab) {
-                        {
-                            let shown = format!("{}{}", state::t(&format!("sub.{tab}.{key}"), label), sub_count(tab, key));
-                            rsx! { Link { key: "{key}", to: to, button { class: if key == sub { "active" } else { "" }, "{shown}" } } }
+                    for entry in subnav_entries(tab) {
+                        match entry {
+                            SubEntry::Tab(key, label, to) => {
+                                let shown = format!("{}{}", state::t(&format!("sub.{tab}.{key}"), label), sub_count(tab, key));
+                                rsx! { Link { key: "{key}", to: to, button { class: if key == sub { "active" } else { "" }, "{shown}" } } }
+                            }
+                            SubEntry::Group(g, label, members) => {
+                                let open = members.iter().find(|(k, _, _)| *k == sub);
+                                let shown = match open {
+                                    Some((k, l, _)) => state::t(&format!("sub.{tab}.{k}"), l),
+                                    None => state::t(&format!("subgroup.{tab}.{g}"), label),
+                                };
+                                let active = open.is_some();
+                                let head = state::t(&format!("subgroup.{tab}.{g}"), label);
+                                let tab_key = tab.to_string();
+                                rsx! {
+                                    button { key: "group-{g}", class: if active { "active" } else { "" },
+                                        onclick: move |e| {
+                                            e.stop_propagation();
+                                            let p = e.client_coordinates();
+                                            let mut items = vec![ui::MenuItem::head(head.clone())];
+                                            for (k, l, to) in members.clone() {
+                                                items.push(ui::MenuItem::new(state::t(&format!("sub.{tab_key}.{k}"), l), move || { navigator().push(to.clone()); }));
+                                            }
+                                            ui::open_menu(p.x, p.y, items);
+                                        },
+                                        "{shown} ▾"
+                                    }
+                                }
+                            }
                         }
                     }
                     SubtabExplain { key: "{tab}-subinfo", tab: tab.to_string() }

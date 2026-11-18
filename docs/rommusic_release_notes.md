@@ -4,6 +4,7 @@ rommusic is released separately from romexplorer; these notes cover rommusic onl
 
 ## Changes
 
+- **A tidier window.** The FLAC options are hidden when only original audio formats are written, and an input's remove button is bigger.
 - **Progress.** Shows the file being searched in each input, the original audio format files being read, and each track's progress in the command line.
 - The original audio format library loads faster after the first time.
 

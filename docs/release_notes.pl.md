@@ -8,6 +8,14 @@ zapasową przed podmianą wersji.
 
 ## Zmiany
 
+**Ekrany**
+- Listy z wieloma filtrami pokazują cztery z nich; reszta jest pod „Więcej filtrów”, a używane filtry są widoczne jako etykiety do usunięcia.
+- Strona zadań pokazuje najpierw listę zadań. Nowe zadania uruchamia się z „Nowe zadanie”.
+- Podzakładki kolekcji dla własnych plików i dla materiałów innych niż gry są teraz dwoma menu rozwijanymi.
+- Ustawienia pokazują nazwę w języku interfejsu, z kluczem pod spodem. Zapisz i resetuj pojawiają się tylko wtedy, gdy coś zmieniają, a ustawienia z innego ekranu zostają na tamtym ekranie.
+- Strony tytułu i wydania pokazują jako przyciski tylko główne działania. Linki do powiązanych tytułów są w wierszu gry bazowej, a wewnętrzne id w „Szczegóły”. Ręczne dopasowanie pokazuje najpierw obecne linki.
+- Big Picture: wyszukiwanie i filtr są na górnym pasku, a język i układ w ustawieniach. Gra z kilkoma płytami ma w menu jedną pozycję „Płyty…”. Ustawienia aplikacji na telefon otwierają się po jednej części.
+
 **Skanowanie**
 - Dodano „Szybkie skanowanie (zmienione)”: odczytuje też pliki, których rozmiar lub data się zmieniły.
 - Hashe skanowania ustawia się osobno dla zwykłych plików, plików archiwów i zawartości archiwów. Pliki archiwów domyślnie używają sha1 i xxh3_128.
@@ -32,6 +40,7 @@ zapasową przed podmianą wersji.
 
 ## Poprawki błędów
 
+- Część tekstów aplikacji na telefon była wyświetlana po angielsku w innych językach.
 - Postęp skanowania dźwięku zatrzymywał się podczas pomiaru głośności.
 - Postęp indeksu muzyki z ROM-ów przesuwał się tylko co 500 ROM-ów.
 

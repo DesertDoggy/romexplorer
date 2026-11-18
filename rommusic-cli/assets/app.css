@@ -56,6 +56,8 @@ input[type=text], input[type=number], select { flex: 1; min-width: 0; background
 .input:hover { background: #20242c; }
 .input span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e6e8ee; }
 button.small { padding: 1px 8px; font-size: 12px; }
+/* An input's remove button: big enough to hit with a thumb. */
+button.remove { min-width: 32px; min-height: 28px; padding: 2px 8px; font-size: 15px; }
 
 .segmented { display: flex; flex: 1; gap: 0; }
 .seg { flex: 1; border-radius: 0; margin-left: -1px; }
@@ -71,6 +73,7 @@ button.small { padding: 1px 8px; font-size: 12px; }
 .app.android .access span { flex: 1; min-width: 200px; color: #f0d9b5; font-size: 13px; }
 .app.android button, .app.android input, .app.android select { min-height: 40px; }
 .app.android button.small { min-height: 32px; }
+.app.android button.remove { min-width: 40px; min-height: 40px; }
 .app.android .log { min-height: 60px; }
 
 /* The controller's focus, visible on everything it can reach. */

@@ -8,6 +8,14 @@ de segurança antes de substituir uma versão.
 
 ## Alterações
 
+**Ecrãs**
+- As listas com muitos filtros mostram quatro; os restantes estão em «Mais filtros», e os que estão em uso aparecem como etiquetas que se podem retirar.
+- A página de tarefas mostra primeiro a lista de tarefas. As novas começam em «Nova tarefa».
+- Os subseparadores da coleção para os ficheiros locais e para o material que não é jogo são agora dois menus pendentes.
+- As definições mostram um nome no idioma da interface, com a chave por baixo. Guardar e repor só aparecem quando alteram algo, e as definições de outro ecrã ficam nesse ecrã.
+- As páginas de título e de lançamento mostram como botões apenas as ações principais. As ligações para títulos relacionados estão na linha do jogo base e os ids internos em «Detalhes». A correspondência manual mostra primeiro as ligações atuais.
+- Big Picture: a pesquisa e o filtro estão na barra superior, e o idioma e a disposição nas definições. Um jogo com vários discos tem uma só entrada «Discos…» no menu. As definições da app móvel abrem-se uma parte de cada vez.
+
 **Análise**
 - Adicionada «Análise rápida (alterados)»: também lê os ficheiros que mudaram de tamanho ou data.
 - Os hashes da análise definem-se em separado para ficheiros normais, ficheiros de arquivo e o conteúdo dos arquivos. Os ficheiros de arquivo usam sha1 e xxh3_128 por predefinição.
@@ -32,6 +40,7 @@ de segurança antes de substituir uma versão.
 
 ## Correções
 
+- Parte do texto da app do telemóvel aparecia em inglês noutras línguas.
 - O progresso da análise de áudio parava durante a medição do volume.
 - O progresso do índice de música das ROM só avançava a cada 500 ROM.
 

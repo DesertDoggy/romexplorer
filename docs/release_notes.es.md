@@ -8,6 +8,14 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
+**Pantallas**
+- Las listas con muchos filtros muestran cuatro; el resto está en «Más filtros», y los que están en uso aparecen como etiquetas que se pueden quitar.
+- La página de tareas muestra primero la lista de tareas. Las nuevas se inician desde «Nueva tarea».
+- Las subpestañas de la colección para los archivos propios y para el material que no es juego son ahora dos menús desplegables.
+- Los ajustes muestran un nombre en el idioma de la interfaz, con la clave debajo. Guardar y restablecer solo aparecen cuando cambian algo, y los ajustes de otra pantalla se dejan en esa pantalla.
+- Las páginas de título y de lanzamiento solo muestran como botones las acciones principales. Los enlaces a títulos relacionados están en la fila del juego base y los ids internos en «Detalles». La correspondencia manual muestra primero los enlaces actuales.
+- Big Picture: la búsqueda y el filtro están en la barra superior, y el idioma y la disposición en los ajustes. Un juego con varios discos tiene una sola entrada «Discos…» en su menú. Los ajustes de la app móvil se abren por partes.
+
 **Escaneo**
 - Se añadió «Escaneo rápido (cambiados)»: también lee los archivos que cambiaron de tamaño o fecha.
 - Los hashes del escaneo se ajustan por separado para archivos normales, archivos comprimidos y su contenido. Los archivos comprimidos usan sha1 y xxh3_128 por defecto.
@@ -32,6 +40,7 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Correcciones
 
+- Parte del texto de la app del móvil aparecía en inglés en otros idiomas.
 - El progreso del escaneo de audio se detenía mientras medía el volumen.
 - El progreso del índice de música de las ROM solo avanzaba cada 500 ROM.
 
