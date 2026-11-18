@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::common::display::{mame_aspect, mame_refresh, mame_resolution, ps3_resolution, serial_key, sfo_u32};
 use crate::common::models::Platform;
-use crate::database::jobs::Progress;
+use crate::database::jobs::{human_bytes, thousands, Progress, Steps};
 
 use super::{App, Error, Result};
 
@@ -59,18 +59,34 @@ pub fn one_liner(s: &DisplayDataSummary) -> String {
 pub async fn run(app: &App, req: &DisplayDataRequest, progress: &Progress) -> Result<DisplayDataSummary> {
     validate(req)?;
     let mut summary = DisplayDataSummary::default();
-    if req.sources.iter().any(|s| s == "sfo") {
-        summary.sfo_releases = from_sfo(app, progress).await?;
+    // One step per source asked for, in this order.
+    const ALL: [(&str, &str, &str); 4] = [("sfo", "display_sfo", "PS3 PARAM.SFO"), ("ipbin", "display_ipbin", "Dreamcast IP.BIN"), ("pcsx2", "display_pcsx2", "PCSX2 widescreen patches"), ("mame", "display_mame", "MAME machine list")];
+    let chosen: Vec<(&str, &'static str, &'static str)> = ALL.iter().copied().filter(|(source, _, _)| req.sources.iter().any(|s| s == source)).collect();
+    let list: Vec<(&'static str, &'static str)> = chosen.iter().map(|&(_, key, label)| (key, label)).collect();
+    let mut steps = Steps::new(progress, &list, &req.sources.join(", "));
+    for (n, (source, _, _)) in chosen.iter().enumerate() {
+        steps.start(n + 1).await;
+        let note = match *source {
+            "sfo" => {
+                summary.sfo_releases = from_sfo(app, progress).await?;
+                format!("{} PS3 release(s)", thousands(summary.sfo_releases))
+            }
+            "ipbin" => {
+                summary.ipbin_releases = from_ipbin(app, progress).await?;
+                format!("{} Dreamcast release(s)", thousands(summary.ipbin_releases))
+            }
+            "pcsx2" => {
+                summary.pcsx2_releases = from_pcsx2(app, progress).await?;
+                format!("{} PS2 release(s) with a widescreen patch", thousands(summary.pcsx2_releases))
+            }
+            _ => {
+                summary.mame_releases = from_mame(app, progress).await?;
+                format!("{} arcade release(s)", thousands(summary.mame_releases))
+            }
+        };
+        steps.done(note).await;
     }
-    if req.sources.iter().any(|s| s == "ipbin") {
-        summary.ipbin_releases = from_ipbin(app, progress).await?;
-    }
-    if req.sources.iter().any(|s| s == "pcsx2") {
-        summary.pcsx2_releases = from_pcsx2(app, progress).await?;
-    }
-    if req.sources.iter().any(|s| s == "mame") {
-        summary.mame_releases = from_mame(app, progress).await?;
-    }
+    steps.finish();
     progress.finish(1, Some(1), &one_liner(&summary), &summary).await;
     Ok(summary)
 }
@@ -88,12 +104,40 @@ fn client() -> Result<reqwest::Client> {
         .map_err(|e| Error::internal(e.to_string()))
 }
 
-async fn download(url: &str, to: &Path) -> Result<()> {
-    let bytes = client()?.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| Error::invalid(format!("{url}: {e}")))?.bytes().await.map_err(|e| Error::invalid(format!("{url}: {e}")))?;
+/// Downloads `url` to `to` in chunks, saying "display data: downloading <name>, 41.0 MiB of
+/// 280.0 MiB" as it goes (or "... so far" when the server sends no length). Written beside
+/// its name and renamed, so a download cut short is never taken for a whole one.
+async fn download(url: &str, to: &Path, progress: &Progress) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    progress.force(0, None, &format!("display data: downloading {name}")).await;
+    let mut response = client()?.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| Error::invalid(format!("{url}: {e}")))?;
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(|e| Error::internal(format!("{}: {e}", dir.display())))?;
     }
-    std::fs::write(to, &bytes).map_err(|e| Error::internal(format!("{}: {e}", to.display())))?;
+    let length = response.content_length();
+    let partial = to.with_extension("part");
+    let mut file = tokio::fs::File::create(&partial).await.map_err(|e| Error::internal(format!("{}: {e}", partial.display())))?;
+    let mut got = 0u64;
+    let written = async {
+        while let Some(chunk) = response.chunk().await.map_err(|e| Error::invalid(format!("{url}: {e}")))? {
+            file.write_all(&chunk).await.map_err(|e| Error::internal(format!("{}: {e}", partial.display())))?;
+            got += chunk.len() as u64;
+            match length {
+                Some(total) => progress.report(got, Some(total.max(1)), &format!("display data: downloading {name}, {} of {}", human_bytes(got), human_bytes(total))).await,
+                None => progress.report(got, None, &format!("display data: downloading {name}, {} so far", human_bytes(got))).await,
+            }
+        }
+        file.flush().await.map_err(|e| Error::internal(format!("{}: {e}", partial.display())))?;
+        Ok::<(), Error>(())
+    }
+    .await;
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
+    std::fs::rename(&partial, to).map_err(|e| Error::internal(format!("{}: {e}", to.display())))?;
     Ok(())
 }
 
@@ -127,12 +171,20 @@ async fn local_files(app: &App, platform: Platform) -> Result<Vec<(u64, String)>
     .await?)
 }
 
+/// The file name of `main_path`, for progress messages.
+fn file_name(main_path: &str) -> &str {
+    main_path.rsplit(['/', '\\']).next().unwrap_or(main_path)
+}
+
 async fn from_sfo(app: &App, progress: &Progress) -> Result<u64> {
+    progress.force(0, None, "display data: listing this machine's PS3 games").await;
     let rows = local_files(app, Platform::PlayStation3).await?;
     let total = rows.len() as u64;
     let mut done: HashSet<u64> = HashSet::new();
     for (i, (release, main_path)) in rows.into_iter().enumerate() {
-        progress.report(i as u64, Some(total.max(1)), &format!("display data: PS3 PARAM.SFO, {} of {total}", i + 1)).await;
+        progress
+            .report(i as u64, Some(total.max(1)), &format!("display data: PS3 PARAM.SFO, {} of {} ({} read): {}", thousands(i as u64 + 1), thousands(total), thousands(done.len() as u64), file_name(&main_path)))
+            .await;
         if done.contains(&release) {
             continue;
         }
@@ -202,11 +254,14 @@ pub fn dreamcast_header(main_path: &Path) -> Option<Vec<u8>> {
 }
 
 async fn from_ipbin(app: &App, progress: &Progress) -> Result<u64> {
+    progress.force(0, None, "display data: listing this machine's Dreamcast games").await;
     let rows = local_files(app, Platform::Dreamcast).await?;
     let total = rows.len() as u64;
     let mut done: HashSet<u64> = HashSet::new();
     for (i, (release, main_path)) in rows.into_iter().enumerate() {
-        progress.report(i as u64, Some(total.max(1)), &format!("display data: Dreamcast IP.BIN, {} of {total}", i + 1)).await;
+        progress
+            .report(i as u64, Some(total.max(1)), &format!("display data: Dreamcast IP.BIN, {} of {} ({} read): {}", thousands(i as u64 + 1), thousands(total), thousands(done.len() as u64), file_name(&main_path)))
+            .await;
         if done.contains(&release) {
             continue;
         }
@@ -240,9 +295,9 @@ pub fn widescreen_serials<'a>(patches: impl Iterator<Item = (&'a str, &'a str)>)
 }
 
 async fn from_pcsx2(app: &App, progress: &Progress) -> Result<u64> {
-    progress.force(0, None, "display data: downloading PCSX2's widescreen patches").await;
     let zip_path = downloads(app).join("pcsx2_patches.zip");
-    download(PCSX2_PATCHES_ZIP, &zip_path).await?;
+    download(PCSX2_PATCHES_ZIP, &zip_path, progress).await?;
+    progress.force(0, None, "display data: reading PCSX2's widescreen patches").await;
     let path = zip_path.clone();
     // A GitHub archive of small text files, read whole: the `zip` crate, as `dat_parse` does.
     let serials = tokio::task::spawn_blocking(move || -> std::result::Result<HashSet<String>, String> {
@@ -262,10 +317,14 @@ async fn from_pcsx2(app: &App, progress: &Progress) -> Result<u64> {
     .await
     .map_err(|e| Error::internal(e.to_string()))?
     .map_err(Error::invalid)?;
+    progress.force(0, None, "display data: listing PS2 releases with a serial").await;
     let releases: Vec<(u64, String)> = sqlx::query_as("SELECT id, serial FROM `release` WHERE app_platform_id = ? AND serial IS NOT NULL AND deleted = FALSE").bind(Platform::PlayStation2.igdb_id()).fetch_all(&app.pool).await?;
+    progress.force(0, None, "display data: clearing the old PCSX2 rows").await;
     sqlx::query("DELETE FROM release_display WHERE source = 'pcsx2'").execute(&app.pool).await?;
     let mut n = 0u64;
-    for (release, serial) in releases {
+    let total = releases.len() as u64;
+    for (i, (release, serial)) in releases.into_iter().enumerate() {
+        progress.report(i as u64, Some(total.max(1)), &format!("display data: PS2 release {} of {} ({} with a widescreen patch): {serial}", thousands(i as u64 + 1), thousands(total), thousands(n))).await;
         if serial.split([',', ';']).any(|s| serials.contains(&serial_key(s))) {
             super::display::record(app, release, "widescreen", "pcsx2", "patch").await?;
             n += 1;
@@ -343,8 +402,7 @@ async fn from_mame(app: &App, progress: &Progress) -> Result<u64> {
     let (url, file) = (asset["browser_download_url"].as_str().unwrap_or_default().to_string(), asset["name"].as_str().unwrap_or("mamelx.zip").to_string());
     let zip_path = downloads(app).join(&file);
     if !zip_path.exists() {
-        progress.force(0, None, &format!("display data: downloading {file}")).await;
-        download(&url, &zip_path).await?;
+        download(&url, &zip_path, progress).await?;
     }
     progress.force(0, None, "display data: reading MAME's machine list").await;
     let path = zip_path.clone();
@@ -358,12 +416,14 @@ async fn from_mame(app: &App, progress: &Progress) -> Result<u64> {
     .map_err(|e| Error::internal(e.to_string()))?
     .map_err(Error::invalid)?;
     let by_description: HashMap<String, &MameDisplay> = machines.values().map(|m| (norm(&m.description), m)).collect();
+    progress.force(0, None, "display data: listing arcade releases").await;
     let releases: Vec<(u64, String)> = sqlx::query_as("SELECT id, name FROM `release` WHERE app_platform_id IN (?, ?) AND deleted = FALSE").bind(Platform::Arcade.igdb_id()).bind(Platform::NeoGeoMvs.igdb_id()).fetch_all(&app.pool).await?;
+    progress.force(0, None, "display data: clearing the old MAME rows").await;
     sqlx::query("DELETE FROM release_display WHERE source = 'mame'").execute(&app.pool).await?;
     let total = releases.len() as u64;
     let mut n = 0u64;
     for (i, (release, name)) in releases.into_iter().enumerate() {
-        progress.report(i as u64, Some(total.max(1)), &format!("display data: MAME, {} of {total} arcade release(s), {n} found", i + 1)).await;
+        progress.report(i as u64, Some(total.max(1)), &format!("display data: MAME, arcade release {} of {} ({} found): {name}", thousands(i as u64 + 1), thousands(total), thousands(n))).await;
         // RetroAchievements names arcade games by MAME's short name; the DATs by its description.
         let Some(m) = machines.get(&name).or_else(|| by_description.get(&norm(&name)).copied()) else { continue };
         super::display::record(app, release, "aspect", "mame", mame_aspect(m.rotate)).await?;

@@ -16,9 +16,33 @@ zapasową przed podmianą wersji.
 - Strony tytułu i wydania pokazują jako przyciski tylko główne działania. Linki do powiązanych tytułów są w wierszu gry bazowej, a wewnętrzne id w „Szczegóły”. Ręczne dopasowanie pokazuje najpierw obecne linki.
 - Big Picture: wyszukiwanie i filtr są na górnym pasku, a język i układ w ustawieniach. Gra z kilkoma płytami ma w menu jedną pozycję „Płyty…”. Ustawienia aplikacji na telefon otwierają się po jednej części.
 
+**Skanowanie**
+- Dodano „Szybkie skanowanie (zmienione)”: odczytuje też pliki, których rozmiar lub data się zmieniły.
+- Hashe skanowania ustawia się osobno dla zwykłych plików, plików archiwów i zawartości archiwów. Pliki archiwów domyślnie używają sha1 i xxh3_128.
+
+**Kopiowanie**
+- Ponownie uruchomione kopiowanie sprawdza kilka plików już obecnych w miejscu docelowym naraz.
+
+**Listy**
+- Widoki kart z wieloma pozycjami otwierają się i przewijają szybciej.
+
+**Postęp**
+- Każde zadanie pokazuje, co robi, ile jest wszystkiego i jak daleko doszło, także przy przeszukiwaniu folderów, sprawdzaniu i krokach bazy danych.
+- Zadania złożone z kilku kroków pokazują listę kroków.
+- Zadania mają przycisk „szczegóły”.
+- Trwające zadania pokazują czas, który minął, i czas do końca.
+- Duże pobierania i sprawdzanie plików pokazują, ile już odczytano.
+- Czyszczenie katalogu i import pliku zestawów działają jako zadania.
+- Aplikacja na komputer pokazuje podczas uruchamiania, co robi.
+
+**Dźwięk**
+- Kilka utworów można jednocześnie konwertować do odtwarzania.
+
 ## Poprawki błędów
 
 - Część tekstów aplikacji na telefon była wyświetlana po angielsku w innych językach.
+- Postęp skanowania dźwięku zatrzymywał się podczas pomiaru głośności.
+- Postęp indeksu muzyki z ROM-ów przesuwał się tylko co 500 ROM-ów.
 
 # romexplorer 0.2.2 (alpha)
 

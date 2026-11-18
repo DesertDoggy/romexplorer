@@ -711,8 +711,9 @@ async fn sets_export(State(s): State<Shared>, Query(q): Query<SetsExportQuery>) 
     Ok(Json(api::set_file::export(&s.app, &ids).await?))
 }
 
-async fn sets_import(State(s): State<Shared>, Json(req): Json<api::set_file::ImportRequest>) -> ApiResult<Vec<api::set_file::SetImported>> {
-    Ok(Json(api::set_file::import(&s.app, &req).await?))
+/// Queues the import (`set_import`); the screen follows the job and shows its result.
+async fn sets_import(State(s): State<Shared>, Json(req): Json<api::set_file::ImportRequest>) -> ApiResult<api::jobs::JobEnqueued> {
+    Ok(Json(api::jobs::JobEnqueued { job_id: api::set_file::queue_import(&s.app, &req).await? }))
 }
 
 async fn sets_list(State(s): State<Shared>) -> ApiResult<Vec<api::sets::CollectionSet>> {
@@ -842,6 +843,11 @@ struct MediaQuery {
 
 async fn audio_list(State(s): State<Shared>, Query(q): Query<api::audio::AudioQuery>) -> ApiResult<api::audio::AudioPage> {
     Ok(Json(api::audio::list(&s.app, &q).await?))
+}
+
+/// How many audio conversions run and wait: a player waiting on its track says which.
+async fn audio_converting() -> ApiResult<api::audio_convert::ConvertStatus> {
+    Ok(Json(api::audio_convert::status()))
 }
 
 async fn audio_facets(State(s): State<Shared>) -> ApiResult<api::audio::AudioFacets> {
@@ -2801,6 +2807,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/audio/tags/remove", post(audio_tag_remove))
         .route("/api/v1/audio/playlist", get(audio_playlist))
         .route("/api/v1/audio/facets", get(audio_facets))
+        .route("/api/v1/audio/converting", get(audio_converting))
         .route("/api/v1/audio/{id}/file", get(audio_file))
         .route("/api/v1/audio/remote/{id}/file", get(audio_remote))
         .route("/api/v1/audio/rom/{id}/file", get(audio_rom_file))

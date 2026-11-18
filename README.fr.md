@@ -105,21 +105,15 @@ et démarre sa propre base de données.
 
 ### Outils en ligne de commande (chdlite)
 
-Déposez une image disque, obtenez un CHD ou un RVZ. `chdlite` (rapide) et `chdcomp` (le plus
-compact) fonctionnent dans les deux sens : une image non compressée est compressée, un `.chd` ou un
-`.rvz` est extrait. `chdread` affiche les métadonnées d'un fichier et `chdhash` calcule son hash.
-Chaque outil fait une seule chose : un fichier déposé sur l'exécutable déclenche la bonne action.
-`chdlite-gui` fait la même chose dans une fenêtre. Chaque réglage existe aussi sous forme d'option
-de ligne de commande (`--help`). chdlite est publié séparément : voir
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite convertit les images disque en CHD ou RVZ et inversement, lit leurs métadonnées et calcule
+leur hash, par glisser-déposer, dans une fenêtre ou une app Android. Il est publié séparément : voir
+[chdlite/README.fr.md](chdlite/README.fr.md).
 
 ### Outil en ligne de commande (rommusic)
 
-Déposez une ROM, une image disque ou un dossier extrait sur `rommusic` : il
-écrit la musique de fond du jeu en FLAC dans un dossier à côté. Chaque réglage existe aussi sous
-forme d'option (`--help`). Les systèmes pris en charge sont listés dans
-[Audio des ROM](#audio-des-rom). rommusic est publié séparément : voir
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic écrit la musique d'un jeu en FLAC à partir de sa ROM ou de son image disque, par
+glisser-déposer, dans une fenêtre ou une app Android. Il est publié séparément : voir
+[rommusic-cli/README.fr.md](rommusic-cli/README.fr.md).
 
 ### Clés des fournisseurs
 
@@ -282,10 +276,13 @@ sa page peut jouer la musique d'un autre jeu.
 |---|---|---|
 | Pistes audio CD | Tout jeu sur CD : PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast, etc. | CHD, cue/bin, gdi |
 | L'archive sonore | Nintendo DS (musique en flux et séquencée), Nintendo 3DS (images déchiffrées uniquement) | .nds, .3ds/.cci |
+| Cartouches | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM, aussi dans un zip ou un 7z |
+| Fichiers musicaux sur disquette | PC-98 | .d88, .fdi, .hdm, etc., aussi dans un zip ou un 7z |
 
+- Même sur une plateforme prise en charge, tous les jeux ne sont pas pris en charge, pour des raisons techniques.
 - Les images disque dans un zip ou un 7z ne sont pas encore lues. Les images chiffrées ne sont pas
   lues.
-- La musique des jeux sur cartouche et celle des fichiers musicaux sur disque sont encore en cours de développement.
+- Les fichiers musicaux sur CD et DVD sont encore en cours de développement.
 
 ## Onglet RetroAchievements
 

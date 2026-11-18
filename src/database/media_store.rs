@@ -968,16 +968,24 @@ async fn still_used(pool: &MySqlPool, path: &str) -> Result<bool, DatabaseError>
 /// every laid-out file that is not where the layout puts it now ([`rehome`]). Only files under the app's own media dir are moved -- anything else was
 /// not written by the app and is left exactly where it is.
 pub async fn relayout(pool: &MySqlPool, roots: &Roots, progress: &super::jobs::Progress) -> Result<RelayoutSummary, DatabaseError> {
+    use super::jobs::thousands;
+    // Two steps, each with its own slice of the bar, so the second's count never sends the
+    // bar back.
+    let mut steps = super::jobs::Steps::new(progress, &[("relayout_move", "Move files into the layout"), ("relayout_rehome", "Move laid-out files to where the layout puts them now")], "all media");
+    steps.start(1).await;
+    progress.force(0, None, "finding media from before the layout").await;
     let rows = sqlx::query("SELECT id, media_type, sub_category, path, source_url, source, provider_id FROM media WHERE root_role IS NULL AND deleted = FALSE ORDER BY id").fetch_all(pool).await?;
     let mut s = RelayoutSummary { candidates: rows.len() as u64, ..Default::default() };
     let total = Some(s.candidates);
     let mut moved_paths = std::collections::HashSet::new();
     for (i, r) in rows.iter().enumerate() {
-        progress.report(i as u64, total, &format!("moved {}, merged {}, skipped {}", s.moved, s.merged, s.skipped_not_app)).await;
         let media_id: u64 = r.try_get("id")?;
         let media_type: String = r.try_get("media_type")?;
         let sub: Option<String> = r.try_get("sub_category")?;
         let old_text: String = r.try_get("path")?;
+        progress
+            .report(i as u64, total, &format!("moving {} of {} (moved {}, merged {}, skipped {}): {old_text}", thousands(i as u64 + 1), thousands(s.candidates), thousands(s.moved), thousands(s.merged), thousands(s.skipped_not_app)))
+            .await;
         let old = PathBuf::from(&old_text);
         let source_url: Option<String> = r.try_get("source_url")?;
         let source: String = r.try_get::<Option<String>, _>("source")?.unwrap_or_else(|| "manual".to_string());
@@ -1038,7 +1046,12 @@ pub async fn relayout(pool: &MySqlPool, roots: &Roots, progress: &super::jobs::P
             }
         }
     }
+    steps.done(format!("{} moved, {} merged, {} skipped (not the app's), {} missing", thousands(s.moved), thousands(s.merged), thousands(s.skipped_not_app), thousands(s.missing))).await;
+    steps.start(2).await;
+    let before = (s.rehomed, s.missing, s.failed);
     rehome(pool, roots, progress, &mut s).await?;
+    steps.done(format!("{} rehomed, {} missing, {} failed", thousands(s.rehomed - before.0), thousands(s.missing - before.1), thousands(s.failed - before.2))).await;
+    steps.finish();
     progress.force(s.candidates, Some(s.candidates), &format!("done: moved {}, merged {}, rehomed {}, skipped {}, missing {}, failed {}", s.moved, s.merged, s.rehomed, s.skipped_not_app, s.missing, s.failed)).await;
     Ok(s)
 }
@@ -1049,15 +1062,19 @@ pub async fn relayout(pool: &MySqlPool, roots: &Roots, progress: &super::jobs::P
 /// `<Platform>/<Title>/...` reach `<source>/<provider id>/...`. Rows sharing a file move
 /// together.
 async fn rehome(pool: &MySqlPool, roots: &Roots, progress: &super::jobs::Progress, s: &mut RelayoutSummary) -> Result<(), DatabaseError> {
+    use super::jobs::thousands;
+    progress.force(0, None, "listing the laid-out media").await;
     let rows = sqlx::query("SELECT id, media_type, sub_category, path, root_role, source_url, source, provider_id FROM media WHERE root_role IS NOT NULL AND deleted = FALSE ORDER BY id").fetch_all(pool).await?;
     let mut seen = std::collections::HashSet::new();
-    let done_before = s.candidates;
     s.candidates += rows.len() as u64;
-    let total = Some(s.candidates);
+    // Counted within this step: [`relayout`] gives it a slice of the bar of its own.
+    let count = rows.len() as u64;
     for (i, r) in rows.iter().enumerate() {
-        progress.report(done_before + i as u64, total, &format!("rehomed {}, missing {}, failed {}", s.rehomed, s.missing, s.failed)).await;
         let media_id: u64 = r.try_get("id")?;
         let rel: String = r.try_get("path")?;
+        progress
+            .report(i as u64, Some(count), &format!("checking {} of {} (rehomed {}, missing {}, failed {}): {rel}", thousands(i as u64 + 1), thousands(count), thousands(s.rehomed), thousands(s.missing), thousands(s.failed)))
+            .await;
         let Some(role_now) = RootRole::from_name(&r.try_get::<String, _>("root_role")?) else { continue };
         if !seen.insert((role_now.name(), rel.clone())) {
             continue;

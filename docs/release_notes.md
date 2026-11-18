@@ -13,9 +13,33 @@ replacing a build.
 - Title and release pages keep only their main actions as buttons. Links to related titles sit in the base game row, and the internal ids are under "Details". Manual match shows the current links first.
 - Big Picture: search and filter are in the top bar, and language and layout are in Settings. A game with several discs has one "Discs…" entry in its menu. The phone app's settings open one part at a time.
 
+**Scan**
+- "Quick scan (changed)" was added: it also reads files whose size or date changed.
+- Scan hashes are set separately for regular files, archive files and what is inside archives. Archive files use sha1 and xxh3_128 by default.
+
+**Copy**
+- A copy started again checks the files already at the destination several at a time.
+
+**Lists**
+- Card grids with many entries open and scroll faster.
+
+**Progress**
+- Every job shows what it is doing, the total and how far it is, including folder walks, checks and database steps.
+- Jobs made of several steps list their steps.
+- Jobs have a "details" button that shows the steps and the files being read.
+- Running jobs show the time taken and the time left.
+- Large downloads and file checks show how much has been read.
+- Clearing the catalogue and importing a sets file run as jobs.
+- The desktop app shows what it is doing while it starts.
+
+**Audio**
+- Several tracks can be converted for playback at once.
+
 ## Bug fixes
 
 - Some of the phone app's text was shown in English in other languages.
+- The audio scan's progress stopped while it measured loudness.
+- The ROM music index's progress moved only every 500 ROMs.
 
 # romexplorer 0.2.2 (alpha)
 

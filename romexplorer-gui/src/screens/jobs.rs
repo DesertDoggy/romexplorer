@@ -36,11 +36,6 @@ pub fn payload_cell(j: &Value) -> String {
     format!("<span title=\"{}\" style=\"white-space:nowrap\">{}</span>", esc(&tip), esc(&text))
 }
 
-/// A job's live progress: a bar when the total is known, else the count, plus the message.
-pub fn progress_cell(j: &Value) -> String {
-    progress_bar(j, false)
-}
-
 /// The same with the whole message, wrapping onto more lines when it is long: for a running
 /// job shown on its own (the Scan tab's Running now), where there is room for all of it.
 pub fn progress_full(j: &Value) -> String {
@@ -66,6 +61,57 @@ fn step_label(step: &Value) -> String {
         "audit_wronglink" => state::tr("Titles whose own files name another game"),
         "audit_merges" => state::tr("Merges made through an IGDB game"),
         "audit_links" => state::tr("IGDB links made by hash, name or search"),
+        // Other jobs' steps (`jobs::Steps`).
+        "audio_walk" => state::tr("Walk the audio folders"),
+        "audio_read" => state::tr("Read tags"),
+        "audio_loudness" => state::tr("Measure loudness"),
+        "title_cleanup" => state::tr("Clean-up"),
+        "display_sfo" => state::tr("PS3 PARAM.SFO"),
+        "display_ipbin" => state::tr("Dreamcast IP.BIN"),
+        "display_pcsx2" => state::tr("PCSX2 widescreen patches"),
+        "display_mame" => state::tr("MAME machine list"),
+        "relayout_move" => state::tr("Move files into the layout"),
+        "relayout_rehome" => state::tr("Move laid-out files to where the layout puts them now"),
+        "backfill_restore" => state::tr("Putting back missing art files"),
+        "backfill_serial" => state::tr("PS1/PS2 covers by serial"),
+        "backfill_tgdb" => state::tr("Linking to TheGamesDB"),
+        "backfill_entries" => state::tr("Art from linked providers"),
+        "mobile_scope" => state::tr("Working out what the phone gets"),
+        "mobile_lists" => state::tr("Reading the lists"),
+        "mobile_pages" => state::tr("Title and release pages"),
+        "mobile_ra" => state::tr("RetroAchievements games and progress"),
+        "mobile_covers" => state::tr("Covers"),
+        "mobile_tables" => state::tr("Copying the catalogue tables"),
+        "mobile_finish" => state::tr("Finishing the file"),
+        "optimize_jobs" => state::tr("Finished jobs older than 30 days"),
+        "optimize_rom_file_links" => state::tr("Links to deleted files"),
+        "optimize_files" => state::tr("Deleted files"),
+        "optimize_game_rom_links" => state::tr("Game links of deleted ROMs"),
+        "optimize_roms" => state::tr("Deleted ROMs"),
+        "optimize_release_game_links" => state::tr("Release links of deleted games"),
+        "optimize_games" => state::tr("Deleted games"),
+        "optimize_hashes" => state::tr("Hashes of deleted content"),
+        "optimize_content" => state::tr("Deleted content"),
+        "scan_walk" => state::tr("Walk the folder"),
+        "scan_precheck" => state::tr("Check the files found"),
+        "scan_hash" => state::tr("Read and hash"),
+        "scan_playlists" => state::tr("Playlists and system files"),
+        "scan_missing" => state::tr("Mark missing files"),
+        "scan_links" => state::tr("Drop stale release links"),
+        "match_unlink" => state::tr("Remove the links to make again"),
+        "match_dat_resolve" => state::tr("DAT resolve"),
+        "match_ra_hashes" => state::tr("RetroAchievements hashes"),
+        "match_dat" => state::tr("DAT match"),
+        "match_serial" => state::tr("Serial match"),
+        "match_rom_platforms" => state::tr("ROM platforms"),
+        "match_kinds" => state::tr("Sort what no DAT matched"),
+        "match_targets" => state::tr("Find the games to look up"),
+        "match_dumps" => state::tr("Hasheous downloaded dumps"),
+        "match_lookups" => state::tr("Hasheous lookups"),
+        "match_playmatch" => state::tr("Own tables and PlayMatch"),
+        "match_linking" => state::tr("Link what the lookups found"),
+        "match_followups" => state::tr("Follow-up jobs"),
+        "match_platforms" => state::tr("File platforms"),
         _ => s(step, "label"),
     }
 }
@@ -134,6 +180,106 @@ pub fn steps_html(j: &Value, full: bool) -> String {
     format!("<div class=\"runsteps\">{head}{rows}</div>")
 }
 
+/// How long a job has run, as the console's `fmtElapsed`: m:ss, or h:mm:ss from an hour.
+fn fmt_elapsed(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    } else {
+        fmt_secs(secs)
+    }
+}
+
+/// Time left in words, as the console's `fmtLeft`: under a minute, whole minutes below an
+/// hour, then hours and minutes to the nearest ten.
+fn fmt_left(secs: f64) -> String {
+    if secs < 60.0 {
+        return state::tr("under a minute left");
+    }
+    let mins = (secs / 60.0).round() as u64;
+    if mins < 60 {
+        return state::trf("about {n} min left", &[("n", &mins.to_string())]);
+    }
+    let tens = (secs / 600.0).round() as u64 * 10;
+    let (h, m) = ((tens / 60).to_string(), (tens % 60).to_string());
+    if tens % 60 == 0 {
+        state::trf("about {h} h left", &[("h", &h)])
+    } else {
+        state::trf("about {h} h {m} min left", &[("h", &h), ("m", &m)])
+    }
+}
+
+// Where each job's bar was first seen to start: (total, done, elapsed). A job whose bar
+// restarts for another phase (a new total, or the count going back) is timed from there,
+// not from the job's start. The console's `etaAnchors`.
+thread_local! {
+    static ETA_ANCHORS: std::cell::RefCell<std::collections::HashMap<u64, (u64, u64, u64)>> = Default::default();
+}
+
+/// "running 3:12 · about 4 min left" for a running job: how long it has run (the server's
+/// `elapsed_secs`), and once ~3% of a known total and 10 s have gone by, the time left at
+/// the rate so far. The console's `timingHtml`.
+fn timing_html(j: &Value) -> String {
+    let Some(elapsed) = api::uo(j, "elapsed_secs").filter(|_| s(j, "status") == "in_progress") else { return String::new() };
+    let mut said = state::trf("running {t}", &[("t", &fmt_elapsed(elapsed))]);
+    let (done, total) = (u(j, "progress_done"), u(j, "progress_total"));
+    if total > 0 {
+        let (d0, e0) = ETA_ANCHORS.with(|a| {
+            let mut a = a.borrow_mut();
+            let anchor = a.entry(u(j, "id")).or_insert((total, 0, 0));
+            if anchor.0 != total || done < anchor.1 || elapsed < anchor.2 {
+                *anchor = (total, done, elapsed);
+            }
+            (anchor.1, anchor.2)
+        });
+        let (moved, spent) = (done - d0, elapsed - e0);
+        if done < total && moved as f64 >= 0.03 * total as f64 && spent >= 10 {
+            said.push_str(" · ");
+            said.push_str(&fmt_left((total - done) as f64 * spent as f64 / moved as f64));
+        }
+    }
+    format!("<span class=\"muted eta\">{}</span>", esc(&said))
+}
+
+/// Whether a job has more to show than its one-line cell: a step list, the files being read,
+/// or a message cut short.
+fn has_more(j: &Value) -> bool {
+    j.pointer("/progress_detail/steps").is_some_and(|x| x.as_array().is_some_and(|a| !a.is_empty()))
+        || j.pointer("/progress_detail/files").is_some_and(|x| x.as_array().is_some_and(|a| !a.is_empty()))
+        || s(j, "progress_message").chars().count() > 90
+}
+
+/// The jobs whose progress is opened out: kept across the list's redraws.
+static OPEN_PROGRESS: GlobalSignal<std::collections::HashSet<u64>> = Signal::global(Default::default);
+
+/// A job's progress cell with a "details" button when there is more to it: opened, the
+/// whole message, the step list and the files being read -- what the Scan tab's Running
+/// now shows. Used by the jobs and scan lists and by a form's job watch; the console's
+/// `progressCell`.
+#[component]
+pub fn JobProgress(job: Value) -> Element {
+    let id = u(&job, "id");
+    let more = has_more(&job);
+    let open = more && OPEN_PROGRESS.read().contains(&id);
+    let body = if open { format!("{}{}{}", progress_full(&job), steps_html(&job, true), super::scan::running_files_html(&job)) } else { progress_bar(&job, false) };
+    rsx! {
+        div { class: "progcell", style: "display:flex; align-items:flex-start; gap:6px",
+            div { style: "flex:1; min-width:0", ui::HtmlDiv { html: body } }
+            if more {
+                button { class: "btn small", r#type: "button",
+                    onclick: move |e| {
+                        e.stop_propagation();
+                        let mut set = OPEN_PROGRESS.write();
+                        if !set.remove(&id) {
+                            set.insert(id);
+                        }
+                    },
+                    if open { {state::tr("hide details")} } else { {state::tr("details")} }
+                }
+            }
+        }
+    }
+}
+
 fn progress_bar(j: &Value, full: bool) -> String {
     let done = api::uo(j, "progress_done");
     let msg = s(j, "progress_message");
@@ -147,13 +293,14 @@ fn progress_bar(j: &Value, full: bool) -> String {
         format!("<div class=\"pbar\"><div style=\"width:{pct}%\"></div></div><span class=\"num\">{pct}%</span>")
     } else if let Some(d) = done.filter(|d| *d > 0) {
         // A count with no total yet; a bare 0 beside the message only reads as stuck.
-        format!("<span class=\"num\">{d}</span>")
+        format!("<span class=\"num\">{}</span>", html::thousands(d))
     } else {
         String::new()
     };
     let shown: String = if full { msg.clone() } else { msg.chars().take(90).collect() };
     let marks = if full { String::new() } else { steps_html(j, false) };
-    format!("<div class=\"prog{}\" title=\"{}\">{bar}{marks}<span class=\"muted\">{}</span></div>", if full { " full" } else { "" }, esc(&msg), esc(&shown))
+    let timing = timing_html(j);
+    format!("<div class=\"prog{}\" title=\"{}\">{bar}{marks}{timing}<span class=\"muted\">{}</span></div>", if full { " full" } else { "" }, esc(&msg), esc(&shown))
 }
 
 /// `POST /api/v1/jobs/clear` with `body`; says what happened. `true` when it went through.
@@ -284,6 +431,8 @@ fn show_job_result(id: u64) {
 #[component]
 pub fn Jobs() -> Element {
     let reload = use_signal(|| 0u64);
+    // The "clear from the list" menu's request while it runs: the button says so, and waits.
+    let clearing = use_signal(|| false);
     let source = use_signal(String::new);
     let media_scope = use_signal(|| "owned".to_string());
     let media_platform = use_signal(String::new);
@@ -336,7 +485,7 @@ pub fn Jobs() -> Element {
                 }
             }),
             Column::render("x", &state::tr("action"), move |j| job_actions(j, reload)),
-            Column::html("progress", &state::tr("progress"), progress_cell),
+            Column::render("progress", &state::tr("progress"), |j| rsx! { JobProgress { job: j.clone() } }),
             Column::html("payload", &state::tr("payload"), payload_cell),
             Column::text("attempts", &state::tr("attempts")).num(),
             Column::html("last_error", &state::tr("error"), |j| {
@@ -399,9 +548,9 @@ pub fn Jobs() -> Element {
                     onclick: move |e| { e.stop_propagation(); let p = e.client_coordinates(); ui::open_menu(p.x, p.y, forms.menu()); },
                     {state::tr("New job")} " ▾"
                 }
-                button { class: "btn small", r#type: "button",
-                    onclick: move |e| { e.stop_propagation(); let p = e.client_coordinates(); ui::open_menu(p.x, p.y, clear_menu(reload)); },
-                    {state::tr("clear from the list")} " ▾"
+                button { class: "btn small", r#type: "button", disabled: clearing(),
+                    onclick: move |e| { e.stop_propagation(); let p = e.client_coordinates(); ui::open_menu(p.x, p.y, clear_menu(reload, clearing)); },
+                    if clearing() { {state::tr("Clearing the jobs…")} } else { {state::tr("clear from the list")} " ▾" }
                 }
             }
             Grid { spec, reload: Some(reload) }
@@ -410,7 +559,7 @@ pub fn Jobs() -> Element {
 }
 
 /// "clear from the list ▾": the finished jobs by status, each after a confirm.
-fn clear_menu(reload: Signal<u64>) -> Vec<ui::MenuItem> {
+fn clear_menu(reload: Signal<u64>, clearing: Signal<bool>) -> Vec<ui::MenuItem> {
     [("done", state::tr("done")), ("failed", state::tr("failed")), ("cancelled", state::tr("cancelled")), ("", state::tr("all finished"))]
         .into_iter()
         .map(|(status, label)| {
@@ -419,7 +568,11 @@ fn clear_menu(reload: Signal<u64>) -> Vec<ui::MenuItem> {
                     let question = if status.is_empty() { state::tr("Clear every finished job (done, failed, cancelled) from the list?") } else { state::trf("Clear every {status} job from the list?", &[("status", &state::tr(status))]) };
                     if !ui::confirm(&question).await { return; }
                     let body = if status.is_empty() { json!({}) } else { json!({ "statuses": [status] }) };
-                    if clear_jobs(body).await { bump(reload); }
+                    let mut clearing = clearing;
+                    clearing.set(true);
+                    let cleared = clear_jobs(body).await;
+                    clearing.set(false);
+                    if cleared { bump(reload); }
                 });
             })
         })

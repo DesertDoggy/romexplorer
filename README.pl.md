@@ -104,19 +104,15 @@ uruchamia własną bazę danych.
 
 ### Narzędzia wiersza poleceń (chdlite)
 
-Upuść obraz płyty, a otrzymasz CHD lub RVZ. `chdlite` (szybki) i `chdcomp` (najmniejszy plik)
-działają w obie strony: nieskompresowany obraz jest kompresowany, a plik `.chd` lub `.rvz`
-rozpakowywany. `chdread` pokazuje metadane pliku, a `chdhash` liczy jego hash. Każde narzędzie
-robi jedną rzecz, więc plik upuszczony na plik wykonywalny zostanie obsłużony właściwie;
-`chdlite-gui` robi to samo w oknie. Każda opcja jest też dostępna jako flaga (`--help`). chdlite
-jest wydawany osobno: zobacz [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite konwertuje obrazy płyt do CHD lub RVZ i z powrotem, czyta ich metadane i liczy hash,
+przez przeciągnij i upuść, w oknie i w aplikacji Android. Jest wydawany osobno: zobacz
+[chdlite/README.pl.md](chdlite/README.pl.md).
 
 ### Narzędzie wiersza poleceń (rommusic)
 
-Upuść na `rommusic` ROM, obraz płyty lub zrzucony folder, a zapisze muzykę w
-tle gry jako FLAC w folderze obok. Każda opcja jest też dostępna jako flaga (`--help`). Obsługiwane
-systemy są wymienione w [Dźwięk z ROM-ów](#dźwięk-z-rom-ów). rommusic jest wydawany osobno: zobacz
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic zapisuje muzykę z gry jako FLAC z jej ROM-u lub obrazu płyty, przez przeciągnij i upuść,
+w oknie i w aplikacji Android. Jest wydawany osobno: zobacz
+[rommusic-cli/README.pl.md](rommusic-cli/README.pl.md).
 
 ### Klucze dostawców
 
@@ -277,9 +273,12 @@ może odtwarzać muzykę z innej gry.
 |---|---|---|
 | Ścieżki audio CD | Każda gra na CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast i inne | CHD, cue/bin, gdi |
 | Archiwum dźwięku | Nintendo DS (muzyka strumieniowa i sekwencyjna), Nintendo 3DS (tylko odszyfrowane obrazy) | .nds, .3ds/.cci |
+| Kartridże | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM-y, także w zip lub 7z |
+| Pliki muzyczne na dyskietkach | PC-98 | .d88, .fdi, .hdm i inne, także w zip lub 7z |
 
+- Nawet na obsługiwanej platformie nie każda gra jest obsługiwana, z przyczyn technicznych.
 - Obrazy płyt w zip lub 7z nie są jeszcze czytane. Zaszyfrowane obrazy nie są czytane.
-- Muzyka z gier na kartridżach i z plików muzycznych na płytach jest jeszcze w przygotowaniu.
+- Pliki muzyczne na płytach CD i DVD są jeszcze w przygotowaniu.
 
 ## Karta RetroAchievements
 

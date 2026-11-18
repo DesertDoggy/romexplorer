@@ -16,9 +16,33 @@ Faites une sauvegarde avant de remplacer une version.
 - Les pages de titre et de version ne gardent en boutons que les actions principales. Les liens vers les titres liés sont dans la ligne du jeu de base, et les identifiants internes sous « Détails ». La correspondance manuelle montre d’abord les liens actuels.
 - Big Picture : la recherche et le filtre sont dans la barre du haut, la langue et la disposition dans les réglages. Un jeu à plusieurs disques n’a qu’une entrée « Disques… » dans son menu. Les réglages de l’app mobile s’ouvrent une partie à la fois.
 
+**Analyse**
+- Ajout de « Analyse rapide (modifiés) » : elle lit aussi les fichiers dont la taille ou la date a changé.
+- Les hash de l'analyse se règlent séparément pour les fichiers ordinaires, les fichiers d'archive et le contenu des archives. Les fichiers d'archive utilisent sha1 et xxh3_128 par défaut.
+
+**Copie**
+- Une copie relancée vérifie plusieurs fichiers déjà présents à la destination à la fois.
+
+**Listes**
+- Les vues en cartes avec beaucoup d'entrées s'ouvrent et défilent plus vite.
+
+**Progression**
+- Chaque tâche indique ce qu'elle fait, le total et où elle en est, y compris pendant le parcours des dossiers, les vérifications et les étapes de base de données.
+- Les tâches en plusieurs étapes listent leurs étapes.
+- Les tâches ont un bouton « détails ».
+- Les tâches en cours indiquent le temps écoulé et le temps restant.
+- Les gros téléchargements et les vérifications de fichiers indiquent la quantité déjà lue.
+- Vider le catalogue et importer un fichier de collections s'exécutent comme des tâches.
+- L'application de bureau indique ce qu'elle fait pendant son démarrage.
+
+**Audio**
+- Plusieurs pistes peuvent être converties en même temps pour la lecture.
+
 ## Corrections
 
 - Une partie du texte de l'appli mobile s'affichait en anglais dans les autres langues.
+- La progression de l'analyse audio s'arrêtait pendant la mesure du volume sonore.
+- La progression de l'index de musique des ROM n'avançait que toutes les 500 ROM.
 
 # romexplorer 0.2.2 (alpha)
 

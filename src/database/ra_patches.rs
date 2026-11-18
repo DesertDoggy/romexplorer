@@ -362,6 +362,9 @@ fn free_path(dir: &Path, name: &str, ours: Option<&Path>) -> PathBuf {
 /// Downloads the patch for RA hash `md5` into the patch directory and records it.
 pub async fn download(pool: &MySqlPool, http: &reqwest::Client, md5: &str, progress: Option<&Progress>) -> Result<RecordSummary, DatabaseError> {
     use tokio::io::AsyncWriteExt;
+    if let Some(p) = progress {
+        p.force(0, None, &format!("finding the patch for RA hash {md5}")).await;
+    }
     let target = target_for(pool, md5).await?;
     if !allowed_url(&target.patch_url) {
         return Err(DatabaseError::Config(format!("refusing patch URL {} (only https from RetroAchievements or GitHub)", target.patch_url)));
@@ -373,6 +376,10 @@ pub async fn download(pool: &MySqlPool, http: &reqwest::Client, md5: &str, progr
     let ours = ours.map(|r| root.join(r));
     let dest = free_path(&dir, &file_name_from_url(&target.patch_url, &target.md5), ours.as_deref());
 
+    if let Some(p) = progress {
+        let host = reqwest::Url::parse(&target.patch_url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        p.force(0, None, &format!("connecting to {host}")).await;
+    }
     let mut response = http.get(&target.patch_url).send().await.map_err(|e| DatabaseError::Fetch(format!("{}: {e}", target.patch_url)))?.error_for_status().map_err(|e| DatabaseError::Fetch(format!("{}: {e}", target.patch_url)))?;
     let expected = response.content_length();
     if expected.is_some_and(|n| n > MAX_BYTES) {

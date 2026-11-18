@@ -7,7 +7,7 @@ use dioxus::prelude::*;
 use serde_json::{json, Value};
 
 use super::common::bump;
-use super::jobs::{enqueue, progress_cell, progress_full, steps_html};
+use super::jobs::{enqueue, progress_full, steps_html, JobProgress};
 use crate::api::{self, s, u};
 use crate::components::{Column, Filter, Grid, GridSpec, Spec};
 use crate::html::{self, badge, esc};
@@ -122,7 +122,7 @@ pub fn Scan() -> Element {
                     badge(&st, cls)
                 }),
                 Column::render("x", &state::tr("action"), move |j| super::jobs::job_actions(j, reload)),
-                Column::html("progress", &state::tr("progress"), progress_cell),
+                Column::render("progress", &state::tr("progress"), |j| rsx! { JobProgress { job: j.clone() } }),
                 Column::html("last_error", &state::tr("error"), |j| {
                     let e = s(j, "last_error");
                     format!("<span title=\"{}\">{}</span>", esc(&e), esc(&e.chars().take(120).collect::<String>()))
@@ -200,6 +200,9 @@ pub fn Scan() -> Element {
                     crate::ui::QueueButton {}
                     " "
                     button { class: "btn", r#type: "button", onclick: { let scan = scan.clone(); move |_| scan("new_only") }, {state::tr("Quick scan (new only)")} }
+                    crate::ui::QueueButton {}
+                    " "
+                    button { class: "btn", r#type: "button", title: state::tr("reads new files, and files whose size or modified date changed since they were last read"), onclick: { let scan = scan.clone(); move |_| scan("changed") }, {state::tr("Quick scan (changed)")} }
                     crate::ui::QueueButton {}
                     " "
                     button { class: "btn", r#type: "button", onclick: { let scan = scan.clone(); move |_| scan("rehash") }, {state::tr("Rehash")} }

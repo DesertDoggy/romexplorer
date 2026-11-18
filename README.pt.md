@@ -103,19 +103,15 @@ sua própria base de dados.
 
 ### Ferramentas de linha de comandos (chdlite)
 
-Largue uma imagem de disco e obtenha um CHD ou um RVZ. `chdlite` (rápido) e `chdcomp` (mais
-pequeno) funcionam nos dois sentidos: uma imagem não comprimida é comprimida e um `.chd` ou `.rvz` é
-extraído. `chdread` mostra os metadados de um ficheiro e `chdhash` calcula o seu hash. Cada
-ferramenta faz uma só coisa, pelo que um ficheiro largado sobre o executável faz o que deve;
-`chdlite-gui` faz o mesmo numa janela. Todas as opções existem também como parâmetro (`--help`). O
-chdlite é publicado em separado: consulte [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+O chdlite converte imagens de disco para CHD ou RVZ e vice-versa, lê os metadados e calcula o hash,
+com arrastar e largar, uma janela e uma app Android. É publicado em separado: consulte
+[chdlite/README.pt.md](chdlite/README.pt.md).
 
 ### Ferramenta de linha de comandos (rommusic)
 
-Largue no `rommusic` uma ROM, uma imagem de disco ou uma pasta extraída e ele escreve a música de fundo do jogo em FLAC numa pasta ao lado. Todas as opções existem
-também como parâmetro (`--help`). Os sistemas suportados estão em
-[Áudio das ROM](#áudio-das-rom). O rommusic é publicado em separado: consulte
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+O rommusic escreve a música de um jogo em FLAC a partir da ROM ou imagem de disco, com arrastar e
+largar, uma janela e uma app Android. É publicado em separado: consulte
+[rommusic-cli/README.pt.md](rommusic-cli/README.pt.md).
 
 ### Chaves dos fornecedores
 
@@ -280,10 +276,13 @@ pode tocar música de outro jogo.
 |---|---|---|
 | Faixas de áudio CD | Qualquer jogo em CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast e outros | CHD, cue/bin, gdi |
 | O arquivo de som | Nintendo DS (música em streaming e sequenciada), Nintendo 3DS (só imagens desencriptadas) | .nds, .3ds/.cci |
+| Cartuchos | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM, também dentro de zip ou 7z |
+| Ficheiros de música em disquetes | PC-98 | .d88, .fdi, .hdm e outros, também dentro de zip ou 7z |
 
+- Mesmo numa plataforma suportada, nem todos os jogos são suportados, por motivos técnicos.
 - As imagens de disco dentro de zip ou 7z ainda não são lidas. As imagens encriptadas não são
   lidas.
-- A música dos jogos em cartucho e dos ficheiros de música nos discos ainda está em desenvolvimento.
+- Os ficheiros de música em CD e DVD ainda estão em desenvolvimento.
 
 ## Separador RetroAchievements
 

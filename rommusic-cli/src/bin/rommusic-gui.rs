@@ -307,8 +307,14 @@ struct Run {
     track: usize,
     track_name: String,
     fraction: f32,
+    /// The track's audio is decoded and being encoded as FLAC.
+    encoding: bool,
     /// What it is doing when it is not writing a track.
     doing: String,
+    /// The input being read, by name.
+    name: String,
+    /// Reading the original-format music sets, before the first input.
+    library: String,
 }
 
 impl Run {
@@ -320,15 +326,23 @@ impl Run {
         ((self.done as f32 + within.min(1.0)) / self.inputs as f32 * 100.0).min(100.0)
     }
 
+    /// "input 2 of 9: name.chd - track 3 of 12 (42%): name", or what it is doing.
     fn status(&self) -> String {
         if self.inputs == 0 {
             return String::new();
         }
-        let input = format!("{} of {}", (self.current + 1).min(self.inputs), self.inputs);
+        if !self.library.is_empty() {
+            return self.library.clone();
+        }
+        let mut input = format!("input {} of {}", (self.current + 1).min(self.inputs), self.inputs);
+        if !self.name.is_empty() {
+            input = format!("{input}: {}", self.name);
+        }
         if self.track > 0 && !self.track_name.is_empty() {
-            format!("{input} · track {} of {}: {}", self.track, self.tracks, self.track_name)
+            let at = if self.encoding { "encoding FLAC".to_string() } else { format!("{:.0}%", self.fraction * 100.0) };
+            format!("{input} - track {} of {} ({at}): {}", self.track, self.tracks, self.track_name)
         } else if !self.doing.is_empty() {
-            format!("{input} · {}", self.doing)
+            format!("{input} - {}", self.doing)
         } else {
             input
         }
@@ -406,16 +420,42 @@ fn App() -> Element {
             let events = std::mem::take(&mut *EVENTS.lock().unwrap());
             for event in events {
                 match event {
-                    Ui::Event(Event::Library { done, total }) => {
-                        run.write().doing = format!("reading original-format music, {done} of {total} files");
+                    Ui::Event(Event::LibraryListing { found }) => {
+                        run.write().library = format!("walking original-format folders: {} set(s) found so far", rommusic::thousands(found));
+                    }
+                    Ui::Event(Event::Library { done, total, set }) => {
+                        run.write().library = match set {
+                            Some(set) => format!("reading original-format music sets: {} of {} ({set})", rommusic::thousands(done + 1), rommusic::thousands(total)),
+                            None => String::new(),
+                        };
                     }
                     Ui::Event(Event::Reading { input }) => {
                         let mut r = run.write();
+                        r.library.clear();
                         r.tracks = 0;
                         r.track = 0;
                         r.track_name.clear();
                         r.fraction = 0.0;
-                        r.doing = format!("looking for music in {}", name_of(&input));
+                        r.encoding = false;
+                        r.name = name_of(&input);
+                        r.doing = "looking for music".to_string();
+                    }
+                    Ui::Event(Event::Probing { file, count, .. }) => {
+                        run.write().doing = format!("probing {}: {file}", rommusic::thousands(count));
+                    }
+                    Ui::Event(Event::Running { second, of }) => {
+                        run.write().doing = format!("running the game to start its music: {second} of {of} s");
+                    }
+                    Ui::Event(Event::TrackEncoding { number, .. }) => {
+                        let mut r = run.write();
+                        if r.track == number {
+                            r.encoding = true;
+                        }
+                    }
+                    Ui::Event(Event::Copying { number, total, name, bytes }) => {
+                        let mut r = run.write();
+                        r.track = 0;
+                        r.doing = format!("copying original files: {} of {} ({name}, {})", rommusic::thousands(number), rommusic::thousands(total), rommusic::size(bytes));
                     }
                     Ui::Event(Event::Found { input, folder, tracks }) => {
                         {
@@ -431,6 +471,7 @@ fn App() -> Element {
                         r.tracks = total;
                         r.track_name = name;
                         r.fraction = 0.0;
+                        r.encoding = false;
                     }
                     Ui::Event(Event::TrackProgress { number, fraction, .. }) => {
                         let mut r = run.write();

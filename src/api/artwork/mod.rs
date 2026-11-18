@@ -305,13 +305,16 @@ pub fn target_path(artwork: &EmulatorArtwork, system: &str, slot: &str, stem: &s
 }
 
 /// What the files to export for come to: (release, platform, stem).
-async fn files_for(app: &App, request: &ArtworkExportRequest, warnings: &mut Vec<String>) -> Result<Vec<ExportFile>> {
+async fn files_for(app: &App, request: &ArtworkExportRequest, warnings: &mut Vec<String>, progress: &Progress) -> Result<Vec<ExportFile>> {
     if !request.files.is_empty() {
         return Ok(request.files.clone());
     }
     let Some(selection) = &request.selection else { return Ok(Vec::new()) };
     let mut out = Vec::new();
-    for release_id in super::selection::release_ids(app, selection, true, warnings).await? {
+    let releases = super::selection::release_ids(app, selection, true, warnings).await?;
+    let n = releases.len() as u64;
+    for (i, release_id) in releases.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("finding the games: {} of {} releases", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(n))).await;
         let Some(row) = sqlx::query("SELECT name, app_platform_id FROM `release` WHERE id = ? AND deleted = FALSE").bind(release_id).fetch_optional(&app.pool).await? else { continue };
         let name: String = row.try_get("name")?;
         let platform: u16 = row.try_get("app_platform_id")?;
@@ -419,7 +422,7 @@ pub async fn run(app: &App, request: &ArtworkExportRequest, progress: &Progress)
     let emulator_id = emulator.as_ref().map(|e| e.id);
     progress.force(0, None, "finding the games").await;
     let mut warnings = Vec::new();
-    let files = files_for(app, request, &mut warnings).await?;
+    let files = files_for(app, request, &mut warnings, progress).await?;
     summary.errors.extend(warnings);
     summary.games = files.len() as u64;
     let accepted: Vec<Codec> = artwork.formats.iter().filter_map(|f| Codec::from_name(f)).collect();
@@ -429,13 +432,14 @@ pub async fn run(app: &App, request: &ArtworkExportRequest, progress: &Progress)
     let cache_mb = db_settings::get::<u64>(&app.pool, KEY_EXPORT_CACHE_MB).await?.unwrap_or(cache::DEFAULT_MAX_MB);
     let roots = Roots::load(&app.pool, &app.paths.media_dir()).await?;
     let cache_root = cache::dir(&app.paths.media_dir());
+    progress.force(0, None, "clearing the export cache's originals").await;
     cache::drop_originals(&cache_root);
     // A client takes the originals from its main server: its own copies are for display.
     let main = if db_settings::instance_mode(&app.pool).await? == db_settings::InstanceMode::Client { super::media_sync::main_source(app).await? } else { None };
     let combine = super::copy::combine_map(app).await?;
     let total = files.len() as u64;
     for (i, file) in files.iter().enumerate() {
-        progress.report(i as u64, Some(total), &format!("{} of {total}: {}, {} written", i + 1, file.stem, summary.written)).await;
+        progress.report(i as u64, Some(total), &format!("{} of {} ({} written): {}", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(total), crate::database::jobs::thousands(summary.written), file.stem)).await;
         let platform = Platform::from_igdb_id(file.platform).unwrap_or(Platform::Unknown);
         let system = super::copy::sanitize_segment(&super::copy::apply_combine(platform, &combine).dat_folder_name());
         let serial: Option<String> = sqlx::query_scalar("SELECT serial FROM `release` WHERE id = ?").bind(file.release_id).fetch_optional(&app.pool).await?.flatten();

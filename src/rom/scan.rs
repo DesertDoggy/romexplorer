@@ -155,6 +155,9 @@ pub struct ScanContext {
     /// collection (or a network share) that is long enough to look stuck. `None`: nobody
     /// is watching.
     pub files_seen: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// The folder the walk is listing right now, for the same watcher: "12,400 found so
+    /// far, in <folder>". `None`: nobody is watching.
+    pub folder_seen: Option<std::sync::Arc<std::sync::Mutex<PathBuf>>>,
     /// Directories below the scan root configured with settings of their own (a type, a
     /// platform): their subtree is walked with those, as a scan of that directory would, and
     /// each is a boundary no bundle reaches above. Empty: nothing configured below.
@@ -596,6 +599,9 @@ fn resolved(dir: &Path) -> PathBuf {
 /// over a network share every listing is a round trip. `at` is the directory's resolved
 /// path: a plain subfolder's is `at` plus its name, so only a link costs a lookup.
 fn walk_listed(listing: Vec<(PathBuf, bool)>, at: &Path, boundary: &Path, ctx: &ScanContext, skip_unknown: bool, out: &mut WalkResult) {
+    if let Some(folder) = &ctx.folder_seen {
+        *folder.lock().unwrap_or_else(|p| p.into_inner()) = at.to_path_buf();
+    }
     let classified = classify_listing(listing, ctx);
     // Real folders before links, so a link to a sibling is the copy that is skipped.
     let mut subdirs: Vec<(PathBuf, bool)> = classified.unresolved_subdirs.iter().map(|d| (d.clone(), fs::symlink_metadata(d).is_ok_and(|m| m.file_type().is_symlink()))).collect();
@@ -810,7 +816,7 @@ mod tests {
 
     fn ctx(dir_type: DirType, platform: PlatformContext, shapes: &str) -> ScanContext {
         let shapes = if shapes.is_empty() { Vec::new() } else { RomShape::parse_list(shapes).expect("valid shapes") };
-        ScanContext { dir_type, platform, heuristics: HeuristicFlags::ALL, shapes, files_seen: None, configured: Default::default() }
+        ScanContext { dir_type, platform, heuristics: HeuristicFlags::ALL, shapes, files_seen: None, folder_seen: None, configured: Default::default() }
     }
 
     fn candidate_paths_walk(out: &WalkResult) -> Vec<PathBuf> {

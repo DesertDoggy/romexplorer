@@ -16,9 +16,33 @@ de segurança antes de substituir uma versão.
 - As páginas de título e de lançamento mostram como botões apenas as ações principais. As ligações para títulos relacionados estão na linha do jogo base e os ids internos em «Detalhes». A correspondência manual mostra primeiro as ligações atuais.
 - Big Picture: a pesquisa e o filtro estão na barra superior, e o idioma e a disposição nas definições. Um jogo com vários discos tem uma só entrada «Discos…» no menu. As definições da app móvel abrem-se uma parte de cada vez.
 
+**Análise**
+- Adicionada «Análise rápida (alterados)»: também lê os ficheiros que mudaram de tamanho ou data.
+- Os hashes da análise definem-se em separado para ficheiros normais, ficheiros de arquivo e o conteúdo dos arquivos. Os ficheiros de arquivo usam sha1 e xxh3_128 por predefinição.
+
+**Cópia**
+- Uma cópia reiniciada verifica vários ficheiros já presentes no destino ao mesmo tempo.
+
+**Listas**
+- As vistas em cartões com muitas entradas abrem e deslizam mais depressa.
+
+**Progresso**
+- Cada tarefa mostra o que está a fazer, o total e em que ponto vai, incluindo a pesquisa de pastas, as verificações e os passos da base de dados.
+- As tarefas com vários passos mostram a lista de passos.
+- As tarefas têm o botão «detalhes».
+- As tarefas em curso mostram o tempo decorrido e o tempo restante.
+- As transferências grandes e as verificações de ficheiros mostram quanto já foi lido.
+- Esvaziar o catálogo e importar um ficheiro de coleções são executados como tarefas.
+- A aplicação de computador mostra o que está a fazer enquanto arranca.
+
+**Áudio**
+- Várias faixas podem ser convertidas ao mesmo tempo para reprodução.
+
 ## Correções
 
 - Parte do texto da app do telemóvel aparecia em inglês noutras línguas.
+- O progresso da análise de áudio parava durante a medição do volume.
+- O progresso do índice de música das ROM só avançava a cada 500 ROM.
 
 # romexplorer 0.2.2 (alpha)
 

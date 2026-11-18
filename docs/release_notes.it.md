@@ -16,9 +16,33 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Le pagine di titolo e di release mostrano come pulsanti solo le azioni principali. I link ai titoli correlati sono nella riga del gioco base e gli id interni in «Dettagli». L’abbinamento manuale mostra prima i link attuali.
 - Big Picture: ricerca e filtro sono nella barra in alto, lingua e disposizione nelle impostazioni. Un gioco con più dischi ha una sola voce «Dischi…» nel menu. Le impostazioni dell’app per telefono si aprono una parte alla volta.
 
+**Scansione**
+- Aggiunta «Scansione rapida (modificati)»: legge anche i file con dimensione o data cambiate.
+- Gli hash della scansione si impostano separatamente per file normali, file d'archivio e contenuto degli archivi. I file d'archivio usano sha1 e xxh3_128 come predefinito.
+
+**Copia**
+- Una copia riavviata controlla più file già presenti nella destinazione insieme.
+
+**Elenchi**
+- Le viste a schede con molte voci si aprono e scorrono più velocemente.
+
+**Avanzamento**
+- Ogni processo mostra cosa sta facendo, il totale e a che punto è, anche durante l'esplorazione delle cartelle, i controlli e i passaggi del database.
+- I processi in più passaggi mostrano l'elenco dei passaggi.
+- I processi hanno il pulsante «dettagli».
+- I processi in corso mostrano il tempo trascorso e quello rimanente.
+- I download grandi e i controlli dei file mostrano quanto è stato letto.
+- Svuotare il catalogo e importare un file di raccolte vengono eseguiti come processi.
+- L'app desktop mostra cosa sta facendo durante l'avvio.
+
+**Audio**
+- Più brani possono essere convertiti insieme per la riproduzione.
+
 ## Correzioni
 
 - Parte del testo dell'app per telefono era mostrata in inglese nelle altre lingue.
+- L'avanzamento della scansione audio si fermava durante la misura del volume.
+- L'avanzamento dell'indice musicale delle ROM si muoveva solo ogni 500 ROM.
 
 # romexplorer 0.2.2 (alpha)
 

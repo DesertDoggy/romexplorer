@@ -9,7 +9,7 @@ use sqlx::Row;
 use crate::common::models::Platform;
 
 use super::super::error::DatabaseError;
-use super::super::jobs::Progress;
+use super::super::jobs::{self, Progress};
 use super::super::matching::util::{join_word_hyphens, loose_key};
 use super::super::platform_map;
 use super::cache::{self, Confidence};
@@ -68,15 +68,18 @@ impl ExactNameIndex {
 /// would add up. One query for the platform's releases, then in-memory lookups, instead of
 /// `link_by_name`'s per-game search. Release-tier providers link each matching release,
 /// title-tier ones the releases' titles. Returns how many games linked.
-pub async fn link_exact_names(pool: &MySqlPool, provider: Provider, platform: Platform, games: &[(String, Vec<String>)]) -> Result<u64, DatabaseError> {
+pub async fn link_exact_names(pool: &MySqlPool, provider: Provider, platform: Platform, games: &[(String, Vec<String>)], progress: &Progress) -> Result<u64, DatabaseError> {
     if games.is_empty() || platform == Platform::Unknown {
         return Ok(0);
     }
+    progress.force(0, None, &format!("linking by name ({platform:?}): reading the releases' names")).await;
     let index = ExactNameIndex::load(pool, platform).await?;
     let release_tier = !matches!(provider.tier(), Tier::Title);
     let mut linked = 0u64;
     let mut titles_done: HashSet<(u64, String)> = HashSet::new();
-    for (id, names) in games {
+    let n = games.len() as u64;
+    for (i, (id, names)) in games.iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("linking by name ({platform:?}): game {} of {} ({} linked)", jobs::thousands(i as u64 + 1), jobs::thousands(n), jobs::thousands(linked))).await;
         let Some(targets) = index.find(names) else { continue };
         for (release_id, title_id) in targets {
             if release_tier {
@@ -256,7 +259,7 @@ pub async fn sync_thegamesdb_platform(clients: &ProviderClients, pool: &MySqlPoo
     progress.force(summary.games, Some(summary.games), &format!("{platform:?}: linking {} games by name", summary.games)).await;
     let regions = super::thegamesdb_region::TgdbRegions::load(clients, store.root()).await?;
     let priority = super::super::settings::region_priority(pool).await?;
-    summary.linked = super::thegamesdb_region::link_platform(pool, &regions, &priority, platform, &found).await?;
+    summary.linked = super::thegamesdb_region::link_platform(pool, &regions, &priority, platform, &found, progress).await?;
     // The total is only known from a complete run (or kept from an earlier full dump).
     super::sync_state::record(pool, Provider::TheGamesDb, Some(platform), summary.remote_id.as_deref(), summary.games, complete.then_some(summary.games), complete).await?;
     Ok(summary)
@@ -307,7 +310,7 @@ pub async fn sync_emuready_platform(clients: &ProviderClients, pool: &MySqlPool,
         page += 1;
     }
     progress.force(summary.games, Some(summary.games), &format!("{platform:?}: linking {} games by name", summary.games)).await;
-    summary.linked = link_exact_names(pool, Provider::EmuReady, platform, &found).await?;
+    summary.linked = link_exact_names(pool, Provider::EmuReady, platform, &found, progress).await?;
     super::sync_state::record(pool, Provider::EmuReady, Some(platform), Some(&system), summary.games, complete.then_some(summary.games), complete).await?;
     Ok(summary)
 }
@@ -348,8 +351,9 @@ pub async fn ra_console_id_for(clients: &ProviderClients, platform: Platform) ->
 /// `SyncMode::Diff` first fetches the console's list without hashes (`h=0`, small) and
 /// compares it with the cached games (ids and achievement counts); only when something is
 /// new or changed does it fetch the full list with hashes.
-pub async fn sync_retroachievements_console(clients: &ProviderClients, pool: &MySqlPool, store: &RawStore, console_id: u32, platform: Option<Platform>, mode: SyncMode) -> Result<BulkSummary, DatabaseError> {
+pub async fn sync_retroachievements_console(clients: &ProviderClients, pool: &MySqlPool, store: &RawStore, console_id: u32, platform: Option<Platform>, mode: SyncMode, progress: &Progress) -> Result<BulkSummary, DatabaseError> {
     let client = clients.retroachievements.as_ref().ok_or_else(|| DatabaseError::Provider("retroachievements client unavailable".to_string()))?;
+    let label = platform.map_or_else(|| format!("console {console_id}"), |p| format!("{p:?}"));
     if mode == SyncMode::Diff {
         let cached = sqlx::query("SELECT provider_id, num_achievements, set_modified_at FROM retroachievements_games WHERE console_id = ? AND deleted = FALSE").bind(console_id).fetch_all(pool).await?;
         if !cached.is_empty() {
@@ -358,6 +362,7 @@ pub async fn sync_retroachievements_console(clients: &ProviderClients, pool: &My
                 .iter()
                 .map(|r| Ok((r.try_get::<u32, _>("provider_id")?, (r.try_get::<Option<u32>, _>("num_achievements")?, r.try_get::<Option<chrono::NaiveDateTime>, _>("set_modified_at")?))))
                 .collect::<Result<_, DatabaseError>>()?;
+            progress.force(0, None, &format!("{label}: asking RetroAchievements whether the game list changed")).await;
             let (light, _) = client.get_game_list(console_id, false, false).await?;
             // Unchanged only when every game is there with the same count and the same set
             // date. A game cached before set dates were recorded (none here, one in the list)
@@ -373,58 +378,83 @@ pub async fn sync_retroachievements_console(clients: &ProviderClients, pool: &My
             }
         }
     }
+    progress.force(0, None, &format!("{label}: reading the game list with hashes")).await;
     let (entries, raw) = client.get_game_list(console_id, true, false).await?;
     store.save_json(Provider::RetroAchievements, &format!("console_{console_id}_gamelist"), &raw)?;
     let mut summary = BulkSummary { provider: Some(Provider::RetroAchievements), platform, remote_id: Some(console_id.to_string()), pages: 1, ..Default::default() };
 
+    // Many rows per statement (a console is up to thousands of games and tens of thousands
+    // of hashes; one INSERT each was a round trip each).
+    const GAME_ROWS: usize = 500;
+    const HASH_ROWS: usize = 1000;
+    let total = entries.len() as u64;
     let mut tx = pool.begin().await?;
-    for entry in &entries {
-        let raw_entry = serde_json::to_value(entry)?;
-        // Per-game raw file only under keep_all/keep_latest -- the list response above
-        // already holds everything; store a compact per-game copy for the cache row.
-        let raw_path = store.save_json(Provider::RetroAchievements, &entry.id.to_string(), &raw_entry)?;
-        sqlx::query(
-            "INSERT INTO retroachievements_games (provider_id, console_id, console_name, image_icon, raw_response_path, raw_format, title, num_achievements, set_modified_at, fetched_at, deleted) VALUES (?, ?, ?, ?, ?, 'json', ?, ?, ?, NOW(), FALSE) \
+    for (c, chunk) in entries.chunks(GAME_ROWS).enumerate() {
+        let mut games = Vec::with_capacity(chunk.len());
+        for (i, entry) in chunk.iter().enumerate() {
+            progress.report((c * GAME_ROWS + i) as u64, Some(total), &format!("{label}: game {} of {} cached ({} hashes)", jobs::thousands((c * GAME_ROWS + i) as u64 + 1), jobs::thousands(total), jobs::thousands(summary.hashes))).await;
+            let raw_entry = serde_json::to_value(entry)?;
+            // Per-game raw file only under keep_all/keep_latest -- the list response above
+            // already holds everything; store a compact per-game copy for the cache row.
+            let raw_path = store.save_json(Provider::RetroAchievements, &entry.id.to_string(), &raw_entry)?;
+            games.push((entry, raw_path.map(|p| p.display().to_string())));
+        }
+        let sql = format!(
+            "INSERT INTO retroachievements_games (provider_id, console_id, console_name, image_icon, raw_response_path, raw_format, title, num_achievements, set_modified_at, fetched_at, deleted) VALUES {} \
              ON DUPLICATE KEY UPDATE console_id = VALUES(console_id), console_name = COALESCE(VALUES(console_name), console_name), image_icon = COALESCE(VALUES(image_icon), image_icon), raw_response_path = VALUES(raw_response_path), title = VALUES(title), num_achievements = VALUES(num_achievements), set_modified_at = COALESCE(VALUES(set_modified_at), set_modified_at), fetched_at = NOW(), deleted = FALSE",
-        )
-        .bind(entry.id)
-        .bind(entry.console_id)
-        .bind(entry.console_name.as_deref())
-        .bind(entry.image_icon.as_deref())
-        .bind(raw_path.map(|p| p.display().to_string()))
-        .bind(&entry.title)
-        .bind(entry.num_achievements)
-        .bind(entry.date_modified.as_deref().and_then(super::ra_account::parse_ra_date))
-        .execute(&mut *tx)
-        .await?;
-        summary.games += 1;
-        for md5 in entry.hashes.iter().flatten() {
-            let md5 = md5.trim().to_ascii_lowercase();
-            if md5.len() != 32 {
-                continue;
-            }
-            sqlx::query("INSERT INTO retroachievements_hashes (md5, ra_game_id, console_id, fetched_at) VALUES (?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE ra_game_id = VALUES(ra_game_id), console_id = VALUES(console_id), fetched_at = NOW()")
-                .bind(&md5)
+            vec!["(?, ?, ?, ?, ?, 'json', ?, ?, ?, NOW(), FALSE)"; games.len()].join(", ")
+        );
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for (entry, raw_path) in &games {
+            query = query
                 .bind(entry.id)
                 .bind(entry.console_id)
-                .execute(&mut *tx)
-                .await?;
-            summary.hashes += 1;
+                .bind(entry.console_name.as_deref())
+                .bind(entry.image_icon.as_deref())
+                .bind(raw_path.as_deref())
+                .bind(&entry.title)
+                .bind(entry.num_achievements)
+                .bind(entry.date_modified.as_deref().and_then(super::ra_account::parse_ra_date));
+        }
+        query.execute(&mut *tx).await?;
+        summary.games += games.len() as u64;
+        // A later row for the same md5 wins, as it did when each was its own upsert.
+        let hashes: Vec<(String, u32, u32)> = chunk
+            .iter()
+            .flat_map(|entry| entry.hashes.iter().flatten().map(move |md5| (md5.trim().to_ascii_lowercase(), entry.id, entry.console_id)))
+            .filter(|(md5, _, _)| md5.len() == 32)
+            .collect();
+        for part in hashes.chunks(HASH_ROWS) {
+            let sql = format!(
+                "INSERT INTO retroachievements_hashes (md5, ra_game_id, console_id, fetched_at) VALUES {} ON DUPLICATE KEY UPDATE ra_game_id = VALUES(ra_game_id), console_id = VALUES(console_id), fetched_at = NOW()",
+                vec!["(?, ?, ?, NOW())"; part.len()].join(", ")
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+            for (md5, game, console) in part {
+                query = query.bind(md5).bind(game).bind(console);
+            }
+            query.execute(&mut *tx).await?;
+            summary.hashes += part.len() as u64;
         }
     }
+    progress.force(total, Some(total), &format!("{label}: saving {} game(s) and {} hashes", jobs::thousands(summary.games), jobs::thousands(summary.hashes))).await;
     tx.commit().await?;
 
     // Link: RA md5 == the plain-file MD5 the DATs carry for most cartridge systems.
+    progress.force(0, None, &format!("{label}: finding catalogue entries with these hashes")).await;
     let rows = sqlx::query("SELECT h.content_id, rh.ra_game_id FROM retroachievements_hashes rh JOIN hashes h ON h.algorithm IN ('md5', 'ra_hash') AND h.value_hex = rh.md5 WHERE rh.console_id = ? AND h.content_id IS NOT NULL")
         .bind(console_id)
         .fetch_all(pool)
         .await?;
-    for row in rows {
+    let matches = rows.len() as u64;
+    for (i, row) in rows.into_iter().enumerate() {
+        progress.report(i as u64, Some(matches), &format!("{label}: linking {} of {} hash matches", jobs::thousands(i as u64 + 1), jobs::thousands(matches))).await;
         let content_id: u64 = row.try_get("content_id")?;
         let ra_game_id: u32 = row.try_get("ra_game_id")?;
         summary.linked += cache::link_for_content(pool, content_id, Provider::RetroAchievements, &ra_game_id.to_string(), Confidence::Exact).await? as u64;
     }
     // And roms whose RA hash a scan worked out (NES, SNES, disc systems, ...).
+    progress.force(matches, Some(matches.max(1)), &format!("{label}: linking scanned ROMs by their RA hash")).await;
     summary.linked += cache::link_ra_rom_hashes(pool, None, Some(console_id)).await?;
     // A console's game list is always the whole list.
     if platform.is_some() {
@@ -446,7 +476,11 @@ pub async fn sync_retroachievements_all(clients: &ProviderClients, pool: &MySqlP
     for (i, console) in consoles.into_iter().enumerate() {
         progress.report(i as u64, Some(count), &format!("console {} of {count}: {} ({} games so far)", i + 1, console.name, total.games)).await;
         let platform = Some(platform_map::platform_from_ra_console_name(&console.name)).filter(|p| *p != Platform::Unknown);
-        match sync_retroachievements_console(clients, pool, store, console.id, platform, mode).await {
+        // The console's own reports fill its slice of the bar.
+        progress.set_inner_frame(Some(jobs::Frame { base: i as u64 * 1000, span: 1000, whole: count * 1000 }));
+        let synced = sync_retroachievements_console(clients, pool, store, console.id, platform, mode, progress).await;
+        progress.set_inner_frame(None);
+        match synced {
             Ok(s) => {
                 log::info!("RA full sync: {} ({}): {} games, {} hashes, {} linked", console.name, console.id, s.games, s.hashes, s.linked);
                 total.games += s.games;
@@ -559,14 +593,21 @@ pub async fn sync_igdb_platform(clients: &ProviderClients, pool: &MySqlPool, sto
                     super::metadata::apply_igdb_game(pool, &names, *title_id, game).await?;
                 }
                 if let Some((http, media_dir)) = media.as_ref() {
+                    let page_label = format!("{platform:?}: page {}", summary.pages);
+                    progress.force(summary.games, to_fetch, &format!("{page_label}: asking IGDB for {} cover(s)", linked.len())).await;
                     let covers = super::media::igdb_cover_urls(clients, &page_games).await?;
-                    for (title_id, game) in &linked {
+                    let n = linked.len() as u64;
+                    let mut attached = 0u64;
+                    for (i, (title_id, game)) in linked.iter().enumerate() {
+                        progress.report(summary.games, to_fetch, &format!("{page_label}: cover {} of {} ({} attached)", jobs::thousands(i as u64 + 1), jobs::thousands(n), jobs::thousands(attached))).await;
                         let Some(url) = game.cover.and_then(|c| covers.get(&c)) else { continue };
                         let targets = super::media::release_targets(pool, *title_id, Provider::Igdb, &game.id.to_string()).await?;
-                        summary.media += super::media::attach_media(http, pool, media_dir, Provider::Igdb, Some(&game.id.to_string()), url, "box", Some("front"), &targets).await? as u64;
+                        attached += super::media::attach_media(http, pool, media_dir, Provider::Igdb, Some(&game.id.to_string()), url, "box", Some("front"), &targets).await? as u64;
                     }
-                    summary.media += super::igdb_localized::attach_for_titles(http, pool, media_dir, clients, store.root(), &linked).await? as u64;
-                    summary.media += super::media::attach_igdb_extras(http, pool, media_dir, clients, &linked).await? as u64;
+                    summary.media += attached;
+                    let report = super::media::Reporting { progress, done: summary.games, total: to_fetch, label: &page_label };
+                    summary.media += super::igdb_localized::attach_for_titles(http, pool, media_dir, clients, store.root(), &linked, &report).await? as u64;
+                    summary.media += super::media::attach_igdb_extras(http, pool, media_dir, clients, &linked, &report).await? as u64;
                 }
             }
             progress.report(summary.games, to_fetch, &format!("{platform:?}: page {}, {}{}, {} linked", summary.pages, games_of(summary.games, to_fetch, false), if since.is_some() { " changed" } else { "" }, summary.linked)).await;

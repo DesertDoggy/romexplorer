@@ -777,14 +777,20 @@ pub async fn pull(app: &App, source_id: u16, full: bool, progress: &crate::datab
             // it is reconciled: the keys this pull receives are remembered (as hashes, so a
             // ten-million-row `hashes` costs ~80 MB, not gigabytes), and every row here whose
             // key was not among them goes once the pull ends. Nothing to do for an empty one.
+            let step = format!("{}: table {} of {total} ({})", source.name, i + 1, state.table);
+            progress.force(rows_done, Some(total_rows.max(rows_done).max(1)), &format!("{step}: counting rows")).await;
             let key = mirror_key(&mut conn, &target).await?;
-            let mut seen: Option<Vec<u64>> = if count_held(&mut conn, &target, mirror.then_some(source.id)).await? > 0 { Some(Vec::new()) } else { None };
+            let held = count_held(&mut conn, &target, mirror.then_some(source.id)).await?;
+            let mut seen: Option<Vec<u64>> = if held > 0 { Some(Vec::new()) } else { None };
+            let clearing = format!("{step}: clearing before the full pull");
             if junction {
                 seen = None;
+                progress.force(rows_done, Some(total_rows.max(rows_done).max(1)), &clearing).await;
                 sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM `{target}` WHERE source_id = ?"))).bind(source.id).execute(&mut *conn).await?;
             }
             if state.group == GROUP_CATALOG && SET_MEMBERS.contains(&state.table.as_str()) {
                 seen = None;
+                progress.force(rows_done, Some(total_rows.max(rows_done).max(1)), &clearing).await;
                 sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM `{target}`"))).execute(&mut *conn).await?;
             }
             if state.group == GROUP_CATALOG && CATALOG_JUNCTIONS.contains(&state.table.as_str()) {
@@ -794,6 +800,7 @@ pub async fn pull(app: &App, source_id: u16, full: bool, progress: &crate::datab
                     .await?;
                 if soft.is_none() {
                     seen = None;
+                    progress.force(rows_done, Some(total_rows.max(rows_done).max(1)), &clearing).await;
                     sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM `{target}`"))).execute(&mut *conn).await?;
                 }
             }
@@ -826,7 +833,8 @@ pub async fn pull(app: &App, source_id: u16, full: bool, progress: &crate::datab
             }
             if let Some(mut seen) = seen {
                 seen.sort_unstable();
-                let gone = drop_unseen(&mut conn, &target, mirror.then_some(source.id), &key, &seen).await?;
+                let at = (progress, rows_done, total_rows.max(rows_done).max(1), step.as_str(), held);
+                let gone = drop_unseen(&mut conn, &target, mirror.then_some(source.id), &key, &seen, at).await?;
                 if gone > 0 {
                     log::info!("sync: {target}: removed {gone} row(s) the source no longer has");
                 }
@@ -864,12 +872,13 @@ pub async fn pull(app: &App, source_id: u16, full: bool, progress: &crate::datab
     // This machine's own games linked to them are unlinked, so `relink_unlinked` below finds
     // them and a hash match puts them on the release that took over.
     if summary.tables.iter().any(|(t, _)| t == "release") {
+        progress.force(rows_done, Some(total_rows.max(rows_done).max(1)), &format!("{}: unlinking local games from releases the source removed", source.name)).await;
         let unlinked = sqlx::query("DELETE lrg FROM local_release_games lrg LEFT JOIN `release` r ON r.id = lrg.release_id WHERE r.id IS NULL").execute(&mut *conn).await?.rows_affected();
         if unlinked > 0 {
             log::info!("sync: unlinked {unlinked} local game(s) from releases the source removed");
         }
     }
-    summary.unresolved = sweep_unresolved(&mut conn, source.id).await?;
+    summary.unresolved = sweep_unresolved(&mut conn, source.id, progress, &source.name).await?;
     Ok::<(), Error>(())
     }
     .await;
@@ -884,6 +893,7 @@ pub async fn pull(app: &App, source_id: u16, full: bool, progress: &crate::datab
     }
     sqlx::query("UPDATE remote_sources SET last_sync_at = NOW() WHERE id = ?").bind(source.id).execute(&mut *conn).await?;
     if took_catalog {
+        progress.force(0, None, &format!("{}: re-linking local games and art", source.name)).await;
         summary.relink_jobs = relink_unlinked(app).await?;
         let (relinked, unresolved) = relink_media(app).await?;
         summary.media_relinked = relinked;
@@ -979,10 +989,16 @@ fn key_hash<S: AsRef<str>>(values: impl IntoIterator<Item = S>) -> u64 {
 
 /// Deletes the rows of `target` (this source's, for a mirror) whose key hash is not in
 /// `seen`, which must be sorted. Pages through this machine's keys rather than loading them.
-async fn drop_unseen(conn: &mut sqlx::MySqlConnection, target: &str, source_id: Option<u16>, key: &[String], seen: &[u64]) -> Result<u64> {
+/// `at` is where the job is -- (progress, bar done, bar total, "<source>: table 7 of 48
+/// (hashes)", rows held here) -- for a pass that reads every row of a table that can be ten
+/// million rows long.
+async fn drop_unseen(conn: &mut sqlx::MySqlConnection, target: &str, source_id: Option<u16>, key: &[String], seen: &[u64], at: (&crate::database::jobs::Progress, u64, u64, &str, u64)) -> Result<u64> {
     if key.is_empty() {
         return Ok(0);
     }
+    let (progress, done, total, step, held) = at;
+    let th = crate::database::jobs::thousands;
+    let mut checked = 0u64;
     let order = key.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
     let select = key.iter().enumerate().map(|(i, c)| format!("CAST(`{c}` AS CHAR) AS `k{i}`")).collect::<Vec<_>>().join(", ");
     let scope = if source_id.is_some() { "source_id = ?" } else { "TRUE" };
@@ -1000,7 +1016,9 @@ async fn drop_unseen(conn: &mut sqlx::MySqlConnection, target: &str, source_id: 
                 query = query.bind(value);
             }
         }
+        progress.report(done, Some(total), &format!("{step}: removing rows the source no longer has, {} of {} checked, {} to remove", th(checked), th(held), th(gone.len() as u64))).await;
         let rows = query.fetch_all(&mut *conn).await?;
+        checked += rows.len() as u64;
         for row in &rows {
             let values: Vec<String> = (0..key.len()).map(|i| row.try_get::<Option<String>, _>(i).ok().flatten().unwrap_or_default()).collect();
             if seen.binary_search(&key_hash(&values)).is_err() {
@@ -1011,6 +1029,9 @@ async fn drop_unseen(conn: &mut sqlx::MySqlConnection, target: &str, source_id: 
         if rows.len() < 5000 {
             break;
         }
+    }
+    if !gone.is_empty() {
+        progress.force(done, Some(total), &format!("{step}: removing {} row(s) the source no longer has", th(gone.len() as u64))).await;
     }
     delete_keys(conn, target, source_id, key, &gone).await
 }
@@ -1043,9 +1064,11 @@ fn urlencode(value: &str) -> String {
 /// not a matter of leaving a column blank. Children are removed before their parents, and the
 /// one nullable reference (`remote_game.playlist_file_id`) is blanked rather than taking the
 /// game with it.
-async fn sweep_unresolved(conn: &mut sqlx::MySqlConnection, source_id: u16) -> Result<u64> {
+async fn sweep_unresolved(conn: &mut sqlx::MySqlConnection, source_id: u16, progress: &crate::database::jobs::Progress, source_name: &str) -> Result<u64> {
+    const STATEMENTS: usize = 7;
+    let say = |n: usize| format!("{source_name}: cleaning up rows with nothing to attach to ({n} of {STATEMENTS})");
     let mut dropped = 0u64;
-    for sql in [
+    for (n, sql) in [
         "DELETE rrg FROM remote_release_games rrg LEFT JOIN `release` r ON r.id = rrg.release_id WHERE rrg.source_id = ? AND r.id IS NULL",
         "DELETE rrr FROM remote_rom_rahash rrr LEFT JOIN hashes h ON h.id = rrr.hash_id WHERE rrr.source_id = ? AND h.id IS NULL",
         "DELETE rrf FROM remote_rom_files rrf JOIN remote_files f ON f.source_id = rrf.source_id AND f.id = rrf.file_id \
@@ -1053,9 +1076,14 @@ async fn sweep_unresolved(conn: &mut sqlx::MySqlConnection, source_id: u16) -> R
         // Art attached to a title or release this machine does not have cannot be placed.
         "DELETE rtm FROM remote_title_media rtm LEFT JOIN title t ON t.id = rtm.title_id WHERE rtm.source_id = ? AND t.id IS NULL",
         "DELETE rrm FROM remote_release_media rrm LEFT JOIN `release` r ON r.id = rrm.release_id WHERE rrm.source_id = ? AND r.id IS NULL",
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        progress.force(n as u64, Some(STATEMENTS as u64), &say(n + 1)).await;
         dropped += sqlx::query(sqlx::AssertSqlSafe(sql.to_string())).bind(source_id).execute(&mut *conn).await?.rows_affected();
     }
+    progress.force(5, Some(STATEMENTS as u64), &say(6)).await;
     sqlx::query(
         "UPDATE remote_game g LEFT JOIN remote_files f ON f.source_id = g.source_id AND f.id = g.playlist_file_id \
          SET g.playlist_file_id = NULL WHERE g.source_id = ? AND g.playlist_file_id IS NOT NULL AND f.id IS NULL",
@@ -1063,6 +1091,7 @@ async fn sweep_unresolved(conn: &mut sqlx::MySqlConnection, source_id: u16) -> R
     .bind(source_id)
     .execute(&mut *conn)
     .await?;
+    progress.force(6, Some(STATEMENTS as u64), &say(7)).await;
     dropped += sqlx::query("DELETE f FROM remote_files f LEFT JOIN content c ON c.id = f.content_id WHERE f.source_id = ? AND c.id IS NULL")
         .bind(source_id)
         .execute(&mut *conn)

@@ -76,7 +76,8 @@ fn ConsentDialog(title: String, message: String, on_proceed: Proceed) -> Element
 /// `PUT /api/v1/mode`. The view already says whether the switch is destructive (`losses`),
 /// so the consent dialog comes before the request rather than after a refusal; the refusal
 /// is still handled, for a catalogue that appeared since the view loaded.
-pub fn apply_mode(mode: String, view: ModeView, first_run: bool, done: impl Fn() + Clone + 'static) {
+/// `done` gets the `catalog_clear` job a switch that replaced the catalogue queued.
+pub fn apply_mode(mode: String, view: ModeView, first_run: bool, done: impl Fn(Option<u64>) + Clone + 'static) {
     // `spawn_forever`, not `spawn`, throughout: a request started from a dialog's button must
     // outlive the dialog. `spawn` ties the future to the calling component's scope, and the
     // first-run prompt closes itself before calling this -- with `spawn` the PUT was dropped
@@ -90,9 +91,10 @@ pub fn apply_mode(mode: String, view: ModeView, first_run: bool, done: impl Fn()
                 let body = ModeBody { mode: mode.clone(), replace_catalog: extra.is_some(), media: extra.unwrap_or_default() };
                 match api::put_as::<ModeBody, Value>("/api/v1/mode", &body).await {
                     Ok(r) => {
-                        let cleared = api::u(&r, "catalog_rows_cleared");
-                        ui::toast(format!("{}{}", state::trf("now {mode}", &[("mode", &api::s(&r, "mode"))]), if cleared > 0 { state::trf("; {n} catalogue rows cleared — add the main server under Config › Share and sync", &[("n", &cleared.to_string())]) } else { String::new() }), false);
-                        done();
+                        // The clear itself is a job the screen follows (`catalog_clear`).
+                        let clear = r.get("clear_job").and_then(Value::as_u64);
+                        ui::toast(format!("{}{}", state::trf("now {mode}", &[("mode", &api::s(&r, "mode"))]), if clear.is_some() { state::tr("; clearing the catalogue — add the main server under Config › Share and sync") } else { String::new() }), false);
+                        done(clear);
                     }
                     Err(e) if e.status == 409 => {
                         let put_again = Proceed::new(move |m: MediaOnReplace| {
@@ -100,7 +102,7 @@ pub fn apply_mode(mode: String, view: ModeView, first_run: bool, done: impl Fn()
                             let done = done.clone();
                             spawn_forever(async move {
                                 match api::put_as::<ModeBody, Value>("/api/v1/mode", &ModeBody { mode, replace_catalog: true, media: m }).await {
-                                    Ok(_) => { ui::toast(state::tr("now client — add the main server under Config › Share and sync"), false); done(); }
+                                    Ok(r) => { ui::toast(state::tr("now client — add the main server under Config › Share and sync"), false); done(r.get("clear_job").and_then(Value::as_u64)); }
                                     Err(e) => ui::toast(e.message, true),
                                 }
                             });
@@ -159,6 +161,8 @@ fn ModeOptions(options: Value, selected: Signal<String>) -> Element {
 pub fn ConfigMode() -> Element {
     let mut view = use_resource(|| async { api::get_as::<ModeView>("/api/v1/mode").await });
     let mut selected = use_signal(String::new);
+    // The catalogue clear a switch to client queued: followed under the button.
+    let clear_watch = use_signal(|| None::<u64>);
     let m = match &*view.read() {
         None => return rsx! { div { class: "muted", {state::tr("loading…")} } },
         Some(Err(e)) => return rsx! { div { class: "card bad", "{e.message}" } },
@@ -202,8 +206,9 @@ pub fn ConfigMode() -> Element {
             details { summary { {state::tr("changing this later")} } p { class: "muted", style: "white-space:pre-wrap", "{m.switch_warning}" } }
             if let Some(l) = m.losses.clone() { details { summary { {state::tr("what switching to client would replace")} } p { style: "white-space:pre-wrap", "{l}" } } }
             div { class: "toolbar",
-                button { class: "btn primary", onclick: move |_| apply_mode(selected(), apply_view.clone(), false, move || { let mut view = view; view.restart() }), {state::tr("apply")} }
+                button { class: "btn primary", onclick: move |_| apply_mode(selected(), apply_view.clone(), false, move |clear: Option<u64>| { let mut view = view; view.restart(); if clear.is_some() { let mut w = clear_watch; w.set(clear); } }), {state::tr("apply")} }
             }
+            if let Some(id) = clear_watch() { super::backup::JobWatch { key: "{id}", job_id: id, on_done: move |_| { let mut view = view; view.restart() } } }
         }
     }
 }
@@ -331,7 +336,7 @@ fn FirstRunDialog(view: ModeView) -> Element {
             span { class: "grow" }
             button { r#type: "button", class: "btn", onclick: move |_| { ui::close_modal(); spawn_forever(ask_media_reuse()); }, {state::tr("later")} }
             button { r#type: "button", class: "btn primary",
-                onclick: move |_| { ui::close_modal(); apply_mode(selected(), v.clone(), true, || { spawn_forever(ask_media_reuse()); }); },
+                onclick: move |_| { ui::close_modal(); apply_mode(selected(), v.clone(), true, |_| { spawn_forever(ask_media_reuse()); }); },
                 {state::tr("choose")}
             }
         }

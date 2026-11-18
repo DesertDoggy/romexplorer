@@ -216,6 +216,7 @@
       state.fadeIn = 1;
     }
     state.audio.src = sourceOf(t);
+    watchConversion(t, state.audio);
     applyVolume();
     if (autoplay) state.audio.play().catch(() => paint());
     paint();
@@ -243,10 +244,42 @@
     state.next = a;
   }
 
+  // A track the server converts before it plays (a ROM's music; DSD, ALAC, AIFF) takes a
+  // moment before its first note: the time shows that instead, and whether it is waiting
+  // behind another conversion (`/api/v1/audio/converting`, asked of the server the track
+  // comes from -- a main server's own queue is not visible from here).
+  let conversion = null;
+  const convertsFirst = t => !!t && (!!t.rom || t.support === 'converted');
+  function statusUrl(u) {
+    const at = String(u || '').indexOf('/api/v1/audio/'); if (at < 0) return null;
+    const token = String(u).match(/[?&](token=[^&]*)/);
+    return u.slice(0, at) + '/api/v1/audio/converting' + (token ? '?' + token[1] : '');
+  }
+  function endConversion() {
+    if (!conversion) return;
+    clearInterval(conversion.timer);
+    const a = conversion.audio; conversion = null;
+    const time = state.bar && state.bar.querySelector('.rxp-time');
+    if (time && state.audio === a) time.textContent = clock(a.currentTime) + ' / ' + clock(a.duration || ((current() || {}).duration_ms || 0) / 1000);
+  }
+  function watchConversion(t, a) {
+    endConversion();
+    if (!convertsFirst(t) || !state.bar) return;
+    const time = state.bar.querySelector('.rxp-time');
+    const show = waiting => { if (conversion && conversion.audio === a && state.audio === a) time.textContent = L(waiting ? 'Waiting for another conversion…' : 'Converting for playback…'); };
+    const url = t.remote ? null : statusUrl(t.url);
+    const ask = () => { if (url) fetch(url, { credentials: 'same-origin' }).then(r => (r.ok ? r.json() : null)).then(s => { if (s) show(s.waiting > 0 && s.running >= s.slots); }).catch(() => {}); };
+    conversion = { audio: a, timer: setInterval(ask, 1500) };
+    show(false);
+    const done = () => { if (conversion && conversion.audio === a) endConversion(); };
+    for (const ev of ['loadeddata', 'canplay', 'playing', 'error']) a.addEventListener(ev, done, { once: true });
+  }
+
   // Set by start(): a new `<audio>` element wired to the bar.
   let makeAudio = () => new Audio();
 
   function stop() {
+    endConversion();
     if (state.audio) { state.audio.pause(); state.audio.removeAttribute('src'); state.audio.load(); }
     dropOutgoing();
     if (state.next) { state.next.removeAttribute('src'); state.next = null; }

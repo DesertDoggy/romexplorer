@@ -432,6 +432,55 @@ fn parse_zip(path: &Path, file_name: &str, member_filter: &dyn Fn(&str) -> bool)
     Ok(out)
 }
 
+/// A `.dat`/`.xml` member of a zip pack and its uncompressed size, from the central
+/// directory alone (nothing is decompressed).
+#[derive(Debug, Clone)]
+pub struct DatMember {
+    pub name: String,
+    pub size: u64,
+}
+
+/// [`list_dat_members`] with each member's size, in the pack's own order: the scale a pack
+/// import reports on before any member has been read.
+pub fn list_dat_members_sized(path: &Path) -> Result<Vec<DatMember>, DatabaseError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut out = Vec::new();
+    for index in 0..archive.len() {
+        let member = archive.by_index_raw(index)?;
+        if member.is_dir() || !is_dat_member(member.name()) {
+            continue;
+        }
+        out.push(DatMember { name: member.name().to_string(), size: member.size() });
+    }
+    Ok(out)
+}
+
+/// Parses the named members of a zip pack one at a time, in the order given, handing each
+/// to `each` (with its index in `members`) as soon as it is read -- so a caller can import
+/// one DAT while the next is still being read, instead of waiting for all 4,700 of a pack.
+/// A member that will not read or parse is handed over as its error and the rest still are;
+/// `each` returns `false` to stop early. Same `zip` crate reader as [`parse_zip`], for the
+/// reason given there.
+pub fn parse_zip_members(path: &Path, members: &[String], mut each: impl FnMut(usize, Result<ParsedDatEntry, DatabaseError>) -> bool) -> Result<(), DatabaseError> {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    for (n, member_name) in members.iter().enumerate() {
+        let parsed = (|| {
+            let mut member = archive.by_name(member_name)?;
+            let mut text = String::new();
+            member.read_to_string(&mut text).map_err(|err| DatabaseError::Parse(format!("{member_name}: {err}")))?;
+            let dat = parse_dat_xml(&text).map_err(|err| DatabaseError::Parse(format!("{member_name}: {err}")))?;
+            Ok(ParsedDatEntry { name: format!("{file_name}::{member_name}"), dat })
+        })();
+        if !each(n, parsed) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Member names of a zip pack (without parsing them), for choosing what to import.
 pub fn list_dat_members(path: &Path) -> Result<Vec<String>, DatabaseError> {
     let file = std::fs::File::open(path)?;

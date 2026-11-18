@@ -23,7 +23,7 @@ pub const NES_FORMATS: [&str; 3] = ["headered", "headerless", "unh"];
 pub const N64_FORMATS: [&str; 3] = ["z64", "v64", "n64"];
 pub const SNES_FORMATS: [&str; 2] = ["sfc", "smc"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Cart {
     Nes,
     N64,

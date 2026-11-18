@@ -738,8 +738,19 @@ async fn wait_or_cancel(progress: &Progress, secs: u64) -> bool {
 pub async fn batch_rate(app: &App, req: &AiBatchRateRequest, progress: &Progress) -> Result<BatchSummary> {
     /// Between two questions: a provider's per-minute limit is rarely below 30.
     const PACE_SECS: u64 = 2;
+    use crate::database::jobs::thousands;
+    progress.force(0, None, "AI rating: choosing families to ask").await;
     let plan = batch_plan(app, req).await?;
     let total = plan.ask.len() as u64;
+    // Each family by its head title's name, for the progress line.
+    progress.force(0, Some(total.max(1)), "AI rating: reading the family names").await;
+    let mut names: HashMap<u64, String> = HashMap::new();
+    for chunk in plan.ask.chunks(1000) {
+        let list = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        names.extend(sqlx::query_as::<_, (u64, String)>(sqlx::AssertSqlSafe(format!("SELECT id, name FROM title WHERE id IN ({list})"))).fetch_all(&app.pool).await?);
+    }
+    // Only said once an answer has reported what it cost: no price, no number.
+    let mut cost_known = false;
     let mut s = BatchSummary { families: plan.families, one_version: plan.one_version, cached: if req.reask { 0 } else { plan.cached }, ..Default::default() };
     let mut in_a_row = 0u32;
     for (i, head) in plan.ask.iter().enumerate() {
@@ -747,7 +758,12 @@ pub async fn batch_rate(app: &App, req: &AiBatchRateRequest, progress: &Progress
             s.cancelled = true;
             break;
         }
-        progress.report(i as u64, Some(total.max(1)), &format!("{i} of {total} asked")).await;
+        let name = names.get(head).cloned().unwrap_or_else(|| format!("title {head}"));
+        let line = |s: &BatchSummary, cost_known: bool| {
+            let cost = if cost_known { format!(", ~US${:.2}", s.cost_usd) } else { String::new() };
+            format!("family {} of {} ({} asked, {} failed{cost})", thousands(i as u64 + 1), thousands(total), thousands(s.asked), thousands(s.failed))
+        };
+        progress.report(i as u64, Some(total.max(1)), &format!("{}: {name}", line(&s, cost_known))).await;
         let mut wait = 30;
         let outcome = loop {
             let asked = ask(app, *head, &AskRequest { lang: req.lang.clone(), ask: !req.reask, again: req.reask }).await;
@@ -756,8 +772,15 @@ pub async fn batch_rate(app: &App, req: &AiBatchRateRequest, progress: &Progress
                     Some(e) if req.reask && a.result.answer.as_ref().is_some_and(|x| x.pinned) => break Ok((a, Some(e))),
                     Some(e) if super::ai::is_rate_limited(&e) && wait <= 240 => {
                         log::info!("ai_batch_rate: rate limited, waiting {wait}s: {e}");
-                        progress.report(i as u64, Some(total.max(1)), &format!("{i} of {total} asked; rate limited, waiting {wait}s")).await;
-                        if wait_or_cancel(progress, wait).await {
+                        let mut cancelled = false;
+                        for left in (1..=wait).rev() {
+                            progress.force(i as u64, Some(total.max(1)), &format!("{}: rate limited, asking again in {left}s: {name}", line(&s, cost_known))).await;
+                            if wait_or_cancel(progress, 1).await {
+                                cancelled = true;
+                                break;
+                            }
+                        }
+                        if cancelled {
                             s.cancelled = true;
                             break Err(String::new());
                         }
@@ -780,7 +803,10 @@ pub async fn batch_rate(app: &App, req: &AiBatchRateRequest, progress: &Progress
                 in_a_row = 0;
                 s.asked += 1;
                 *s.ranks.entry(a.ai_rank.clone().unwrap_or_else(|| "unranked".into())).or_default() += 1;
-                s.cost_usd += a.result.answer.as_ref().and_then(|x| x.cost_usd).unwrap_or(0.0);
+                if let Some(cost) = a.result.answer.as_ref().and_then(|x| x.cost_usd) {
+                    s.cost_usd += cost;
+                    cost_known = true;
+                }
             }
             Err(e) => {
                 log::warn!("ai_batch_rate: family {head}: {e}");

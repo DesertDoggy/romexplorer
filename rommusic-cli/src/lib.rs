@@ -80,10 +80,21 @@ impl Default for Options {
 /// What a run says while it goes.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// Reading the original-format music sets given: `done` of `total` files.
-    Library { done: usize, total: usize },
+    /// Listing the original-format music folders given: `found` sets so far.
+    LibraryListing { found: usize },
+    /// Reading the original-format music sets given: set `done + 1` of `total` (`set`, its
+    /// path), or all of them read (`set` is `None`).
+    Library { done: usize, total: usize, set: Option<String> },
     /// Looking for the music in an input.
     Reading { input: PathBuf },
+    /// Looking at file `count` of what an input holds (`file`, its path in there).
+    Probing { input: PathBuf, file: String, count: usize },
+    /// SNES: the game has run `second` of `of` seconds, waiting for its music to start.
+    Running { second: u32, of: u32 },
+    /// The track's audio is all decoded; it is being encoded as FLAC.
+    TrackEncoding { number: usize, total: usize },
+    /// Copying the files as the game stores them: file `number` of `total`, `bytes` long.
+    Copying { number: usize, total: usize, name: String, bytes: u64 },
     /// The tracks found, and where they go.
     Found { input: PathBuf, folder: PathBuf, tracks: usize },
     TrackStarted { number: usize, total: usize, name: String },
@@ -111,9 +122,39 @@ pub fn load_ps2_bios(path: &Path) -> Result<bool, String> {
     romexplorer::rom::psf::set_ps2_bios(&image).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Reads the folders of original-format music once, for every input of a run.
+/// Reads the folders of original-format music once, for every input of a run. What the sets
+/// hold is kept in [`library_cache`], so a later run reads only the sets that changed.
 pub fn load_library(folders: &[PathBuf], on: &mut dyn FnMut(Event)) -> Option<rip_match::Library> {
-    (!folders.is_empty()).then(|| rip_match::Library::build(folders, None, |done, total| on(Event::Library { done, total })))
+    if folders.is_empty() {
+        return None;
+    }
+    let cache = library_cache();
+    Some(rip_match::Library::build_with(folders, cache.as_deref(), |step| match step {
+        rip_match::BuildStep::Listing { found } => on(Event::LibraryListing { found }),
+        rip_match::BuildStep::Reading { done, total, set } => on(Event::Library { done, total, set: set.map(|p| p.display().to_string()) }),
+    }))
+}
+
+/// Where what the original-format music sets hold is kept between runs: the per-user cache
+/// folder by each platform's convention (the app's files on Android), made if missing.
+pub fn library_cache() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    let dir = android::files_dir().join("cache");
+    #[cfg(not(target_os = "android"))]
+    let dir = {
+        let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let home = env("HOME").or_else(|| env("USERPROFILE"))?;
+        let base = if cfg!(windows) {
+            env("LOCALAPPDATA").unwrap_or_else(|| home.join("AppData").join("Local"))
+        } else if cfg!(target_os = "macos") {
+            home.join("Library").join("Caches")
+        } else {
+            env("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache"))
+        };
+        base.join("rommusic")
+    };
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("original-format-sets.json"))
 }
 
 /// One thing to write.
@@ -143,11 +184,28 @@ impl Job {
     }
 }
 
+/// A file to copy as the game stores it, for [`Format::Original`]: read when it is written,
+/// one at a time, not all held while the tracks are.
+pub struct Original {
+    /// Its path in the "original" folder.
+    pub name: String,
+    pub from: Stored,
+}
+
+pub enum Stored {
+    /// Made here (a SNES cartridge's .spc).
+    Bytes(Vec<u8>),
+    /// A file of its own, copied straight across.
+    File(PathBuf),
+    /// A file on a disc or in a dumped folder, the one a track at `location` is in.
+    InRom { base: PathBuf, location: TrackLocation },
+}
+
 /// What one input gives.
 pub struct Plan {
     pub jobs: Vec<Job>,
-    /// Files to copy as they are stored, for [`Format::Original`]: a name and its bytes.
-    pub originals: Vec<(String, Vec<u8>)>,
+    /// Files to copy as they are stored, for [`Format::Original`].
+    pub originals: Vec<Original>,
     /// The folder the music goes into.
     pub folder: PathBuf,
     /// The album name the FLAC files carry.
@@ -157,11 +215,16 @@ pub struct Plan {
 /// Finds the music in `input`, keeps what `o` asks for, and decides where it goes. An error
 /// when there is none, saying why.
 pub fn prepare(input: &Path, o: &Options, library: Option<&rip_match::Library>) -> Result<Plan, String> {
+    prepare_with(input, o, library, &mut |_| {})
+}
+
+/// [`prepare`], saying what it looks at as it goes ([`Event::Probing`], [`Event::Running`]).
+pub fn prepare_with(input: &Path, o: &Options, library: Option<&rip_match::Library>, on: &mut dyn FnMut(Event)) -> Result<Plan, String> {
     if !input.exists() {
         return Err("no such file or folder".into());
     }
     let t = Thresholds::default();
-    let (mut jobs, mut originals, why_none) = find(input, o, library, &t)?;
+    let (mut jobs, mut originals, why_none) = find(input, o, library, &t, on)?;
     jobs.retain(|j| match j {
         Job::Track { track, .. } => o.all || (track.kind == SoundKind::Bgm && !track.video),
         Job::Spc { .. } => true,
@@ -217,7 +280,7 @@ pub fn music_folders(inputs: &[PathBuf], o: &Options) -> Vec<PathBuf> {
 /// [`CANCELLED`].
 pub fn process(input: &Path, folder: &Path, o: &Options, library: Option<&rip_match::Library>, cancel: &AtomicBool, on: &mut dyn FnMut(Event)) -> Result<(), String> {
     on(Event::Reading { input: input.to_path_buf() });
-    let mut plan = prepare(input, o, library)?;
+    let mut plan = prepare_with(input, o, library, on)?;
     plan.folder = folder.to_path_buf();
     if cancel.load(Ordering::Relaxed) {
         return Err(CANCELLED.into());
@@ -240,7 +303,10 @@ pub fn write(plan: &Plan, o: &Options, cancel: &AtomicBool, on: &mut dyn FnMut(E
             let name = job.name();
             let file = folder.join(format!("{number:0width$} - {}.flac", clean(&name)));
             on(Event::TrackStarted { number, total, name: name.clone() });
-            let mut progress = |fraction: f32| on(Event::TrackProgress { number, total, fraction });
+            let mut progress = |fraction: Option<f32>| match fraction {
+                Some(fraction) => on(Event::TrackProgress { number, total, fraction }),
+                None => on(Event::TrackEncoding { number, total }),
+            };
             match render(job, o, &plan.album, number, total, &file, cancel, &mut progress) {
                 Ok(ms) => {
                     on(Event::TrackWritten { number, total, name: name.clone(), ms });
@@ -266,17 +332,43 @@ pub fn write(plan: &Plan, o: &Options, cancel: &AtomicBool, on: &mut dyn FnMut(E
     if o.format != Format::Flac {
         let originals = folder.join("original");
         std::fs::create_dir_all(&originals).map_err(|e| format!("{}: {e}", originals.display()))?;
-        for (name, bytes) in &plan.originals {
-            let path = originals.join(clean_path(name));
+        let total = plan.originals.len();
+        let mut copied = 0;
+        for (n, original) in plan.originals.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(CANCELLED.into());
+            }
+            let path = originals.join(clean_path(&original.name));
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let announce = |bytes: u64, on: &mut dyn FnMut(Event)| on(Event::Copying { number: n + 1, total, name: original.name.clone(), bytes });
+            let written = match &original.from {
+                Stored::Bytes(bytes) => {
+                    announce(bytes.len() as u64, on);
+                    std::fs::write(&path, bytes)
+                }
+                // Streamed across, never held whole.
+                Stored::File(from) => {
+                    announce(std::fs::metadata(from).map(|m| m.len()).unwrap_or(0), on);
+                    std::fs::copy(from, &path).map(|_| ())
+                }
+                Stored::InRom { base, location } => match rom_audio::stored_file(base, location) {
+                    Ok((_, bytes)) => {
+                        announce(bytes.len() as u64, on);
+                        std::fs::write(&path, bytes)
+                    }
+                    // Unreadable now: left out, as it was when the files were read up front.
+                    Err(_) => continue,
+                },
+            };
+            written.map_err(|e| format!("{}: {e}", path.display()))?;
+            copied += 1;
         }
-        if plan.originals.is_empty() {
+        if copied == 0 {
             on(Event::NoOriginals);
         } else {
-            on(Event::OriginalsWritten { count: plan.originals.len(), folder: originals });
+            on(Event::OriginalsWritten { count: copied, folder: originals });
         }
     }
     if errors > 0 {
@@ -314,35 +406,41 @@ fn tracks(base: &Path, found: Vec<FoundTrack>) -> Vec<Job> {
     found.into_iter().map(|track| Job::Track { base: base.to_path_buf(), track }).collect()
 }
 
-type Found = (Vec<Job>, Vec<(String, Vec<u8>)>, Option<String>);
+type Found = (Vec<Job>, Vec<Original>, Option<String>);
 
-fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thresholds) -> Result<Found, String> {
+fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thresholds, on: &mut dyn FnMut(Event)) -> Result<Found, String> {
     let mut jobs = Vec::new();
     let mut originals = Vec::new();
-    let progress = |_: &str| {};
+    // Which file is being looked at, and how many so far: a disc's listing can run to
+    // thousands, each probed for audio.
+    let mut count = 0usize;
+    let mut progress = |file: &str| {
+        count += 1;
+        on(Event::Probing { input: input.to_path_buf(), file: file.to_string(), count });
+    };
     if input.is_dir() {
         // A dumped disc, and any original-format music sets kept in it.
-        if let Ok(found) = rom_audio::index_rom(input, t, progress) {
+        if let Ok(found) = rom_audio::index_rom(input, t, &mut progress) {
             jobs.extend(tracks(input, found));
         }
-        jobs.extend(tracks(input, rip_sets::index(input, t, progress)));
+        jobs.extend(tracks(input, rip_sets::index(input, t, &mut progress)));
         return Ok((jobs, originals, None));
     }
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if rip_sets::is_music(&name) {
         // One original-format file, with the playlist and libraries beside it.
         let input = std::path::absolute(input).unwrap_or_else(|_| input.to_path_buf());
-        jobs.extend(tracks(Path::new(""), rip_sets::index_file(&input, t, progress)));
+        jobs.extend(tracks(Path::new(""), rip_sets::index_file(&input, t, &mut progress)));
         return Ok((jobs, originals, None));
     }
     if rom_audio::may_hold_audio(input) {
-        jobs.extend(tracks(input, rom_audio::index_rom(input, t, progress)?));
+        jobs.extend(tracks(input, rom_audio::index_rom(input, t, &mut progress)?));
         return Ok((jobs, originals, None));
     }
     let member = archive_format(input).and_then(|f| main_member(input, f));
     if archive_format(input).is_some() {
         // A zip of original-format files is a set of its own.
-        let found = rip_sets::index_set(input, t, progress);
+        let found = rip_sets::index_set(input, t, &mut progress);
         if !found.is_empty() {
             jobs.extend(tracks(Path::new(""), found));
             return Ok((jobs, originals, None));
@@ -359,17 +457,19 @@ fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thr
     if let Some(library) = library.filter(|l| l.covers(platform as u16)) {
         let matches = library.match_rom(input, platform as u16)?;
         for set in rip_match::choose(&matches, |_| false, |_| false) {
-            jobs.extend(tracks(Path::new(""), rip_sets::index_set(&set, t, progress)));
+            jobs.extend(tracks(Path::new(""), rip_sets::index_set(&set, t, &mut progress)));
         }
         if !jobs.is_empty() {
             return Ok((jobs, originals, None));
         }
     }
     let mut why_none = None;
+    // A SNES ROM is read once, for the music map and, without one, for the capture.
+    let snes_rom = if matches!(platform, Platform::Snes | Platform::SuperFamicom) { Some(rom_songs::read_rom(input)?) } else { None };
     match platform {
         // Played by the game's own sound code or engine, straight from the ROM. A SNES game
         // with a music map plays each song by it; one without falls to the capture below.
-        p if rom_songs::covers(p as u16) && !(matches!(p, Platform::Snes | Platform::SuperFamicom) && !rom_songs::has_snes_map(&rom_songs::read_rom(input)?)) => {
+        p if rom_songs::covers(p as u16) && !snes_rom.as_ref().is_some_and(|rom| !rom_songs::has_snes_map(rom)) => {
             let (found, why) = rom_songs::index_explained(input, p as u16, t)?;
             jobs.extend(tracks(input, found));
             if jobs.is_empty() {
@@ -377,13 +477,16 @@ fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thr
             }
         }
         Platform::Snes | Platform::SuperFamicom => {
-            let rom = rom_songs::read_rom(input)?;
+            let rom = match snes_rom {
+                Some(rom) => rom,
+                None => rom_songs::read_rom(input)?,
+            };
             let options = snes_capture::Options { seconds: o.seconds, keep_audio: false, press_start: o.press_start, watch_register: None };
-            let capture = snes_capture::capture(&rom, &options)?;
+            let capture = snes_capture::capture_with(&rom, &options, &mut |second, of| on(Event::Running { second, of }))?;
             if capture.driver_starts.is_empty() {
                 why_none = Some(format!("the game started no music in {} s (try pressing Start, or a longer run)", o.seconds));
             } else {
-                originals.push((format!("{}.spc", input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()), capture.spc.clone()));
+                originals.push(Original { name: format!("{}.spc", input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()), from: Stored::Bytes(capture.spc.clone()) });
                 jobs.push(Job::Spc { spc: capture.spc });
             }
         }
@@ -398,20 +501,21 @@ fn find(input: &Path, o: &Options, library: Option<&rip_match::Library>, t: &Thr
     Ok((jobs, originals, why_none))
 }
 
-/// The files the tracks are stored in, read once each, for [`Format::Original`].
-fn stored_files(jobs: &[Job], originals: &mut Vec<(String, Vec<u8>)>, o: &Options) {
+/// The files the tracks are stored in, each once, for [`Format::Original`]. Only listed here:
+/// [`write`] reads each as it copies it.
+fn stored_files(jobs: &[Job], originals: &mut Vec<Original>, o: &Options) {
     if o.format == Format::Flac {
         return;
     }
-    let mut seen: std::collections::HashSet<String> = originals.iter().map(|(n, _)| n.clone()).collect();
+    let mut seen: std::collections::HashSet<String> = originals.iter().map(|original| original.name.clone()).collect();
     for job in jobs {
         let Job::Track { base, track } = job else { continue };
         match &track.location {
-            TrackLocation::File { .. } => {
-                if let Ok((name, bytes)) = rom_audio::stored_file(base, &track.location) {
-                    if seen.insert(name.clone()) {
-                        originals.push((name, bytes));
-                    }
+            TrackLocation::File { path: inner, .. } => {
+                // The file itself, for a member of an archive inside it (as `stored_file` names it).
+                let name = romexplorer::rom::inner_archives::split(inner).map_or(inner.as_str(), |(file, _)| file).to_string();
+                if seen.insert(name.clone()) {
+                    originals.push(Original { name, from: Stored::InRom { base: base.clone(), location: track.location.clone() } });
                 }
             }
             TrackLocation::Rip { path, .. } => {
@@ -426,10 +530,8 @@ fn stored_files(jobs: &[Job], originals: &mut Vec<(String, Vec<u8>)>, o: &Option
                 }
                 for f in copy {
                     let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    if seen.insert(name.clone()) {
-                        if let Ok(bytes) = std::fs::read(&f) {
-                            originals.push((name, bytes));
-                        }
+                    if f.is_file() && seen.insert(name.clone()) {
+                        originals.push(Original { name, from: Stored::File(f) });
                     }
                 }
             }
@@ -484,7 +586,9 @@ fn open(job: &Job) -> Result<Box<dyn PcmStream>, String> {
 
 /// Writes one track; returns its length in ms.
 #[allow(clippy::too_many_arguments)]
-fn render(job: &Job, o: &Options, album: &str, number: usize, total: usize, out: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<u64, String> {
+/// `progress` hears how far the decoding is (`Some`, 0.0 to 1.0), and `None` when the FLAC
+/// encoding starts.
+fn render(job: &Job, o: &Options, album: &str, number: usize, total: usize, out: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(Option<f32>)) -> Result<u64, String> {
     let mut stream = open(job)?;
     let (from, channels) = (stream.sample_rate(), stream.channels());
     // In samples across all channels, as the chunks come.
@@ -501,7 +605,7 @@ fn render(job: &Job, o: &Options, album: &str, number: usize, total: usize, out:
             let fraction = (pcm.len() as f32 / expected as f32).min(1.0) * 0.95;
             if fraction - reported >= 0.01 {
                 reported = fraction;
-                progress(fraction);
+                progress(Some(fraction));
             }
         }
     }
@@ -528,16 +632,33 @@ fn render(job: &Job, o: &Options, album: &str, number: usize, total: usize, out:
         .tag("TRACKTOTAL", total)
         .tag("COMMENT", format!("ROM music ({source}){}", if to != from { format!(", resampled from {from} Hz") } else { String::new() }))
         .tag("ENCODER", format!("rommusic {VERSION}"));
+    progress(None);
     // A file left by an earlier run (or by another input with the same name) is replaced.
     let _ = std::fs::remove_file(out);
     let mut writer = flac_codec::encode::FlacSampleWriter::create(out, options, to, o.bits, u8::try_from(channels).map_err(|_| "too many channels")?, None).map_err(|e| format!("create {}: {e}", out.display()))?;
     writer.write(&samples).map_err(|e| format!("FLAC: {e}"))?;
     writer.finalize().map_err(|e| format!("FLAC: {e}"))?;
-    progress(1.0);
+    progress(Some(1.0));
     Ok(ms)
 }
 
 // --- small things ---------------------------------------------------------------------
+
+/// 12,400: a count with thousands separators, for progress lines.
+pub fn thousands(n: usize) -> String {
+    romexplorer::database::jobs::thousands(n as u64)
+}
+
+/// 38 MB: a file's size, for progress lines.
+pub fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let (mut value, mut unit) = (bytes as f64, 0);
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+}
 
 pub fn length(ms: u64) -> String {
     format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)

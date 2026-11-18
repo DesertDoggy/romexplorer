@@ -690,6 +690,11 @@ fn new_snes(rom: &[u8], mapping: Mapping, apu: Apu, watch_register: Option<u16>)
 
 /// Runs the game from power on and returns what it left in the sound chip.
 pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
+    capture_with(file, options, &mut |_, _| {})
+}
+
+/// [`capture`], telling `on_second(done, of)` each time another second of console time has run.
+pub fn capture_with(file: &[u8], options: &Options, on_second: &mut dyn FnMut(u32, u32)) -> Result<Capture, String> {
     let Options { seconds, keep_audio, press_start, .. } = *options;
     let rom = rom_image(file);
     let mapping = mapping(rom).ok_or("no SNES header found")?;
@@ -713,7 +718,14 @@ pub fn capture(file: &[u8], options: &Options) -> Result<Capture, String> {
     let (mut nmis, mut irqs) = (0u32, 0u32);
     let mut recent = [0u32; 64];
     let mut crash: Option<Vec<u32>> = None;
+    let of = seconds.max(0.0).ceil() as u32;
+    let mut next_second = MASTER_RATE;
+    on_second(0, of);
     while snes.master < end {
+        if snes.master >= next_second {
+            on_second((snes.master / MASTER_RATE) as u32, of);
+            next_second = (snes.master / MASTER_RATE + 1) * MASTER_RATE;
+        }
         if press_start {
             snes.buttons = if start_held(snes.master) { START } else { 0 };
         }

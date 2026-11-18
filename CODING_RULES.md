@@ -127,6 +127,12 @@ In practice:
   then the message carries the running count ("12,400 file(s) found so far").
 - The worker writes "<job>: starting" when it claims a job, so the row is never blank; a
   job's own first report must follow before any long work, not after it.
+- Helpers in `database::jobs`: `with_fraction` runs one large blocking read (a verify, a hash)
+  and reports its percent; `WalkCount` gives a walk its running count and current folder;
+  `thousands` formats counts. `report_detail` keys (a scan's running `files`) are merged over a
+  `Steps` list, so a step can show its files without hiding the step list.
+- A check before the main loop (is this file recorded, does it still exist) counts as a phase:
+  batch its queries (a thousand paths to one `IN (...)`) and report every item.
 - A new job type is not done until its progress has been watched once on real-sized data:
   if the row stays on one message for more than a few seconds, that phase needs reports.
 

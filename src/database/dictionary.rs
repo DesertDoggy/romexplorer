@@ -561,19 +561,23 @@ async fn download_wikidata(http: &reqwest::Client, progress: &Progress) -> Resul
 /// hand stay; names the user removed stay out.
 pub async fn rebuild(pool: &MySqlPool, http: &reqwest::Client, cache_dir: &Path, download: bool, progress: &Progress) -> Result<BuildSummary, DatabaseError> {
     let mut s = BuildSummary::default();
-    progress.force(0, None, "dictionary: titles and their localized names").await;
     let mut names: HashMap<u64, Vec<String>> = HashMap::new();
-    for sql in [
-        "SELECT t.id, t.name FROM title t WHERE t.deleted = FALSE",
-        "SELECT tl.title_id AS id, tl.name FROM title_locales tl JOIN title t ON t.id = tl.title_id AND t.deleted = FALSE",
-        "SELECT tan.title_id AS id, tan.name FROM title_alt_names tan JOIN title t ON t.id = tan.title_id AND t.deleted = FALSE",
-    ] {
+    for (i, (what, sql)) in [
+        ("titles", "SELECT t.id, t.name FROM title t WHERE t.deleted = FALSE"),
+        ("localized names", "SELECT tl.title_id AS id, tl.name FROM title_locales tl JOIN title t ON t.id = tl.title_id AND t.deleted = FALSE"),
+        ("other names", "SELECT tan.title_id AS id, tan.name FROM title_alt_names tan JOIN title t ON t.id = tan.title_id AND t.deleted = FALSE"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        progress.force(0, None, &format!("dictionary: reading names ({} of 3: {what})", i + 1)).await;
         for r in sqlx::query(sql).fetch_all(pool).await? {
             names.entry(r.try_get("id")?).or_default().push(r.try_get("name")?);
         }
     }
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
     let mut catalog: Vec<Vec<String>> = Vec::new();
+    progress.force(0, None, &format!("dictionary: grouping the names of {} title(s)", super::jobs::thousands(names.len() as u64))).await;
     for (id, list) in names {
         if let Some(g) = group_of(list) {
             catalog.push(g.clone());
@@ -609,6 +613,9 @@ pub async fn rebuild(pool: &MySqlPool, http: &reqwest::Client, cache_dir: &Path,
     } else {
         None
     };
+    if tsv.is_none() {
+        progress.force(0, None, "dictionary: reading the kept Wikidata download").await;
+    }
     let tsv = tsv.or_else(|| std::fs::read(&cache).ok().and_then(|b| zstd::decode_all(b.as_slice()).ok()).and_then(|b| String::from_utf8(b).ok()));
     if let Some(tsv) = &tsv {
         for (key, g) in wikidata_groups(tsv) {
@@ -620,8 +627,9 @@ pub async fn rebuild(pool: &MySqlPool, http: &reqwest::Client, cache_dir: &Path,
         s.wikidata_note.get_or_insert_with(|| "no Wikidata download kept yet".to_string());
     }
 
-    progress.force(0, Some(groups.len() as u64), "dictionary: writing").await;
+    progress.force(0, None, "dictionary: reading the names removed by hand").await;
     let blocks: HashSet<(String, String)> = sqlx::query("SELECT group_key, norm FROM name_dictionary_blocks").fetch_all(pool).await?.iter().map(|r| Ok((r.try_get("group_key")?, r.try_get("norm")?))).collect::<Result<_, sqlx::Error>>()?;
+    progress.force(0, None, "dictionary: clearing the old entries").await;
     sqlx::query("DELETE FROM name_dictionary WHERE source IN ('catalog', 'series', 'wikidata')").execute(pool).await?;
     let mut rows: Vec<(String, String, String, bool, &str)> = Vec::new();
     for ((key, g), source) in groups.iter().zip(&sources) {
@@ -634,6 +642,8 @@ pub async fn rebuild(pool: &MySqlPool, http: &reqwest::Client, cache_dir: &Path,
             rows.push((key.clone(), name.clone(), k, has_cjk(name), source));
         }
     }
+    let total = rows.len() as u64;
+    progress.force(0, Some(total), &format!("dictionary: writing 0 of {} name(s)", super::jobs::thousands(total))).await;
     for (n, chunk) in rows.chunks(1000).enumerate() {
         let sql = format!("INSERT IGNORE INTO name_dictionary (group_key, term, norm, cjk, source) VALUES {}", vec!["(?, ?, ?, ?, ?)"; chunk.len()].join(", "));
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
@@ -641,7 +651,8 @@ pub async fn rebuild(pool: &MySqlPool, http: &reqwest::Client, cache_dir: &Path,
             q = q.bind(key).bind(term).bind(k).bind(cjk).bind(*source);
         }
         s.names += q.execute(pool).await?.rows_affected();
-        progress.report((n * 1000) as u64, Some(rows.len() as u64), "dictionary: writing").await;
+        let written = (n * 1000 + chunk.len()) as u64;
+        progress.report(written, Some(total), &format!("dictionary: writing {} of {} name(s)", super::jobs::thousands(written), super::jobs::thousands(total))).await;
     }
     forget();
     progress

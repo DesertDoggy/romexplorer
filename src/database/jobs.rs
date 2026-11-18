@@ -104,6 +104,10 @@ pub struct Progress {
     prefix: std::sync::Mutex<Option<String>>,
     /// When [`Progress::cancelled`] last asked the database, and what it heard.
     cancel_seen: std::sync::Mutex<(Option<std::time::Instant>, bool)>,
+    /// The last detail [`Progress::set_detail`] wrote (a [`Steps`] list). A later
+    /// [`Progress::report_detail`] adds its own keys to it instead of replacing it, so a job
+    /// made of steps can still show the files it is reading inside one of them.
+    kept: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
 /// A slice of a larger whole: reports made while it is set are fitted into
@@ -138,11 +142,11 @@ impl Progress {
     const INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
     pub fn new(pool: &MySqlPool, job_id: u64) -> Self {
-        Self { target: Some((pool.clone(), job_id)), last: std::sync::Mutex::new(None), frame: std::sync::Mutex::new(None), inner: std::sync::Mutex::new(None), prefix: std::sync::Mutex::new(None), cancel_seen: std::sync::Mutex::new((None, false)) }
+        Self { target: Some((pool.clone(), job_id)), last: std::sync::Mutex::new(None), frame: std::sync::Mutex::new(None), inner: std::sync::Mutex::new(None), prefix: std::sync::Mutex::new(None), cancel_seen: std::sync::Mutex::new((None, false)), kept: std::sync::Mutex::new(None) }
     }
 
     pub fn none() -> Self {
-        Self { target: None, last: std::sync::Mutex::new(None), frame: std::sync::Mutex::new(None), inner: std::sync::Mutex::new(None), prefix: std::sync::Mutex::new(None), cancel_seen: std::sync::Mutex::new((None, false)) }
+        Self { target: None, last: std::sync::Mutex::new(None), frame: std::sync::Mutex::new(None), inner: std::sync::Mutex::new(None), prefix: std::sync::Mutex::new(None), cancel_seen: std::sync::Mutex::new((None, false)), kept: std::sync::Mutex::new(None) }
     }
 
     /// Whether a cancel was asked for this job (or it was marked cancelled while running).
@@ -202,6 +206,7 @@ impl Progress {
     /// the bar and message as they are: a job made of steps says which are done, and how
     /// each came out, as each one ends.
     pub async fn set_detail(&self, detail: &serde_json::Value) {
+        *self.kept.lock().unwrap_or_else(|p| p.into_inner()) = Some(detail.clone());
         let Some((pool, id)) = &self.target else { return };
         if let Err(e) = sqlx::query("UPDATE jobs SET progress_detail = ? WHERE id = ?").bind(detail).bind(id).execute(pool).await {
             log::warn!("job {id}: progress detail write failed: {e}");
@@ -244,7 +249,8 @@ impl Progress {
         let frame = *self.frame.lock().unwrap_or_else(|p| p.into_inner());
         let inner = *self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let prefix = self.prefix.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        Self { target: self.target.clone(), last: std::sync::Mutex::new(None), frame: std::sync::Mutex::new(frame), inner: std::sync::Mutex::new(inner), prefix: std::sync::Mutex::new(prefix), cancel_seen: std::sync::Mutex::new((None, false)) }
+        let kept = self.kept.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        Self { target: self.target.clone(), last: std::sync::Mutex::new(None), frame: std::sync::Mutex::new(frame), inner: std::sync::Mutex::new(inner), prefix: std::sync::Mutex::new(prefix), cancel_seen: std::sync::Mutex::new((None, false)), kept: std::sync::Mutex::new(kept) }
     }
 
     /// `done` out of `total` (when known), and a short note on the current step.
@@ -307,16 +313,30 @@ impl Progress {
         let Some((pool, id)) = &self.target else { return };
         let (done, total) = self.framed(done, total);
         let message = self.prefixed(message);
+        let detail = self.with_kept(detail);
         if let Err(e) = sqlx::query("UPDATE jobs SET progress_done = ?, progress_total = ?, progress_message = ?, progress_detail = ? WHERE id = ?")
             .bind(done)
             .bind(total)
             .bind(message)
-            .bind(detail)
+            .bind(&detail)
             .bind(id)
             .execute(pool)
             .await
         {
             log::warn!("job {id}: progress write failed: {e}");
+        }
+    }
+
+    /// `detail`'s keys over the kept step list, so neither hides the other.
+    fn with_kept(&self, detail: &serde_json::Value) -> serde_json::Value {
+        match (self.kept.lock().unwrap_or_else(|p| p.into_inner()).clone(), detail) {
+            (Some(serde_json::Value::Object(mut kept)), serde_json::Value::Object(own)) => {
+                for (k, v) in own {
+                    kept.insert(k.clone(), v.clone());
+                }
+                serde_json::Value::Object(kept)
+            }
+            _ => detail.clone(),
         }
     }
 
@@ -746,6 +766,11 @@ pub fn lane_of(job_type: JobType, payload: &serde_json::Value) -> String {
         // Network only, paced by the provider's rate limit: one batch at a time, so two
         // never share (and halve) that limit.
         JobType::AiBatchRate => "ai".to_string(),
+        // The lane of the main server's sync: the sync a user queues right after replacing
+        // the catalogue must run on the emptied one, not beside the clear.
+        JobType::CatalogClear => format!("sync:{}", payload.get("source_id").and_then(|v| v.as_u64()).unwrap_or(0)),
+        // Writes collection sets only: a lane of its own, so it never waits behind a scan.
+        JobType::SetImport => "sets".to_string(),
     }
 }
 
@@ -888,6 +913,9 @@ fn row_to_job(row: &sqlx::mysql::MySqlRow) -> Result<JobRow, DatabaseError> {
         claimed_at: row.try_get("claimed_at")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        // Worked out by the database, on its own clock, so a browser in another time zone or
+        // with a wrong clock still gets the right number.
+        elapsed_secs: row.try_get::<Option<i64>, _>("elapsed_secs")?.map(|s| s.max(0) as u64),
         progress_done: row.try_get("progress_done")?,
         progress_total: row.try_get("progress_total")?,
         progress_message: row.try_get("progress_message")?,
@@ -897,7 +925,8 @@ fn row_to_job(row: &sqlx::mysql::MySqlRow) -> Result<JobRow, DatabaseError> {
     })
 }
 
-const JOB_SELECT: &str = "SELECT id, job_type, status, payload, attempts, priority, in_turn, last_error, progress_done, progress_total, progress_message, progress_detail, result, cancel_requested, claimed_at, created_at, updated_at FROM jobs";
+const JOB_SELECT: &str = "SELECT id, job_type, status, payload, attempts, priority, in_turn, last_error, progress_done, progress_total, progress_message, progress_detail, result, cancel_requested, claimed_at, created_at, updated_at, \
+     CAST(CASE WHEN claimed_at IS NULL OR status = 'pending' THEN NULL WHEN status = 'in_progress' THEN TIMESTAMPDIFF(SECOND, claimed_at, NOW()) ELSE TIMESTAMPDIFF(SECOND, claimed_at, updated_at) END AS SIGNED) AS elapsed_secs FROM jobs";
 
 /// Newest first, optionally narrowed by type and/or status. Returns the page and the total
 /// matching count.
@@ -1103,4 +1132,103 @@ mod tests {
         assert_eq!(FileScanMode::from_name("new_only"), Some(FileScanMode::NewOnly));
         assert_eq!(FileScanMode::from_name("quickscan"), None);
     }
+}
+
+/// Runs `job` on the blocking pool and, while it runs, reports what it publishes through
+/// the `0.0..=100.0` callback it is handed as "<label> NN%" (or "<label> finishing" at
+/// 100%). For one large file inside a job -- a read-back verify, an integrity hash, a copy
+/// target being checked -- so the row moves through the file instead of sitting on its
+/// name for minutes. `done`/`total` place the file in the job's bar: `done` is where the
+/// bar was before this file, `span` how much of it this file takes (both in the job's own
+/// unit, usually bytes).
+pub async fn with_fraction<T, F>(progress: &Progress, done: u64, span: u64, total: Option<u64>, label: &str, job: F) -> std::result::Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut dyn FnMut(f32)) -> T + Send + 'static,
+{
+    const TICK: std::time::Duration = std::time::Duration::from_millis(400);
+    let bits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits()));
+    let published = std::sync::Arc::clone(&bits);
+    let mut handle = tokio::task::spawn_blocking(move || {
+        let mut on_progress = move |pct: f32| published.store(pct.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        job(&mut on_progress)
+    });
+    loop {
+        tokio::select! {
+            joined = &mut handle => return joined,
+            _ = tokio::time::sleep(TICK) => {
+                let pct = f32::from_bits(bits.load(std::sync::atomic::Ordering::Relaxed)).clamp(0.0, 100.0);
+                let within = (span as f64 * (pct as f64 / 100.0)) as u64;
+                let note = if pct >= 100.0 { "finishing".to_string() } else { format!("{pct:.0}%") };
+                progress.report(done + within, total, &format!("{label} {note}")).await;
+            }
+        }
+    }
+}
+
+/// A count that a blocking walk bumps and an async loop reports, with the folder it is in:
+/// "walking X: 12,400 found so far, in <folder>". The walk calls [`WalkCount::found`] and
+/// [`WalkCount::enter`]; [`WalkCount::report_while`] polls them every second until the walk
+/// returns.
+#[derive(Clone, Default)]
+pub struct WalkCount {
+    found: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    folder: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl WalkCount {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn found(&self, n: u64) {
+        self.found.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn enter(&self, folder: &std::path::Path) {
+        *self.folder.lock().unwrap_or_else(|p| p.into_inner()) = folder.display().to_string();
+    }
+
+    pub fn count(&self) -> u64 {
+        self.found.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The running message, "<what>: 12,400 <unit> found so far, in <folder>".
+    pub fn message(&self, what: &str, unit: &str) -> String {
+        let folder = self.folder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let place = if folder.is_empty() { String::new() } else { format!(", in {folder}") };
+        format!("{what}: {} {unit} found so far{place}", thousands(self.count()))
+    }
+
+    /// Runs `walk` on the blocking pool, reporting [`WalkCount::message`] every second
+    /// with no total, until it returns.
+    pub async fn report_while<T, F>(&self, progress: &Progress, what: &str, unit: &str, walk: F) -> std::result::Result<T, tokio::task::JoinError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        progress.force(0, None, &self.message(what, unit)).await;
+        let mut handle = tokio::task::spawn_blocking(walk);
+        loop {
+            tokio::select! {
+                joined = &mut handle => return joined,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    progress.report(self.count(), None, &self.message(what, unit)).await;
+                }
+            }
+        }
+    }
+}
+
+/// 12400 -> "12,400", for counts in progress messages.
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }

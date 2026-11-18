@@ -196,6 +196,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             server_config = server_config.with_root_password(root);
         }
         let mut db = MariaDbServer::new(server_config);
+        romexplorer::common::startup::report("Starting the database");
         db.start().await?;
         eprintln!("database cache {} ({} MB)", stored.buffer_pool.to_text(), stored.buffer_pool.bytes() >> 20);
         eprintln!("started embedded mariadbd on 127.0.0.1:{} (datadir {})", config.port, paths.mariadb_data_dir().display());
@@ -226,6 +227,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
     });
 
+    // Logged step by step (`common::startup`): the schema updates and data upgrades say which
+    // one is running. The listener starts only after them, so there is no start page to show.
+    romexplorer::common::startup::report("Opening the database");
     let app = App::open(paths.clone(), config.clone()).await?;
     romexplorer::database::warm::start(&app.pool, &stored, local_db);
     // A server is standalone: it is what client machines take their catalogue from. One
@@ -270,6 +274,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         match worker::take_worker_lock(&app.pool).await {
             Some(conn) => {
                 _worker_lock = Some(conn);
+                romexplorer::common::startup::report("Starting the worker");
                 let worker_app = App::with_pool(app.pool.clone(), paths.clone(), config.clone())?;
                 let w = Worker::new(worker_app).await?;
                 eprintln!("background worker running (jobs run here; --no-worker to use a separate romexplorer_worker)");

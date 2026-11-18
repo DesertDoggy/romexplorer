@@ -129,7 +129,16 @@ pub async fn run(app: &App, request: &IntegrityRequest, progress: &Progress, job
             break;
         }
         let name = Path::new(&file.path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| file.path.clone());
-        progress.report(done, Some(total), &format!("file {} of {count}: {name}", i + 1)).await;
+        let label = format!(
+            "file {} of {} ({} ok, {} mismatched, {} missing): {name}",
+            crate::database::jobs::thousands(i as u64 + 1),
+            crate::database::jobs::thousands(count as u64),
+            crate::database::jobs::thousands(summary.ok),
+            crate::database::jobs::thousands(summary.mismatched.len() as u64),
+            crate::database::jobs::thousands(summary.missing.len() as u64)
+        );
+        progress.report(done, Some(total), &label).await;
+        let before = done;
         done += file.size;
 
         // Gone from disk is not a mismatch, it is the thing a scan soft-deletes for. Say so
@@ -141,7 +150,7 @@ pub async fn run(app: &App, request: &IntegrityRequest, progress: &Progress, job
         }
         // One read answers both questions: does it still match a hash the catalogue already
         // had, and does the catalogue now also hold the one we want everything to have.
-        let (outcome, read) = match super::copy::check_file(app, Path::new(&file.path), file.content_id, populate).await {
+        let (outcome, read) = match check_file(app, Path::new(&file.path), file.content_id, populate, progress, before, file.size, total, &label).await {
             Ok(v) => v,
             Err(e) => {
                 summary.errors.push(format!("{}: {}", file.path, e.message));
@@ -178,6 +187,43 @@ pub async fn run(app: &App, request: &IntegrityRequest, progress: &Progress, job
     }
     progress.force(done, Some(total), &one_liner(&summary)).await;
     Ok(summary)
+}
+
+/// `copy::check_file` with the bar moving through the file: the same comparison and the same
+/// rule (the populate hash is recorded only after a match), but hashed under
+/// `jobs::with_fraction`, so a 40 GB image reads "<label> 63%" instead of sitting on its name.
+#[allow(clippy::too_many_arguments)]
+async fn check_file(app: &App, path: &Path, content_id: u64, populate: crate::common::models::HashAlgorithms, progress: &Progress, done: u64, span: u64, total: u64, label: &str) -> Result<(CheckOutcome, u64)> {
+    use crate::rom::hash::HashFlags;
+    use super::copy::{algorithm_name, comparison_hash, record_hash, recorded_hash};
+
+    let Some((algorithm, expected)) = comparison_hash(app, content_id, Some(populate)).await? else {
+        return Ok((CheckOutcome::Unverifiable, 0));
+    };
+    let already_has_populate = recorded_hash(app, content_id, algorithm_name(populate)).await?.is_some();
+    let mut flags = HashFlags::algorithm_to_flag(algorithm);
+    if !already_has_populate {
+        flags |= HashFlags::algorithm_to_flag(populate);
+    }
+    let owned = path.to_path_buf();
+    let report = crate::database::jobs::with_fraction(progress, done, span, Some(total), label, move |on_progress| crate::rom::hash::hash(&owned, &crate::rom::hash::HashOptions { flags, ..Default::default() }, on_progress))
+        .await
+        .map_err(|e| Error::internal(e.to_string()))?
+        .map_err(|e| Error::internal(format!("{}: {e}", path.display())))?;
+    let read = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+    let got = report.get(algorithm).unwrap_or_default().to_string();
+    if !got.eq_ignore_ascii_case(&expected) {
+        return Ok((CheckOutcome::Mismatched { algorithm, expected, got }, read));
+    }
+    let mut recorded = false;
+    if !already_has_populate {
+        if let Some(value) = report.get(populate) {
+            record_hash(app, content_id, algorithm_name(populate), value).await?;
+            recorded = true;
+        }
+    }
+    Ok((CheckOutcome::Matched { algorithm, recorded }, read))
 }
 
 /// Only a file that actually matched is stamped: a mismatch must stay at the front of the

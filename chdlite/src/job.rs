@@ -15,7 +15,7 @@ use romexplorer::rom::detect::{hinted_metadata_cycle, HeuristicFlags};
 use romexplorer::rom::dolphin_wrapper::{DiscCompression, DiscReader};
 use romexplorer::rom::hash::HashFlags;
 use romexplorer::rom::models::{ArchiveArgs, ChdArgs, ChdCodecs, ChdPresets, RvzArgs, RvzBlockSize, RvzCodecs};
-use romexplorer::rom::operation::{Detect, ProgressEvent, Single, SingleArgs, SingleError, SingleOutcome, StageResult, StageSwitches};
+use romexplorer::rom::operation::{Detect, ProgressEvent, Single, SingleArgs, SingleError, SingleOutcome, Stage, StageResult, StageSwitches};
 use romexplorer::rom::platforms::helpers::{is_chd_platform, is_rvz_platform};
 use romexplorer::rom::sheet_build::{rebuild_cue, Expected, TrackFile};
 
@@ -58,12 +58,116 @@ pub struct JobSpec {
     /// of its jobs would write the same file ([`crate::batch`]).
     #[serde(default)]
     pub output_stem: Option<String>,
+    /// What [`classify`] made of the input, when the batch already worked it out (for the
+    /// lossy warning), so the job does not read the image again.
+    #[serde(default)]
+    pub classified: Option<Input>,
+}
+
+impl JobSpec {
+    pub fn new(mode: Mode, input: PathBuf, settings: Settings, threads: Option<u32>) -> Self {
+        Self { mode, input, settings, threads, output_stem: None, classified: None }
+    }
+
+    /// The input's kind: the one already worked out, or [`classify`]'s.
+    pub fn input_kind(&self) -> Result<Input, String> {
+        match &self.classified {
+            Some(input) => Ok(input.clone()),
+            None => classify(&self.input),
+        }
+    }
+}
+
+/// Where a running job is: its bar, the step it is on, and that step's bytes and item.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Progress {
+    /// 0..=100, the whole job.
+    pub percent: f32,
+    /// What it is doing ("hashing", "compressing"); empty when nothing more is known.
+    #[serde(default)]
+    pub stage: String,
+    /// The step's bytes; `bytes_total` 0 when it does not count bytes.
+    #[serde(default)]
+    pub bytes_done: u64,
+    #[serde(default)]
+    pub bytes_total: u64,
+    /// The file inside the job being worked on ("file 3 of 25: Track 03.bin").
+    #[serde(default)]
+    pub item: Option<String>,
+}
+
+impl Progress {
+    pub fn percent(percent: f32) -> Self {
+        Self { percent, ..Self::default() }
+    }
+
+    /// A step that counts bytes: the percent is its own.
+    pub fn bytes(stage: &str, done: u64, total: u64) -> Self {
+        let percent = if total > 0 { done.min(total) as f32 * 100.0 / total as f32 } else { 0.0 };
+        Self { percent, stage: stage.to_string(), bytes_done: done, bytes_total: total, item: None }
+    }
+
+    /// "compressing 1.2 / 4.7 GB (26%) · file 3 of 25: Track 03.bin", for a status line.
+    pub fn describe(&self) -> String {
+        if self.stage.is_empty() && self.bytes_total == 0 && self.item.is_none() && self.percent <= 0.0 {
+            return "starting".to_string();
+        }
+        let mut text = self.stage.clone();
+        if self.bytes_total > 0 {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&human_pair(self.bytes_done, self.bytes_total));
+        }
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(&format!("({:.0}%)", self.percent.clamp(0.0, 100.0)));
+        if let Some(item) = &self.item {
+            text.push_str(" · ");
+            text.push_str(item);
+        }
+        text
+    }
+}
+
+/// "1.2 / 4.7 GB": both in the total's unit.
+pub fn human_pair(done: u64, total: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut unit = 0;
+    let mut scale = 1.0f64;
+    while total as f64 / scale >= 1024.0 && unit < UNITS.len() - 1 {
+        scale *= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{done} / {total} B")
+    } else {
+        format!("{:.1} / {:.1} {}", done as f64 / scale, total as f64 / scale, UNITS[unit])
+    }
+}
+
+/// A byte-counting library callback as this job's progress, `stage` naming the step.
+fn reporter<'a>(stage: &'a str, counts_bytes: bool, on_event: &'a mut dyn FnMut(Event) -> bool) -> impl FnMut(u64, u64) -> bool + 'a {
+    let mut last = -1.0f32;
+    move |done, total| {
+        let mut progress = Progress::bytes(stage, done, total);
+        // A listener only needs to hear about visible movement.
+        if progress.percent - last < 0.2 && done < total {
+            return true;
+        }
+        last = progress.percent;
+        if !counts_bytes {
+            progress.bytes_done = 0;
+            progress.bytes_total = 0;
+        }
+        on_event(Event::Progress(progress))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
-    /// 0..=100.
-    Progress(f32),
+    Progress(Progress),
     Message(String),
     /// An output this job has claimed ([`claim_output`]) and is about to write, so whoever
     /// supervises it can roll a partial one back ([`Writing::undo`]).
@@ -126,7 +230,7 @@ pub fn run_one(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Resul
 }
 
 fn run_inner(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Result<String, String> {
-    let input = classify(&spec.input)?;
+    let input = spec.input_kind()?;
     match (spec.mode, input) {
         (Mode::Read, input) => read(&spec.input, &input, &spec.settings),
         (Mode::Hash, _) => content_pass(spec, None, on_event),
@@ -170,7 +274,11 @@ pub enum Planned {
 
 /// [`Planned`] for `spec`: classifies the input and, for an extraction, lists the content.
 pub fn plan(spec: &JobSpec) -> Planned {
-    let Ok(input) = classify(&spec.input) else { return Planned::Nothing };
+    // Read and Hash write nothing: no need to read the image to know it.
+    if matches!(spec.mode, Mode::Read | Mode::Hash) {
+        return Planned::Nothing;
+    }
+    let Ok(input) = spec.input_kind() else { return Planned::Nothing };
     let dir = planned_dir(spec);
     let named = |extension: Option<&str>| Planned::Named { dir: dir.clone(), stem: out_stem(spec), extension: extension.map(str::to_string) };
     let content = |chds: bool| {
@@ -387,7 +495,7 @@ fn create(spec: &JobSpec, target: Target, source: &Path, needs_cue: bool, on_eve
                 on_event(Event::Message(format!("codecs {}", codecs.iter().map(|c| format!("{c:?}").to_lowercase()).collect::<Vec<_>>().join("+"))));
             }
         }
-        run_single(&source, args, on_event)
+        run_single(&source, args, "compressing", on_event)
     });
     if let Some(cue) = temp_cue {
         let _ = std::fs::remove_file(cue);
@@ -499,15 +607,7 @@ fn create_wua(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> b
     // chdlite checks no DAT, so the record says where it came from and nothing more.
     let record = cemu_wrapper::SourceRecord { name: image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), size: wud_bytes, ..Default::default() };
     let record = serde_json::to_value(record).map_err(|err| err.to_string())?;
-    let mut last = -1.0f32;
-    cemu_wrapper::create(&[source], keys.as_deref(), Some(&record), &output, |done, total| {
-        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
-        if percent - last < 0.2 {
-            return true;
-        }
-        last = percent;
-        on_event(Event::Progress(percent))
-    })
+    cemu_wrapper::create(&[source], keys.as_deref(), Some(&record), &output, reporter("writing the WUA", true, on_event))
     .map_err(|err| err.to_string())?;
     claim.finish();
 
@@ -549,15 +649,7 @@ fn create_zar(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> b
         let record = cemu_wrapper::SourceRecord { name, size: Some(size), crc32: hashes.crc32.clone(), md5: hashes.md5.clone(), sha1: hashes.sha1.clone(), verified: false };
         serde_json::to_value(record).unwrap_or_default()
     };
-    let mut last = -1.0f32;
-    let written = romexplorer::rom::xbox::create_zar(image, &output, record, |done, total| {
-        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
-        if percent - last < 0.2 {
-            return true;
-        }
-        last = percent;
-        on_event(Event::Progress(percent))
-    })?;
+    let written = romexplorer::rom::xbox::create_zar(image, &output, record, reporter("writing the ZAR", true, on_event))?;
     claim.finish();
     let files: usize = written.manifest.titles.iter().map(|t| t.files.len()).sum();
     Ok(format!("ZAR: {}, {files} files", ratio(written.image_size, &output)))
@@ -571,15 +663,7 @@ fn create_xiso(spec: &JobSpec, image: &Path, on_event: &mut dyn FnMut(Event) -> 
     };
     on_event(Event::Message(format!("XISO -> {}", output.display())));
     on_event(Event::Output(output.clone()));
-    let mut last = -1.0f32;
-    romexplorer::rom::xbox::rewrite_xiso(image, &output, |done, total| {
-        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
-        if percent - last < 0.2 {
-            return true;
-        }
-        last = percent;
-        on_event(Event::Progress(percent))
-    })?;
+    romexplorer::rom::xbox::rewrite_xiso(image, &output, reporter("writing the XISO", true, on_event))?;
     claim.finish();
     let input_bytes = std::fs::metadata(image).map(|m| m.len()).unwrap_or(0);
     Ok(format!("XISO: {}", ratio(input_bytes, &output)))
@@ -619,15 +703,20 @@ fn create_from_container(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool
     std::fs::create_dir_all(&scratch).map_err(|err| format!("{}: {err}", scratch.display()))?;
     // Half the bar each: the extract, then the CHDs. Scratch files go with the scratch
     // folder; only the CHDs are this job's outputs.
-    fn relay(event: Event, offset: f32, scale: f32, scratch: &Path, on_event: &mut dyn FnMut(Event) -> bool) -> bool {
+    // Each step's progress says which step it is: "step 2 of 2: disc 2 of 3 -> CD CHD, compressing".
+    fn relay(event: Event, offset: f32, scale: f32, step: &str, scratch: &Path, on_event: &mut dyn FnMut(Event) -> bool) -> bool {
         match event {
-            Event::Progress(p) => on_event(Event::Progress(offset + p * scale)),
+            Event::Progress(p) => {
+                let stage = if p.stage.is_empty() { step.to_string() } else { format!("{step}, {}", p.stage) };
+                on_event(Event::Progress(Progress { percent: offset + p.percent * scale, stage, ..p }))
+            }
             Event::Output(path) if path.starts_with(scratch) => true,
             other => on_event(other),
         }
     }
     let result = (|| {
-        content_pass(spec, Some(scratch.clone()), &mut |event| relay(event, 0.0, 0.5, &scratch, on_event))?;
+        on_event(Event::Message("step 1 of 2: extracting to a scratch folder".to_string()));
+        content_pass(spec, Some(scratch.clone()), &mut |event| relay(event, 0.0, 0.5, "step 1 of 2: extracting to scratch", &scratch, on_event))?;
         let mut sources: Vec<PathBuf> = std::fs::read_dir(&scratch)
             .map_err(|err| format!("{}: {err}", scratch.display()))?
             .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -642,9 +731,11 @@ fn create_from_container(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool
         let count = sources.len() as f32;
         for (i, source) in sources.iter().enumerate() {
             let target = if crate::classify::extension(source) == "cue" { Target::CdChd } else { Target::DvdChd };
-            let disc = JobSpec { mode: spec.mode, input: source.clone(), settings: settings.clone(), threads: spec.threads, output_stem: None };
+            let disc = JobSpec::new(spec.mode, source.clone(), settings.clone(), spec.threads);
             let offset = 50.0 + 50.0 * i as f32 / count;
-            done.push(create(&disc, target, source, false, &mut |event| relay(event, offset, 0.5 / count, &scratch, on_event))?);
+            let step = format!("step 2 of 2: disc {} of {} -> {}", i + 1, sources.len(), target.label());
+            on_event(Event::Message(step.clone()));
+            done.push(create(&disc, target, source, false, &mut |event| relay(event, offset, 0.5 / count, &step, &scratch, on_event))?);
         }
         Ok(done.join("\n"))
     })();
@@ -777,15 +868,8 @@ fn convert_n3ds(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Resu
     };
     on_event(Event::Message(format!("3DS {} -> {}", info.title_kind, output.display())));
     on_event(Event::Output(output.clone()));
-    let mut last = -1.0f32;
-    let outcome = n3ds::convert(&spec.input, &output, target, &keys, &mut |done, total| {
-        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
-        if percent - last < 0.2 {
-            return true;
-        }
-        last = percent;
-        on_event(Event::Progress(percent))
-    })?;
+    // The library counts in passes, not bytes.
+    let outcome = n3ds::convert(&spec.input, &output, target, &keys, &mut reporter("decrypting", false, on_event))?;
     claim.finish();
     let input_bytes = std::fs::metadata(&spec.input).map(|m| m.len()).unwrap_or(0);
     let what = match outcome {
@@ -806,16 +890,9 @@ fn extract_n3ds(spec: &JobSpec, on_event: &mut dyn FnMut(Event) -> bool) -> Resu
     let Some(claim) = claim_output(&output, spec.settings.output.force)? else {
         return Ok(format!("skipped, {} already exists", output.display()));
     };
+    on_event(Event::Message(format!(".{ext} -> {}", output.display())));
     on_event(Event::Output(output.clone()));
-    let mut last = -1.0f32;
-    romexplorer::rom::n3ds::z3ds_decompress(&spec.input, &output, &mut |done, total| {
-        let percent = if total > 0 { done as f32 * 100.0 / total as f32 } else { 0.0 };
-        if percent - last < 0.2 {
-            return true;
-        }
-        last = percent;
-        on_event(Event::Progress(percent))
-    })?;
+    romexplorer::rom::n3ds::z3ds_decompress(&spec.input, &output, &mut reporter("decompressing", true, on_event))?;
     claim.finish();
     Ok(format!(".{ext} -> .{plain} ({})", human(std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0))))
 }
@@ -935,17 +1012,36 @@ fn decode_threads(spec: &JobSpec) -> DecodeThreads {
 
 /// Runs one `Single`, its progress as this job's events; `on_event` returning `false`
 /// cancels it.
-fn run_single(input: &Path, args: SingleArgs, on_event: &mut dyn FnMut(Event) -> bool) -> Result<SingleOutcome, String> {
+/// `verb` names the job's main step ("compressing", "extracting", "hashing"): `Single` reports
+/// reading the input under its hash stage even when the bytes are going to chdman.
+fn run_single(input: &Path, args: SingleArgs, verb: &str, on_event: &mut dyn FnMut(Event) -> bool) -> Result<SingleOutcome, String> {
     let mut last = -1.0f32;
+    // The file inside the input being worked on, from `Single`'s per-file message.
+    let mut item: Option<String> = None;
+    let mut last_stage = "";
     Single::new(input, args)
         .run(&mut |event: &ProgressEvent| {
             let percent = event.total_fraction * 100.0;
+            let stage = match (event.stage, event.message) {
+                (_, Some("detecting" | "detected")) | (Stage::Detect, _) => "detecting the platform",
+                // chdman finishing the file after the last byte went in.
+                (_, Some("archiving")) => "finishing",
+                _ => verb,
+            };
+            let mut moved = false;
+            if let Some(message) = event.message.filter(|m| !matches!(*m, "detecting" | "detected" | "archiving" | "done")) {
+                moved = item.as_deref() != Some(message);
+                item = Some(message.to_string());
+            }
             // A listener only needs to hear about visible movement.
-            if percent - last < 0.2 {
+            if percent - last < 0.2 && !moved && stage == last_stage {
                 return true;
             }
             last = percent;
-            on_event(Event::Progress(percent))
+            last_stage = stage;
+            // Detection's bytes are a nominal cost, not anything read.
+            let (bytes_done, bytes_total) = if event.stage == Stage::Detect { (0, 0) } else { (event.bytes_done, event.bytes_total) };
+            on_event(Event::Progress(Progress { percent, stage: stage.to_string(), bytes_done, bytes_total, item: item.clone() }))
         })
         .map_err(|err| match err {
             SingleError::Cancelled => "cancelled".to_string(),
@@ -1030,6 +1126,11 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
         for file in &plan.files {
             on_event(Event::Output(dir.join(&file.name)));
         }
+    } else {
+        let names: Vec<String> = spec.settings.hash.algorithms.iter().map(|name| name.trim().to_ascii_lowercase()).filter(|name| !name.is_empty()).collect();
+        let names = if names.is_empty() { "sha1".to_string() } else { names.join("+") };
+        let files = if plan.files.len() > 1 { format!("{} files, ", plan.files.len()) } else { String::new() };
+        on_event(Event::Message(format!("hashing {names} ({files}{})", human(plan.total_bytes()))));
     }
 
     // The RA hash is worked out apart (`crate::ra`). For most cartridge systems it is the
@@ -1044,7 +1145,7 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
         decode_threads: decode_threads(spec),
         ..base
     };
-    let outcome = run_single(&spec.input, args, on_event)?;
+    let outcome = run_single(&spec.input, args, if extracting { "extracting" } else { "hashing" }, on_event)?;
     if extracting {
         if input.is_archive() {
             stage_ok(&outcome.stages.extract, "extract")?;
@@ -1080,6 +1181,7 @@ fn content_pass(spec: &JobSpec, out_dir: Option<PathBuf>, on_event: &mut dyn FnM
         if records.len() > 1 {
             lines.push(spec.input.display().to_string());
         }
+        on_event(Event::Progress(Progress { percent: 99.9, stage: "working out the RetroAchievements hash".to_string(), ..Progress::default() }));
         lines.extend(crate::ra::lines(&spec.input, file_md5));
     }
     Ok(lines.join("\n"))
@@ -1313,7 +1415,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.output.dir = out.to_string_lossy().into_owned();
         settings.output.force = true;
-        let spec = JobSpec { mode: Mode::Lite, input, settings, threads: Some(1), output_stem: None };
+        let spec = JobSpec::new(Mode::Lite, input, settings, Some(1));
         assert!(run_one(&spec, &mut |_| true).is_err());
         assert_eq!(std::fs::read(out.join("Game.chd")).unwrap(), b"previous");
         assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1, "no marks or old copies left");

@@ -497,6 +497,7 @@ impl Worker {
                 // Only what changed since the last completed pass (and what it could merge
                 // with), unless there was none, the catalogue was replaced since, or a full
                 // pass was asked for (which forgets the mark).
+                progress.force(0, None, "finding the titles changed since the last pass").await;
                 let start = merge::pass_start(&self.app.pool).await?;
                 let stored = merge::stored_pass(&self.app.pool).await?;
                 let scope = match merge::usable_pass(stored.clone(), &start) {
@@ -508,9 +509,9 @@ impl Worker {
                     None => "full pass".to_string(),
                 };
                 log::info!("title_dedupe job {}: {what}", job.id);
-                // Seven steps, each counting in its own unit (and some of them set-based
+                // Eight steps, each counting in its own unit (and some of them set-based
                 // statements with nothing to count): the row says which step it is on, the
-                // bar gives each a seventh, and the live detail lists all seven with how each
+                // bar gives each an eighth, and the live detail lists all eight with how each
                 // came out (the Scan and Jobs tabs show it).
                 let mut steps = jobs::Steps::new(
                     &progress,
@@ -522,6 +523,7 @@ impl Worker {
                         ("versions", "Find each game's official versions"),
                         ("basegames", "Link ports, remakes and add-ons to their base game"),
                         ("families", "Collections, families and definitive versions"),
+                        ("title_cleanup", "Clean-up"),
                     ],
                     &what,
                 );
@@ -574,13 +576,14 @@ impl Worker {
                 crate::database::title_family::run_families(&self.app.pool, &mut families, &progress).await?;
                 log::info!("title_dedupe job {}: {}", job.id, serde_json::to_string(&families).unwrap_or_default());
                 steps.done(format!("{} collection link(s), {} root game(s) changed, {} family(ies)", families.bundles, families.roots_changed, families.families)).await;
-                steps.finish();
+                steps.start(8).await;
                 // Art from games the titles it touched are no longer linked to.
                 // The first pass after this came in looks at everything once: art left by links
                 // that were put right before anything took it off.
                 const STALE_ONCE: &str = "stale_media_0056";
                 let first_time = sqlx::query_scalar::<_, String>("SELECT name FROM data_migrations WHERE name = ?").bind(STALE_ONCE).fetch_optional(&self.app.pool).await?.is_none();
                 let touched: Option<Vec<u64>> = if first_time { None } else { scope.dirty.as_ref().map(|d| d.iter().copied().collect()) };
+                progress.force(0, Some(2), "removing art from games no longer linked").await;
                 let detached = crate::database::providers::media::detach_stale(&self.app.pool, touched.as_deref()).await?;
                 if detached > 0 {
                     log::info!("title_dedupe job {}: detached {detached} piece(s) of art from games no longer linked", job.id);
@@ -589,11 +592,14 @@ impl Worker {
                 if first_time {
                     sqlx::query("INSERT IGNORE INTO data_migrations (name) VALUES (?)").bind(STALE_ONCE).execute(&self.app.pool).await?;
                 }
+                progress.force(1, Some(2), "saving the pass mark").await;
                 merge::clear_dirty(&self.app.pool).await?;
                 // Not when a full pass was asked for while this one ran: that one starts over.
                 if merge::stored_pass(&self.app.pool).await? == stored {
                     merge::save_pass(&self.app.pool, &start).await?;
                 }
+                steps.done(format!("{detached} piece(s) of art taken off games no longer linked")).await;
+                steps.finish();
                 progress.force(1, Some(1), &format!("done ({what}): {} merge(s), {} title(s) folded, {} suggestion(s) in the backlog, {} DLC / update title(s) bundled into {} game(s)", summary.merges, summary.titles_merged, summary.suggestions, bundle.bundled, bundle.games)).await;
                 Ok(())
             }
@@ -853,6 +859,25 @@ impl Worker {
                 log::info!("rom_audio_index job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());
                 Ok(())
             }
+            JobType::CatalogClear => {
+                let media: api::sources::MediaOnReplace = job.payload.get("media").cloned().and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default();
+                let progress = Progress::new(&self.app.pool, job.id);
+                let removed = api::sources::clear_catalog(&self.app, media, &progress).await?;
+                let message = format!("catalogue cleared: {} rows removed -- sync from the main server to fill it", jobs::thousands(removed));
+                progress.finish(1, Some(1), &message, &serde_json::json!({ "rows_removed": removed })).await;
+                log::info!("catalog_clear job {}: {message}", job.id);
+                Ok(())
+            }
+            JobType::SetImport => {
+                let request: api::set_file::ImportRequest =
+                    serde_json::from_value(job.payload.clone()).map_err(|e| DatabaseError::Config(format!("set_import: bad payload: {e}")))?;
+                let progress = Progress::new(&self.app.pool, job.id);
+                let summary = api::set_file::import(&self.app, &request, &progress).await?;
+                let message = api::set_file::one_liner(&summary);
+                progress.finish(1, Some(1), &message, &summary).await;
+                log::info!("set_import job {}: {message}", job.id);
+                Ok(())
+            }
             JobType::RaBadges => {
                 let request: romexplorer_types::jobs::RaBadgesRequest =
                     serde_json::from_value(job.payload.clone()).map_err(|e| DatabaseError::Config(format!("ra_badges: bad payload: {e}")))?;
@@ -903,8 +928,10 @@ impl Worker {
             }
             JobType::RaPatchDownload => {
                 let md5 = payload_str(job, "md5").unwrap_or_default().to_string();
-                let summary = crate::database::ra_patches::download(&self.app.pool, &self.app.http, &md5, Some(&Progress::new(&self.app.pool, job.id))).await?;
+                let progress = Progress::new(&self.app.pool, job.id);
+                let summary = crate::database::ra_patches::download(&self.app.pool, &self.app.http, &md5, Some(&progress)).await?;
                 log::info!("ra_patch_download job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());
+                progress.finish(1, Some(1), &format!("done: {}", summary.rel_path), &summary).await;
                 Ok(())
             }
             JobType::RaGenreFetch => {
@@ -915,8 +942,10 @@ impl Worker {
                 Ok(())
             }
             JobType::MediaRelayout => {
+                let progress = Progress::new(&self.app.pool, job.id);
+                progress.force(0, None, "reading the media folders").await;
                 let roots = crate::database::media_store::Roots::load(&self.app.pool, &self.app.paths.media_dir()).await?;
-                let summary = crate::database::media_store::relayout(&self.app.pool, &roots, &Progress::new(&self.app.pool, job.id)).await?;
+                let summary = crate::database::media_store::relayout(&self.app.pool, &roots, &progress).await?;
                 log::info!("media_relayout job {}: {}", job.id, serde_json::to_string(&summary).unwrap_or_default());
                 if summary.failed > 0 {
                     return Err(DatabaseError::Partial(format!("{} of {} media files could not be moved (see log)", summary.failed, summary.candidates)));
@@ -1013,48 +1042,53 @@ impl Worker {
                     .collect()
             } else {
                 progress.force(0, None, &format!("source {} of {count}: {} -- fetching", i + 1, source.name())).await;
-                let files = dat_download::fetch(&client, source, &self.app.paths.dats_dir(), &options).await?;
+                // The downloader's own reports ("redump: checking PSX (42 of 186) ...") say
+                // which source they are of.
+                progress.set_prefix(Some(format!("source {} of {count}: ", i + 1)));
+                let files = dat_download::fetch(&client, source, &self.app.paths.dats_dir(), &options).await;
+                progress.set_prefix(None);
+                let files = files?;
                 log::info!("dat_sync {}: {} file(s) ({} fresh)", source.name(), files.len(), files.iter().filter(|f| f.fresh).count());
                 files
             };
             if do_import || offline {
-                // Fresh downloads, plus files an interrupted run downloaded but never imported.
+                // Fresh downloads, plus files an interrupted run downloaded but never imported;
+                // and DATs to import again: music, video and scans imported before releases
+                // recorded that (imported once more, which is all it takes to stamp them), and
+                // DATs imported before their system had a platform here (imported again, their
+                // releases go onto it and the platform-less rows fold in). What the source has
+                // imported is read once, not per file.
+                let what = format!("source {} of {count}: {} -- checking which DATs need importing", i + 1, source.name());
+                progress.force(0, Some(files.len() as u64), &what).await;
+                let known = match import::imported_dats(&self.app.pool, source).await {
+                    Ok(known) => Some(known),
+                    Err(e) => {
+                        log::warn!("dat_sync {}: could not read which DATs are imported: {e}", source.name());
+                        None
+                    }
+                };
                 let mut fresh = Vec::new();
-                for file in &files {
+                let mut restamp: Vec<(&dat_download::Downloaded, Vec<String>)> = Vec::new();
+                for (n, file) in files.iter().enumerate() {
+                    let name = file.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    progress.report(n as u64, Some(files.len() as u64), &format!("{what}: {} of {} ({name})", jobs::thousands(n as u64 + 1), jobs::thousands(files.len() as u64))).await;
                     // A file that can't even be listed is imported anyway (and fails there,
                     // with its name).
-                    if file.fresh || !import::is_imported(&self.app.pool, source, &file.path, &wanted).await.unwrap_or(false) {
-                        fresh.push(file);
-                    }
-                }
-                // DATs of music, video and scans imported before releases recorded that:
-                // those are imported once more, which is all it takes to stamp them.
-                let mut restamp: Vec<(&dat_download::Downloaded, Vec<String>)> = Vec::new();
-                for file in &files {
-                    if fresh.iter().any(|f| f.path == file.path) {
-                        continue;
-                    }
-                    // And DATs imported before their system had a platform here: imported again,
-                    // their releases go onto it and the platform-less rows fold in.
-                    let mut members = match import::unclassified_members(&self.app.pool, source, &file.path).await {
-                        Ok(m) => m,
+                    let check = match &known {
+                        Some(known) => known.check(source, &file.path, &wanted),
+                        None => Ok(import::FileCheck::default()),
+                    };
+                    let check = match check {
+                        Ok(check) => check,
                         Err(e) => {
-                            log::warn!("dat_sync {}: could not check {} for unclassified DATs: {e}", source.name(), file.path.display());
-                            Vec::new()
+                            log::warn!("dat_sync {}: could not check {}: {e}", source.name(), file.path.display());
+                            import::FileCheck::default()
                         }
                     };
-                    match import::misplaced_members(&self.app.pool, source, &file.path).await {
-                        Ok(m) => {
-                            for member in m {
-                                if !members.contains(&member) {
-                                    members.push(member);
-                                }
-                            }
-                        }
-                        Err(e) => log::warn!("dat_sync {}: could not check {} for DATs with no platform: {e}", source.name(), file.path.display()),
-                    }
-                    if !members.is_empty() {
-                        restamp.push((file, members));
+                    if file.fresh || !check.imported {
+                        fresh.push(file);
+                    } else if !check.again.is_empty() {
+                        restamp.push((file, check.again));
                     }
                 }
                 // The import half of the source's slice, a part of it per file; within a
@@ -1113,21 +1147,26 @@ impl Worker {
         // Releases that have just been marked as disc media, documents or source code and
         // still hold the title their first import gave them: such things have none.
         // Roms linked to releases that now have a platform take it.
+        progress.set_frame(Some(jobs::Frame { base: whole.saturating_sub(1), span: 1, whole }));
+        progress.force(0, None, "giving scanned ROMs their release's platform (1 of 3)").await;
         match import::confirm_rom_platforms(&self.app.pool).await {
             Ok(0) => {}
             Ok(n) => log::info!("dat_sync: {n} rom(s) took their release's platform"),
             Err(e) => log::warn!("dat_sync: giving roms their release's platform failed: {e}"),
         }
         if reclassified {
+            progress.force(0, None, "removing titles of disc media and documents (2 of 3)").await;
             match crate::database::title_merge::drop_standalone_titles(&self.app.pool).await {
                 Ok(gone) => log::info!("dat_sync: {gone} title(s) of disc media, documents and source code removed"),
                 Err(e) => log::warn!("dat_sync: removing the titles of disc media, documents and source code failed: {e}"),
             }
         }
         if imported {
-            progress.set_frame(Some(jobs::Frame { base: whole.saturating_sub(1), span: 1, whole }));
-            progress.force(0, None, "matching the new catalogue entries against the downloaded Hasheous dumps").await;
-            match dumps::match_hasheous_index_catalog(&self.app.pool, &self.store, &progress).await {
+            progress.force(0, None, "matching against Hasheous dumps (3 of 3)").await;
+            progress.set_prefix(Some("matching against Hasheous dumps (3 of 3): ".to_string()));
+            let matched = dumps::match_hasheous_index_catalog(&self.app.pool, &self.store, &progress).await;
+            progress.set_prefix(None);
+            match matched {
                 Ok((matched, igdb_ids)) => {
                     let ids: Vec<String> = igdb_ids.into_iter().collect();
                     for chunk in ids.chunks(500) {
@@ -1186,11 +1225,13 @@ impl Worker {
         match provider {
             Provider::Hasheous => {
                 let content_id = payload_u64(job, "content_id").ok_or_else(|| DatabaseError::Config("hasheous query needs content_id".to_string()))?;
+                progress.force(0, Some(1), &format!("Hasheous: looking up content {content_id}")).await;
                 let request = cache::hasheous_request_for_content(&self.app.pool, content_id).await?;
                 cache::hasheous_lookup(&self.app.clients(), &self.app.pool, &self.store, content_id, &request).await?;
             }
             Provider::PlayMatch => {
                 let content_id = payload_u64(job, "content_id").ok_or_else(|| DatabaseError::Config("playmatch query needs content_id".to_string()))?;
+                progress.force(0, Some(1), &format!("PlayMatch: looking up content {content_id}")).await;
                 let request = cache::playmatch_request_for_content(&self.app.pool, content_id).await?;
                 let record = cache::playmatch_lookup(&self.app.clients(), &self.app.pool, &self.store, content_id, &request).await?;
                 log::info!("playmatch content {content_id}: hit={} match={:?} refs={}", record.hit, record.match_type, record.cross_refs.len());
@@ -1422,7 +1463,7 @@ impl Worker {
                 step(40, 5);
                 progress.force(0, None, &format!("IGDB: looking up the names of genres, companies and franchises for {} game(s)", games.len())).await;
                 let mut names = metadata::IgdbNames::new();
-                names.resolve(&self.app.clients(), &games).await?;
+                names.resolve_reporting(&self.app.clients(), &games, progress).await?;
                 let mut applied = 0usize;
                 let mut art = 0u64;
                 // Cover ids -> URLs in list requests, only for games whose titles have none yet.
@@ -1487,8 +1528,9 @@ impl Worker {
                 } else {
                     progress.force(0, None, &format!("IGDB: downloading {} for {} title(s)", extra_types.join(" and "), linked.len())).await;
                 }
-                art += crate::database::providers::igdb_localized::attach_for_titles(&self.app.http, &self.app.pool, &self.app.paths.media_dir(), &self.app.clients(), self.store.root(), &linked).await? as u64;
-                let extras = media::attach_igdb_extras(&self.app.http, &self.app.pool, &self.app.paths.media_dir(), &self.app.clients(), &linked).await?;
+                let report = media::Reporting { progress, done: 0, total: None, label: "IGDB" };
+                art += crate::database::providers::igdb_localized::attach_for_titles(&self.app.http, &self.app.pool, &self.app.paths.media_dir(), &self.app.clients(), self.store.root(), &linked, &report).await? as u64;
+                let extras = media::attach_igdb_extras(&self.app.http, &self.app.pool, &self.app.paths.media_dir(), &self.app.clients(), &linked, &report).await?;
                 progress.set_frame(None);
                 progress.force(total, Some(total), &format!("IGDB: {applied} title(s) updated, {art} cover(s) and {extras} screenshot / fan art link(s) attached; {cover_note}; {} ids, {cached} from cache, {fetched} fetched in {requests} request(s)", ids.len())).await;
                 log::info!("provider_query igdb: {} ids, {cached} from cache, {} fetched in {requests} request(s), metadata applied to {applied} title(s), {art} box front(s) and {extras} screenshot / fan art link(s) attached", ids.len(), fresh.len());
@@ -1722,7 +1764,7 @@ impl Worker {
                             log::info!("RA sync: no console for {platform:?}, skipped");
                             return Ok(None);
                         };
-                        Some(bulk::sync_retroachievements_console(&self.app.clients(), &self.app.pool, &self.store, console_id, Some(platform), mode).await?)
+                        Some(bulk::sync_retroachievements_console(&self.app.clients(), &self.app.pool, &self.store, console_id, Some(platform), mode, inner).await?)
                     }
                     Provider::Igdb => {
                         let id = cache::sibling_igdb_platforms(platform.igdb_id())[0];
@@ -1809,7 +1851,8 @@ impl Worker {
         // allowed; a server that is up but cannot supply it fails the job rather than being
         // worked around.
         use api::media_sync::ServerCopy;
-        Progress::new(&self.app.pool, job.id).force(0, Some(1), &format!("downloading the {media_type} from {}: {url}", provider.name())).await;
+        let progress = Progress::new(&self.app.pool, job.id);
+        progress.force(0, Some(1), &format!("downloading the {media_type} from {}: {url}", provider.name())).await;
         let prefetched = match api::media_sync::via_main(&self.app, url, provider, payload_str(job, "provider_id"), media_type, payload_str(job, "sub_category"), target).await? {
             ServerCopy::Bytes(f) => Some((f.bytes, f.content_type)),
             ServerCopy::NoMainServer | ServerCopy::NotServed => None,
@@ -1821,6 +1864,35 @@ impl Worker {
                 None
             }
         };
+        // A video or a soundtrack is tens to hundreds of MB: fetched here with its bytes on
+        // the row, rather than inside `store_url_with`, which reads it in one go. Only when
+        // nothing is recorded for the URL yet -- otherwise there may be nothing to fetch.
+        let role = crate::database::media_store::RootRole::for_media_type(media_type);
+        let large = matches!(role, crate::database::media_store::RootRole::Video | crate::database::media_store::RootRole::Audio);
+        let prefetched = match prefetched {
+            None if large && sqlx::query("SELECT 1 FROM media WHERE source_url = ? AND media_type = ? AND deleted = FALSE LIMIT 1").bind(url).bind(media_type).fetch_optional(&self.app.pool).await?.is_none() => {
+                let mut response = self.app.http.get(url).send().await?.error_for_status()?;
+                let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
+                let limit = role.max_bytes();
+                let expected = response.content_length();
+                let too_big = || DatabaseError::Fetch(format!("{url} is larger than {} MiB", limit >> 20));
+                if expected.is_some_and(|n| n > limit as u64) {
+                    return Err(too_big());
+                }
+                let of = expected.map(|n| format!(" of {}", jobs::human_bytes(n))).unwrap_or_default();
+                let mut body = Vec::with_capacity(expected.map_or(0, |n| n as usize));
+                while let Some(chunk) = response.chunk().await? {
+                    if body.len() + chunk.len() > limit {
+                        return Err(too_big());
+                    }
+                    body.extend_from_slice(&chunk);
+                    progress.report(body.len() as u64, expected, &format!("downloading the {media_type}: {}{of}", jobs::human_bytes(body.len() as u64))).await;
+                }
+                progress.force(1, Some(1), &format!("saving the {media_type} ({})", jobs::human_bytes(body.len() as u64))).await;
+                Some((body, content_type))
+            }
+            other => other,
+        };
         media::store_url_with(&self.app.http, &self.app.pool, &self.app.paths.media_dir(), provider.name(), payload_str(job, "provider_id"), url, media_type, payload_str(job, "sub_category"), &[target], prefetched).await?;
         Ok(())
     }
@@ -1828,23 +1900,30 @@ impl Worker {
     /// The deletion-policy hard-delete pass, bottom-up: only rows flagged `deleted` with
     /// nothing live still pointing at them.
     async fn db_optimize(&self, progress: &Progress) -> Result<(), DatabaseError> {
-        const STATEMENTS: [(&str, &str); 9] = [
-            ("finished jobs older than 30 days", "DELETE FROM jobs WHERE status IN ('done','failed') AND updated_at < NOW() - INTERVAL 30 DAY"),
-            ("links to deleted files", "DELETE rf FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id WHERE f.deleted = TRUE"),
-            ("deleted files", "DELETE FROM local_files WHERE deleted = TRUE"),
-            ("game links of deleted ROMs", "DELETE gr FROM local_game_roms gr JOIN local_rom r ON r.id = gr.rom_id WHERE r.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = r.id)"),
-            ("deleted ROMs", "DELETE FROM local_rom WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = local_rom.id)"),
-            ("release links of deleted games", "DELETE rg FROM local_release_games rg JOIN local_game g ON g.id = rg.game_id WHERE g.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = g.id)"),
-            ("deleted games", "DELETE FROM local_game WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = local_game.id)"),
-            ("hashes of deleted content", "DELETE h FROM hashes h JOIN content c ON c.id = h.content_id WHERE c.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = c.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = c.id)"),
-            ("deleted content", "DELETE FROM content WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM hashes h WHERE h.content_id = content.id)"),
+        // (step key, English label, statement): each statement is a step, with how many rows it
+        // took out as its note.
+        const STATEMENTS: [(&str, &str, &str); 9] = [
+            ("optimize_jobs", "Finished jobs older than 30 days", "DELETE FROM jobs WHERE status IN ('done','failed') AND updated_at < NOW() - INTERVAL 30 DAY"),
+            ("optimize_rom_file_links", "Links to deleted files", "DELETE rf FROM local_rom_files rf JOIN local_files f ON f.id = rf.file_id WHERE f.deleted = TRUE"),
+            ("optimize_files", "Deleted files", "DELETE FROM local_files WHERE deleted = TRUE"),
+            ("optimize_game_rom_links", "Game links of deleted ROMs", "DELETE gr FROM local_game_roms gr JOIN local_rom r ON r.id = gr.rom_id WHERE r.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = r.id)"),
+            ("optimize_roms", "Deleted ROMs", "DELETE FROM local_rom WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_rom_files rf WHERE rf.rom_id = local_rom.id)"),
+            ("optimize_release_game_links", "Release links of deleted games", "DELETE rg FROM local_release_games rg JOIN local_game g ON g.id = rg.game_id WHERE g.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = g.id)"),
+            ("optimize_games", "Deleted games", "DELETE FROM local_game WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_game_roms gr WHERE gr.game_id = local_game.id)"),
+            ("optimize_hashes", "Hashes of deleted content", "DELETE h FROM hashes h JOIN content c ON c.id = h.content_id WHERE c.deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = c.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = c.id)"),
+            ("optimize_content", "Deleted content", "DELETE FROM content WHERE deleted = TRUE AND NOT EXISTS (SELECT 1 FROM local_files f WHERE f.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM release_contents rc WHERE rc.content_id = content.id) AND NOT EXISTS (SELECT 1 FROM hashes h WHERE h.content_id = content.id)"),
         ];
-        let n = STATEMENTS.len() as u64;
+        let list: Vec<(&'static str, &'static str)> = STATEMENTS.iter().map(|(key, label, _)| (*key, *label)).collect();
+        let mut steps = jobs::Steps::new(progress, &list, "deleted rows");
         let mut tx = self.app.pool.begin().await?;
-        for (i, (what, sql)) in STATEMENTS.iter().enumerate() {
-            progress.force(i as u64, Some(n), &format!("removing {what} ({} of {n})", i + 1)).await;
-            sqlx::query(*sql).execute(&mut *tx).await?;
+        for (i, (_, label, sql)) in STATEMENTS.iter().enumerate() {
+            steps.start(i + 1).await;
+            progress.force(0, None, &format!("removing {}", label.to_lowercase())).await;
+            let gone = sqlx::query(*sql).execute(&mut *tx).await?.rows_affected();
+            steps.done(format!("{} row(s)", jobs::thousands(gone))).await;
         }
+        steps.finish();
+        progress.force(1, Some(1), "saving").await;
         tx.commit().await?;
         Ok(())
     }

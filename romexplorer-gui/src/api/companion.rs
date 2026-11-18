@@ -416,6 +416,75 @@ pub struct Progress {
     pub total: Option<u64>,
 }
 
+/// "step 3 of 4: <text>", for a sync's status line.
+fn step(n: u32, of: u32, text: &str) -> String {
+    format!(
+        "{} {text}",
+        crate::state::trf(
+            "step {n} of {total}:",
+            &[("n", &n.to_string()), ("total", &of.to_string())]
+        )
+    )
+}
+
+/// " (12 of 40)" when the total is known, else nothing.
+fn counted(done: u64, total: Option<u64>) -> String {
+    match total.filter(|t| *t > 0) {
+        Some(total) => format!(
+            " ({} of {})",
+            crate::html::thousands(done),
+            crate::html::thousands(total)
+        ),
+        None => String::new(),
+    }
+}
+
+/// A server job's progress, as the status line shows it: "server: <its message> (3 of 9)",
+/// and whether it has ended (`Some(Ok(row))` done, `Some(Err(why))` failed or cancelled).
+fn job_line(row: &Value) -> (Progress, Option<Result<Value, String>>) {
+    let status = row
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let message = row
+        .get("progress_message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let done = row
+        .get("progress_done")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total = row.get("progress_total").and_then(Value::as_u64);
+    let ended = match status {
+        "done" => Some(Ok(row.get("result").cloned().unwrap_or(Value::Null))),
+        "failed" | "cancelled" => Some(Err(row
+            .get("last_error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| message.clone()))),
+        _ => None,
+    };
+    let progress = if status == "pending" {
+        Progress {
+            message: crate::state::tr("waiting for the server to start the job"),
+            done: 0,
+            total: None,
+        }
+    } else {
+        Progress {
+            message: format!(
+                "{} {message}{}",
+                crate::state::tr("server:"),
+                counted(done, total)
+            ),
+            done,
+            total,
+        }
+    };
+    (progress, ended)
+}
+
 /// Every language the app ships: the copy keeps all of them, so switching language works
 /// without the server.
 const LANGUAGES: [&str; 9] = ["en", "ja", "fr", "es", "it", "pt", "de", "ko", "pl"];
@@ -471,7 +540,7 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
         return Err(err(crate::state::tr("Every machine is set to Don't sync.")));
     }
     report(Progress {
-        message: crate::state::tr("asking the server for a copy"),
+        message: step(1, 4, &crate::state::tr("asking the server for a copy")),
         ..Default::default()
     });
     let queued: Value = super::post_as("/api/v1/mobile/sync", &options).await?;
@@ -483,46 +552,21 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
     // The job, until it ends: its own detailed progress shown as it comes.
     let summary: SyncSummary = loop {
         let row = super::get(&format!("/api/v1/jobs/{job}")).await?;
-        let status = row
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let message = row
-            .get("progress_message")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let done = row
-            .get("progress_done")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let total = row.get("progress_total").and_then(Value::as_u64);
-        match status {
-            "done" => {
-                let result = row.get("result").cloned().unwrap_or(Value::Null);
+        let (progress, ended) = job_line(&row);
+        match ended {
+            Some(Ok(result)) => {
                 break serde_json::from_value(result)
                     .map_err(|e| err(format!("the sync job's result: {e}")))?;
             }
-            "failed" | "cancelled" => {
-                let why = row
-                    .get("last_error")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or(message);
+            Some(Err(why)) => {
                 return Err(err(format!(
                     "{} {why}",
                     crate::state::tr("the server's sync job stopped:")
                 )));
             }
-            "pending" => report(Progress {
-                message: crate::state::tr("waiting for the server to start the sync"),
-                done: 0,
-                total: None,
-            }),
-            _ => report(Progress {
-                message: format!("{} {message}", crate::state::tr("server:")),
-                done,
-                total,
+            None => report(Progress {
+                message: step(2, 4, &progress.message),
+                ..progress
             }),
         }
         sleep(1000).await;
@@ -533,13 +577,23 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
     std::fs::create_dir_all(&dir).map_err(|e| err(format!("{}: {e}", dir.display())))?;
     let part = dir.join("synced.sqlite.part");
     let _ = std::fs::remove_file(&part);
-    let label = crate::state::tr("downloading");
+    let label = step(3, 4, &crate::state::tr("downloading"));
     super::rest::download(
         &format!("/api/v1/cache/{}", super::encode(&summary.file)),
         &part,
         |done, total| {
+            // "12.3 MB / 48.0 MB (26%)" when the server says the size, else what came so far.
+            let amount = match total.filter(|t| *t > 0) {
+                Some(total) => format!(
+                    "{} / {} ({:.0}%)",
+                    crate::html::fmt_size(Some(done)),
+                    crate::html::fmt_size(Some(total)),
+                    done.min(total) as f64 * 100.0 / total as f64
+                ),
+                None => crate::html::fmt_size(Some(done)),
+            };
             report(Progress {
-                message: format!("{label} {}", crate::html::fmt_size(Some(done))),
+                message: format!("{label} {amount}"),
                 done,
                 total,
             });
@@ -548,13 +602,18 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
     .await?;
 
     // The answers every screen reads first, as this server gives them now.
-    report(Progress {
-        message: crate::state::tr("saving settings and translations"),
-        ..Default::default()
-    });
     {
         let conn = offline::open(&part).map_err(err)?;
-        for path in fixed_paths() {
+        let paths = fixed_paths();
+        let total = paths.len() as u64;
+        let saving = step(4, 4, &crate::state::tr("saving settings and translations"));
+        for (i, path) in paths.into_iter().enumerate() {
+            let done = i as u64 + 1;
+            report(Progress {
+                message: format!("{saving}{}", counted(done, Some(total))),
+                done,
+                total: Some(total),
+            });
             if let Ok(text) = RestBackend.call(Method::Get, &path, None).await {
                 offline::put_fixed(&conn, &path, &text).map_err(err)?;
             }
@@ -582,30 +641,52 @@ pub async fn full_sync(mut report: impl FnMut(Progress)) -> ApiResult<SyncSummar
 
 /// RetroAchievements progress alone: asks the server to refresh the account first, then
 /// takes its rows into the copy (`GET /api/v1/mobile/ra`).
-pub async fn ra_sync(refresh_account: bool) -> ApiResult<usize> {
+///
+/// `report` hears how far it is: the server's refresh job as it goes ("step 1 of 2: server:
+/// <its message> (3 of 9)"), then taking the rows in.
+pub async fn ra_sync(refresh_account: bool, mut report: impl FnMut(Progress)) -> ApiResult<usize> {
     if !has_server() {
         return Err(no_server());
     }
     if !has_copy() {
         return Err(err(crate::state::tr("sync once first")));
     }
+    let steps = if refresh_account { 2 } else { 1 };
     if refresh_account {
+        report(Progress {
+            message: step(
+                1,
+                steps,
+                &crate::state::tr("asking the server to refresh RetroAchievements progress"),
+            ),
+            ..Default::default()
+        });
         // Best effort: an account without RetroAchievements set up still gets the local rows.
         if let Ok(v) = super::post("/api/v1/ra/refresh", Value::Null).await {
             if let Some(job) = v.get("job_id").and_then(Value::as_u64) {
                 for _ in 0..120 {
                     let row = super::get(&format!("/api/v1/jobs/{job}")).await?;
-                    if matches!(
-                        row.get("status").and_then(Value::as_str),
-                        Some("done" | "failed" | "cancelled")
-                    ) {
+                    let (progress, ended) = job_line(&row);
+                    if ended.is_some() {
                         break;
                     }
+                    report(Progress {
+                        message: step(1, steps, &progress.message),
+                        ..progress
+                    });
                     sleep(1000).await;
                 }
             }
         }
     }
+    report(Progress {
+        message: step(
+            steps,
+            steps,
+            &crate::state::tr("taking RetroAchievements progress into the copy"),
+        ),
+        ..Default::default()
+    });
     let v = super::get("/api/v1/mobile/ra").await?;
     let rows = v
         .get("rows")
@@ -655,7 +736,18 @@ pub async fn background() {
             && age(s.last_ra_sync.as_deref())
                 .is_none_or(|a| a >= u64::from(s.ra_every_min.max(5)) * 60)
         {
-            let _ = ra_sync(true).await;
+            // On the status line like one asked for, unless a full sync already is.
+            let idle = {
+                use dioxus::prelude::*;
+                SYNCING.read().is_none()
+            };
+            if idle {
+                *SYNCING.write() = Some(Progress::default());
+                let _ = ra_sync(true, |p| *SYNCING.write() = Some(p)).await;
+                *SYNCING.write() = None;
+            } else {
+                let _ = ra_sync(true, |_| {}).await;
+            }
         }
         sleep(60_000).await;
     }

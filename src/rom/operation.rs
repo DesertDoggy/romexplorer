@@ -559,6 +559,15 @@ pub struct CheckedOutput {
     pub members: Option<Result<Vec<FileHashRecord>, String>>,
 }
 
+/// The flags `content` is hashed with: [`SingleArgs::member_hash_flags`] when it comes out of a
+/// container, else [`SingleArgs::hash_flags`].
+fn content_hash_flags(args: &SingleArgs, content: &ContentPlan) -> HashFlags {
+    match (args.member_hash_flags, &content.container) {
+        (Some(flags), container) if !matches!(container, ContainerPlan::None) && !flags.is_empty() => flags,
+        _ => args.hash_flags,
+    }
+}
+
 /// Everything a [`Single`] needs besides its input path.
 #[derive(Debug, Clone)]
 pub struct SingleArgs {
@@ -594,6 +603,10 @@ pub struct SingleArgs {
     /// access, so the raw bytes cannot be teed off it, but the two reads overlap -- and is
     /// derived from the content hashes instead when the input is a plain file hashed anyway.
     pub container_hash: Option<HashFlags>,
+    /// What the content is hashed with when it comes out of a container (a zip or 7z's
+    /// members, a CHD/RVZ/CSO/PBP's image); `None`: `hash_flags`, as for a plain file. A
+    /// scan sets it from its archive-contents setting.
+    pub member_hash_flags: Option<HashFlags>,
     /// Read every written file back once it is complete.
     pub output_check: Option<OutputCheck>,
     /// The created archive's file name stem; `None`: the input's. For a caller that runs on a
@@ -630,6 +643,7 @@ impl Default for SingleArgs {
             detect: Detect::Full,
             whole_file: false,
             container_hash: None,
+            member_hash_flags: None,
             output_check: None,
             archive_stem: None,
         }
@@ -1171,12 +1185,13 @@ impl Single {
 
         let streaming_needed = plan.stages.hash.is_ok() || plan.stages.convert.is_ok() || plan.stages.archive.is_ok() || (plan.stages.extract.is_ok() && plan.write_dir.is_some());
         // The container's own bytes: free when the input is one plain file hashed anyway
-        // (its one content file *is* those bytes), else a raw read beside the decode.
+        // (its one content file *is* those bytes), else a raw read beside the decode. A plain
+        // file is never read twice for it, even when `container_hash` names an algorithm the
+        // content set lacks (a scan's archive-file set): its record then carries the content
+        // set's algorithms, which is what a plain file is recorded with.
         let single_file = matches!(plan.input.kind, InputKind::PlainFile | InputKind::Archive(_));
         let container_flags = self.args.container_hash.filter(|_| single_file);
-        let derive_container = container_flags.is_some_and(|flags| {
-            matches!(content.container, ContainerPlan::None) && content.files.len() == 1 && plan.stages.hash.is_ok() && self.args.hash_flags.contains(flags.difference(HashFlags::RAHASH))
-        });
+        let derive_container = container_flags.is_some() && matches!(content.container, ContainerPlan::None) && content.files.len() == 1 && plan.stages.hash.is_ok();
         let mut collected = Collected::default();
         let (result, raw_container) = std::thread::scope(|scope| {
             let tap = container_flags.filter(|_| !derive_container).map(|flags| {
@@ -1340,7 +1355,7 @@ impl Single {
                 pipes.push(Some(writer));
             }
         }
-        let hash_flags = plan.stages.hash.is_ok().then_some(self.args.hash_flags);
+        let hash_flags = plan.stages.hash.is_ok().then_some(content_hash_flags(&self.args, content));
         let mut sink = SinkImpl {
             plan,
             progress,
@@ -1349,6 +1364,7 @@ impl Single {
             collected,
             archive_counter: Arc::clone(&archive_counter),
             finished_bytes: 0,
+            file_count: content.files.len(),
         };
 
         let target = sink.plan.archive_target;
@@ -1369,7 +1385,7 @@ impl Single {
                     archive::archive_from_sources(&output, target, &options, command, &primary, sources, None, |_, _| !cancel.load(Ordering::Relaxed))
                 })
             });
-            let produced = produce(&input, content, &self.args.decode_threads, self.args.hash_flags, &mut sink, cancel);
+            let produced = produce(&input, content, &self.args.decode_threads, content_hash_flags(&self.args, content), &mut sink, cancel);
             if let Some(handle) = consumer {
                 while !handle.is_finished() {
                     std::thread::sleep(Duration::from_millis(50));
@@ -1415,11 +1431,11 @@ impl Single {
             }
             _ => Source::file(&plan.input.path, name).map_err(|e| ContentError::Io(e.to_string()))?,
         };
-        let hash_flags = plan.stages.hash.is_ok().then_some(self.args.hash_flags);
+        let hash_flags = plan.stages.hash.is_ok().then_some(content_hash_flags(&self.args, content));
         let target = plan.archive_target.expect("dolphin route needs a target");
         let output = plan.archive_output.clone().expect("archive output planned");
         let options = plan.archive_options.clone().expect("archive options planned");
-        let mut sink = SinkImpl { plan, progress, hash_flags, pipes: Vec::new(), collected, archive_counter: Arc::new(AtomicU64::new(0)), finished_bytes: 0 };
+        let mut sink = SinkImpl { plan, progress, hash_flags, pipes: Vec::new(), collected, archive_counter: Arc::new(AtomicU64::new(0)), finished_bytes: 0, file_count: 1 };
         let mut pipeline = sink.begin(0, file)?;
         let mut failure: Option<ContentError> = None;
         let mut pushed = 0u64;
@@ -1542,10 +1558,18 @@ struct SinkImpl<'p, 'a> {
     archive_counter: Arc<AtomicU64>,
     /// Bytes of the content files already finished.
     finished_bytes: u64,
+    /// How many content files there are, for "file 3 of 25: Track 03.bin".
+    file_count: usize,
 }
 
 impl ContentSink for SinkImpl<'_, '_> {
     fn begin(&mut self, index: usize, file: &ContentFile) -> Result<ChunkPipeline, ContentError> {
+        // Which file of a multi-file disc is being read, so a long one is not just a percent.
+        if self.file_count > 1 {
+            let stage = if self.plan.input.is_archive() && self.plan.stages.extract.is_ok() { Stage::Extract } else { Stage::Hash };
+            let message = format!("file {} of {}: {}", index + 1, self.file_count, file.name);
+            self.progress.emit(stage, Some(&message));
+        }
         let mut sinks = Vec::new();
         let converter = if index == 0 { self.plan.converter.take() } else { None };
         if let Some(dir) = &self.plan.write_dir {

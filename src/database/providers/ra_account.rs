@@ -41,9 +41,13 @@ pub struct GenreFetchSummary {
 pub async fn fetch_genres(clients: &ProviderClients, pool: &MySqlPool, local_only: bool, limit: u64, progress: &Progress) -> Result<GenreFetchSummary, DatabaseError> {
     let client = clients.retroachievements.as_ref().ok_or_else(|| DatabaseError::Provider("retroachievements client unavailable (ra_username / ra_api_key in api.env)".to_string()))?;
     // Rows whose genre text arrived before genre_major existed.
-    for row in sqlx::query("SELECT provider_id, genre_raw FROM retroachievements_games WHERE genre_raw IS NOT NULL AND genre_major IS NULL").fetch_all(pool).await? {
-        let id: u32 = sqlx::Row::try_get(&row, "provider_id")?;
-        let raw: String = sqlx::Row::try_get(&row, "genre_raw")?;
+    progress.force(0, None, "sorting stored genre text: finding games").await;
+    let unsorted = sqlx::query("SELECT provider_id, genre_raw FROM retroachievements_games WHERE genre_raw IS NOT NULL AND genre_major IS NULL").fetch_all(pool).await?;
+    let n = unsorted.len() as u64;
+    for (i, row) in unsorted.iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("sorting stored genre text: {} of {}", super::super::jobs::thousands(i as u64 + 1), super::super::jobs::thousands(n))).await;
+        let id: u32 = sqlx::Row::try_get(row, "provider_id")?;
+        let raw: String = sqlx::Row::try_get(row, "genre_raw")?;
         sqlx::query("UPDATE retroachievements_games SET genre_major = ?, genre_checked_at = COALESCE(genre_checked_at, NOW()) WHERE provider_id = ?").bind(genre_majors(&raw)).bind(id).execute(pool).await?;
     }
     let scope = if local_only { "loc.game_id IS NOT NULL" } else { "(loc.game_id IS NOT NULL OR rg.num_achievements > 0)" };
@@ -53,6 +57,7 @@ pub async fn fetch_genres(clients: &ProviderClients, pool: &MySqlPool, local_onl
          WHERE {scope} AND rg.genre_checked_at IS NULL ORDER BY (loc.game_id IS NULL), u.game_id{}",
         if limit > 0 { format!(" LIMIT {limit}") } else { String::new() }
     );
+    progress.force(0, None, "genres: finding games not asked yet").await;
     let ids: Vec<u64> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?;
     let mut s = GenreFetchSummary { candidates: ids.len() as u64, ..Default::default() };
     let total = Some(s.candidates);
@@ -162,6 +167,7 @@ pub async fn sync(clients: &ProviderClients, pool: &MySqlPool, progress: &Progre
         }
     }
 
+    progress.force(entries.len() as u64, Some(entries.len() as u64), &format!("RetroAchievements: saving {} played games", super::super::jobs::thousands(entries.len() as u64))).await;
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM ra_user_progress WHERE ra_user = ?").bind(&user).execute(&mut *tx).await?;
     for chunk in entries.chunks(500) {

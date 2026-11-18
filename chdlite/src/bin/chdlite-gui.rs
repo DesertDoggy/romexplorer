@@ -11,6 +11,7 @@
 // No console window behind the GUI in a release build; a debug build keeps one for panics.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -22,8 +23,8 @@ use dioxus::prelude::*;
 
 use chdlite::batch::{self, Batch, BatchEvent, CAN_SPAWN_WORKERS, WORKER_FLAG};
 use chdlite::cart::{N64_FORMATS, NES_FORMATS, SNES_FORMATS};
-use chdlite::classify::{expand, lossy_targets};
-use chdlite::job::Mode;
+use chdlite::classify::{classify_all, expand_with, known, lossy_of, Input, Target};
+use chdlite::job::{Mode, Progress};
 use chdlite::settings::{CompMode, Jobs, LitePreset, Settings, CD_CODECS, CUE_STYLES, DVD_CODECS, GDROM_SHEETS, HASHES, MAX_CODECS, RVZ_BLOCKS, RVZ_CODECS};
 
 #[cfg(target_os = "android")]
@@ -55,7 +56,9 @@ const MODES: [(Mode, &str, &str, &str); 4] = [
 
 enum Ui {
     /// A drop, expanded into its inputs off the window's thread (a big folder takes a while).
-    Expanded { with: Mode, inputs: Vec<PathBuf>, lossy: Vec<PathBuf> },
+    Expanded { with: Mode, inputs: Vec<PathBuf>, lossy: Vec<(PathBuf, Target)>, classified: HashMap<PathBuf, Input> },
+    /// How far the expanding has got ("walking folders: 12,400 file(s) found so far").
+    Preparing(String),
     Batch(BatchEvent),
     Done { failed: usize },
 }
@@ -66,6 +69,8 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 /// Paths given on the command line: files dropped onto `chdlite-gui` itself.
 static STARTUP: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static STARTUP_ERROR: Mutex<Option<String>> = Mutex::new(None);
+/// What starting up had to say (the first run unpacking its libraries).
+static STARTUP_NOTE: Mutex<Option<String>> = Mutex::new(None);
 
 fn main() {
     #[cfg(target_os = "android")]
@@ -77,7 +82,7 @@ fn main() {
     if args.first().map(String::as_str) == Some(WORKER_FLAG) {
         std::process::exit(batch::worker_main(args.get(1).map(String::as_str).unwrap_or("")));
     }
-    if let Err(err) = chdlite::natives::ensure() {
+    if let Err(err) = chdlite::natives::ensure_with(&|text| *STARTUP_NOTE.lock().unwrap() = Some(text.to_string())) {
         *STARTUP_ERROR.lock().unwrap() = Some(err);
     }
     *STARTUP.lock().unwrap() = args.iter().map(PathBuf::from).filter(|path| path.exists()).collect();
@@ -116,15 +121,49 @@ fn line(class: &'static str, text: impl Into<String>) -> Line {
 struct Run {
     names: Vec<String>,
     percents: Vec<f32>,
+    /// Where each running file is; `None` for one waiting or finished.
+    current: Vec<Option<Progress>>,
     done: usize,
+    /// What the batch says before its first file starts ("planning outputs: 120 of 500").
+    status: Option<String>,
 }
 
 impl Run {
+    fn new(names: Vec<String>) -> Self {
+        Self { percents: vec![0.0; names.len()], current: vec![None; names.len()], names, done: 0, status: None }
+    }
+
     fn overall(&self) -> f32 {
         if self.percents.is_empty() {
             0.0
         } else {
             self.percents.iter().sum::<f32>() / self.percents.len() as f32
+        }
+    }
+
+    /// One line per running file: "file 3 of 40: name - compressing 1.2 / 4.7 GB (26%)".
+    fn running_lines(&self) -> Vec<String> {
+        let total = self.names.len();
+        self.current
+            .iter()
+            .enumerate()
+            .filter_map(|(index, progress)| {
+                let progress = progress.as_ref()?;
+                Some(format!("file {} of {total}: {} - {}", index + 1, self.names.get(index).map(String::as_str).unwrap_or(""), progress.describe()))
+            })
+            .collect()
+    }
+
+    /// The one line that sums the run up: the running file's own, or with several
+    /// "3 running · 12 of 40 done · 41%". For the Android notification.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn summary(&self) -> String {
+        let running = self.current.iter().filter(|p| p.is_some()).count();
+        let total = self.names.len();
+        match running {
+            0 => self.status.clone().unwrap_or_else(|| format!("{} of {total} done · {:.0}%", self.done, self.overall())),
+            1 => self.running_lines().pop().unwrap_or_default(),
+            n => format!("{n} running · {} of {total} done · {:.0}%", self.done, self.overall()),
         }
     }
 }
@@ -169,18 +208,20 @@ fn App() -> Element {
     });
 
     // A run that would make lossy outputs, waiting on the question.
-    let mut asking = use_signal(|| None::<(Mode, Vec<PathBuf>, Vec<PathBuf>)>);
+    let mut asking = use_signal(|| None::<(Mode, Vec<PathBuf>, Vec<(PathBuf, Target)>, HashMap<PathBuf, Input>)>);
     // A drop being expanded.
     let mut preparing = use_signal(|| false);
+    // How far the expanding has got.
+    let mut preparing_status = use_signal(String::new);
 
-    let mut run_now = move |with: Mode, inputs: Vec<PathBuf>| {
+    let mut run_now = move |with: Mode, inputs: Vec<PathBuf>, classified: HashMap<PathBuf, Input>| {
         mode.set(with);
         let names: Vec<String> = inputs.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
         log.write().push(line("muted", format!("── {} · {} file{} ──", with.label(), names.len(), if names.len() == 1 { "" } else { "s" })));
-        run.set(Run { percents: vec![0.0; names.len()], names, done: 0 });
+        run.set(Run::new(names));
         running.set(true);
         CANCEL.store(false, Ordering::Relaxed);
-        let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true, ctrl_c_cancels: false };
+        let batch = Batch { mode: with, inputs, settings: settings(), always_workers: true, ctrl_c_cancels: false, classified };
         #[cfg(target_os = "android")]
         chdlite::android::run_started(&format!("{} · {} file{}", with.label(), batch.inputs.len(), if batch.inputs.len() == 1 { "" } else { "s" }));
         std::thread::spawn(move || {
@@ -199,16 +240,27 @@ fn App() -> Element {
         }
         mode.set(with);
         preparing.set(true);
+        preparing_status.set(String::new());
         let warn = matches!(with, Mode::Lite | Mode::Comp) && settings().output.lossy_warning;
         std::thread::spawn(move || {
-            let inputs = expand(&paths);
-            let lossy = if warn { lossy_targets(&inputs).into_iter().map(|(path, _)| path).collect() } else { Vec::new() };
-            EVENTS.lock().unwrap().push(Ui::Expanded { with, inputs, lossy });
+            let say = |text: &str| EVENTS.lock().unwrap().push(Ui::Preparing(text.to_string()));
+            let inputs = expand_with(&paths, &say);
+            // Classified once here, for the warning; the jobs take the kinds from the batch.
+            let (lossy, classified) = if warn && !inputs.is_empty() {
+                let kinds = classify_all(&inputs, &say);
+                (lossy_of(&inputs, &kinds), known(&inputs, kinds))
+            } else {
+                (Vec::new(), HashMap::new())
+            };
+            EVENTS.lock().unwrap().push(Ui::Expanded { with, inputs, lossy, classified });
         });
     };
 
     // Worker events into the window, and whatever was dropped onto the executable itself.
     use_future(move || async move {
+        if let Some(note) = STARTUP_NOTE.lock().unwrap().take() {
+            log.write().push(line("muted", note));
+        }
         if let Some(err) = STARTUP_ERROR.lock().unwrap().take() {
             log.write().push(line("err", err));
         }
@@ -227,20 +279,31 @@ fn App() -> Element {
             let events = std::mem::take(&mut *EVENTS.lock().unwrap());
             for event in events {
                 match event {
-                    Ui::Expanded { with, inputs, lossy } => {
+                    Ui::Preparing(text) => preparing_status.set(text),
+                    Ui::Expanded { with, inputs, lossy, classified } => {
                         preparing.set(false);
+                        preparing_status.set(String::new());
                         if inputs.is_empty() {
                             log.write().push(line("err", "Nothing to do: no disc images, .chd, .rvz, .cso, .pbp, cartridge dumps or 3DS titles in what was dropped."));
                         } else if !lossy.is_empty() {
-                            asking.set(Some((with, inputs, lossy)));
+                            asking.set(Some((with, inputs, lossy, classified)));
                         } else {
-                            run_now(with, inputs);
+                            run_now(with, inputs, classified);
                         }
                     }
-                    Ui::Batch(BatchEvent::Started { .. }) => {}
-                    Ui::Batch(BatchEvent::Progress { index, percent }) => {
-                        if let Some(slot) = run.write().percents.get_mut(index) {
-                            *slot = percent.clamp(0.0, 99.9);
+                    Ui::Batch(BatchEvent::Status(text)) => run.write().status = Some(text),
+                    Ui::Batch(BatchEvent::Started { index }) => {
+                        if let Some(slot) = run.write().current.get_mut(index) {
+                            *slot = Some(Progress::default());
+                        }
+                    }
+                    Ui::Batch(BatchEvent::Progress { index, progress }) => {
+                        let mut run = run.write();
+                        if let Some(slot) = run.percents.get_mut(index) {
+                            *slot = progress.percent.clamp(0.0, 99.9);
+                        }
+                        if let Some(slot) = run.current.get_mut(index) {
+                            *slot = Some(progress);
                         }
                     }
                     Ui::Batch(BatchEvent::Message { index, text }) => {
@@ -253,6 +316,9 @@ fn App() -> Element {
                             let mut run = run.write();
                             if let Some(slot) = run.percents.get_mut(index) {
                                 *slot = 100.0;
+                            }
+                            if let Some(slot) = run.current.get_mut(index) {
+                                *slot = None;
                             }
                             run.done += 1;
                         }
@@ -278,7 +344,7 @@ fn App() -> Element {
                 tick = tick.wrapping_add(1);
                 if *running.peek() && tick % 12 == 0 {
                     let run = run.peek();
-                    chdlite::android::run_progress(run.overall(), &format!("{} of {} done", run.done, run.names.len()));
+                    chdlite::android::run_progress(run.overall(), &run.summary());
                 }
                 if !*file_access.peek() && tick % 20 == 0 && chdlite::android::has_file_access() {
                     file_access.set(true);
@@ -336,6 +402,16 @@ fn App() -> Element {
     let snapshot = run();
     let overall = snapshot.overall();
     let status = if snapshot.names.is_empty() { String::new() } else { format!("{:.0}%  ·  {}/{}", overall, snapshot.done, snapshot.names.len()) };
+    // Under the bar: what the drop is being turned into, then each running file, or the
+    // batch's own step before the first one starts.
+    let now_lines: Vec<String> = if preparing() {
+        vec![if preparing_status().is_empty() { "looking at what was dropped".to_string() } else { preparing_status() }]
+    } else if !running() {
+        Vec::new()
+    } else {
+        let lines = snapshot.running_lines();
+        if lines.is_empty() { snapshot.status.clone().into_iter().collect() } else { lines }
+    };
     let output_dir = settings().output.dir.clone();
 
     #[cfg(target_os = "android")]
@@ -515,17 +591,23 @@ fn App() -> Element {
                     "Cancel"
                 }
             }
+            if !now_lines.is_empty() {
+                div { class: "now",
+                    for (index, text) in now_lines.iter().enumerate() {
+                        div { key: "{index}", title: "{text}", "{text}" }
+                    }
+                }
+            }
             // Focusable on Android, where Select moves the focus here and the D-pad scrolls it.
             div { class: "log", id: "log", tabindex: if ANDROID { "0" },
                 for (index, entry) in log().into_iter().enumerate() {
                     div { key: "{index}", class: "{entry.class}", "{entry.text}" }
                 }
             }
-            if let Some((with, inputs, lossy)) = asking() {
+            if let Some((with, inputs, lossy, classified)) = asking() {
                 LossyAsk {
-                    lossy: lossy.iter().map(|path| {
-                        let target = chdlite::classify::classify(path).ok().and_then(|input| match input { chdlite::classify::Input::Image { target, .. } => Some(target.label()), _ => None }).unwrap_or("");
-                        format!("{} → {target}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                    lossy: lossy.iter().map(|(path, target)| {
+                        format!("{} → {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), target.label())
                     }).collect::<Vec<_>>(),
                     rest: inputs.len() - lossy.len(),
                     on_answer: move |(answer, dont_ask): (Answer, bool)| {
@@ -538,13 +620,13 @@ fn App() -> Element {
                         }
                         let chosen: Vec<PathBuf> = match answer {
                             Answer::All => inputs.clone(),
-                            Answer::Lossless => inputs.iter().filter(|path| !lossy.contains(path)).cloned().collect(),
+                            Answer::Lossless => inputs.iter().filter(|path| !lossy.iter().any(|(lossy, _)| lossy == *path)).cloned().collect(),
                             Answer::Nothing => Vec::new(),
                         };
                         if chosen.is_empty() {
                             log.write().push(line("muted", "Not converted."));
                         } else {
-                            run_now(with, chosen);
+                            run_now(with, chosen, classified.clone());
                         }
                     },
                 }

@@ -300,6 +300,8 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
     let source_keys: Vec<String> = api::arr(&o, "source_keys").iter().filter_map(|v| v.as_str().map(str::to_string)).filter(|k| k != "curated").collect();
     let mut keep_pinned = use_signal(|| true);
     let mut chosen = use_signal(|| None::<dioxus::html::FileData>);
+    // While the clear runs (it answers when done): what its button says instead.
+    let mut clearing = use_signal(|| false);
     let purposes = api::arr(&st, "purposes").to_vec();
     let f = |k: &str| st.get(k).and_then(Value::as_f64).unwrap_or(0.0);
     let clear = move |_| {
@@ -311,7 +313,10 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
             let chosen = from();
             let (source, provider) = chosen.split_once(':').unwrap_or(("", ""));
             let opt = |x: &str| if x.is_empty() { Value::Null } else { json!(x) };
-            match api::post("/api/v1/ai/clear", json!({ "purpose": opt(&purpose), "keep_pinned": keep_pinned(), "source": opt(source), "provider": opt(provider) })).await {
+            clearing.set(true);
+            let answer = api::post("/api/v1/ai/clear", json!({ "purpose": opt(&purpose), "keep_pinned": keep_pinned(), "source": opt(source), "provider": opt(provider) })).await;
+            clearing.set(false);
+            match answer {
                 Ok(r) => {
                     ui::toast(state::trf("{n} answer(s) removed", &[("n", &u(&r, "removed").to_string())]), false);
                     on_change.call(());
@@ -373,7 +378,7 @@ fn AiCache(o: Value, on_change: EventHandler<()>) -> Element {
                     input { r#type: "checkbox", checked: keep_pinned(), onchange: move |e| keep_pinned.set(e.checked()) }
                     {state::tr("keep pinned answers")}
                 }
-                button { class: "btn danger", r#type: "button", onclick: clear, {state::tr("clear saved answers")} }
+                button { class: "btn danger", r#type: "button", onclick: clear, disabled: clearing(), if clearing() { {state::tr("Removing the saved answers…")} } else { {state::tr("clear saved answers")} } }
                 span { class: "grow" }
                 button { class: "btn", r#type: "button", onclick: export, {state::tr("export JSON")} }
                 input { r#type: "file", accept: ".json,application/json", onchange: move |e| chosen.set(e.files().into_iter().next()) }

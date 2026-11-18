@@ -541,12 +541,45 @@ pub async fn attach_igdb_extras(
     media_dir: &Path,
     clients: &ProviderClients,
     linked: &[(u64, &playmatch_deredis::providers::igdb::model::Game)],
+    report: &Reporting<'_>,
 ) -> Result<u32, DatabaseError> {
     let mut targeted = Vec::with_capacity(linked.len());
-    for (title_id, game) in linked {
+    let n = linked.len() as u64;
+    for (i, (title_id, game)) in linked.iter().enumerate() {
+        report.say(&format!("screenshots and fan art: finding releases, title {} of {}", thousands(i as u64 + 1), thousands(n))).await;
         targeted.push((release_targets(pool, *title_id, Provider::Igdb, &game.id.to_string()).await?, *game));
     }
-    attach_igdb_extras_to(http, pool, media_dir, clients, &Ask::Auto, &targeted).await
+    attach_igdb_extras_reporting(http, pool, media_dir, clients, &Ask::Auto, &targeted, report).await
+}
+
+/// Where a bulk job is, for art attached title by title inside one of its steps: the bar
+/// stays at `done` of `total`, and each message goes after `label` ("NES: page 3").
+pub struct Reporting<'a> {
+    pub progress: &'a crate::database::jobs::Progress,
+    pub done: u64,
+    pub total: Option<u64>,
+    pub label: &'a str,
+}
+
+impl Reporting<'_> {
+    /// Nothing is reported (a single game's art, inside a larger step).
+    pub fn none() -> Reporting<'static> {
+        Reporting { progress: &NO_PROGRESS, done: 0, total: None, label: "" }
+    }
+
+    pub async fn say(&self, message: &str) {
+        if self.label.is_empty() {
+            self.progress.report(self.done, self.total, message).await;
+        } else {
+            self.progress.report(self.done, self.total, &format!("{}: {message}", self.label)).await;
+        }
+    }
+}
+
+static NO_PROGRESS: std::sync::LazyLock<crate::database::jobs::Progress> = std::sync::LazyLock::new(crate::database::jobs::Progress::none);
+
+fn thousands(n: u64) -> String {
+    crate::database::jobs::thousands(n)
 }
 
 /// [`attach_igdb_extras`] for games whose targets are already known.
@@ -557,6 +590,18 @@ pub async fn attach_igdb_extras_to(
     clients: &ProviderClients,
     ask: &Ask,
     linked: &[(Vec<MediaTarget>, &playmatch_deredis::providers::igdb::model::Game)],
+) -> Result<u32, DatabaseError> {
+    attach_igdb_extras_reporting(http, pool, media_dir, clients, ask, linked, &Reporting::none()).await
+}
+
+async fn attach_igdb_extras_reporting(
+    http: &reqwest::Client,
+    pool: &MySqlPool,
+    media_dir: &Path,
+    clients: &ProviderClients,
+    ask: &Ask,
+    linked: &[(Vec<MediaTarget>, &playmatch_deredis::providers::igdb::model::Game)],
+    report: &Reporting<'_>,
 ) -> Result<u32, DatabaseError> {
     let rules = super::super::settings::MediaRules::load(pool).await?;
     let cap = super::super::settings::media_list_cap(pool).await?;
@@ -588,7 +633,9 @@ pub async fn attach_igdb_extras_to(
                 urls.extend(client.get_artworks_by_id(chunk.to_vec()).await?.into_iter().map(|a| (a.id, igdb_image_url(&a.url, size))));
             }
         }
-        for (targets, game, ids) in &wanted {
+        let n = wanted.len() as u64;
+        for (i, (targets, game, ids)) in wanted.iter().enumerate() {
+            report.say(&format!("screenshots and fan art: title {} of {} ({} attached)", thousands(i as u64 + 1), thousands(n), thousands(total as u64))).await;
             let list: Vec<String> = ids.iter().filter_map(|id| urls.get(id).cloned()).collect();
             total += attach_media_list_as(http, pool, media_dir, ask, Provider::Igdb, Some(&game.id.to_string()), &list, media_type, targets).await?;
         }

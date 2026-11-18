@@ -48,6 +48,7 @@ pub async fn restore(app: &App, name: &str, progress: &crate::database::jobs::Pr
 
     // The manifest first, on its own, so a backup this build cannot read is refused before
     // anything has been written.
+    progress.force(0, None, "reading the backup's manifest").await;
     let manifest = {
         let file = std::fs::File::open(&path).map_err(|e| Error::internal(format!("opening {}: {e}", path.display())))?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| Error::invalid(format!("{name}: not a readable zip: {e}")))?;

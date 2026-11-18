@@ -105,3 +105,7 @@ input[type=text], input[type=number], select { flex: 1; min-width: 0; background
 .browser .entry.picked { background: #1a2233; border-color: #2f6fed; color: #fff; }
 .browser .entry.up { color: #8a90a0; }
 .confirm p { margin: 0; color: #aab0bf; }
+
+/* What is running now: one line per file, under the bar. */
+.now { color: #aab0bf; font-size: 12px; margin: -4px 2px 0; display: flex; flex-direction: column; gap: 1px; }
+.now div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -527,15 +527,23 @@ pub async fn export(
         rows: Vec::new(),
     };
 
-    // Steps, for one bar that only goes up: scope, lists, pages, RA, covers, tables.
-    const STEPS: u64 = 7;
-    progress
-        .force(
-            0,
-            Some(STEPS),
-            "working out what the phone gets (step 1 of 7)",
-        )
-        .await;
+    // Steps, each with its own slice of the bar and its own count: scope, lists, pages, RA,
+    // covers, tables, finishing.
+    let mut steps = crate::database::jobs::Steps::new(
+        progress,
+        &[
+            ("mobile_scope", "Working out what the phone gets"),
+            ("mobile_lists", "Reading the lists"),
+            ("mobile_pages", "Title and release pages"),
+            ("mobile_ra", "RetroAchievements games and progress"),
+            ("mobile_covers", "Covers"),
+            ("mobile_tables", "Copying the catalogue tables"),
+            ("mobile_finish", "Finishing the file"),
+        ],
+        &o.scope,
+    );
+    steps.start(1).await;
+    progress.force(0, None, "working out what the phone gets").await;
     let s = scope(app, o).await?;
     let instance = crate::database::settings::instance_id(&app.pool).await?;
     let meta = [
@@ -583,8 +591,10 @@ pub async fn export(
     let tabs = &o.tabs;
     let held_title = |id: u64| Scope::held_text(s.held_titles.get(&id));
     let mut covers = BTreeSet::new();
+    steps.done(format!("{} title(s), {} release(s)", s.titles.len(), s.releases.len())).await;
 
     // --- lists ---
+    steps.start(2).await;
     if !platforms.is_empty() {
         if tabs.titles {
             let mut ord = 0;
@@ -594,17 +604,8 @@ pub async fn export(
                     return Err(Error::invalid("cancelled"));
                 }
                 let page = catalog::titles(app, &list_query(&platforms, offset)).await?;
-                progress
-                    .force(
-                        1,
-                        Some(STEPS),
-                        &format!(
-                            "titles: {} of {} read (step 2 of 7)",
-                            (offset as u64 + page.items.len() as u64).min(page.total),
-                            page.total
-                        ),
-                    )
-                    .await;
+                let read = (offset as u64 + page.items.len() as u64).min(page.total);
+                progress.report(read, Some(page.total), &format!("titles: {} of {} read", crate::database::jobs::thousands(read), crate::database::jobs::thousands(page.total))).await;
                 let n = page.items.len() as u32;
                 let mut rows = Vec::new();
                 for t in page.items.iter().filter(|t| s.titles.contains(&t.id)) {
@@ -657,17 +658,8 @@ pub async fn export(
                     return Err(Error::invalid("cancelled"));
                 }
                 let page = catalog::releases(app, &list_query(&platforms, offset)).await?;
-                progress
-                    .force(
-                        1,
-                        Some(STEPS),
-                        &format!(
-                            "releases: {} of {} read (step 2 of 7)",
-                            (offset as u64 + page.items.len() as u64).min(page.total),
-                            page.total
-                        ),
-                    )
-                    .await;
+                let read = (offset as u64 + page.items.len() as u64).min(page.total);
+                progress.report(read, Some(page.total), &format!("releases: {} of {} read", crate::database::jobs::thousands(read), crate::database::jobs::thousands(page.total))).await;
                 let n = page.items.len() as u32;
                 let mut rows = Vec::new();
                 for r in page.items.iter().filter(|r| s.releases.contains(&r.id)) {
@@ -700,17 +692,8 @@ pub async fn export(
                     return Err(Error::invalid("cancelled"));
                 }
                 let page = catalog::crossplatform(app, &list_query(&platforms, offset)).await?;
-                progress
-                    .force(
-                        1,
-                        Some(STEPS),
-                        &format!(
-                            "cross-platform: {} of {} read (step 2 of 7)",
-                            (offset as u64 + page.items.len() as u64).min(page.total),
-                            page.total
-                        ),
-                    )
-                    .await;
+                let read = (offset as u64 + page.items.len() as u64).min(page.total);
+                progress.report(read, Some(page.total), &format!("cross-platform: {} of {} read", crate::database::jobs::thousands(read), crate::database::jobs::thousands(page.total))).await;
                 let n = page.items.len() as u32;
                 let mut rows = Vec::new();
                 for c in &page.items {
@@ -757,17 +740,8 @@ pub async fn export(
                     return Err(Error::invalid("cancelled"));
                 }
                 let page = super::definitive::list(app, &list_query(&platforms, offset)).await?;
-                progress
-                    .force(
-                        1,
-                        Some(STEPS),
-                        &format!(
-                            "definitive: {} of {} read (step 2 of 7)",
-                            (offset as u64 + page.items.len() as u64).min(page.total),
-                            page.total
-                        ),
-                    )
-                    .await;
+                let read = (offset as u64 + page.items.len() as u64).min(page.total);
+                progress.report(read, Some(page.total), &format!("definitive: {} of {} read", crate::database::jobs::thousands(read), crate::database::jobs::thousands(page.total))).await;
                 let n = page.items.len() as u32;
                 let mut rows = Vec::new();
                 for d in &page.items {
@@ -859,16 +833,8 @@ pub async fn export(
                         )
                     }
                 };
-                progress
-                    .force(
-                        1,
-                        Some(STEPS),
-                        &format!(
-                            "{tab}: {} of {total} read (step 2 of 7)",
-                            (offset as u64 + items.len() as u64).min(total)
-                        ),
-                    )
-                    .await;
+                let read = (offset as u64 + items.len() as u64).min(total);
+                progress.report(read, Some(total), &format!("{tab}: {} of {} read", crate::database::jobs::thousands(read), crate::database::jobs::thousands(total))).await;
                 let n = items.len() as u32;
                 let rows = items
                     .into_iter()
@@ -910,7 +876,10 @@ pub async fn export(
         }
     }
 
+    steps.done(format!("{} row(s)", out.rows.iter().map(|(_, n)| *n).sum::<u64>())).await;
+
     // --- pages: held items only ---
+    steps.start(3).await;
     let mut pages = 0u64;
     if o.pages {
         let titles: Vec<u64> = s.held_titles.keys().copied().collect();
@@ -922,18 +891,10 @@ pub async fn export(
             .collect();
         let total = (titles.len() + releases.len()) as u64;
         for (i, id) in titles.iter().enumerate() {
-            if i % 50 == 0 {
-                if progress.cancelled().await {
-                    return Err(Error::invalid("cancelled"));
-                }
-                progress
-                    .force(
-                        2,
-                        Some(STEPS),
-                        &format!("pages: {i} of {total} (step 3 of 7)"),
-                    )
-                    .await;
+            if progress.cancelled().await {
+                return Err(Error::invalid("cancelled"));
             }
+            progress.report(i as u64, Some(total), &format!("pages: {} of {} (title {id})", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(total))).await;
             // A title merged away since the scope was read is skipped, not fatal.
             if let Ok(page) = catalog::title(app, *id).await {
                 let body = to_value(&page)?;
@@ -943,18 +904,11 @@ pub async fn export(
             }
         }
         for (i, id) in releases.iter().enumerate() {
-            if i % 50 == 0 {
-                if progress.cancelled().await {
-                    return Err(Error::invalid("cancelled"));
-                }
-                progress
-                    .force(
-                        2,
-                        Some(STEPS),
-                        &format!("pages: {} of {total} (step 3 of 7)", titles.len() + i),
-                    )
-                    .await;
+            if progress.cancelled().await {
+                return Err(Error::invalid("cancelled"));
             }
+            let at = (titles.len() + i) as u64;
+            progress.report(at, Some(total), &format!("pages: {} of {} (release {id})", crate::database::jobs::thousands(at + 1), crate::database::jobs::thousands(total))).await;
             if let Ok(page) = catalog::release(app, *id).await {
                 let body = to_value(&page)?;
                 covers_in(&body, &mut covers);
@@ -964,38 +918,41 @@ pub async fn export(
         }
     }
 
+    steps.done(if o.pages { format!("{pages} page(s)") } else { "not asked".to_string() }).await;
+
     // --- RetroAchievements: every RA game with the account's progress ---
+    steps.start(4).await;
     let mut ra_boxart = Vec::new();
     if tabs.ra {
-        progress
-            .force(
-                3,
-                Some(STEPS),
-                "RetroAchievements games and progress (step 4 of 7)",
-            )
-            .await;
-        let n = write_ra(app, &out.db, &s, &mut covers, &mut ra_boxart).await?;
+        progress.force(0, None, "RetroAchievements games and progress: reading them").await;
+        let n = write_ra(app, &out.db, &s, &mut covers, &mut ra_boxart, progress).await?;
         out.count("ra", n);
+        steps.done(format!("{n} game(s)")).await;
+    } else {
+        steps.done("not asked".to_string()).await;
     }
 
     // --- covers ---
+    steps.start(5).await;
     let mut cover_count = 0u64;
     if o.covers {
-        cover_count = write_covers(app, &out.db, o, &covers, &ra_boxart, progress, STEPS).await?;
+        cover_count = write_covers(app, &out.db, o, &covers, &ra_boxart, progress).await?;
+        steps.done(format!("{cover_count} cover(s)")).await;
+    } else {
+        steps.done("not asked".to_string()).await;
     }
 
     // --- the catalogue's own tables, cut down to the scope ---
-    progress
-        .force(5, Some(STEPS), "copying the catalogue tables (step 6 of 7)")
-        .await;
-    let tables = write_tables(app, &out.db, o, &s, &covers, progress, STEPS).await?;
+    steps.start(6).await;
+    progress.force(0, None, "copying the catalogue tables").await;
+    let tables = write_tables(app, &out.db, o, &s, &covers, progress).await?;
+    steps.done(format!("{} table(s)", tables.len())).await;
     for (t, n) in tables {
         out.count(&t, n);
     }
 
-    progress
-        .force(6, Some(STEPS), "finishing the file (step 7 of 7)")
-        .await;
+    steps.start(7).await;
+    progress.force(0, None, "finishing the file").await;
     sqlx::query("ANALYZE").execute(&out.db).await.ok();
     out.db.close().await;
     std::fs::rename(&part, path).map_err(|e| {
@@ -1007,6 +964,8 @@ pub async fn export(
     })?;
     guard.0 = None;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    steps.done(crate::database::jobs::human_bytes(bytes)).await;
+    steps.finish();
     Ok(SyncSummary {
         file: path
             .file_name()
@@ -1028,8 +987,10 @@ async fn write_ra(
     s: &Scope,
     covers: &mut BTreeSet<u64>,
     boxart: &mut Vec<u64>,
+    progress: &Progress,
 ) -> Result<u64> {
     let rows = ra_rows(app).await?;
+    progress.force(0, None, "RetroAchievements games and progress: which machines hold them").await;
     // Which synced machines hold each RA game: through the releases linked to it.
     let links = sqlx::query(
         "SELECT release_id, provider_id FROM release_provider_links WHERE provider = 'retroachievements' AND deleted = FALSE",
@@ -1048,7 +1009,9 @@ async fn write_ra(
     sqlx::query("DELETE FROM _mobile_ra")
         .execute(&mut *tx)
         .await?;
+    let n = rows.len() as u64;
     for (i, r) in rows.iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("RetroAchievements: game {} of {}", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(n))).await;
         let body = to_value(r)?;
         match r.cover_media_id {
             Some(id) => {
@@ -1145,14 +1108,15 @@ async fn write_covers(
     covers: &BTreeSet<u64>,
     boxart: &[u64],
     progress: &Progress,
-    steps: u64,
 ) -> Result<u64> {
     use crate::database::media_cache::{make_thumbs, ThumbFormat};
     let format = ThumbFormat::from_name(&o.cover_format).unwrap_or(ThumbFormat::Avif);
     let (_, quality, _) = crate::database::settings::media_thumb(&app.pool).await?;
     let px = o.cover_px;
     let mut wanted: Vec<(String, Option<std::path::PathBuf>)> = Vec::new();
+    let finding = (covers.len() + boxart.len()) as u64;
     for id in covers {
+        progress.report(wanted.len() as u64, Some(finding), &format!("covers: finding file {} of {}", crate::database::jobs::thousands(wanted.len() as u64 + 1), crate::database::jobs::thousands(finding))).await;
         wanted.push((
             format!("media/{id}"),
             super::media::file(app, *id, false, None)
@@ -1162,6 +1126,7 @@ async fn write_covers(
         ));
     }
     for gid in boxart {
+        progress.report(wanted.len() as u64, Some(finding), &format!("covers: finding file {} of {}", crate::database::jobs::thousands(wanted.len() as u64 + 1), crate::database::jobs::thousands(finding))).await;
         wanted.push((
             format!("ra/{gid}/boxart"),
             super::ra::image(app, *gid as u32, "boxart").await.ok(),
@@ -1174,13 +1139,7 @@ async fn write_covers(
         if progress.cancelled().await {
             return Err(Error::invalid("cancelled"));
         }
-        progress
-            .force(
-                4,
-                Some(steps),
-                &format!("covers: {done} of {total} made (step 5 of 7)"),
-            )
-            .await;
+        progress.report(done, Some(total), &format!("covers: {} of {} made", crate::database::jobs::thousands(done), crate::database::jobs::thousands(total))).await;
         let mut keys = Vec::new();
         let mut sources = Vec::new();
         for (key, path) in chunk {
@@ -1334,7 +1293,6 @@ async fn write_tables(
     s: &Scope,
     covers: &BTreeSet<u64>,
     progress: &Progress,
-    steps: u64,
 ) -> Result<Vec<(String, u64)>> {
     let local = o.machines.iter().any(|m| m == THIS_MACHINE);
     let sources: Vec<u64> = o
@@ -1413,23 +1371,10 @@ async fn write_tables(
             skipped.push(*table);
             continue;
         }
-        progress
-            .force(
-                5,
-                Some(steps),
-                &format!("table {} of {n} ({table}) (step 6 of 7)", i + 1),
-            )
-            .await;
+        progress.report(i as u64, Some(n as u64), &format!("table {} of {n} ({table})", i + 1)).await;
         let rows =
             super::sqlite::copy_table(app, db, table, filter.as_deref(), progress, &|rows| {
-                (
-                    5,
-                    Some(steps),
-                    format!(
-                        "table {} of {n} ({table}): {rows} rows (step 6 of 7)",
-                        i + 1
-                    ),
-                )
+                (i as u64, Some(n as u64), format!("table {} of {n} ({table}): {} rows", i + 1, crate::database::jobs::thousands(rows)))
             })
             .await?;
         out.push((table.to_string(), rows));
