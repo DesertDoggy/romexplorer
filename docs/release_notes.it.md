@@ -1,6 +1,13 @@
 *Questa è una traduzione delle note di rilascio 0.2.1, 0.2.0 e 0.1.8. Le versioni precedenti sono in
 [release_notes.md](release_notes.md) (inglese), che fa fede in caso di differenze.*
 
+# romexplorer 0.3.0 (alpha)
+
+Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
+aggiornamento. Fai un backup prima di sostituire una build.
+
+## Modifiche
+
 # romexplorer 0.2.2 (alpha)
 
 Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di

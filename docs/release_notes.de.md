@@ -1,6 +1,13 @@
 *Dies ist eine Übersetzung der Versionshinweise zu 0.2.1, 0.2.0 und 0.1.8. Ältere Versionen stehen in
 [release_notes.md](release_notes.md) (Englisch), die bei Abweichungen maßgeblich ist.*
 
+# romexplorer 0.3.0 (alpha)
+
+Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
+Sie ein Backup, bevor Sie einen Build ersetzen.
+
+## Änderungen
+
 # romexplorer 0.2.2 (alpha)
 
 Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen

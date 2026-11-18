@@ -5879,7 +5879,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aes 0.9.3",
  "anyhow",
@@ -5938,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer-gui"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "axum",
  "dioxus",
@@ -5957,7 +5957,7 @@ dependencies = [
 
 [[package]]
 name = "romexplorer-types"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rustls",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "rommusic-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "dioxus",
  "flac-codec",

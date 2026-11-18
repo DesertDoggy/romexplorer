@@ -1,6 +1,13 @@
 *Esta é uma tradução das notas das versões 0.2.1, 0.2.0 e 0.1.8. As versões anteriores estão em
 [release_notes.md](release_notes.md) (inglês), que prevalece em caso de diferença.*
 
+# romexplorer 0.3.0 (alpha)
+
+Alfa: o esquema da base de dados pode mudar entre versões sem forma de atualização. Faça uma cópia
+de segurança antes de substituir uma versão.
+
+## Alterações
+
 # romexplorer 0.2.2 (alpha)
 
 Alfa: o esquema da base de dados pode mudar entre versões sem forma de atualização. Faça uma cópia
