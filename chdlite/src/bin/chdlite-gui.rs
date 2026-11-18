@@ -396,7 +396,9 @@ fn App() -> Element {
     });
 
     let current = mode();
+    // One line under the tiles: the mode's first sentence. The whole of it is the tile's tooltip.
     let hint = MODES.iter().find(|(m, ..)| *m == current).map(|(.., hint)| *hint).unwrap_or("");
+    let hint = hint.split_once(". ").map(|(first, _)| format!("{first}.")).unwrap_or_else(|| hint.to_string());
     let snapshot = run();
     let overall = snapshot.overall();
     let status = if snapshot.names.is_empty() { String::new() } else { format!("{:.0}%  ·  {}/{}", overall, snapshot.done, snapshot.names.len()) };
@@ -411,7 +413,6 @@ fn App() -> Element {
         if lines.is_empty() { snapshot.status.clone().into_iter().collect() } else { lines }
     };
     let output_dir = settings().output.dir.clone();
-    let cartridges = format!("{} · {}", chdlite::cart::summary(&settings().cartridge), chdlite::n3ds::summary(&settings().n3ds.format));
 
     #[cfg(target_os = "android")]
     let needs_access = !file_access();
@@ -531,6 +532,8 @@ fn App() -> Element {
             if !ANDROID {
                 div {
                     class: if over_zone() { "drop over" } else { "drop" },
+                    // What each kind of input becomes: on hover, not spelled out in the zone.
+                    title: "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO · NES / N64 / SNES → the layout in Settings · 3DS + keys → decrypted, the format in Settings",
                     ondragover: move |event| { event.prevent_default(); over_zone.set(true); },
                     ondragleave: move |_| over_zone.set(false),
                     onclick: move |_| {
@@ -542,7 +545,7 @@ fn App() -> Element {
                         });
                     },
                     b { "Drop files or folders here" }
-                    "CD → CD CHD · DVD → DVD CHD · GameCube / Wii → RVZ · .cso → DVD CHD · .pbp → CD CHD · Wii U + key → WUA · Xbox 360 → ZAR · Xbox → XISO · NES / N64 / SNES → the layout in Settings · 3DS + keys → decrypted, the format in Settings — or click to choose files"
+                    "or click to choose files"
                 }
             }
             div { class: "row",
@@ -571,16 +574,12 @@ fn App() -> Element {
                 }
             }
             div { class: "row",
-                label { title: "What Lite and Comp write a NES, N64 or SNES dump and a 3DS title as", "Cartridges" }
-                span { class: "cartridges", style: "flex:1", "{cartridges}" }
-                button { onclick: move |_| show_settings.set(true), "Change…" }
-            }
-            div { class: "row",
                 div { class: "bar", style: "flex:1", div { style: "width:{overall}%" } }
                 span { class: "status", "{status}" }
+                // Only while something runs.
                 button {
                     class: "danger",
-                    disabled: !running(),
+                    hidden: !running(),
                     onclick: move |_| {
                         // Android asks first: a stray tap or button press would throw away
                         // a long run.
@@ -770,15 +769,18 @@ fn SettingsPanel(initial: Settings, on_close: EventHandler<Option<Settings>>) ->
                         option { value: "custom", selected: custom, "Custom" }
                     }
                 }
-                Codecs { label: "CD codecs", all: CD_CODECS.to_vec(), chosen: s.comp.cd_codecs.clone(), disabled: !custom, max: MAX_CODECS, on_change: move |next| draft.write().comp.cd_codecs = next }
-                Codecs { label: "DVD codecs", all: DVD_CODECS.to_vec(), chosen: s.comp.dvd_codecs.clone(), disabled: !custom, max: MAX_CODECS, on_change: move |next| draft.write().comp.dvd_codecs = next }
-                div { class: "row",
-                    label { "CD hunk size" }
-                    input { r#type: "number", min: "0", step: "2448", disabled: !custom, value: "{s.comp.cd_hunk_size}", oninput: move |event| draft.write().comp.cd_hunk_size = number(&event.value()) }
-                    label { "DVD hunk size" }
-                    input { r#type: "number", min: "0", step: "2048", disabled: !custom, value: "{s.comp.dvd_hunk_size}", oninput: move |event| draft.write().comp.dvd_hunk_size = number(&event.value()) }
+                // The codec and hunk rows only matter for Custom.
+                if custom {
+                    Codecs { label: "CD codecs", all: CD_CODECS.to_vec(), chosen: s.comp.cd_codecs.clone(), disabled: !custom, max: MAX_CODECS, on_change: move |next| draft.write().comp.cd_codecs = next }
+                    Codecs { label: "DVD codecs", all: DVD_CODECS.to_vec(), chosen: s.comp.dvd_codecs.clone(), disabled: !custom, max: MAX_CODECS, on_change: move |next| draft.write().comp.dvd_codecs = next }
+                    div { class: "row",
+                        label { "CD hunk size" }
+                        input { r#type: "number", min: "0", step: "2448", disabled: !custom, value: "{s.comp.cd_hunk_size}", oninput: move |event| draft.write().comp.cd_hunk_size = number(&event.value()) }
+                        label { "DVD hunk size" }
+                        input { r#type: "number", min: "0", step: "2048", disabled: !custom, value: "{s.comp.dvd_hunk_size}", oninput: move |event| draft.write().comp.dvd_hunk_size = number(&event.value()) }
+                    }
+                    div { class: "note", "Custom: up to {MAX_CODECS} codecs; hunk size in bytes, 0 = chdman's choice (a CD hunk is a multiple of 2448)." }
                 }
-                div { class: "note", "Custom: up to {MAX_CODECS} codecs; hunk size in bytes, 0 = chdman's choice (a CD hunk is a multiple of 2448)." }
 
                 h3 { "RVZ — GameCube / Wii" }
                 div { class: "row",

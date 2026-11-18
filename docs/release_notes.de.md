@@ -8,6 +8,14 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
+**Bildschirme**
+- Listen mit vielen Filtern zeigen vier davon; der Rest liegt unter „Weitere Filter“, aktive Filter erscheinen als Chips zum Entfernen.
+- Die Auftragsseite zeigt zuerst die Auftragsliste. Neue Aufträge starten über „Neuer Auftrag“.
+- Die Unterreiter der Sammlung für eigene Dateien und für Material außer Spielen sind jetzt zwei Ausklappmenüs.
+- Einstellungen zeigen einen Namen in der Sprache der Oberfläche, den Schlüssel darunter. Speichern und Zurücksetzen erscheinen nur, wenn sie etwas ändern; auf anderen Seiten eingestellte Werte bleiben dort.
+- Titel- und Release-Seiten zeigen nur noch die wichtigsten Aktionen als Schaltflächen. Links zu verwandten Titeln stehen in der Zeile des Basisspiels, interne IDs unter „Details“. Der manuelle Abgleich zeigt zuerst die aktuellen Links.
+- Big Picture: Suche und Filter sind in der oberen Leiste, Sprache und Layout in den Einstellungen. Ein Spiel mit mehreren Discs hat im Menü nur noch den Eintrag „Discs…“. Die Einstellungen der Handy-App öffnen sich Teil für Teil.
+
 **Scan**
 - „Schneller Scan (geänderte)“ wurde hinzugefügt: Er liest auch Dateien, deren Größe oder Datum sich geändert hat.
 - Die Scan-Hashes werden getrennt für normale Dateien, Archivdateien und den Inhalt von Archiven eingestellt. Archivdateien nutzen standardmäßig sha1 und xxh3_128.
@@ -34,6 +42,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Fehlerbehebungen
 
+- Einige Texte der Handy-App wurden in anderen Sprachen auf Englisch angezeigt.
 - Der Fortschritt des Audio-Scans stand still, während die Lautheit gemessen wurde.
 - Der Fortschritt des ROM-Musikindex bewegte sich nur alle 500 ROMs.
 

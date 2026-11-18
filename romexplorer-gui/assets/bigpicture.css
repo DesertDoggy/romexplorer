@@ -8,8 +8,12 @@
 .bp-tabs button { background: none; border: 0; color: var(--dim); font-size: 15px; padding: 10px 14px; border-radius: 8px; white-space: nowrap; cursor: pointer; }
 .bp-tabs button.active { color: var(--fg); background: var(--hover); box-shadow: inset 0 -3px 0 var(--acc); }
 .bp-btn { background: var(--hover); border: 1px solid var(--line); color: var(--fg); font-size: 15px; padding: 9px 14px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
-.bp-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
-.bp-search { flex: 1; max-width: 420px; font-size: 16px; padding: 9px 12px; border-radius: 8px; }
+/* The list's search box opens in the top bar, between the groups and the buttons. */
+.bp-search { flex: 1 1 160px; min-width: 0; max-width: 420px; font-size: 16px; padding: 9px 12px; border-radius: 8px; }
+.bp-top:has(.bp-search) .bp-spacer { display: none; }
+.bp-top:has(.bp-search) .bp-group span { display: none; }
+.bp-badged { position: relative; font-size: 20px; }
+.bp-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--acc); color: #0b1220; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
 .bp-body { flex: 1; min-height: 0; display: flex; }
 .bp-items { flex: 1; min-width: 0; overflow: auto; padding: 8px 12px 24px; scroll-padding: 24px; }
 .bp-empty { padding: 40px; text-align: center; }
@@ -104,8 +108,6 @@
 }
 @media (max-width: 560px) {
   .bp-top { padding: 6px 8px; gap: 6px; }
-  .bp-toolbar { flex-wrap: wrap; padding: 6px 8px; }
-  .bp-search { flex: 1 1 100%; max-width: none; }
   .layout-multi .bp-items { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
   .bp-hero-art { width: 100%; max-width: 320px; margin: 0 auto; }
   .bp-hero-meta { min-width: 0; }
@@ -159,9 +161,6 @@
 .bp.icons-color .active .bp-ic .full .d { stroke: var(--c-padd); }
 .bp.icons-outline .bp-ic .cb { fill: none; stroke: currentColor; stroke-width: 1.2; }
 .bp.icons-color .bp-ic .cb { fill: var(--btn); stroke: none; }
-/* A narrow phone: the layout button gives way (it is in Settings › Covers too). */
 @media (max-width: 440px) {
-  .bp-layout { display: none; }
   .bp-group { padding: 6px 12px 6px 8px; gap: 6px; }
 }
-.bp-flag { font-size: 22px; }

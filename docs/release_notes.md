@@ -5,6 +5,14 @@ replacing a build.
 
 ## Changes
 
+**Screens**
+- Lists with many filters show four of them; the rest are under "More filters", and the ones in use show as chips you can clear.
+- The Jobs page shows the job list first. New jobs start from "New job".
+- Collection's sub-tabs for local files and for non-game material are now two drop-down menus.
+- Settings show a name in the UI's language, with the key under it. Save and reset appear only when they would change something, and settings edited on another screen are left to that screen.
+- Title and release pages keep only their main actions as buttons. Links to related titles sit in the base game row, and the internal ids are under "Details". Manual match shows the current links first.
+- Big Picture: search and filter are in the top bar, and language and layout are in Settings. A game with several discs has one "Discs…" entry in its menu. The phone app's settings open one part at a time.
+
 **Scan**
 - "Quick scan (changed)" was added: it also reads files whose size or date changed.
 - Scan hashes are set separately for regular files, archive files and what is inside archives. Archive files use sha1 and xxh3_128 by default.
@@ -31,6 +39,7 @@ replacing a build.
 
 ## Bug fixes
 
+- Some of the phone app's text was shown in English in other languages.
 - The audio scan's progress stopped while it measured loudness.
 - The ROM music index's progress moved only every 500 ROMs.
 

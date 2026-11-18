@@ -356,6 +356,7 @@ fn TitlePage(id: u64) -> Element {
     let rel_key = format!("{id}-{}-{minor_key}", releases.iter().map(|r| u(r, "id").to_string()).collect::<Vec<_>>().join("."));
 
     let crumbs_name = shown.clone();
+    let norm_name = s(&t, "norm_name");
     let (match_name, match_links) = (name.clone(), links.clone());
     let releases_h = state::trf("Releases ({n})", &[("n", &releases.len().to_string())]);
     rsx! {
@@ -375,18 +376,8 @@ fn TitlePage(id: u64) -> Element {
                     button { class: "btn small", onclick: move |_| widgets::match_dialog("titles", id, match_name.clone(), platform_id, match_links.clone(), Some(id), EventHandler::new(move |_| *gen.write() += 1)), {state::tr("manual match…")} }
                     " "
                     button { class: "btn small", title: state::tr("queue metadata/art fetches for this title at high priority"), onclick: move |_| { spawn(async move { widgets::page_refresh("titles", id, true).await }); }, {state::tr("refresh metadata")} }
-                    " "
-                    button { class: "btn small", title: state::tr("this game, its base game and its ports / remakes / DLC, in the Titles list"),
-                        onclick: move |e| { let r = Route::Titles { q: format!("basegame={id}") }; if e.modifiers().ctrl() || e.modifiers().meta() || e.modifiers().shift() { crate::components::open_new_tab(&r); } else { navigator().push(r); } },
-                        {state::tr("base game & ports / remakes")}
-                    }
-                    " "
-                    button { class: "btn small", title: state::tr("this game's versions in definitive order (Collection › Definitive)"), onclick: move |_| { navigator().push(Route::Family { id: family_root }); }, {state::tr("definitive version")} }
-                    " "
-                    button { class: "btn small", title: state::tr("titles combined into this one (Edit › Combined titles), to split them apart again"), onclick: move |_| { navigator().push(Route::EditMerges { q: format!("title={id}") }); }, {state::tr("combined titles")} }
                 }
                 div { class: "kv",
-                    div { {state::tr("collection id")} } div { "{id} " span { class: "muted", {state::tr("(this app’s title id)")} } }
                     div { {state::tr("IGDB id")} }
                     div {
                         if let Some(l) = igdb.clone() {
@@ -397,7 +388,6 @@ fn TitlePage(id: u64) -> Element {
                             span { class: "muted", {state::tr("not linked")} }
                         }
                     }
-                    div { {state::tr("normalized")} } div { class: "mono", "{s(&t, \"norm_name\")}" }
                     div { {state::tr("base game")} }
                     div {
                         if let Some(b) = basegame {
@@ -425,6 +415,15 @@ fn TitlePage(id: u64) -> Element {
                         if basegame_locked {
                             " "
                             button { class: "btn small", title: state::tr("back to the base game and category IGDB gives"), onclick: move |_| super::definitive::reset_basegame(id, move || *gen.write() += 1), {state::tr("reset to IGDB")} }
+                        }
+                        // Where this game's relatives are listed: links, not more buttons.
+                        div { class: "muted",
+                            span { class: "link", title: state::tr("this game, its base game and its ports / remakes / DLC, in the Titles list"),
+                                onclick: move |e| { let r = Route::Titles { q: format!("basegame={id}") }; if e.modifiers().ctrl() || e.modifiers().meta() || e.modifiers().shift() { crate::components::open_new_tab(&r); } else { navigator().push(r); } },
+                                {state::tr("base game & ports / remakes")}
+                            }
+                            " · "
+                            span { class: "link", title: state::tr("this game's versions in definitive order (Collection › Definitive)"), onclick: move |_| { navigator().push(Route::Family { id: family_root }); }, {state::tr("definitive version")} }
                         }
                     }
                     if !siblings.is_empty() {
@@ -556,6 +555,17 @@ fn TitlePage(id: u64) -> Element {
                                 } }
                             }
                         }
+                    }
+                }
+                // What this app itself calls the title: rarely needed, so folded.
+                details { class: "more",
+                    summary { {state::tr("Details")} }
+                    div { class: "kv",
+                        div { {state::tr("collection id")} }
+                        div { "{id} " span { class: "muted", {state::tr("(this app’s title id)")} } " "
+                            span { class: "link", title: state::tr("titles combined into this one (Edit › Combined titles), to split them apart again"), onclick: move |_| { navigator().push(Route::EditMerges { q: format!("title={id}") }); }, {state::tr("combined titles")} }
+                        }
+                        div { {state::tr("normalized")} } div { class: "mono", "{norm_name}" }
                     }
                 }
             }

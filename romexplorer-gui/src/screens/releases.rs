@@ -431,37 +431,9 @@ fn ReleasePage(id: u64) -> Element {
                     " "
                     button { class: "btn small", onclick: move |_| widgets::match_dialog("releases", id, match_name.clone(), platform_id, match_links.clone(), title_id, EventHandler::new(move |_| *gen.write() += 1)), {state::tr("manual match…")} }
                     " "
-                    if title_id.is_some() {
-                        button { class: "btn small", title: state::tr("give this release a title of its own, apart from the others it is listed with"),
-                            onclick: move |_| {
-                                spawn(async move {
-                                    if !ui::confirm(&state::tr("Give this release a title of its own? The two titles will not be combined again automatically.")).await { return; }
-                                    match api::post(&format!("/api/v1/catalog/releases/{id}/split"), json!({})).await {
-                                        Ok(r) => { navigator().push(Route::TitleDetail { id: u(&r, "title_id") }); }
-                                        Err(e) => ui::toast(e.message, true),
-                                    }
-                                });
-                            },
-                            {state::tr("split into its own title")}
-                        }
-                        " "
-                        button { class: "btn small",
-                            onclick: move |_| ui::open_modal(move || rsx! { super::patched::PickTitle { heading: state::tr("Move this release to"), release_ids: vec![id], on_pick: move |title: u64| {
-                                spawn(async move {
-                                    match api::post(&format!("/api/v1/catalog/releases/{id}/title"), json!({ "title_id": title })).await {
-                                        Ok(_) => { navigator().push(Route::TitleDetail { id: title }); }
-                                        Err(e) => ui::toast(e.message, true),
-                                    }
-                                });
-                            } } }),
-                            {state::tr("move to another title…")}
-                        }
-                        " "
-                    }
                     button { class: "btn small", title: state::tr("queue metadata/art fetches for this release's title at high priority"), onclick: move |_| { spawn(async move { widgets::page_refresh("releases", id, true).await }); }, {state::tr("refresh metadata")} }
                 }
                 div { class: "kv",
-                    div { {state::tr("collection id")} } div { "{id} " span { class: "muted", {state::tr("(this app’s release id; DATs give their entries no ids — see sources and serial)")} } }
                     div { {state::tr("localized title")} } div { if let Some(l) = api::so(&r, "local_title") { "{l}" } else { span { class: "muted", "—" } } }
                     if !ra_games.is_empty() {
                         div { "RetroAchievements" }
@@ -503,6 +475,42 @@ fn ReleasePage(id: u64) -> Element {
                             if i > 0 { ", " }
                             span { class: "link", onclick: move |_| { navigator().push(Route::Set { id: u(&x, "id") }); }, "{s(&x, \"name\")}" }
                             " " span { class: "muted", "#{s(&x, \"position\")}" }
+                        }
+                    }
+                }
+                // This app's own id and the rarely used title moves: folded.
+                details { class: "more",
+                    summary { {state::tr("Details")} }
+                    div { class: "kv",
+                        div { {state::tr("collection id")} } div { "{id} " span { class: "muted", {state::tr("(this app’s release id; DATs give their entries no ids — see sources and serial)")} } }
+                        if title_id.is_some() {
+                            div { {state::tr("title")} }
+                            div {
+                                span { class: "link", title: state::tr("give this release a title of its own, apart from the others it is listed with"),
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            if !ui::confirm(&state::tr("Give this release a title of its own? The two titles will not be combined again automatically.")).await { return; }
+                                            match api::post(&format!("/api/v1/catalog/releases/{id}/split"), json!({})).await {
+                                                Ok(r) => { navigator().push(Route::TitleDetail { id: u(&r, "title_id") }); }
+                                                Err(e) => ui::toast(e.message, true),
+                                            }
+                                        });
+                                    },
+                                    {state::tr("split into its own title")}
+                                }
+                                " · "
+                                span { class: "link",
+                                    onclick: move |_| ui::open_modal(move || rsx! { super::patched::PickTitle { heading: state::tr("Move this release to"), release_ids: vec![id], on_pick: move |title: u64| {
+                                        spawn(async move {
+                                            match api::post(&format!("/api/v1/catalog/releases/{id}/title"), json!({ "title_id": title })).await {
+                                                Ok(_) => { navigator().push(Route::TitleDetail { id: title }); }
+                                                Err(e) => ui::toast(e.message, true),
+                                            }
+                                        });
+                                    } } }),
+                                    {state::tr("move to another title…")}
+                                }
+                            }
                         }
                     }
                 }

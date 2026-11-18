@@ -8,6 +8,14 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
+**Écrans**
+- Les listes avec beaucoup de filtres en affichent quatre ; les autres sont sous « Plus de filtres », et ceux en cours d'utilisation apparaissent comme des pastilles que l'on peut retirer.
+- La page des tâches affiche d'abord la liste des tâches. Les nouvelles se lancent depuis « Nouvelle tâche ».
+- Les sous-onglets de la collection pour les fichiers locaux et pour le contenu hors jeux sont maintenant deux menus déroulants.
+- Les réglages affichent un nom dans la langue de l'interface, avec la clé en dessous. Enregistrer et réinitialiser n'apparaissent que s'ils changent quelque chose, et les réglages d'un autre écran restent sur cet écran.
+- Les pages de titre et de version ne gardent en boutons que les actions principales. Les liens vers les titres liés sont dans la ligne du jeu de base, et les identifiants internes sous « Détails ». La correspondance manuelle montre d’abord les liens actuels.
+- Big Picture : la recherche et le filtre sont dans la barre du haut, la langue et la disposition dans les réglages. Un jeu à plusieurs disques n’a qu’une entrée « Disques… » dans son menu. Les réglages de l’app mobile s’ouvrent une partie à la fois.
+
 **Analyse**
 - Ajout de « Analyse rapide (modifiés) » : elle lit aussi les fichiers dont la taille ou la date a changé.
 - Les hash de l'analyse se règlent séparément pour les fichiers ordinaires, les fichiers d'archive et le contenu des archives. Les fichiers d'archive utilisent sha1 et xxh3_128 par défaut.
@@ -34,6 +42,7 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Corrections
 
+- Une partie du texte de l'appli mobile s'affichait en anglais dans les autres langues.
 - La progression de l'analyse audio s'arrêtait pendant la mesure du volume sonore.
 - La progression de l'index de musique des ROM n'avançait que toutes les 500 ROM.
 

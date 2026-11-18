@@ -13,7 +13,6 @@ use super::backup::JobWatch;
 use crate::html::badge;
 use crate::state;
 use crate::ui::{self, Html};
-use super::common::bump;
 use crate::api;
 
 /// The button that goes on a rom or game screen.
@@ -251,7 +250,7 @@ pub fn SheetCard(reload: Signal<u64>) -> Element {
                 button { class: "btn", r#type: "button",
                     onclick: move |_| {
                         let body = json!({ "job_type": "sheet_verify", "directory_id": directory().parse::<u64>().ok(), "limit": limit().parse::<u64>().ok(), "fix": fix() });
-                        spawn(async move { if super::jobs::enqueue(body).await { bump(reload) } });
+                        spawn(async move { if super::jobs::enqueue(body).await { super::jobs::started(reload) } });
                     },
                     {state::tr("check sheets")}
                 }
@@ -259,7 +258,7 @@ pub fn SheetCard(reload: Signal<u64>) -> Element {
                 button { class: "btn", r#type: "button",
                     onclick: move |_| {
                         let body = json!({ "job_type": "m3u_verify", "directory_id": directory().parse::<u64>().ok(), "limit": limit().parse::<u64>().ok(), "fix": fix() });
-                        spawn(async move { if super::jobs::enqueue(body).await { bump(reload) } });
+                        spawn(async move { if super::jobs::enqueue(body).await { super::jobs::started(reload) } });
                     },
                     {state::tr("check playlists")}
                 }
@@ -272,7 +271,7 @@ pub fn SheetCard(reload: Signal<u64>) -> Element {
                             // Never renames from here: a job over a whole collection is the
                             // last place to move somebody's files without showing them first.
                             let body = json!({ "job_type": "sheet_create", "target": "sheet", "all": true });
-                            if super::jobs::enqueue(body).await { bump(reload) }
+                            if super::jobs::enqueue(body).await { super::jobs::started(reload) }
                         });
                     },
                     {state::tr("create every missing sheet")}
@@ -282,7 +281,7 @@ pub fn SheetCard(reload: Signal<u64>) -> Element {
                     onclick: move |_| {
                         spawn(async move {
                             let body = json!({ "job_type": "sheet_create", "target": "m3u", "all": true });
-                            if super::jobs::enqueue(body).await { bump(reload) }
+                            if super::jobs::enqueue(body).await { super::jobs::started(reload) }
                         });
                     },
                     {state::tr("create every missing playlist")}

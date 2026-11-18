@@ -5,6 +5,7 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 ## Changes
 
 - **RetroAchievements.** The list ships as assets/radb.bin and can be replaced with a newer one.
+- **A tidier window.** The drop area is one line (hover it to see what each input becomes), the Cartridges row is gone (it is in Settings), Cancel shows only while something runs, and the codec rows show only for Custom.
 - **Progress.** Shows each file's step and size, and every file running at once.
 - Searching folders, checking formats and planning outputs show their progress and run faster.
 
