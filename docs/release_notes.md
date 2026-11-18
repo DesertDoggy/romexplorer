@@ -1,3 +1,10 @@
+# romexplorer 0.3.0 (alpha)
+
+Alpha: the database schema may change between releases with no upgrade path. Back up before
+replacing a build.
+
+## Changes
+
 # romexplorer 0.2.2 (alpha)
 
 Alpha: the database schema may change between releases with no upgrade path. Back up before

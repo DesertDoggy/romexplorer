@@ -1,3 +1,9 @@
+# rommusic 0.2.2
+
+rommusic は romexplorer とは別にリリースします。このノートは rommusic だけの内容です。
+
+## 変更点
+
 # rommusic 0.2.1
 
 rommusic は romexplorer とは別にリリースします。このノートは rommusic だけの内容です。
