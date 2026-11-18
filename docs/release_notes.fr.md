@@ -12,6 +12,7 @@ Faites une sauvegarde avant de remplacer une version.
 - Les listes avec beaucoup de filtres en affichent quatre ; les autres sont sous « Plus de filtres », et ceux en cours d'utilisation apparaissent comme des pastilles que l'on peut retirer.
 - La page des tâches affiche d'abord la liste des tâches. Les nouvelles se lancent depuis « Nouvelle tâche ».
 - Les sous-onglets de la collection pour les fichiers locaux et pour le contenu hors jeux sont maintenant deux menus déroulants.
+- Les réglages affichent un nom dans la langue de l'interface, avec la clé en dessous. Enregistrer et réinitialiser n'apparaissent que s'ils changent quelque chose, et les réglages d'un autre écran restent sur cet écran.
 
 **Audio des ROM**
 - L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
@@ -19,6 +20,10 @@ Faites une sauvegarde avant de remplacer une version.
 - Pour les jeux sur plusieurs disques, les fichiers de musique déjà présents sur un disque précédent ne sont pas relus.
 - Les jeux sur cartouche dont l'application connaît déjà la musique la jouent dès l'ouverture de la page du titre, sans attendre l'index.
 - Ajout de « Effacer l'index audio des ROM » (toutes ou par plateforme).
+
+## Corrections
+
+- Une partie du texte de l'appli mobile s'affichait en anglais dans les autres langues.
 
 # romexplorer 0.2.1 (alpha)
 

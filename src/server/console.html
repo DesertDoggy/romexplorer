@@ -245,6 +245,7 @@ input[type=color] { width:44px; height:26px; padding:0; border:1px solid var(--l
   .setrow { display: grid; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
   .setrow:first-of-type { border-top: none; }
   .setrow .setname { padding-top: 4px; overflow-wrap: anywhere; }
+.setrow .setkey { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .setrow .setact { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
   .setrow.wide .editor { grid-column: 1 / -1; grid-row: 2; }
   .setrow.wide .setact { grid-column: 3; grid-row: 1; }
@@ -5762,7 +5763,10 @@ async function settingsPage(json, group) {
 // Config › Settings as a form: a card per section, a row per setting. Each row is the key,
 // its stored/default badge and a "!" for what it does; the editor; save / reset. Long notes
 // an editor carries move into the row's "!" too.
-function settingsForm(list, group) {
+function settingsForm(all, group) {
+  // The form leaves out keys set on another screen (each section names those screens once)
+  // and values that are not preferences; the JSON view still has them. (The app's form_hides.)
+  const list = all.filter(s => !formHides(s.key));
   const sections = settingGroups(list);
   const active = sections.some(g => g.id === group) ? group : (sections[0] || {}).id;
   view.innerHTML = `${sectionTabs(sections, active, 'config/settings')}<div class="card"><h2>${tr('Settings')} ${info(`<p>${trf('Changes apply after saving. "reset to default" removes the stored value. The {link} shows the stored values as they are.', { link: `<span class="link" onclick="go('config/settings_json')">${tr('JSON view')}</span>` })}</p>`)}</h2>
@@ -5771,7 +5775,12 @@ function settingsForm(list, group) {
   const groups = new Map();
   for (const s of list) {
     const g = s.group || 'other';
-    if (!groups.has(g)) { const card = el(`<div class="card setgroup" data-group="${esc(g)}"><h2>${esc(tr(s.group_label || 'Other'))}</h2><div class="rows"></div></div>`); host.appendChild(card); groups.set(g, card); }
+    if (!groups.has(g)) {
+      const links = [];
+      for (const x of all.filter(x => (x.group || 'other') === g && formHides(x.key))) { const at = screenOfKey(x.key) || (['instance_mode', 'catalog_from'].includes(x.key) ? ['config/mode', 'Config › Mode'] : null); if (at && !links.some(l => l[1] === at[1])) links.push(at); }
+      const more = links.length ? `<p class="muted">${tr('More of this section is set under')} ${links.map(([route, label]) => `<a class="link" onclick="go('${route}')">${esc(tr(label))}</a>`).join(', ')}</p>` : '';
+      const card = el(`<div class="card setgroup" data-group="${esc(g)}"><h2>${esc(tr(s.group_label || 'Other'))}</h2>${more}<div class="rows"></div></div>`); host.appendChild(card); groups.set(g, card);
+    }
     groups.get(g).querySelector('.rows').appendChild(settingRow(s, active));
   }
   // Wide editors (lists, tables) get a line of their own once they are measurable.
@@ -5784,10 +5793,16 @@ function settingsForm(list, group) {
   document.getElementById('setfilter').oninput = e => showSection(host, active, e.target.value.trim().toLowerCase());
 }
 
+// A setting's name as the form shows it: `setting.<key>` in the language file, else the key.
+function settingLabel(key) { return t('setting.' + key, key); }
+function formHides(key) { return !!screenOfKey(key) || ['instance_mode', 'catalog_from', 'instance_id', 'ai_cost_warning_seen', 'copy_recent_destinations'].includes(key); }
+// One setting on the form: its name (the key under it), stored/default badge and "!"; the
+// editor; save while the editor differs from what is stored, reset while a value is stored.
 function settingRow(s, section) {
   const updated = s.updated_at ? trf('updated {date}', { date: fmtDate(s.updated_at) }) : '';
-  const row = el(`<div class="setrow" data-search="${esc((s.key + ' ' + (s.description || '')).toLowerCase())}">
-    <div class="setname" title="${esc(updated)}"><span class="mono">${esc(s.key)}</span> ${s.value === null ? badge(tr('default'), 'dim') : badge(tr('set'), 'ok')}${(s.explain || []).length ? info(s.explain.map(x => `<p>${esc(tr(x))}</p>`).join('')) : s.description ? info(`<p>${esc(tr(s.description))}</p>`) : ''}</div>
+  const label = settingLabel(s.key);
+  const row = el(`<div class="setrow" data-search="${esc((s.key + ' ' + label + ' ' + (s.description || '')).toLowerCase())}">
+    <div class="setname" title="${esc(updated)}"><b>${esc(label)}</b> ${s.value === null ? badge(tr('default'), 'dim') : badge(tr('set'), 'ok')}${(s.explain || []).length ? info(s.explain.map(x => `<p>${esc(tr(x))}</p>`).join('')) : s.description ? info(`<p>${esc(tr(s.description))}</p>`) : ''}${label !== s.key ? `<div class="mono setkey">${esc(s.key)}</div>` : ''}</div>
     <div class="editor"></div>
     <div class="setact"><button class="btn small primary">${tr('save')}</button><button class="btn small danger" title="${tr('reset to default')}">${tr('reset')}</button></div></div>`);
   const holder = row.querySelector('.editor'), name = row.querySelector('.setname'), act = row.querySelector('.setact');
@@ -5811,6 +5826,13 @@ function settingRow(s, section) {
     else name.insertAdjacentHTML('beforeend', info(notes.join('')));
   }
   const [save, reset] = act.querySelectorAll('button');
+  if (s.value === null) reset.style.display = 'none';
+  if (editor && !editor.readonly) {
+    const start = JSON.stringify(editor.get() ?? null);
+    const sync = () => { save.style.display = JSON.stringify(editor.get() ?? null) === start ? 'none' : ''; };
+    sync();
+    for (const ev of ['input', 'change', 'click']) holder.addEventListener(ev, () => setTimeout(sync, 0));
+  }
   const done = async msg => { toast(msg); await loadUiSettings(); settingsPage(false, section); };
   save.onclick = async () => {
     const v = editor.get();

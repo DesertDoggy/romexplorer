@@ -12,6 +12,7 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Listen mit vielen Filtern zeigen vier davon; der Rest liegt unter „Weitere Filter“, aktive Filter erscheinen als Chips zum Entfernen.
 - Die Auftragsseite zeigt zuerst die Auftragsliste. Neue Aufträge starten über „Neuer Auftrag“.
 - Die Unterreiter der Sammlung für eigene Dateien und für Material außer Spielen sind jetzt zwei Ausklappmenüs.
+- Einstellungen zeigen einen Namen in der Sprache der Oberfläche, den Schlüssel darunter. Speichern und Zurücksetzen erscheinen nur, wenn sie etwas ändern; auf anderen Seiten eingestellte Werte bleiben dort.
 
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
@@ -19,6 +20,10 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 - Bei Spielen mit mehreren Discs werden Musikdateien, die schon auf einer früheren Disc liegen, nicht erneut gelesen.
 - Cartridge-Spiele, deren Musik die App bereits kennt, spielen sie ab, sobald die Titelseite geöffnet wird, ohne auf den Index zu warten.
 - „ROM-Audio-Index löschen“ wurde hinzugefügt (alle ROMs oder eine Plattform).
+
+## Fehlerbehebungen
+
+- Einige Texte der Handy-App wurden in anderen Sprachen auf Englisch angezeigt.
 
 # romexplorer 0.2.1 (alpha)
 

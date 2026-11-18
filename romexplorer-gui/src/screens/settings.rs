@@ -83,6 +83,31 @@ fn keepable_media_types() -> Vec<String> {
     vocab_strs("/media_types")
 }
 
+/// A setting's name as the form shows it: `setting.<key>` in the language file, else the key.
+pub fn setting_label(key: &str) -> String {
+    state::t(&format!("setting.{key}"), key)
+}
+
+/// Keys the form leaves out: the ones edited on another screen (the section names it once,
+/// [`elsewhere_links`]) and values that are not preferences (an id, a dismissed warning, the
+/// copy dialog's recent folders). The JSON view still has them all.
+fn form_hides(key: &str) -> bool {
+    edited_elsewhere(key).is_some() || matches!(key, "instance_id" | "ai_cost_warning_seen" | "copy_recent_destinations")
+}
+
+/// The screens a section's left-out keys are set on, once each.
+fn elsewhere_links(list: &[Value]) -> Vec<(crate::Route, &'static str)> {
+    let mut out: Vec<(crate::Route, &'static str)> = Vec::new();
+    for x in list {
+        if let Some((to, label)) = edited_elsewhere(&s(x, "key")) {
+            if !out.iter().any(|(_, l)| *l == label) {
+                out.push((to, label));
+            }
+        }
+    }
+    out
+}
+
 /// Keys whose editor lives on another screen; the settings form only points there.
 fn edited_elsewhere(key: &str) -> Option<(crate::Route, &'static str)> {
     match key {
@@ -1282,13 +1307,14 @@ fn SettingCard(setting: Value, json: bool, on_change: EventHandler<()>) -> Eleme
     }
     // An unset key whose default depends on the server's build starts on that default.
     let (k0, v0) = (key.clone(), if value.is_null() { setting.get("default").cloned().unwrap_or(Value::Null) } else { value.clone() });
+    let start = initial(&k0, &v0);
     let cur = use_signal(move || initial(&k0, &v0));
     let raw = use_signal(|| json);
     let v1 = value.clone();
     let mut text = use_signal(move || if v1.is_null() { String::new() } else { serde_json::to_string_pretty(&v1).unwrap_or_default() });
     let (k_save, k_reset) = (key.clone(), key.clone());
     if !json {
-        return rsx! { SettingRow { setting, key_name: key, cur, on_change } };
+        return rsx! { SettingRow { setting, key_name: key, cur, start, on_change } };
     }
     rsx! {
         div { class: "card",
@@ -1333,10 +1359,12 @@ fn SettingCard(setting: Value, json: bool, on_change: EventHandler<()>) -> Eleme
     }
 }
 
-/// One setting on the form: its key, stored/default badge and a "!" for what it does; the
-/// editor; save / reset. An editor that needs the width (`WIDE`) gets a line of its own.
+/// One setting on the form: its name (`setting.<key>` in the language file, the key under it),
+/// stored/default badge and a "!" for what it does; the editor; save while the editor differs
+/// from what is stored (`start`), reset while a value is stored. An editor that needs the
+/// width (`WIDE`) gets a line of its own.
 #[component]
-fn SettingRow(setting: Value, key_name: String, cur: Signal<Value>, on_change: EventHandler<()>) -> Element {
+fn SettingRow(setting: Value, key_name: String, cur: Signal<Value>, start: Value, on_change: EventHandler<()>) -> Element {
     let key = key_name;
     let value = setting.get("value").cloned().unwrap_or(Value::Null);
     let wide = WIDE.contains(&key.as_str());
@@ -1345,20 +1373,24 @@ fn SettingRow(setting: Value, key_name: String, cur: Signal<Value>, on_change: E
     // The one "!": the setting's own explanation where it has one, else its description.
     let explain: Vec<String> = setting.get("explain").and_then(Value::as_array).map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect()).unwrap_or_default();
     let updated = api::so(&setting, "updated_at").map(|t| state::trf("updated {date}", &[("date", &html::fmt_date(&t))])).unwrap_or_default();
+    let label = setting_label(&key);
+    let changed = finalize(&key, &cur()) != finalize(&key, &start);
+    let stored = !value.is_null();
     rsx! {
         div { class: if wide { "setrow wide" } else { "setrow" },
             div { class: "setname", title: "{updated}",
-                span { class: "mono", "{key}" } " "
+                b { "{label}" } " "
                 Html { html: if value.is_null() { badge(&state::tr("default"), "dim") } else { badge(&state::tr("set"), "ok") } }
                 if !explain.is_empty() {
                     Explain { for p in explain.iter() { p { {state::tr(p)} } } }
                 } else if !description.is_empty() {
                     Explain { {state::tr(&description)} }
                 }
+                if label != key { div { class: "mono setkey", "{key}" } }
             }
             div { class: "editor", Editor { name: key.clone(), cur } }
             div { class: "setact",
-                button { class: "btn small primary",
+                button { class: "btn small primary", hidden: !changed,
                     onclick: move |_| {
                         let v = finalize(&k_save, &cur());
                         let key = k_save.clone();
@@ -1372,7 +1404,7 @@ fn SettingRow(setting: Value, key_name: String, cur: Signal<Value>, on_change: E
                     },
                     {state::tr("save")}
                 }
-                button { class: "btn small danger", title: state::tr("reset to default"),
+                button { class: "btn small danger", title: state::tr("reset to default"), hidden: !stored,
                     onclick: move |_| {
                         let key = k_reset.clone();
                         spawn(async move {
@@ -1466,11 +1498,23 @@ fn SettingsPage(json: bool) -> Element {
     // Sections in the order the server lists them (it sorts by section), with every setting
     // for the tab counts; then only the chosen one, or the filter's matches across all.
     let mut all: Vec<(String, String, Vec<Value>)> = Vec::new();
-    for x in items {
+    // Per section, the screens its left-out keys are set on (the form only).
+    let mut links: Vec<(String, Vec<(crate::Route, &'static str)>)> = Vec::new();
+    for x in items.iter().filter(|x| json || !form_hides(&s(x, "key"))) {
+        let x = x.clone();
         let id = api::so(&x, "group").unwrap_or_else(|| "other".into());
         match all.iter_mut().find(|(g, ..)| *g == id) {
             Some((.., list)) => list.push(x),
             None => all.push((id, api::so(&x, "group_label").unwrap_or_else(|| "Other".into()), vec![x])),
+        }
+    }
+    if !json {
+        for x in items.iter().filter(|x| form_hides(&s(x, "key"))) {
+            let id = api::so(x, "group").unwrap_or_else(|| "other".into());
+            match links.iter_mut().find(|(g, _)| *g == id) {
+                Some((_, l)) => l.extend(elsewhere_links(std::slice::from_ref(x)).into_iter().filter(|(_, label)| !l.iter().any(|(_, m)| m == label)).collect::<Vec<_>>()),
+                None => links.push((id, elsewhere_links(std::slice::from_ref(x)))),
+            }
         }
     }
     let active = if all.iter().any(|(g, ..)| *g == section()) { section() } else { all.first().map(|(g, ..)| g.clone()).unwrap_or_default() };
@@ -1479,7 +1523,7 @@ fn SettingsPage(json: bool) -> Element {
     let groups: Vec<(String, String, Vec<Value>)> = all
         .into_iter()
         .filter(|(g, ..)| !q.is_empty() || *g == active)
-        .map(|(g, l, list)| (g, l, list.into_iter().filter(|x| q.is_empty() || format!("{} {}", s(x, "key"), s(x, "description")).to_lowercase().contains(&q)).collect::<Vec<_>>()))
+        .map(|(g, l, list)| (g, l, list.into_iter().filter(|x| q.is_empty() || format!("{} {} {}", s(x, "key"), setting_label(&s(x, "key")), s(x, "description")).to_lowercase().contains(&q)).collect::<Vec<_>>()))
         .filter(|(.., list)| !list.is_empty())
         .collect();
     let section_tabs = rsx! {
@@ -1511,6 +1555,15 @@ fn SettingsPage(json: bool) -> Element {
             for (id, label, list) in groups {
                 div { class: "card setgroup", key: "{id}",
                     h2 { {state::tr(&label)} }
+                    if let Some((_, to)) = links.iter().find(|(g, _)| *g == id).filter(|(_, l)| !l.is_empty()) {
+                        p { class: "muted",
+                            {state::tr("More of this section is set under")} " "
+                            for (i, (route, name)) in to.clone().into_iter().enumerate() {
+                                if i > 0 { ", " }
+                                Link { to: route, {state::tr(name)} }
+                            }
+                        }
+                    }
                     div { class: "rows",
                         for x in list {
                             SettingCard { key: "{s(&x, \"key\")}-{s(&x, \"updated_at\")}-{g}", setting: x.clone(), json, on_change: move |_| { *gen.write() += 1; list_restart(); } }

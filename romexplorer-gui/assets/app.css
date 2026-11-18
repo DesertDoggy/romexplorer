@@ -246,6 +246,7 @@ input[type=color] { width:44px; height:26px; padding:0; border:1px solid var(--l
 .setrow { display: grid; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
 .rows > .setrow:first-child { border-top: none; }
 .setrow .setname { padding-top: 4px; overflow-wrap: anywhere; }
+.setrow .setkey { font-size: 11px; color: var(--dim); margin-top: 2px; }
 .setrow .setact { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
 .setrow.wide .editor { grid-column: 1 / -1; grid-row: 2; }
 .setrow.wide .setact { grid-column: 3; grid-row: 1; }

@@ -9,6 +9,7 @@ replacing a build.
 - Lists with many filters show four of them; the rest are under "More filters", and the ones in use show as chips you can clear.
 - The Jobs page shows the job list first. New jobs start from "New job".
 - Collection's sub-tabs for local files and for non-game material are now two drop-down menus.
+- Settings show a name in the UI's language, with the key under it. Save and reset appear only when they would change something, and settings edited on another screen are left to that screen.
 
 **ROM audio**
 - The ROM music index can read several ROMs at once (4 by default, set under Audio settings).
@@ -16,6 +17,10 @@ replacing a build.
 - On games with several discs, music files an earlier disc already has are not read again.
 - Cartridge games whose music the app already knows play it as soon as the title page opens, without waiting for the index.
 - "Clear ROM audio index" was added (all ROMs or one platform).
+
+## Bug fixes
+
+- Some of the phone app's text was shown in English in other languages.
 
 # romexplorer 0.2.1 (alpha)
 

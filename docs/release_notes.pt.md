@@ -12,6 +12,7 @@ de segurança antes de substituir uma versão.
 - As listas com muitos filtros mostram quatro; os restantes estão em «Mais filtros», e os que estão em uso aparecem como etiquetas que se podem retirar.
 - A página de tarefas mostra primeiro a lista de tarefas. As novas começam em «Nova tarefa».
 - Os subseparadores da coleção para os ficheiros locais e para o material que não é jogo são agora dois menus pendentes.
+- As definições mostram um nome no idioma da interface, com a chave por baixo. Guardar e repor só aparecem quando alteram algo, e as definições de outro ecrã ficam nesse ecrã.
 
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
@@ -19,6 +20,10 @@ de segurança antes de substituir uma versão.
 - Nos jogos com vários discos, os ficheiros de música que um disco anterior já tem não voltam a ser lidos.
 - Os jogos em cartucho cuja música a aplicação já conhece reproduzem-na assim que a página do título abre, sem esperar pelo índice.
 - Adicionado «Limpar o índice de áudio das ROM» (todas ou por plataforma).
+
+## Correções
+
+- Parte do texto da app do telemóvel aparecia em inglês noutras línguas.
 
 # romexplorer 0.2.1 (alpha)
 

@@ -12,6 +12,7 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Gli elenchi con molti filtri ne mostrano quattro; gli altri sono in «Altri filtri», e quelli in uso compaiono come etichette da togliere.
 - La pagina dei processi mostra prima l'elenco dei processi. I nuovi si avviano da «Nuovo processo».
 - Le sottoschede della collezione per i file locali e per il materiale non di gioco sono ora due menu a tendina.
+- Le impostazioni mostrano un nome nella lingua dell'interfaccia, con la chiave sotto. Salva e ripristina compaiono solo quando cambiano qualcosa, e le impostazioni di un'altra schermata restano lì.
 
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
@@ -19,6 +20,10 @@ aggiornamento. Fai un backup prima di sostituire una build.
 - Nei giochi su più dischi, i file musicali già presenti su un disco precedente non vengono riletti.
 - I giochi su cartuccia di cui l'app conosce già la musica la riproducono appena si apre la pagina del titolo, senza attendere l'indice.
 - Aggiunto «Cancella l'indice audio delle ROM» (tutte o per piattaforma).
+
+## Correzioni
+
+- Parte del testo dell'app per telefono era mostrata in inglese nelle altre lingue.
 
 # romexplorer 0.2.1 (alpha)
 

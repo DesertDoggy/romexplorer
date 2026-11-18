@@ -12,6 +12,7 @@ zapasową przed podmianą wersji.
 - Listy z wieloma filtrami pokazują cztery z nich; reszta jest pod „Więcej filtrów”, a używane filtry są widoczne jako etykiety do usunięcia.
 - Strona zadań pokazuje najpierw listę zadań. Nowe zadania uruchamia się z „Nowe zadanie”.
 - Podzakładki kolekcji dla własnych plików i dla materiałów innych niż gry są teraz dwoma menu rozwijanymi.
+- Ustawienia pokazują nazwę w języku interfejsu, z kluczem pod spodem. Zapisz i resetuj pojawiają się tylko wtedy, gdy coś zmieniają, a ustawienia z innego ekranu zostają na tamtym ekranie.
 
 **Dźwięk z ROM-ów**
 - Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).
@@ -19,6 +20,10 @@ zapasową przed podmianą wersji.
 - W grach na kilku płytach pliki muzyczne, które ma już wcześniejsza płyta, nie są czytane ponownie.
 - Gry na kartridżach, których muzykę aplikacja już zna, odtwarzają ją od razu po otwarciu strony tytułu, bez czekania na indeks.
 - Dodano „Wyczyść indeks dźwięku z ROM-ów” (wszystkie lub jedna platforma).
+
+## Poprawki błędów
+
+- Część tekstów aplikacji na telefon była wyświetlana po angielsku w innych językach.
 
 # romexplorer 0.2.1 (alpha)
 
