@@ -284,23 +284,22 @@ fn show_job_result(id: u64) {
 #[component]
 pub fn Jobs() -> Element {
     let reload = use_signal(|| 0u64);
-    let mut source = use_signal(String::new);
-    let mut media_scope = use_signal(|| "owned".to_string());
-    let mut media_platform = use_signal(String::new);
+    let source = use_signal(String::new);
+    let media_scope = use_signal(|| "owned".to_string());
+    let media_platform = use_signal(String::new);
     // One provider's art, of the types ticked; none: every provider whose art comes on its own.
-    let mut media_provider = use_signal(String::new);
-    let mut media_types = use_signal(|| super::art::DEFAULT_TICKED.iter().map(|s| s.to_string()).collect::<Vec<String>>());
-    let mut disp_sfo = use_signal(|| true);
-    let mut disp_pcsx2 = use_signal(|| true);
-    let mut disp_ipbin = use_signal(|| true);
-    let mut disp_mame = use_signal(|| false);
-    let mut ra_scope = use_signal(|| "played".to_string());
+    let media_provider = use_signal(String::new);
+    let media_types = use_signal(|| super::art::DEFAULT_TICKED.iter().map(|s| s.to_string()).collect::<Vec<String>>());
+    let disp_sfo = use_signal(|| true);
+    let disp_pcsx2 = use_signal(|| true);
+    let disp_ipbin = use_signal(|| true);
+    let disp_mame = use_signal(|| false);
+    let ra_scope = use_signal(|| "played".to_string());
     // A client installation may not build the catalogue: the server refuses those jobs, so
     // say so on the button rather than after the click.
     let mode = use_resource(|| async { api::get_as::<romexplorer_types::sources::ModeView>("/api/v1/mode").await });
     let client = mode.read().as_ref().and_then(|r| r.as_ref().ok()).is_some_and(|m| m.mode == "client");
     let providers = use_resource(|| async { api::get("/api/v1/providers").await.map(|v| api::items(&v)) });
-    let client_title = if client { state::tr("refused in client mode: the catalogue comes from the main server") } else { String::new() };
     // The list refreshes every 2 s while the page is open.
     use_future(move || async move {
         loop {
@@ -391,145 +390,226 @@ pub fn Jobs() -> Element {
         Spec(Rc::new(spec))
     });
     let dat_plats = super::widgets::use_dat_platforms();
+    let forms = JobForms { reload, source, media_scope, media_platform, media_provider, media_types, disp_sfo, disp_pcsx2, disp_ipbin, disp_mame, ra_scope, client, providers, dat_plats };
     rsx! {
-        div { class: "card",
-            p { class: "muted", {state::tr("Scans and hash matches have their own tab, with the files being read right now:")} " "
-                Link { class: "link", to: crate::Route::Scan {}, {state::tr("Scan")} }
-            }
-        }
-        // One box per kind of job, so each is found by its name.
-        div { class: "card",
-            h2 { {state::tr("DAT sync")} " " {ui::key_explain("explain.jobs.other")} }
-            form { class: "inline", onsubmit: move |e| e.prevent_default(),
-                label { {state::tr("DAT source")}
-                    select { onchange: move |e| source.set(e.value()),
-                        option { value: "", {state::tr("all sources")} }
-                        for x in vocab_list("/jobs/dat_sources") { option { "{x}" } }
-                    }
-                }
-                button { class: "btn", r#type: "button", disabled: client, title: "{client_title}", onclick: move |_| { let src = source(); let Some(body) = super::widgets::with_dat_platforms(dat_plats, json!({ "job_type": "dat_sync", "source": if src.is_empty() { Value::Null } else { json!(src) }, "import": true })) else { return }; spawn(async move { if enqueue(body).await { bump(reload) } }); }, {state::tr("DAT sync (download + import)")} }
-                crate::ui::QueueButton {}
-            }
-            super::widgets::DatPlatformPicker { pick: dat_plats }
-        }
-        div { class: "card",
-            h2 { {state::tr("Media download")} }
-            form { class: "inline", onsubmit: move |e| e.prevent_default(),
-                label { {state::tr("media for")}
-                    select { onchange: move |e| media_scope.set(e.value()),
-                        option { value: "owned", {state::tr("owned games")} }
-                        option { value: "all", {state::tr("the whole catalogue")} }
-                    }
-                }
-                label { {state::tr("platform")}
-                    select { onchange: move |e| media_platform.set(e.value()),
-                        option { value: "", {state::tr("all platforms")} }
-                        for p in state::platforms() { option { value: "{u(&p, \"id\")}", "{s(&p, \"name\")}" } }
-                    }
-                }
-                label { {state::tr("from")}
-                    select { onchange: move |e| media_provider.set(e.value()),
-                        option { value: "", {state::tr("every provider (the media settings)")} }
-                        for p in super::art::art_providers() { option { value: "{p.name}", "{p.name}" } }
-                    }
-                }
-                if let Some(p) = super::art::art_providers().into_iter().find(|p| p.name == media_provider()) {
-                    for slot in p.slots.clone() {
-                        label {
-                            input { r#type: "checkbox", checked: media_types().contains(&slot),
-                                onchange: { let slot = slot.clone(); move |e: Event<FormData>| { let mut t = media_types.write(); t.retain(|x| x != &slot); if e.checked() { t.push(slot.clone()); } } } }
-                            " " {super::art::slot_label(&slot)}
-                        }
-                    }
-                }
-                button { class: "btn", r#type: "button",
-                    onclick: move |_| {
-                        let plat = media_platform();
-                        let provider = media_provider();
-                        let slots: Vec<String> = super::art::art_providers().into_iter().find(|p| p.name == provider).map(|p| p.slots).unwrap_or_default();
-                        let types: Vec<String> = media_types().into_iter().filter(|t| slots.contains(t)).collect();
-                        let body = if provider.is_empty() {
-                            json!({ "job_type": "media_backfill", "scope": media_scope(), "platform": plat.parse::<u64>().ok() })
-                        } else {
-                            json!({ "job_type": "media_backfill", "scope": media_scope(), "platform": plat.parse::<u64>().ok(), "providers": [provider], "types": types })
-                        };
-                        spawn(async move { if enqueue(body).await { bump(reload) } });
-                    },
-                    {state::tr("download missing media")}
-                }
-                crate::ui::QueueButton {}
-                {ui::key_explain("explain.jobs.media_backfill")}
-            }
-            form { class: "inline", style: "margin-top:8px", onsubmit: move |e| e.prevent_default(),
-                button { class: "btn", r#type: "button", title: state::tr("move media the app stored in its own folder into the Platform/Title/Region layout and into the configured image / video / audio dirs (only app-written files; user files are never touched)"), onclick: move |_| { spawn(async move { if enqueue(json!({ "job_type": "media_relayout" })).await { bump(reload) } }); }, {state::tr("media relayout")} }
-                crate::ui::QueueButton {}
-            }
-        }
-        div { class: "card",
-            h2 { {state::tr("RetroAchievements data")} }
-            form { class: "inline", onsubmit: move |e| e.prevent_default(),
-                label { {state::tr("RetroAchievements games")}
-                    select { onchange: move |e| ra_scope.set(e.value()),
-                        option { value: "played", {state::tr("played by the account")} }
-                        option { value: "owned", {state::tr("owned games")} }
-                    }
-                }
-                button { class: "btn", r#type: "button",
-                    onclick: move |_| {
-                        let body = json!({ "job_type": "ra_badges", "scope": ra_scope() });
-                        spawn(async move { if enqueue(body).await { bump(reload) } });
-                    },
-                    {state::tr("RA badges download/update")}
-                }
-                crate::ui::QueueButton {}
-                {ui::key_explain("explain.jobs.ra_badges")}
-            }
-        }
-        if let Some(Ok(list)) = &*providers.read() { super::data::ProviderRequest { list: list.clone() } }
-        IntegrityCard { reload }
-        super::sheets::SheetCard { reload }
-        div { class: "card",
-            h2 { {state::tr("Display data")} }
-            form { class: "inline", onsubmit: move |e| e.prevent_default(),
-                span { {state::tr("display data from")} }
-                label { input { r#type: "checkbox", checked: disp_sfo(), onchange: move |e| disp_sfo.set(e.checked()) } {state::tr(" PS3 games' PARAM.SFO")} }
-                label { input { r#type: "checkbox", checked: disp_ipbin(), onchange: move |e| disp_ipbin.set(e.checked()) } {state::tr(" Dreamcast discs' IP.BIN (VGA)")} }
-                label { input { r#type: "checkbox", checked: disp_pcsx2(), onchange: move |e| disp_pcsx2.set(e.checked()) } {state::tr(" PCSX2's widescreen patches (download)")} }
-                label { input { r#type: "checkbox", checked: disp_mame(), onchange: move |e| disp_mame.set(e.checked()) } {state::tr(" MAME's machine list (large download)")} }
-                button { class: "btn", r#type: "button",
-                    onclick: move |_| {
-                        let sources: Vec<&str> = [("sfo", disp_sfo()), ("ipbin", disp_ipbin()), ("pcsx2", disp_pcsx2()), ("mame", disp_mame())].into_iter().filter(|(_, on)| *on).map(|(s, _)| s).collect();
-                        if sources.is_empty() {
-                            ui::toast(state::tr("pick at least one source"), true);
-                            return;
-                        }
-                        let body = json!({ "job_type": "display_data", "sources": sources });
-                        spawn(async move { if enqueue(body).await { bump(reload) } });
-                    },
-                    {state::tr("collect display data")}
-                }
-                crate::ui::QueueButton {}
-            }
-        }
         div { class: "card",
             h2 { {state::tr("Jobs")} " " {ui::key_explain("explain.jobs.list")} }
             div { class: "toolbar",
-                span { class: "muted", {state::tr("clear from the list:")} }
-                for (status, label) in [("done", state::tr("done")), ("failed", state::tr("failed")), ("cancelled", state::tr("cancelled")), ("", state::tr("all finished"))] {
-                    button { class: "btn small", r#type: "button",
-                        onclick: move |_| {
-                            spawn(async move {
-                                let question = if status.is_empty() { state::tr("Clear every finished job (done, failed, cancelled) from the list?") } else { state::trf("Clear every {status} job from the list?", &[("status", &state::tr(status))]) };
-                                if !ui::confirm(&question).await { return; }
-                                let body = if status.is_empty() { json!({}) } else { json!({ "statuses": [status] }) };
-                                if clear_jobs(body).await { bump(reload); }
-                            });
-                        },
-                        "{label}"
-                    }
+                button { class: "btn primary", r#type: "button",
+                    onclick: move |e| { e.stop_propagation(); let p = e.client_coordinates(); ui::open_menu(p.x, p.y, forms.menu()); },
+                    {state::tr("New job")} " ▾"
+                }
+                button { class: "btn small", r#type: "button",
+                    onclick: move |e| { e.stop_propagation(); let p = e.client_coordinates(); ui::open_menu(p.x, p.y, clear_menu(reload)); },
+                    {state::tr("clear from the list")} " ▾"
                 }
             }
             Grid { spec, reload: Some(reload) }
+        }
+    }
+}
+
+/// "clear from the list ▾": the finished jobs by status, each after a confirm.
+fn clear_menu(reload: Signal<u64>) -> Vec<ui::MenuItem> {
+    [("done", state::tr("done")), ("failed", state::tr("failed")), ("cancelled", state::tr("cancelled")), ("", state::tr("all finished"))]
+        .into_iter()
+        .map(|(status, label)| {
+            ui::MenuItem::new(label, move || {
+                spawn(async move {
+                    let question = if status.is_empty() { state::tr("Clear every finished job (done, failed, cancelled) from the list?") } else { state::trf("Clear every {status} job from the list?", &[("status", &state::tr(status))]) };
+                    if !ui::confirm(&question).await { return; }
+                    let body = if status.is_empty() { json!({}) } else { json!({ "statuses": [status] }) };
+                    if clear_jobs(body).await { bump(reload); }
+                });
+            })
+        })
+        .collect()
+}
+
+/// A job started from one of the Jobs page's dialogs: the list shows it, and the dialog
+/// closes.
+pub fn started(reload: Signal<u64>) {
+    bump(reload);
+    ui::close_modal();
+}
+
+/// The Jobs page's "New job ▾" forms, each opened as a dialog over the list. The forms'
+/// choices live on the page, so reopening a dialog shows what was picked last (the selects
+/// are bound to them for that).
+#[derive(Clone, Copy)]
+struct JobForms {
+    reload: Signal<u64>,
+    source: Signal<String>,
+    media_scope: Signal<String>,
+    media_platform: Signal<String>,
+    media_provider: Signal<String>,
+    media_types: Signal<Vec<String>>,
+    disp_sfo: Signal<bool>,
+    disp_pcsx2: Signal<bool>,
+    disp_ipbin: Signal<bool>,
+    disp_mame: Signal<bool>,
+    ra_scope: Signal<String>,
+    client: bool,
+    providers: Resource<Result<Vec<Value>, api::ApiError>>,
+    dat_plats: super::widgets::DatPick,
+}
+
+/// The "New job ▾" menu: (group, [(form, label)]). The console's JOB_FORMS.
+const JOB_MENU: [(&str, &[(&str, &str)]); 3] = [
+    ("Catalogue", &[("dat_sync", "DAT sync"), ("provider_request", "Metadata request"), ("display_data", "Display data")]),
+    ("Media", &[("media", "Media download"), ("ra_badges", "RetroAchievements data")]),
+    ("Files", &[("integrity", "Integrity check"), ("sheets", "Cue sheet and playlist check"), ("scan", "Scan / hash match…")]),
+];
+
+impl JobForms {
+    fn menu(self) -> Vec<ui::MenuItem> {
+        let mut items = Vec::new();
+        for (group, forms) in JOB_MENU {
+            items.push(ui::MenuItem::head(state::trc("jobgroup", group)));
+            for (kind, label) in forms {
+                let kind: &'static str = kind;
+                items.push(ui::MenuItem::new(state::tr(label), move || {
+                    if kind == "scan" {
+                        // Scans have their own tab, with the files being read right now.
+                        navigator().push(crate::Route::Scan {});
+                    } else {
+                        ui::open_modal(move || self.render(kind));
+                    }
+                }));
+            }
+        }
+        items
+    }
+
+    fn render(self, kind: &'static str) -> Element {
+        let JobForms { reload, mut source, mut media_scope, mut media_platform, mut media_provider, mut media_types, mut disp_sfo, mut disp_pcsx2, mut disp_ipbin, mut disp_mame, mut ra_scope, client, providers, dat_plats } = self;
+        let client_title = if client { state::tr("refused in client mode: the catalogue comes from the main server") } else { String::new() };
+        match kind {
+            "dat_sync" => rsx! {
+                div { class: "card",
+                    h2 { {state::tr("DAT sync")} " " {ui::key_explain("explain.jobs.other")} }
+                    form { class: "inline", onsubmit: move |e| e.prevent_default(),
+                        label { {state::tr("DAT source")}
+                            select { value: "{source}", onchange: move |e| source.set(e.value()),
+                                option { value: "", {state::tr("all sources")} }
+                                for x in vocab_list("/jobs/dat_sources") { option { "{x}" } }
+                            }
+                        }
+                        button { class: "btn", r#type: "button", disabled: client, title: "{client_title}", onclick: move |_| { let src = source(); let Some(body) = super::widgets::with_dat_platforms(dat_plats, json!({ "job_type": "dat_sync", "source": if src.is_empty() { Value::Null } else { json!(src) }, "import": true })) else { return }; spawn(async move { if enqueue(body).await { started(reload) } }); }, {state::tr("DAT sync (download + import)")} }
+                        crate::ui::QueueButton {}
+                    }
+                    super::widgets::DatPlatformPicker { pick: dat_plats }
+                }
+            },
+            "media" => rsx! {
+                div { class: "card",
+                    h2 { {state::tr("Media download")} }
+                    form { class: "inline", onsubmit: move |e| e.prevent_default(),
+                        label { {state::tr("media for")}
+                            select { value: "{media_scope}", onchange: move |e| media_scope.set(e.value()),
+                                option { value: "owned", {state::tr("owned games")} }
+                                option { value: "all", {state::tr("the whole catalogue")} }
+                            }
+                        }
+                        label { {state::tr("platform")}
+                            select { value: "{media_platform}", onchange: move |e| media_platform.set(e.value()),
+                                option { value: "", {state::tr("all platforms")} }
+                                for p in state::platforms() { option { value: "{u(&p, \"id\")}", "{s(&p, \"name\")}" } }
+                            }
+                        }
+                        label { {state::tr("from")}
+                            select { value: "{media_provider}", onchange: move |e| media_provider.set(e.value()),
+                                option { value: "", {state::tr("every provider (the media settings)")} }
+                                for p in super::art::art_providers() { option { value: "{p.name}", "{p.name}" } }
+                            }
+                        }
+                        if let Some(p) = super::art::art_providers().into_iter().find(|p| p.name == media_provider()) {
+                            for slot in p.slots.clone() {
+                                label {
+                                    input { r#type: "checkbox", checked: media_types().contains(&slot),
+                                        onchange: { let slot = slot.clone(); move |e: Event<FormData>| { let mut t = media_types.write(); t.retain(|x| x != &slot); if e.checked() { t.push(slot.clone()); } } } }
+                                    " " {super::art::slot_label(&slot)}
+                                }
+                            }
+                        }
+                        button { class: "btn", r#type: "button",
+                            onclick: move |_| {
+                                let plat = media_platform();
+                                let provider = media_provider();
+                                let slots: Vec<String> = super::art::art_providers().into_iter().find(|p| p.name == provider).map(|p| p.slots).unwrap_or_default();
+                                let types: Vec<String> = media_types().into_iter().filter(|t| slots.contains(t)).collect();
+                                let body = if provider.is_empty() {
+                                    json!({ "job_type": "media_backfill", "scope": media_scope(), "platform": plat.parse::<u64>().ok() })
+                                } else {
+                                    json!({ "job_type": "media_backfill", "scope": media_scope(), "platform": plat.parse::<u64>().ok(), "providers": [provider], "types": types })
+                                };
+                                spawn(async move { if enqueue(body).await { started(reload) } });
+                            },
+                            {state::tr("download missing media")}
+                        }
+                        crate::ui::QueueButton {}
+                        {ui::key_explain("explain.jobs.media_backfill")}
+                    }
+                    form { class: "inline", style: "margin-top:8px", onsubmit: move |e| e.prevent_default(),
+                        button { class: "btn", r#type: "button", title: state::tr("move media the app stored in its own folder into the Platform/Title/Region layout and into the configured image / video / audio dirs (only app-written files; user files are never touched)"), onclick: move |_| { spawn(async move { if enqueue(json!({ "job_type": "media_relayout" })).await { started(reload) } }); }, {state::tr("media relayout")} }
+                        crate::ui::QueueButton {}
+                    }
+                }
+            },
+            "ra_badges" => rsx! {
+                div { class: "card",
+                    h2 { {state::tr("RetroAchievements data")} }
+                    form { class: "inline", onsubmit: move |e| e.prevent_default(),
+                        label { {state::tr("RetroAchievements games")}
+                            select { value: "{ra_scope}", onchange: move |e| ra_scope.set(e.value()),
+                                option { value: "played", {state::tr("played by the account")} }
+                                option { value: "owned", {state::tr("owned games")} }
+                            }
+                        }
+                        button { class: "btn", r#type: "button",
+                            onclick: move |_| {
+                                let body = json!({ "job_type": "ra_badges", "scope": ra_scope() });
+                                spawn(async move { if enqueue(body).await { started(reload) } });
+                            },
+                            {state::tr("RA badges download/update")}
+                        }
+                        crate::ui::QueueButton {}
+                        {ui::key_explain("explain.jobs.ra_badges")}
+                    }
+                }
+            },
+            "display_data" => rsx! {
+                div { class: "card",
+                    h2 { {state::tr("Display data")} }
+                    form { class: "inline", onsubmit: move |e| e.prevent_default(),
+                        span { {state::tr("display data from")} }
+                        label { input { r#type: "checkbox", checked: disp_sfo(), onchange: move |e| disp_sfo.set(e.checked()) } {state::tr(" PS3 games' PARAM.SFO")} }
+                        label { input { r#type: "checkbox", checked: disp_ipbin(), onchange: move |e| disp_ipbin.set(e.checked()) } {state::tr(" Dreamcast discs' IP.BIN (VGA)")} }
+                        label { input { r#type: "checkbox", checked: disp_pcsx2(), onchange: move |e| disp_pcsx2.set(e.checked()) } {state::tr(" PCSX2's widescreen patches (download)")} }
+                        label { input { r#type: "checkbox", checked: disp_mame(), onchange: move |e| disp_mame.set(e.checked()) } {state::tr(" MAME's machine list (large download)")} }
+                        button { class: "btn", r#type: "button",
+                            onclick: move |_| {
+                                let sources: Vec<&str> = [("sfo", disp_sfo()), ("ipbin", disp_ipbin()), ("pcsx2", disp_pcsx2()), ("mame", disp_mame())].into_iter().filter(|(_, on)| *on).map(|(s, _)| s).collect();
+                                if sources.is_empty() {
+                                    ui::toast(state::tr("pick at least one source"), true);
+                                    return;
+                                }
+                                let body = json!({ "job_type": "display_data", "sources": sources });
+                                spawn(async move { if enqueue(body).await { started(reload) } });
+                            },
+                            {state::tr("collect display data")}
+                        }
+                        crate::ui::QueueButton {}
+                    }
+                }
+            },
+            "provider_request" => match &*providers.read() {
+                Some(Ok(list)) => rsx! { super::data::ProviderRequest { list: list.clone() } },
+                _ => rsx! { p { class: "muted", {state::tr("loading…")} } },
+            },
+            "integrity" => rsx! { IntegrityCard { reload } },
+            "sheets" => rsx! { super::sheets::SheetCard { reload } },
+            _ => rsx! {},
         }
     }
 }
@@ -578,7 +658,7 @@ fn IntegrityCard(reload: Signal<u64>) -> Element {
                             "limit": limit().parse::<u64>().ok().filter(|n| *n > 0),
                             "older_than_days": days().parse::<u64>().ok().filter(|n| *n > 0),
                         });
-                        spawn(async move { if enqueue(body).await { bump(reload) } });
+                        spawn(async move { if enqueue(body).await { started(reload) } });
                     },
                     {state::tr("check now")}
                 }

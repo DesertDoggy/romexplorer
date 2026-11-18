@@ -5,6 +5,11 @@ replacing a build.
 
 ## Changes
 
+**Screens**
+- Lists with many filters show four of them; the rest are under "More filters", and the ones in use show as chips you can clear.
+- The Jobs page shows the job list first. New jobs start from "New job".
+- Collection's sub-tabs for local files and for non-game material are now two drop-down menus.
+
 **ROM audio**
 - The ROM music index can read several ROMs at once (4 by default, set under Audio settings).
 - The ROM music index reads only the best-ranked copy of each title, and other copies only when it has no music.

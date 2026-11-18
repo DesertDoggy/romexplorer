@@ -8,6 +8,11 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Modifiche
 
+**Schermate**
+- Gli elenchi con molti filtri ne mostrano quattro; gli altri sono in «Altri filtri», e quelli in uso compaiono come etichette da togliere.
+- La pagina dei processi mostra prima l'elenco dei processi. I nuovi si avviano da «Nuovo processo».
+- Le sottoschede della collezione per i file locali e per il materiale non di gioco sono ora due menu a tendina.
+
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
 - L'indice della musica delle ROM legge solo la copia meglio classificata di ogni titolo, e le altre solo se quella non ha musica.

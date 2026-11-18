@@ -8,6 +8,11 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
+**Bildschirme**
+- Listen mit vielen Filtern zeigen vier davon; der Rest liegt unter „Weitere Filter“, aktive Filter erscheinen als Chips zum Entfernen.
+- Die Auftragsseite zeigt zuerst die Auftragsliste. Neue Aufträge starten über „Neuer Auftrag“.
+- Die Unterreiter der Sammlung für eigene Dateien und für Material außer Spielen sind jetzt zwei Ausklappmenüs.
+
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
 - Der ROM-Musikindex liest pro Titel nur die am höchsten eingestufte Kopie, andere Kopien nur, wenn sie keine Musik hat.

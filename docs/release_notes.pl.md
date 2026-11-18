@@ -8,6 +8,11 @@ zapasową przed podmianą wersji.
 
 ## Zmiany
 
+**Ekrany**
+- Listy z wieloma filtrami pokazują cztery z nich; reszta jest pod „Więcej filtrów”, a używane filtry są widoczne jako etykiety do usunięcia.
+- Strona zadań pokazuje najpierw listę zadań. Nowe zadania uruchamia się z „Nowe zadanie”.
+- Podzakładki kolekcji dla własnych plików i dla materiałów innych niż gry są teraz dwoma menu rozwijanymi.
+
 **Dźwięk z ROM-ów**
 - Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).
 - Indeks muzyki z ROM-ów czyta tylko najwyżej ocenianą kopię każdego tytułu, a inne kopie tylko wtedy, gdy ta nie ma muzyki.

@@ -3002,5 +3002,19 @@
   "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "一覧でのカバーの並べ方です。自動と1列/1行は大きなカバーと詳細を表示し、縦持ちでは縦1列、横持ちでは横1行に並べます。グリッドは小さなカバーを入るだけ並べ、余裕があれば選択中の詳細を横に表示します。",
   "ROMs": "個の ROM",
   "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "「ROM の音声を索引」で同時に読む ROM の数です。SSD や速いサーバーでは多いほど速くなります。HDD では少ないほうが速いこともあります。",
-  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "「ROM の音声を索引」で同時に読む ROM の数です（既定 4、1〜32）。"
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "「ROM の音声を索引」で同時に読む ROM の数です（既定 4、1〜32）。",
+  "subgroup.collection.local": "手元のファイル",
+  "subgroup.collection.material": "ゲーム以外",
+  "New job": "新しいジョブ",
+  "clear from the list": "一覧から削除",
+  "jobgroup|Catalogue": "カタログ",
+  "jobgroup|Media": "メディア",
+  "jobgroup|Files": "ファイル",
+  "Scan / hash match…": "スキャン・ハッシュ照合…",
+  "More filters": "その他の絞り込み",
+  "filtergroup|Where": "場所",
+  "filtergroup|Kind": "種類",
+  "filtergroup|Metadata": "メタデータ",
+  "filtergroup|Display": "画面表示",
+  "filtergroup|Other": "その他"
 }

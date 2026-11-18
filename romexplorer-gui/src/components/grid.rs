@@ -392,6 +392,7 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
     let mut suppress_click = use_signal(|| false);
     let mut drag_from = use_signal(|| None::<usize>);
     let mut show_filters = use_signal(|| false);
+    let mut more_filters = use_signal(|| false);
 
     let spec_fetch = spec.clone();
     let mem_key_save = mem_key.clone();
@@ -487,6 +488,17 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
         }
     };
 
+    // The folded filters that are set, as chips that clear them; their count on the button.
+    let chips: Vec<(&'static str, String, String)> = if folds(&spec.filters) {
+        spec.filters.iter().filter(|f| !PRIMARY_FILTERS.contains(&filter_key(f))).filter_map(|f| {
+            let key = filter_key(f);
+            let reset = spec.initial_filters.get(key).cloned().unwrap_or_default();
+            filter_chip(f, &q, &reset).map(|text| (key, text, reset))
+        }).collect()
+    } else {
+        Vec::new()
+    };
+    let more_label = if chips.is_empty() { format!("{} ▾", state::tr("More filters")) } else { format!("{} ({}) ▾", state::tr("More filters"), chips.len()) };
     let explain = explain_keys(&spec.key);
     rsx! {
         if !spec.bare {
@@ -514,8 +526,32 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
                     button { class: if show_filters() { "btn small filtertoggle on" } else { "btn small filtertoggle" }, onclick: move |_| show_filters.toggle(), {state::tr("filters")} }
                 }
                 span { class: if show_filters() { "filters open" } else { "filters" },
-                    for f in spec.filters.clone() {
-                        {filter_widget(f, &q, set_filter)}
+                    if folds(&spec.filters) {
+                        for f in spec.filters.iter().filter(|f| PRIMARY_FILTERS.contains(&filter_key(f))).cloned() {
+                            {filter_widget(f, &q, set_filter)}
+                        }
+                        button { class: if more_filters() { "btn small on" } else { "btn small" }, onclick: move |_| more_filters.toggle(),
+                            {more_label}
+                        }
+                        for (key, text, reset) in chips.clone() {
+                            span { key: "{key}", class: "fchip", title: "{text}", "{text}"
+                                b { title: state::tr("clear"), onclick: move |_| { let mut set = set_filter; set(key.to_string(), reset.clone()) }, "✕" }
+                            }
+                        }
+                        if more_filters() {
+                            div { class: "morefilters",
+                                for (group, filters) in folded_groups(&spec.filters) {
+                                    div { key: "{group}", class: "fgroup",
+                                        div { class: "ghead", {state::trc("filtergroup", group)} }
+                                        for f in filters { {filter_widget(f, &q, set_filter)} }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for f in spec.filters.clone() {
+                            {filter_widget(f, &q, set_filter)}
+                        }
                     }
                 }
                 select { value: "{q.limit}", onchange: move |e| { let mut s = st.write(); s.limit = e.value().parse().unwrap_or(50); s.offset = 0; },
@@ -872,14 +908,93 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
     }
 }
 
+
+/// Lists with more filters than this show only [`PRIMARY_FILTERS`] in the toolbar; the rest
+/// fold behind "More filters", by [`FILTER_GROUPS`], and show as chips while set. (The
+/// console's FILTER_FOLD.)
+const FOLD_OVER: usize = 6;
+pub const PRIMARY_FILTERS: [&str; 4] = ["platform", "held", "kinds", "genre_major"];
+const FILTER_GROUPS: [(&str, &[&str]); 3] = [
+    ("Where", &["held", "machine", "view", "source", "provider"]),
+    ("Kind", &["kinds", "material", "hide_minor", "one_per_group"]),
+    ("Metadata", &["genre_major", "genres", "franchises", "companies", "keywords", "tags", "tag_source", "region", "language"]),
+];
+
+fn folds(filters: &[Filter]) -> bool {
+    filters.len() > FOLD_OVER && filters.iter().any(|f| PRIMARY_FILTERS.contains(&filter_key(f)))
+}
+
+fn filter_key(f: &Filter) -> &'static str {
+    match f {
+        Filter::Select { key, .. } | Filter::Check { key, .. } | Filter::Combo { key, .. } | Filter::Checks { key, .. } => key,
+    }
+}
+
+fn filter_group(key: &str) -> &'static str {
+    FILTER_GROUPS.iter().find(|(_, keys)| keys.contains(&key)).map(|(g, _)| *g).unwrap_or(if key.starts_with("display_") { "Display" } else { "Other" })
+}
+
+/// The folded filters by group, in the groups' order.
+fn folded_groups(filters: &[Filter]) -> Vec<(&'static str, Vec<Filter>)> {
+    let mut out: Vec<(&'static str, Vec<Filter>)> = ["Where", "Kind", "Metadata", "Display", "Other"].iter().map(|g| (*g, Vec::new())).collect();
+    for f in filters.iter().filter(|f| !PRIMARY_FILTERS.contains(&filter_key(f))) {
+        let g = filter_group(filter_key(f));
+        if let Some((_, list)) = out.iter_mut().find(|(name, _)| *name == g) {
+            list.push(f.clone());
+        }
+    }
+    out.retain(|(_, list)| !list.is_empty());
+    out
+}
+
+/// A folded filter's chip while it is set to something other than where the list started:
+/// "label: value". (The console's filterChip.)
+fn filter_chip(f: &Filter, q: &Query, reset: &str) -> Option<String> {
+    let key = filter_key(f);
+    let v = q.f(key);
+    if v.is_empty() || v == reset {
+        return None;
+    }
+    match f {
+        Filter::Select { label, options, .. } => {
+            let options = options();
+            if options.len() <= 1 {
+                return None;
+            }
+            let shown = options.iter().find(|(o, _)| *o == v).map(|(_, l)| state::tr(l)).unwrap_or(v.clone());
+            Some(format!("{}: {shown}", state::tr(label)))
+        }
+        Filter::Check { label, .. } => (v == "true").then(|| state::tr(label)),
+        Filter::Combo { label, options, .. } => {
+            let opts = options();
+            let names: Vec<String> = v.split(',').filter(|x| !x.is_empty()).map(|x| opts.iter().find(|o| o.value == x).map(|o| o.label.clone()).unwrap_or_else(|| x.to_string())).collect();
+            let shown = if names.len() > 2 { format!("{}, {} +{}", names[0], names[1], names.len() - 2) } else { names.join(", ") };
+            Some(format!("{}: {shown}", state::tr(label)))
+        }
+        Filter::Checks { label, options, extra, none, .. } => {
+            if v == *none {
+                return None;
+            }
+            let all: Vec<(String, String)> = options().into_iter().chain(extra()).collect();
+            let shown = v.split(',').map(|x| all.iter().find(|(o, _)| o == x).map(|(_, l)| l.clone()).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>().join(", ");
+            Some(format!("{}: {shown}", state::tr(label)))
+        }
+    }
+}
+
 fn filter_widget(f: Filter, q: &Query, mut set: impl FnMut(String, String) + Copy + 'static) -> Element {
     match f {
         Filter::Select { key, label, options } => {
             let cur = q.f(key);
             let label = state::tr(&label);
+            let options = options();
+            // A choice of one (the Machine filter on a machine with no others) is no filter.
+            if options.len() <= 1 {
+                return rsx! {};
+            }
             rsx! {
                 select { title: "{label}", onchange: move |e| set(key.to_string(), e.value()),
-                    for (v, l) in options() { option { value: "{v}", selected: v == cur, {state::tr(&l)} } }
+                    for (v, l) in options { option { value: "{v}", selected: v == cur, {state::tr(&l)} } }
                 }
             }
         }

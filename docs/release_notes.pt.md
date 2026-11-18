@@ -8,6 +8,11 @@ de segurança antes de substituir uma versão.
 
 ## Alterações
 
+**Ecrãs**
+- As listas com muitos filtros mostram quatro; os restantes estão em «Mais filtros», e os que estão em uso aparecem como etiquetas que se podem retirar.
+- A página de tarefas mostra primeiro a lista de tarefas. As novas começam em «Nova tarefa».
+- Os subseparadores da coleção para os ficheiros locais e para o material que não é jogo são agora dois menus pendentes.
+
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
 - O índice de música das ROM lê só a cópia mais bem classificada de cada título, e as outras só se essa não tiver música.

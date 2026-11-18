@@ -8,6 +8,11 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
+**Écrans**
+- Les listes avec beaucoup de filtres en affichent quatre ; les autres sont sous « Plus de filtres », et ceux en cours d'utilisation apparaissent comme des pastilles que l'on peut retirer.
+- La page des tâches affiche d'abord la liste des tâches. Les nouvelles se lancent depuis « Nouvelle tâche ».
+- Les sous-onglets de la collection pour les fichiers locaux et pour le contenu hors jeux sont maintenant deux menus déroulants.
+
 **Audio des ROM**
 - L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
 - L'index de musique des ROM ne lit que la copie la mieux classée de chaque titre, et les autres seulement si elle n'a pas de musique.

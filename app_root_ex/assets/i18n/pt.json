@@ -3002,5 +3002,19 @@
   "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Como as listas mostram as capas. Auto e Simples: capas grandes com os detalhes, em coluna na vertical e em linha na horizontal. Grelha: tantas capas pequenas quanto couberem, com os detalhes da selecionada ao lado se houver espaço.",
   "ROMs": "ROM",
   "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "Indexar o áudio das ROM: quantas ROM são lidas ao mesmo tempo. Mais é mais rápido num SSD ou num servidor rápido; num disco rígido, menos pode ser mais rápido.",
-  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Quantas ROM «Indexar o áudio das ROM» lê ao mesmo tempo (predefinição 4, 1-32)."
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Quantas ROM «Indexar o áudio das ROM» lê ao mesmo tempo (predefinição 4, 1-32).",
+  "subgroup.collection.local": "Ficheiros",
+  "subgroup.collection.material": "Outros conteúdos",
+  "New job": "Nova tarefa",
+  "clear from the list": "remover da lista",
+  "jobgroup|Catalogue": "Catálogo",
+  "jobgroup|Media": "Multimédia",
+  "jobgroup|Files": "Ficheiros",
+  "Scan / hash match…": "Análise / correspondência de hash…",
+  "More filters": "Mais filtros",
+  "filtergroup|Where": "Onde",
+  "filtergroup|Kind": "Tipo",
+  "filtergroup|Metadata": "Metadados",
+  "filtergroup|Display": "Ecrã",
+  "filtergroup|Other": "Outros"
 }

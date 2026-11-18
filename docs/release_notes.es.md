@@ -8,6 +8,11 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
+**Pantallas**
+- Las listas con muchos filtros muestran cuatro; el resto está en «Más filtros», y los que están en uso aparecen como etiquetas que se pueden quitar.
+- La página de tareas muestra primero la lista de tareas. Las nuevas se inician desde «Nueva tarea».
+- Las subpestañas de la colección para los archivos propios y para el material que no es juego son ahora dos menús desplegables.
+
 **Audio de las ROM**
 - El índice de música de las ROM puede leer varias ROM a la vez (4 por defecto, se cambia en los ajustes de audio).
 - El índice de música de las ROM lee solo la copia mejor clasificada de cada título, y las demás solo si esa no tiene música.

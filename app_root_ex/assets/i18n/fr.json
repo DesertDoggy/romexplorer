@@ -3002,5 +3002,19 @@
   "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Comment les listes affichent les jaquettes. Auto et Simple : grandes jaquettes avec leurs détails, en colonne à la verticale et en ligne à l'horizontale. Grille : autant de petites jaquettes que possible, avec les détails de la sélection à côté s'il y a la place.",
   "ROMs": "ROM",
   "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "Indexer l'audio des ROM : combien de ROM sont lues en même temps. Plus, c'est plus rapide sur un SSD ou un serveur rapide ; sur un disque dur, moins peut être plus rapide.",
-  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Combien de ROM « Indexer l'audio des ROM » lit en même temps (4 par défaut, 1-32)."
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Combien de ROM « Indexer l'audio des ROM » lit en même temps (4 par défaut, 1-32).",
+  "subgroup.collection.local": "Fichiers",
+  "subgroup.collection.material": "Autres contenus",
+  "New job": "Nouvelle tâche",
+  "clear from the list": "retirer de la liste",
+  "jobgroup|Catalogue": "Catalogue",
+  "jobgroup|Media": "Médias",
+  "jobgroup|Files": "Fichiers",
+  "Scan / hash match…": "Analyse / correspondance de hachage…",
+  "More filters": "Plus de filtres",
+  "filtergroup|Where": "Où",
+  "filtergroup|Kind": "Type",
+  "filtergroup|Metadata": "Métadonnées",
+  "filtergroup|Display": "Affichage",
+  "filtergroup|Other": "Autre"
 }

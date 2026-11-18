@@ -3002,5 +3002,19 @@
   "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "Wie die Listen Cover zeigen. Auto und Einzeln: große Cover mit Details, hochkant als Spalte, quer als Zeile. Raster: so viele kleine Cover wie passen, mit den Details der Auswahl daneben, wenn Platz ist.",
   "ROMs": "ROMs",
   "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "ROM-Audio indizieren: wie viele ROMs gleichzeitig gelesen werden. Mehr ist auf einer SSD oder einem schnellen Server schneller; auf einer Festplatte können weniger schneller sein.",
-  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Wie viele ROMs „ROM-Audio indizieren“ gleichzeitig liest (Standard 4, 1–32)."
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "Wie viele ROMs „ROM-Audio indizieren“ gleichzeitig liest (Standard 4, 1–32).",
+  "subgroup.collection.local": "Dateien",
+  "subgroup.collection.material": "Weiteres Material",
+  "New job": "Neuer Auftrag",
+  "clear from the list": "aus der Liste entfernen",
+  "jobgroup|Catalogue": "Katalog",
+  "jobgroup|Media": "Medien",
+  "jobgroup|Files": "Dateien",
+  "Scan / hash match…": "Scan / Hash-Abgleich…",
+  "More filters": "Weitere Filter",
+  "filtergroup|Where": "Wo",
+  "filtergroup|Kind": "Art",
+  "filtergroup|Metadata": "Metadaten",
+  "filtergroup|Display": "Anzeige",
+  "filtergroup|Other": "Sonstiges"
 }

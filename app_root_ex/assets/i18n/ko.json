@@ -3002,5 +3002,19 @@
   "How the lists show covers. Auto and Single: big covers with their details, in a column when held upright and in a row when turned sideways. Grid: as many small covers as fit, with the selected one's details beside them when there is room.": "목록의 커버 표시 방식입니다. 자동과 단일: 큰 커버와 상세 정보를 세로로 들면 한 열, 가로로 들면 한 줄로 표시합니다. 격자: 작은 커버를 들어가는 만큼 표시하고, 공간이 있으면 선택한 항목의 상세를 옆에 표시합니다.",
   "ROMs": "개의 ROM",
   "Index ROM audio: how many ROMs are read at once. More is faster on an SSD or a fast server; on a hard disk, fewer may be faster.": "ROM 오디오 색인: 동시에 읽는 ROM 수입니다. SSD나 빠른 서버에서는 많을수록 빠릅니다. HDD에서는 적은 편이 더 빠를 수 있습니다.",
-  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "ROM 오디오 색인이 동시에 읽는 ROM 수입니다(기본값 4, 1~32)."
+  "How many ROMs Index ROM audio reads at once (default 4, 1-32).": "ROM 오디오 색인이 동시에 읽는 ROM 수입니다(기본값 4, 1~32).",
+  "subgroup.collection.local": "보유 파일",
+  "subgroup.collection.material": "게임 외 자료",
+  "New job": "새 작업",
+  "clear from the list": "목록에서 지우기",
+  "jobgroup|Catalogue": "카탈로그",
+  "jobgroup|Media": "미디어",
+  "jobgroup|Files": "파일",
+  "Scan / hash match…": "스캔 / 해시 대조…",
+  "More filters": "추가 필터",
+  "filtergroup|Where": "위치",
+  "filtergroup|Kind": "종류",
+  "filtergroup|Metadata": "메타데이터",
+  "filtergroup|Display": "화면",
+  "filtergroup|Other": "기타"
 }
