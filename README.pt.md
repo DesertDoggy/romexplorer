@@ -280,10 +280,15 @@ pode tocar música de outro jogo.
 |---|---|---|
 | Faixas de áudio CD | Qualquer jogo em CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast e outros | CHD, cue/bin, gdi |
 | O arquivo de som | Nintendo DS (música em streaming e sequenciada), Nintendo 3DS (só imagens desencriptadas) | .nds, .3ds/.cci |
+| O próprio código de som do jogo | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM, também dentro de zip ou 7z |
+| Ficheiros de música em disquetes | PC-98 | .d88, .fdi, .hdm e outros, também dentro de zip ou 7z |
 
+- Nem todos os jogos destas plataformas tocam. Cada jogo produz o som à sua maneira, por isso em
+  alguns não se encontra música, ou só parte das faixas.
+- Os jogos de SNES e Nintendo 64 só tocam quando vem incluído um mapa de música para o jogo.
 - As imagens de disco dentro de zip ou 7z ainda não são lidas. As imagens encriptadas não são
   lidas.
-- A música dos jogos em cartucho e dos ficheiros de música nos discos ainda está em desenvolvimento.
+- Os ficheiros de música em CD e DVD ainda estão em desenvolvimento.
 
 ## Separador RetroAchievements
 

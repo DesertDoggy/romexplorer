@@ -282,9 +282,14 @@ die Musik eines anderen Spiels laufen.
 |---|---|---|
 | CD-Audiotracks | Jedes CD-Spiel: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast und andere | CHD, cue/bin, gdi |
 | Das Soundarchiv | Nintendo DS (gestreamte und sequenzierte Musik), Nintendo 3DS (nur entschlüsselte Images) | .nds, .3ds/.cci |
+| Der eigene Soundcode des Spiels | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROMs, auch in zip oder 7z |
+| Musikdateien auf Disketten | PC-98 | .d88, .fdi, .hdm und andere, auch in zip oder 7z |
 
+- Nicht jedes Spiel dieser Plattformen spielt. Jedes Spiel erzeugt seinen Klang auf eigene Weise,
+  daher wird bei manchen Spielen keine Musik gefunden oder nur ein Teil der Stücke.
+- SNES- und Nintendo-64-Spiele spielen nur, wenn für das Spiel eine Musikkarte mitgeliefert ist.
 - Disc-Images in zip oder 7z werden noch nicht gelesen. Verschlüsselte Images werden nicht gelesen.
-- Musik aus Modulspielen und aus Musikdateien auf Discs ist noch in Arbeit.
+- Musikdateien auf CDs und DVDs sind noch in Arbeit.
 
 ## Tab RetroAchievements
 
