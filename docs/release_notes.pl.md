@@ -8,13 +8,6 @@ zapasową przed podmianą wersji.
 
 ## Zmiany
 
-# romexplorer 0.2.2 (alpha)
-
-Alfa: schemat bazy danych może się zmienić między wydaniami bez możliwości aktualizacji. Zrób kopię
-zapasową przed podmianą wersji.
-
-## Zmiany
-
 **Skanowanie**
 - Dodano „Szybkie skanowanie (zmienione)”: odczytuje też pliki, których rozmiar lub data się zmieniły.
 - Hashe skanowania ustawia się osobno dla zwykłych plików, plików archiwów i zawartości archiwów. Pliki archiwów domyślnie używają sha1 i xxh3_128.
@@ -37,17 +30,24 @@ zapasową przed podmianą wersji.
 **Dźwięk**
 - Kilka utworów można jednocześnie konwertować do odtwarzania.
 
+## Poprawki błędów
+
+- Postęp skanowania dźwięku zatrzymywał się podczas pomiaru głośności.
+- Postęp indeksu muzyki z ROM-ów przesuwał się tylko co 500 ROM-ów.
+
+# romexplorer 0.2.2 (alpha)
+
+Alfa: schemat bazy danych może się zmienić między wydaniami bez możliwości aktualizacji. Zrób kopię
+zapasową przed podmianą wersji.
+
+## Zmiany
+
 **Dźwięk z ROM-ów**
 - Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).
 - Indeks muzyki z ROM-ów czyta tylko najwyżej ocenianą kopię każdego tytułu, a inne kopie tylko wtedy, gdy ta nie ma muzyki.
 - W grach na kilku płytach pliki muzyczne, które ma już wcześniejsza płyta, nie są czytane ponownie.
 - Gry na kartridżach, których muzykę aplikacja już zna, odtwarzają ją od razu po otwarciu strony tytułu, bez czekania na indeks.
 - Dodano „Wyczyść indeks dźwięku z ROM-ów” (wszystkie lub jedna platforma).
-
-## Poprawki błędów
-
-- Postęp skanowania dźwięku zatrzymywał się podczas pomiaru głośności.
-- Postęp indeksu muzyki z ROM-ów przesuwał się tylko co 500 ROM-ów.
 
 # romexplorer 0.2.1 (alpha)
 

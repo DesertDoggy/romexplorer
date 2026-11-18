@@ -8,13 +8,6 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Modifiche
 
-# romexplorer 0.2.2 (alpha)
-
-Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
-aggiornamento. Fai un backup prima di sostituire una build.
-
-## Modifiche
-
 **Scansione**
 - Aggiunta «Scansione rapida (modificati)»: legge anche i file con dimensione o data cambiate.
 - Gli hash della scansione si impostano separatamente per file normali, file d'archivio e contenuto degli archivi. I file d'archivio usano sha1 e xxh3_128 come predefinito.
@@ -37,17 +30,24 @@ aggiornamento. Fai un backup prima di sostituire una build.
 **Audio**
 - Più brani possono essere convertiti insieme per la riproduzione.
 
+## Correzioni
+
+- L'avanzamento della scansione audio si fermava durante la misura del volume.
+- L'avanzamento dell'indice musicale delle ROM si muoveva solo ogni 500 ROM.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha: lo schema del database può cambiare tra una versione e l'altra senza possibilità di
+aggiornamento. Fai un backup prima di sostituire una build.
+
+## Modifiche
+
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
 - L'indice della musica delle ROM legge solo la copia meglio classificata di ogni titolo, e le altre solo se quella non ha musica.
 - Nei giochi su più dischi, i file musicali già presenti su un disco precedente non vengono riletti.
 - I giochi su cartuccia di cui l'app conosce già la musica la riproducono appena si apre la pagina del titolo, senza attendere l'indice.
 - Aggiunto «Cancella l'indice audio delle ROM» (tutte o per piattaforma).
-
-## Correzioni
-
-- L'avanzamento della scansione audio si fermava durante la misura del volume.
-- L'avanzamento dell'indice musicale delle ROM si muoveva solo ogni 500 ROM.
 
 # romexplorer 0.2.1 (alpha)
 

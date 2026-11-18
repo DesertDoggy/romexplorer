@@ -8,13 +8,6 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
-# romexplorer 0.2.2 (alpha)
-
-Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
-Haz una copia de seguridad antes de sustituir una versión.
-
-## Cambios
-
 **Escaneo**
 - Se añadió «Escaneo rápido (cambiados)»: también lee los archivos que cambiaron de tamaño o fecha.
 - Los hashes del escaneo se ajustan por separado para archivos normales, archivos comprimidos y su contenido. Los archivos comprimidos usan sha1 y xxh3_128 por defecto.
@@ -37,17 +30,24 @@ Haz una copia de seguridad antes de sustituir una versión.
 **Audio**
 - Se pueden convertir varias pistas a la vez para reproducirlas.
 
+## Correcciones
+
+- El progreso del escaneo de audio se detenía mientras medía el volumen.
+- El progreso del índice de música de las ROM solo avanzaba cada 500 ROM.
+
+# romexplorer 0.2.2 (alpha)
+
+Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.
+Haz una copia de seguridad antes de sustituir una versión.
+
+## Cambios
+
 **Audio de las ROM**
 - El índice de música de las ROM puede leer varias ROM a la vez (4 por defecto, se cambia en los ajustes de audio).
 - El índice de música de las ROM lee solo la copia mejor clasificada de cada título, y las demás solo si esa no tiene música.
 - En los juegos de varios discos, ya no se vuelven a leer los archivos de música que tiene un disco anterior.
 - Los juegos de cartucho cuya música la aplicación ya conoce la reproducen en cuanto se abre la página del título, sin esperar al índice.
 - Se añadió «Borrar el índice de audio de las ROM» (todas o por plataforma).
-
-## Correcciones
-
-- El progreso del escaneo de audio se detenía mientras medía el volumen.
-- El progreso del índice de música de las ROM solo avanzaba cada 500 ROM.
 
 # romexplorer 0.2.1 (alpha)
 

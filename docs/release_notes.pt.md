@@ -8,13 +8,6 @@ de segurança antes de substituir uma versão.
 
 ## Alterações
 
-# romexplorer 0.2.2 (alpha)
-
-Alfa: o esquema da base de dados pode mudar entre versões sem forma de atualização. Faça uma cópia
-de segurança antes de substituir uma versão.
-
-## Alterações
-
 **Análise**
 - Adicionada «Análise rápida (alterados)»: também lê os ficheiros que mudaram de tamanho ou data.
 - Os hashes da análise definem-se em separado para ficheiros normais, ficheiros de arquivo e o conteúdo dos arquivos. Os ficheiros de arquivo usam sha1 e xxh3_128 por predefinição.
@@ -37,17 +30,24 @@ de segurança antes de substituir uma versão.
 **Áudio**
 - Várias faixas podem ser convertidas ao mesmo tempo para reprodução.
 
+## Correções
+
+- O progresso da análise de áudio parava durante a medição do volume.
+- O progresso do índice de música das ROM só avançava a cada 500 ROM.
+
+# romexplorer 0.2.2 (alpha)
+
+Alfa: o esquema da base de dados pode mudar entre versões sem forma de atualização. Faça uma cópia
+de segurança antes de substituir uma versão.
+
+## Alterações
+
 **Áudio das ROM**
 - O índice de música das ROM pode ler várias ROM ao mesmo tempo (4 por predefinição, alterável nas definições de áudio).
 - O índice de música das ROM lê só a cópia mais bem classificada de cada título, e as outras só se essa não tiver música.
 - Nos jogos com vários discos, os ficheiros de música que um disco anterior já tem não voltam a ser lidos.
 - Os jogos em cartucho cuja música a aplicação já conhece reproduzem-na assim que a página do título abre, sem esperar pelo índice.
 - Adicionado «Limpar o índice de áudio das ROM» (todas ou por plataforma).
-
-## Correções
-
-- O progresso da análise de áudio parava durante a medição do volume.
-- O progresso do índice de música das ROM só avançava a cada 500 ROM.
 
 # romexplorer 0.2.1 (alpha)
 

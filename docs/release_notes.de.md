@@ -8,13 +8,6 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
-# romexplorer 0.2.2 (alpha)
-
-Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
-Sie ein Backup, bevor Sie einen Build ersetzen.
-
-## Änderungen
-
 **Scan**
 - „Schneller Scan (geänderte)“ wurde hinzugefügt: Er liest auch Dateien, deren Größe oder Datum sich geändert hat.
 - Die Scan-Hashes werden getrennt für normale Dateien, Archivdateien und den Inhalt von Archiven eingestellt. Archivdateien nutzen standardmäßig sha1 und xxh3_128.
@@ -37,17 +30,24 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 **Audio**
 - Mehrere Titel können gleichzeitig für die Wiedergabe umgewandelt werden.
 
+## Fehlerbehebungen
+
+- Der Fortschritt des Audio-Scans stand still, während die Lautheit gemessen wurde.
+- Der Fortschritt des ROM-Musikindex bewegte sich nur alle 500 ROMs.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen
+Sie ein Backup, bevor Sie einen Build ersetzen.
+
+## Änderungen
+
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
 - Der ROM-Musikindex liest pro Titel nur die am höchsten eingestufte Kopie, andere Kopien nur, wenn sie keine Musik hat.
 - Bei Spielen mit mehreren Discs werden Musikdateien, die schon auf einer früheren Disc liegen, nicht erneut gelesen.
 - Cartridge-Spiele, deren Musik die App bereits kennt, spielen sie ab, sobald die Titelseite geöffnet wird, ohne auf den Index zu warten.
 - „ROM-Audio-Index löschen“ wurde hinzugefügt (alle ROMs oder eine Plattform).
-
-## Fehlerbehebungen
-
-- Der Fortschritt des Audio-Scans stand still, während die Lautheit gemessen wurde.
-- Der Fortschritt des ROM-Musikindex bewegte sich nur alle 500 ROMs.
 
 # romexplorer 0.2.1 (alpha)
 

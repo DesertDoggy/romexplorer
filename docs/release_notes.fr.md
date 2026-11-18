@@ -8,13 +8,6 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
-# romexplorer 0.2.2 (alpha)
-
-Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
-Faites une sauvegarde avant de remplacer une version.
-
-## Changements
-
 **Analyse**
 - Ajout de « Analyse rapide (modifiés) » : elle lit aussi les fichiers dont la taille ou la date a changé.
 - Les hash de l'analyse se règlent séparément pour les fichiers ordinaires, les fichiers d'archive et le contenu des archives. Les fichiers d'archive utilisent sha1 et xxh3_128 par défaut.
@@ -37,17 +30,24 @@ Faites une sauvegarde avant de remplacer une version.
 **Audio**
 - Plusieurs pistes peuvent être converties en même temps pour la lecture.
 
+## Corrections
+
+- La progression de l'analyse audio s'arrêtait pendant la mesure du volume sonore.
+- La progression de l'index de musique des ROM n'avançait que toutes les 500 ROM.
+
+# romexplorer 0.2.2 (alpha)
+
+Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.
+Faites une sauvegarde avant de remplacer une version.
+
+## Changements
+
 **Audio des ROM**
 - L'index de musique des ROM peut lire plusieurs ROM à la fois (4 par défaut, réglable dans les paramètres audio).
 - L'index de musique des ROM ne lit que la copie la mieux classée de chaque titre, et les autres seulement si elle n'a pas de musique.
 - Pour les jeux sur plusieurs disques, les fichiers de musique déjà présents sur un disque précédent ne sont pas relus.
 - Les jeux sur cartouche dont l'application connaît déjà la musique la jouent dès l'ouverture de la page du titre, sans attendre l'index.
 - Ajout de « Effacer l'index audio des ROM » (toutes ou par plateforme).
-
-## Corrections
-
-- La progression de l'analyse audio s'arrêtait pendant la mesure du volume sonore.
-- La progression de l'index de musique des ROM n'avançait que toutes les 500 ROM.
 
 # romexplorer 0.2.1 (alpha)
 
