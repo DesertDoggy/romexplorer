@@ -251,7 +251,7 @@ everything down).
 
 ## ROM audio
 
-Title pages can play the music inside your ROMs, straight from the file: nothing is extracted or
+Title pages can play the music inside your ROMs, from the file: nothing is extracted or
 copied. Run Index ROM audio on the Audio tab first. `rommusic` reads the same.
 For now a ROM's music plays only once the ROM has been indexed; until then its page may play
 another game's music.
@@ -260,12 +260,10 @@ another game's music.
 |---|---|---|
 | CD audio tracks | Any CD game: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast and others | CHD, cue/bin, gdi |
 | The sound archive | Nintendo DS (streamed and sequenced music), Nintendo 3DS (decrypted images only) | .nds, .3ds/.cci |
-| The game's own sound code | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive / Genesis, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROMs, also inside zip or 7z |
+| Cartridges | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive / Genesis, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROMs, also inside zip or 7z |
 | Music files on floppies | PC-98 | .d88, .fdi, .hdm and others, also inside zip or 7z |
 
-- Not every game on these platforms plays. Each game drives its sound its own way, so some games
-  have no music found, or only some of their songs.
-- SNES and Nintendo 64 games play only when a music map for the game is bundled.
+- Even on a supported platform, not every game is supported, for technical reasons.
 - Disc images inside zip or 7z are not read yet. Encrypted images are not read.
 - Music files on CDs and DVDs are still in progress.
 

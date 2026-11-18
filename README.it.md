@@ -277,12 +277,10 @@ nel frattempo la sua pagina può riprodurre la musica di un altro gioco.
 |---|---|---|
 | Tracce audio CD | Qualsiasi gioco su CD: PC Engine CD, Mega-CD, Saturn, PlayStation, Dreamcast e altri | CHD, cue/bin, gdi |
 | L'archivio sonoro | Nintendo DS (musica in streaming e sequenziata), Nintendo 3DS (solo immagini decifrate) | .nds, .3ds/.cci |
-| Il codice audio del gioco stesso | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM, anche dentro zip o 7z |
+| Cartucce | NES / Famicom, Famicom Disk System, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance, Virtual Boy, SG-1000, Master System, Game Gear, Mega Drive, PC Engine / TurboGrafx-16, SuperGrafx, MSX, WonderSwan, WonderSwan Color, Neo Geo Pocket, Neo Geo Pocket Color | ROM, anche dentro zip o 7z |
 | File musicali su floppy | PC-98 | .d88, .fdi, .hdm e altri, anche dentro zip o 7z |
 
-- Non tutti i giochi di queste piattaforme suonano. Ogni gioco produce il suono a modo suo, quindi in
-  alcuni non si trova musica o solo una parte dei brani.
-- I giochi SNES e Nintendo 64 suonano solo se per il gioco è inclusa una mappa musicale.
+- Anche su una piattaforma supportata, non tutti i giochi sono supportati, per motivi tecnici.
 - Le immagini disco dentro zip o 7z non vengono ancora lette. Le immagini cifrate non vengono lette.
 - I file musicali su CD e DVD sono ancora in lavorazione.
 
