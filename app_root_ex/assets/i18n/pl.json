@@ -1549,7 +1549,7 @@
   "removed tag {tag}": "usunięto tag {tag}",
   "resolving…": "ustalanie…",
   "searching…": "wyszukiwanie…",
-  "select (or ctrl+click the row / cover; ctrl+drag selects a rectangle)": "zaznacz (lub ctrl+klik na wiersz / okładkę; ctrl+przeciągnięcie zaznacza prostokąt)",
+  "select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)": "zaznacz (ctrl+klik przełącza wiersz / okładkę, shift+klik zaznacza zakres, ctrl+przeciągnięcie prostokąt)",
   "set under <a class=\"link\" onclick=\"go('config/mode')\">Config › Mode</a>": "ustawiane w <a class=\"link\" onclick=\"go('config/mode')\">Konfiguracja › Tryb</a>",
   "setup token -- create the admin account in the app (Config > Users)": "token konfiguracyjny -- utwórz konto administratora w aplikacji (Konfiguracja > Użytkownicy)",
   "shutting down — start romexplorer_server again to use the console.": "zamykanie — uruchom ponownie romexplorer_server, aby korzystać z konsoli.",
@@ -3083,5 +3083,17 @@
   "step {n} of {total}:": "krok {n} z {total}:",
   "waiting for the server to start the job": "czekanie, aż serwer uruchomi zadanie",
   "asking the server to refresh RetroAchievements progress": "prośba do serwera o odświeżenie postępów RetroAchievements",
-  "taking RetroAchievements progress into the copy": "przenoszenie postępów RetroAchievements do kopii"
+  "taking RetroAchievements progress into the copy": "przenoszenie postępów RetroAchievements do kopii",
+  "decouple selected": "rozdziel zaznaczone",
+  "Decouple {n} merge(s)? Splits among them are put back.": "Rozdzielić {n} scaleń? Rozdzielenia między nimi zostaną przywrócone.",
+  "{n} done, {failed} failed": "{n} gotowe, {failed} nieudane",
+  "sync selected": "synchronizuj zaznaczone",
+  "import downloaded (selected)": "importuj pobrane (zaznaczone)",
+  "none of the selected sources has downloaded files": "żadne z wybranych źródeł nie ma pobranych plików",
+  "select (shift+click selects a range)": "zaznacz (Shift+klik zaznacza zakres)",
+  "select all": "zaznacz wszystko",
+  "none of the selected BIOS files is on disk": "żaden z wybranych plików BIOS nie jest na dysku",
+  "{n} not on disk left out": "pominięto {n} spoza dysku",
+  "sign out selected": "wyloguj zaznaczone",
+  "Sign {n} device(s) out? They will have to sign in again.": "Wylogować {n} urządzeń? Będą musiały zalogować się ponownie."
 }

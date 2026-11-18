@@ -1,5 +1,5 @@
 //! The console's `makeGrid`: a server-paged list with a list and a card-grid mode, sort,
-//! filters, page size, selection (checkbox, ctrl/cmd+click, drag a rectangle), right-click
+//! filters, page size, selection (checkbox, ctrl/cmd+click, shift+click range, drag a rectangle), right-click
 //! menus (acting on the selection when the clicked row is in it), hover popovers, row
 //! reordering, resizable columns, and search / filters / sort / page remembered per page
 //! for the session (back / forward and links return to the same list).
@@ -378,6 +378,9 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
         }
     });
     let mut selected = use_signal(BTreeSet::<u64>::new);
+    // The row a shift+click range starts from: the last one ticked or ctrl/cmd+clicked, by
+    // selection key, so it still means the same row after a sort or a page turn.
+    let anchor = use_signal(|| None::<u64>);
     // Sizes of every row seen (`row_sizes`), by selection key: the selection's total spans pages.
     let size_cache = use_hook(|| Rc::new(RefCell::new(HashMap::<u64, Vec<(String, u64)>>::new())));
     let mut search_text = use_signal(move || st.peek().search.clone());
@@ -427,6 +430,39 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
     let key_of = {
         let k = sel_key.clone();
         move |r: &Value| k.as_ref().map(|k| k(r))
+    };
+    // Windows / macOS selection on a click: ctrl/cmd toggles one row; shift selects the rows
+    // from the anchor to this one, replacing the selection (ctrl/cmd+shift adds them to it).
+    // Without an anchor on this page, shift picks just this row and makes it the anchor.
+    let page_keys: Rc<Vec<Option<u64>>> = Rc::new(rows.iter().map(|r| key_of(r)).collect());
+    let pick = {
+        let page_keys = page_keys.clone();
+        move |i: usize, shift: bool, toggle: bool| {
+            let (mut selected, mut anchor) = (selected, anchor);
+            let Some(id) = page_keys.get(i).copied().flatten() else { return };
+            let from = anchor.peek().and_then(|a| page_keys.iter().position(|k| *k == Some(a)));
+            match (shift, from) {
+                (true, Some(a)) => {
+                    let (lo, hi) = if a <= i { (a, i) } else { (i, a) };
+                    let mut s = selected.write();
+                    if !toggle {
+                        s.clear();
+                    }
+                    s.extend(page_keys[lo..=hi].iter().flatten().copied());
+                }
+                (true, None) => {
+                    selected.write().insert(id);
+                    anchor.set(Some(id));
+                }
+                (false, _) => {
+                    let mut s = selected.write();
+                    if !s.insert(id) {
+                        s.remove(&id);
+                    }
+                    anchor.set(Some(id));
+                }
+            }
+        }
     };
     let selection_for = {
         let key_of = key_of.clone();
@@ -487,8 +523,41 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
         }
     };
 
+    // The selection's bar: in the toolbar, or on its own over a bare list (no toolbar).
+    let sel_bar = {
+        let selection = spec.selection.clone();
+        let (n_sel_text, sel_sizes) = (n_sel_text.clone(), sel_sizes.clone());
+        move || rsx! {
+                if let Some(sel) = selection.clone() {
+                    if n_sel > 0 {
+                        span { class: "selbar",
+                            span { class: "muted", "{n_sel_text}" }
+                            if !sel_sizes.is_empty() { span { class: "muted", "{sel_sizes} " } }
+                            for a in sel.actions.clone() {
+                                button { class: "btn small primary",
+                                    onclick: move |_| {
+                                        let run = a.run.clone();
+                                        let ids: Vec<u64> = selected.read().iter().copied().collect();
+                                        spawn(async move {
+                                            if run(ids).await {
+                                                selected.write().clear();
+                                                let mut p = page;
+                                                p.restart();
+                                            }
+                                        });
+                                    },
+                                    {state::tr(&a.label)}
+                                }
+                            }
+                            button { class: "btn small", onclick: move |_| selected.write().clear(), {state::tr("clear")} }
+                        }
+                    }
+                }
+        }
+    };
     let explain = explain_keys(&spec.key);
     rsx! {
+        if spec.bare && n_sel > 0 { div { class: "toolbar", {sel_bar()} } }
         if !spec.bare {
             div { class: "toolbar",
                 if !explain.is_empty() { ui::KeyExplain { keys: explain.iter().map(|k| k.to_string()).collect::<Vec<_>>() } }
@@ -533,31 +602,7 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
                     }
                 }
                 button { class: "btn", onclick: move |_| { let mut p = page; p.restart(); }, {state::tr("refresh")} }
-                if let Some(sel) = spec.selection.clone() {
-                    if n_sel > 0 {
-                        span { class: "selbar",
-                            span { class: "muted", "{n_sel_text}" }
-                            if !sel_sizes.is_empty() { span { class: "muted", "{sel_sizes} " } }
-                            for a in sel.actions.clone() {
-                                button { class: "btn small primary",
-                                    onclick: move |_| {
-                                        let run = a.run.clone();
-                                        let ids: Vec<u64> = selected.read().iter().copied().collect();
-                                        spawn(async move {
-                                            if run(ids).await {
-                                                selected.write().clear();
-                                                let mut p = page;
-                                                p.restart();
-                                            }
-                                        });
-                                    },
-                                    {state::tr(&a.label)}
-                                }
-                            }
-                            button { class: "btn small", onclick: move |_| selected.write().clear(), {state::tr("clear")} }
-                        }
-                    }
-                }
+                {sel_bar()}
                 if let Some(t) = spec.toolbar.clone() { {t()} }
             }
         }
@@ -608,19 +653,23 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
                                         }
                                     },
                                     onmounted: move |e| { mounts.borrow_mut().insert(i, e.data()); },
-                                    onmousedown: move |e| { if !(e.modifiers().ctrl() || e.modifiers().meta()) { e.stop_propagation(); } },
-                                    onclick: move |e| {
+                                    onmousedown: move |e| {
+                                        // Shift+click selects: no text selection from it.
+                                        if e.modifiers().shift() && id.is_some() { e.prevent_default(); }
+                                        if !(e.modifiers().ctrl() || e.modifiers().meta()) { e.stop_propagation(); }
+                                    },
+                                    onclick: { let pick = pick.clone(); move |e: MouseEvent| {
                                         if suppress_click() { suppress_click.set(false); return; }
-                                        if (e.modifiers().ctrl() || e.modifiers().meta()) && id.is_some() {
-                                            let id = id.unwrap_or_default();
-                                            let mut s = selected.write();
-                                            if !s.insert(id) { s.remove(&id); }
+                                        let toggle = e.modifiers().ctrl() || e.modifiers().meta();
+                                        if (toggle || e.modifiers().shift()) && id.is_some() {
+                                            pick(i, e.modifiers().shift(), toggle);
                                             return;
                                         }
                                         if let Some(l) = &link_click {
+                                            // Shift+click opens a new tab only where the list has no selection.
                                             if e.modifiers().shift() { open_new_tab(l); } else { navigator().push(l.clone()); }
                                         }
-                                    },
+                                    }},
                                     oncontextmenu: move |e| {
                                         e.prevent_default();
                                         let p = e.client_coordinates();
@@ -644,9 +693,15 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
                                         if !card.chips.is_empty() { HtmlDiv { class: "chips", html: card.chips.clone() } }
                                         if !card.flags.is_empty() { HtmlDiv { class: "flags", html: card.flags.clone() } }
                                         if id.is_some() {
-                                            input { r#type: "checkbox", class: "rowsel cardsel", checked: is_sel,
-                                                onclick: move |e| e.stop_propagation(),
-                                                onchange: move |e| { let id = id.unwrap_or_default(); if e.checked() { selected.write().insert(id); } else { selected.write().remove(&id); } },
+                                            // A spot around the box that selects, so a click that
+                                            // misses it doesn't open the card.
+                                            span { class: "selhit",
+                                                onmousedown: move |e| e.stop_propagation(),
+                                                onclick: { let pick = pick.clone(); move |e: MouseEvent| { e.stop_propagation(); pick(i, e.modifiers().shift(), true); } },
+                                            input { r#type: "checkbox", class: "rowsel cardsel", checked: is_sel, title: state::tr("select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)"),
+                                                onclick: { let pick = pick.clone(); move |e: MouseEvent| { e.stop_propagation(); if e.modifiers().shift() { e.prevent_default(); pick(i, true, true); } } },
+                                                onchange: move |e| { let id = id.unwrap_or_default(); if e.checked() { selected.write().insert(id); } else { selected.write().remove(&id); } let mut anchor = anchor; anchor.set(Some(id)); },
+                                            }
                                             }
                                         }
                                     }
@@ -748,19 +803,23 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
                                 rsx! {
                                     tr { key: "{i}", class: "{cls}", draggable: reorder.is_some(),
                                         onmounted: move |e| { mounts.borrow_mut().insert(i, e.data()); },
-                                        onmousedown: move |e| { if !(e.modifiers().ctrl() || e.modifiers().meta()) { e.stop_propagation(); } },
-                                        onclick: move |e| {
+                                        onmousedown: move |e| {
+                                            // Shift+click selects: no text selection from it.
+                                            if e.modifiers().shift() && id.is_some() { e.prevent_default(); }
+                                            if !(e.modifiers().ctrl() || e.modifiers().meta()) { e.stop_propagation(); }
+                                        },
+                                        onclick: { let pick = pick.clone(); move |e: MouseEvent| {
                                             if suppress_click() { suppress_click.set(false); return; }
-                                            if (e.modifiers().ctrl() || e.modifiers().meta()) && id.is_some() {
-                                                let id = id.unwrap_or_default();
-                                                let mut s = selected.write();
-                                                if !s.insert(id) { s.remove(&id); }
+                                            let toggle = e.modifiers().ctrl() || e.modifiers().meta();
+                                            if (toggle || e.modifiers().shift()) && id.is_some() {
+                                                pick(i, e.modifiers().shift(), toggle);
                                                 return;
                                             }
                                             if let Some(l) = &link_click {
+                                                // Shift+click opens a new tab only where the list has no selection.
                                                 if e.modifiers().shift() { open_new_tab(l); } else { navigator().push(l.clone()); }
                                             }
-                                        },
+                                        }},
                                         oncontextmenu: move |e| {
                                             e.prevent_default();
                                             let p = e.client_coordinates();
@@ -798,10 +857,13 @@ pub fn Grid(spec: Spec, #[props(default)] reload: Option<Signal<u64>>) -> Elemen
                                             }
                                         },
                                         if let Some(id) = id {
-                                            td {
-                                                input { r#type: "checkbox", class: "rowsel", checked: is_sel,
-                                                    onclick: move |e| e.stop_propagation(),
-                                                    onchange: move |e| { if e.checked() { selected.write().insert(id); } else { selected.write().remove(&id); } },
+                                            // The whole cell selects, so a click that misses the box
+                                            // doesn't open the row.
+                                            td { class: "selcell",
+                                                onclick: { let pick = pick.clone(); move |e: MouseEvent| { e.stop_propagation(); pick(i, e.modifiers().shift(), true); } },
+                                                input { r#type: "checkbox", class: "rowsel", checked: is_sel, title: state::tr("select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)"),
+                                                    onclick: { let pick = pick.clone(); move |e: MouseEvent| { e.stop_propagation(); if e.modifiers().shift() { e.prevent_default(); pick(i, true, true); } } },
+                                                    onchange: move |e| { if e.checked() { selected.write().insert(id); } else { selected.write().remove(&id); } let mut anchor = anchor; anchor.set(Some(id)); },
                                                 }
                                             }
                                         }

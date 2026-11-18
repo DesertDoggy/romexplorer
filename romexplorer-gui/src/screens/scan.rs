@@ -144,6 +144,14 @@ pub fn Scan() -> Element {
                 }),
             }]);
             spec.search = false;
+            // The Jobs list's own actions for several at once.
+            let spec = spec.select(
+                |j| u(j, "id"),
+                vec![
+                    crate::components::SelAction::new(&state::tr("run next"), |ids| async move { super::jobs::run_next_jobs(ids).await }),
+                    crate::components::SelAction::new(&state::tr("clear selected from the list"), |ids| async move { super::jobs::clear_jobs(json!({ "ids": ids })).await }),
+                ],
+            );
             Spec(Rc::new(spec))
         }
     });

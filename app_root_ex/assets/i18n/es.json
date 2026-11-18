@@ -1549,7 +1549,7 @@
   "removed tag {tag}": "etiqueta {tag} quitada",
   "resolving…": "resolviendo…",
   "searching…": "buscando…",
-  "select (or ctrl+click the row / cover; ctrl+drag selects a rectangle)": "seleccionar (o ctrl+clic en la fila / carátula; ctrl+arrastrar selecciona un rectángulo)",
+  "select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)": "seleccionar (ctrl+clic alterna una fila / portada, mayús+clic selecciona un rango, ctrl+arrastrar un rectángulo)",
   "set under <a class=\"link\" onclick=\"go('config/mode')\">Config › Mode</a>": "se define en <a class=\"link\" onclick=\"go('config/mode')\">Configuración › Modo</a>",
   "setup token -- create the admin account in the app (Config > Users)": "token de configuración -- crear la cuenta de administrador en la app (Configuración > Usuarios)",
   "shutting down — start romexplorer_server again to use the console.": "apagando — iniciar romexplorer_server de nuevo para usar la consola.",
@@ -3083,5 +3083,17 @@
   "step {n} of {total}:": "paso {n} de {total}:",
   "waiting for the server to start the job": "esperando a que el servidor inicie la tarea",
   "asking the server to refresh RetroAchievements progress": "pidiendo al servidor que actualice el progreso de RetroAchievements",
-  "taking RetroAchievements progress into the copy": "incorporando el progreso de RetroAchievements a la copia"
+  "taking RetroAchievements progress into the copy": "incorporando el progreso de RetroAchievements a la copia",
+  "decouple selected": "separar seleccionadas",
+  "Decouple {n} merge(s)? Splits among them are put back.": "¿Separar {n} fusión(es)? Las separaciones entre ellas se restauran.",
+  "{n} done, {failed} failed": "{n} hechos, {failed} fallidos",
+  "sync selected": "sincronizar seleccionadas",
+  "import downloaded (selected)": "importar descargados (selección)",
+  "none of the selected sources has downloaded files": "ninguna de las fuentes elegidas tiene archivos descargados",
+  "select (shift+click selects a range)": "seleccionar (Mayús+clic selecciona un rango)",
+  "select all": "seleccionar todo",
+  "none of the selected BIOS files is on disk": "ninguno de los archivos BIOS elegidos está en el disco",
+  "{n} not on disk left out": "{n} que no están en el disco se omitieron",
+  "sign out selected": "cerrar sesión de los seleccionados",
+  "Sign {n} device(s) out? They will have to sign in again.": "¿Cerrar la sesión de {n} dispositivo(s)? Tendrán que volver a iniciar sesión."
 }

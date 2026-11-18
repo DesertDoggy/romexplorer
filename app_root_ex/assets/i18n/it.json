@@ -1549,7 +1549,7 @@
   "removed tag {tag}": "rimosso il tag {tag}",
   "resolving…": "risoluzione…",
   "searching…": "ricerca…",
-  "select (or ctrl+click the row / cover; ctrl+drag selects a rectangle)": "seleziona (o ctrl+clic sulla riga / copertina; ctrl+trascina seleziona un rettangolo)",
+  "select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)": "seleziona (ctrl+clic su una riga / copertina, maiusc+clic seleziona un intervallo, ctrl+trascina un rettangolo)",
   "set under <a class=\"link\" onclick=\"go('config/mode')\">Config › Mode</a>": "impostato in <a class=\"link\" onclick=\"go('config/mode')\">Configurazione › Modalità</a>",
   "setup token -- create the admin account in the app (Config > Users)": "token di configurazione -- crea l'account amministratore nell'app (Configurazione > Utenti)",
   "shutting down — start romexplorer_server again to use the console.": "arresto in corso — avvia di nuovo romexplorer_server per usare la console.",
@@ -3083,5 +3083,17 @@
   "step {n} of {total}:": "passo {n} di {total}:",
   "waiting for the server to start the job": "in attesa che il server avvii il processo",
   "asking the server to refresh RetroAchievements progress": "richiesta al server di aggiornare i progressi RetroAchievements",
-  "taking RetroAchievements progress into the copy": "inserimento dei progressi RetroAchievements nella copia"
+  "taking RetroAchievements progress into the copy": "inserimento dei progressi RetroAchievements nella copia",
+  "decouple selected": "separa selezionati",
+  "Decouple {n} merge(s)? Splits among them are put back.": "Separare {n} unione/i? Le separazioni tra loro vengono ripristinate.",
+  "{n} done, {failed} failed": "{n} completati, {failed} non riusciti",
+  "sync selected": "sincronizza selezionati",
+  "import downloaded (selected)": "importa scaricati (selezionati)",
+  "none of the selected sources has downloaded files": "nessuna delle fonti scelte ha file scaricati",
+  "select (shift+click selects a range)": "seleziona (Maiusc+clic seleziona un intervallo)",
+  "select all": "seleziona tutto",
+  "none of the selected BIOS files is on disk": "nessuno dei file BIOS scelti è sul disco",
+  "{n} not on disk left out": "{n} non presenti sul disco esclusi",
+  "sign out selected": "disconnetti selezionati",
+  "Sign {n} device(s) out? They will have to sign in again.": "Disconnettere {n} dispositivo/i? Dovranno accedere di nuovo."
 }

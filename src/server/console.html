@@ -190,6 +190,9 @@ input[type=color] { width:44px; height:26px; padding:0; border:1px solid var(--l
 .gcard .cap { padding:6px 8px; font-size:12px; line-height:1.3; }
 .gcard .cap .t { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .gcard .art .cardsel { position:absolute; top:6px; left:6px; width:18px; height:18px; z-index:2; }
+/* Clicks around a selection checkbox select instead of opening the row / card. */
+.gcard .art .selhit { position:absolute; top:0; left:0; width:40px; height:40px; z-index:2; cursor:default; }
+table.grid td.selcell { cursor:default; width:32px; }
 .selbar { display:inline-flex; gap:6px; align-items:center; margin-left:8px; }
 .localname { color:var(--dim); font-size:12px; }
 /* RetroAchievements grids: square icon / badge-mosaic art (the mosaic keeps its full width
@@ -865,6 +868,51 @@ function displayColumns() {
 const FACET_KEYS = ['genre_major', 'genre_major_logic', 'genres', 'genre_logic', 'franchises', 'franchise_logic', 'companies', 'company_logic', 'keywords', 'keyword_logic', 'tags', 'tag_logic', 'tag_source', 'region', 'language'].concat(DISPLAY_KEYS);
 function facetParams(st) { const o = {}; for (const k of FACET_KEYS) if (st.filters[k]) o[k] = st.filters[k]; return o; }
 
+// Selecting rows of a hand-built table whose rows have an action worth running on several at
+// once (the app's PickBox / PickAll / PickBar). The table puts `<input type="checkbox"
+// data-pick="i">` in each row (i: the row's index in `keys`) and `data-pickall` in the header;
+// `bar` gets "{n} selected", the `actions` ([label, run(keys)]) and "clear". Shift+click on a
+// checkbox selects the range from the last one ticked.
+const PICK_TITLE = 'select (shift+click selects a range)';
+function wirePicks(root, keys, bar, actions) {
+  const picked = new Set();
+  let anchor = null;
+  const sync = () => {
+    for (const b of root.querySelectorAll('input[data-pick]')) b.checked = picked.has(keys[Number(b.dataset.pick)]);
+    for (const b of root.querySelectorAll('input[data-pickall]')) b.checked = keys.length > 0 && keys.every(k => picked.has(k));
+    bar.innerHTML = '';
+    bar.style.display = picked.size ? '' : 'none';
+    if (!picked.size) return;
+    bar.appendChild(el(`<span class="muted">${trf('{n} selected', { n: picked.size })}</span>`));
+    for (const [label, run] of actions) { const b = el(`<button class="btn small primary">${esc(label)}</button>`); b.onclick = async () => { await run([...picked]); }; bar.append(' ', b); }
+    const clear = el(`<button class="btn small">${tr('clear')}</button>`); clear.onclick = () => { picked.clear(); sync(); }; bar.append(' ', clear);
+  };
+  for (const b of root.querySelectorAll('input[data-pick]')) {
+    b.title = tr(PICK_TITLE);
+    const i = Number(b.dataset.pick), k = keys[i];
+    b.onclick = ev => {
+      ev.stopPropagation();
+      if (!ev.shiftKey) return;
+      ev.preventDefault();
+      const f = anchor === null ? -1 : keys.indexOf(anchor);
+      if (f < 0) { picked.add(k); anchor = k; } else for (let j = Math.min(f, i); j <= Math.max(f, i); j++) picked.add(keys[j]);
+      // The click's own default is undone after this handler: tick the boxes again after it.
+      setTimeout(sync, 0);
+    };
+    b.onchange = () => { if (b.checked) picked.add(k); else picked.delete(k); anchor = k; sync(); };
+  }
+  for (const b of root.querySelectorAll('input[data-pickall]')) { b.title = tr('select all'); b.onchange = () => { if (b.checked) keys.forEach(k => picked.add(k)); else keys.forEach(k => picked.delete(k)); sync(); }; }
+  sync();
+  return { picked, clear: () => { picked.clear(); sync(); } };
+}
+// A grid with no toolbar or pager, the app's bare list: only the selection's bar shows, while
+// something is selected.
+function bareGrid(holder) {
+  const tb = holder.querySelector('.toolbar');
+  for (const c of [...tb.children]) if (!c.classList.contains('selbar')) c.remove();
+  tb.dataset.bare = '1'; tb.style.display = 'none';
+  for (const p of holder.querySelectorAll('.pager')) p.remove();
+}
 function makeGrid(container, spec) {
   const modes = spec.modes || [['list', tr('list')], ['grid', tr('grid')]];
   const initialMode = spec.gridKey ? (sessionViews[spec.gridKey] || viewDefaults[viewKeyOf(spec)] || VIEW_FALLBACK[viewKeyOf(spec)] || 'grid') : 'list';
@@ -905,6 +953,7 @@ function makeGrid(container, spec) {
   const syncSel = () => {
     if (!spec.selection) return;
     selBar.style.display = st.selected.size ? '' : 'none';
+    if (tb.dataset.bare) tb.style.display = st.selected.size ? '' : 'none';
     selBar.innerHTML = `<span class="muted">${trf('{n} selected', { n: st.selected.size })}</span> `;
     const known = [...st.selected].map(id => st.sizeOf.get(id)).filter(Boolean);
     if (known.length) {
@@ -916,9 +965,28 @@ function makeGrid(container, spec) {
     const clear = el(`<button class="btn small">${tr('clear')}</button>`); clear.onclick = () => { st.selected.clear(); syncSel(); body(); }; selBar.appendChild(clear);
   };
   if (spec.selection) tb.appendChild(selBar);
-  const selBox = row => { if (!spec.selection) return null; const id = spec.selection.key(row); const box = el(`<input type="checkbox" class="rowsel" ${st.selected.has(id) ? 'checked' : ''} title="${tr('select (or ctrl+click the row / cover; ctrl+drag selects a rectangle)')}">`); box.onclick = ev => ev.stopPropagation(); box.onchange = () => { if (box.checked) st.selected.add(id); else st.selected.delete(id); markSel(); syncSel(); }; return box; };
-  // Ctrl / cmd + click toggles a row / card; ctrl / cmd + drag selects every one the
-  // rectangle touches. (Shift / middle click and the menu still open a new tab.)
+  // Windows / macOS selection, the app's same rule: ctrl / cmd + click toggles one row and
+  // makes it the anchor; shift + click selects the rows from the anchor to this one,
+  // replacing the selection (ctrl / cmd + shift adds them). The anchor is kept by key, so a
+  // sort or page turn doesn't move it; with no anchor on the page, shift picks this row.
+  let anchorId = null;
+  const pick = (index, shift, toggle) => {
+    const keys = st.items.map(r => spec.selection.key(r));
+    const id = keys[index];
+    if (id === undefined) return;
+    const from = anchorId === null ? -1 : keys.indexOf(anchorId);
+    if (shift && from >= 0) {
+      if (!toggle) st.selected.clear();
+      for (let k = Math.min(from, index); k <= Math.max(from, index); k++) st.selected.add(keys[k]);
+    } else if (shift) { st.selected.add(id); anchorId = id; }
+    else { if (st.selected.has(id)) st.selected.delete(id); else st.selected.add(id); anchorId = id; }
+    markSel(); syncSel();
+    // A shift+click on a checkbox has its default undone after this handler: tick again after.
+    setTimeout(markSel, 0);
+  };
+  const selBox = row => { if (!spec.selection) return null; const id = spec.selection.key(row); const box = el(`<input type="checkbox" class="rowsel" ${st.selected.has(id) ? 'checked' : ''} title="${tr('select (ctrl+click toggles a row / cover, shift+click selects a range, ctrl+drag selects a rectangle)')}">`); box.onclick = ev => { ev.stopPropagation(); if (ev.shiftKey) { ev.preventDefault(); pick(st.items.indexOf(row), true, true); } }; box.onchange = () => { if (box.checked) st.selected.add(id); else st.selected.delete(id); anchorId = id; markSel(); syncSel(); }; return box; };
+  // Ctrl / cmd + drag selects every row / card the rectangle touches. Middle click and the
+  // menu still open a new tab; shift + click does only in a list without selection.
   const markSel = () => { for (const e of container.querySelectorAll('[data-sel-idx]')) { const row = st.items[Number(e.dataset.selIdx)]; const on = !!row && st.selected.has(spec.selection.key(row)); e.classList.toggle('selected', on); const cb = e.querySelector('.rowsel'); if (cb) cb.checked = on; } syncAll(); };
   // Every "select all on this page" box -- the list header's and the one beside each pager
   // (the only one a card grid has) -- ticked when the whole page is selected.
@@ -933,12 +1001,12 @@ function makeGrid(container, spec) {
     elem.dataset.selIdx = String(index);
     elem.addEventListener('click', ev => {
       if (suppressClick) { suppressClick = false; ev.preventDefault(); ev.stopImmediatePropagation(); return; }
-      if (!(ev.ctrlKey || ev.metaKey) || ev.target.closest('a,button,input,select')) return;
+      if (!(ev.ctrlKey || ev.metaKey || ev.shiftKey) || ev.target.closest('a,button,input,select')) return;
       ev.preventDefault(); ev.stopImmediatePropagation();
-      const id = spec.selection.key(st.items[index]);
-      if (st.selected.has(id)) st.selected.delete(id); else st.selected.add(id);
-      markSel(); syncSel();
+      pick(index, ev.shiftKey, ev.ctrlKey || ev.metaKey);
     }, true);
+    // Shift + click selects rows, not the text between two clicks.
+    elem.addEventListener('mousedown', ev => { if (ev.shiftKey && !ev.target.closest('input,select,textarea')) ev.preventDefault(); });
   };
   if (spec.selection) {
     container.addEventListener('mousedown', ev => {
@@ -1057,7 +1125,8 @@ function makeGrid(container, spec) {
         const link = spec.rowLink && spec.rowLink(row);
         if (link) linkify(c, link, ctxOf(row));
         else { if (spec.rowClick) c.onclick = () => spec.rowClick(row); if (spec.context) attachContext(c, ctxOf(row)); }
-        const cb = selBox(row); if (cb) { cb.classList.add('cardsel'); c.querySelector('.art').appendChild(cb); }
+        // A spot around the box selects too, so a click that misses it doesn't open the card.
+        const cb = selBox(row); if (cb) { cb.classList.add('cardsel'); const hit = el('<span class="selhit"></span>'); hit.appendChild(cb); hit.addEventListener('mousedown', ev => ev.stopPropagation()); hit.onclick = ev => { ev.stopPropagation(); pick(st.items.indexOf(row), ev.shiftKey, true); }; c.querySelector('.art').appendChild(hit); }
         selectable(c, st.items.indexOf(row));
         draggable(c, st.items.indexOf(row), true);
         cards.appendChild(c);
@@ -1073,7 +1142,8 @@ function makeGrid(container, spec) {
       tr.className = (spec.rowClick || spec.rowLink ? 'click' : spec.rowHover ? 'hover' : '') + (held ? ' ' + held : '');
       tr.innerHTML = (spec.selection ? '<td></td>' : '') + spec.columns.map(c => `<td class="${c.cls || ''}">${c.render ? c.render(row) : esc(row[c.key])}</td>`).join('');
       tr.addEventListener('mouseover', ev => { const td = ev.target.closest('td'); if (td && !td.title && td.scrollWidth > td.clientWidth) td.title = td.textContent.trim(); });
-      const cb = selBox(row); if (cb) tr.firstElementChild.appendChild(cb);
+      // The whole cell selects, so a click that misses the box doesn't open the row.
+      const cb = selBox(row); if (cb) { const cell = tr.firstElementChild; cell.classList.add('selcell'); cell.appendChild(cb); cell.onclick = ev => { ev.stopPropagation(); pick(st.items.indexOf(row), ev.shiftKey, true); }; }
       const link = spec.rowLink && spec.rowLink(row);
       if (link) linkify(tr, link, ctxOf(row));
       else if (spec.rowClick) tr.onclick = () => spec.rowClick(row);
@@ -2772,7 +2842,7 @@ function materialSections(after, releases) {
     if (!items.length) continue;
     const card = el(`<div class="card"><h2>${trf(heading, { n: items.length })}</h2><div></div></div>`);
     after.after(card); after = card;
-    makeGrid(card.lastElementChild, { gridKey: 'title_releases', columns: releaseColumns(), search: false, filters: [], fetch: () => Promise.resolve({ items, total: items.length }), rowLink: r => 'collection/releases/' + r.id, isLocal: heldClass, context: r => releaseContext(r.id, r.name), gridCard: releaseCard, pageSize: 500 });
+    makeGrid(card.lastElementChild, { gridKey: 'title_releases', columns: releaseColumns(), search: false, filters: [], fetch: () => Promise.resolve({ items, total: items.length }), rowLink: r => 'collection/releases/' + r.id, isLocal: heldClass, context: (r, sel) => releaseContext(r.id, r.name, { ids: sel }), gridCard: releaseCard, pageSize: 500, selection: { key: r => r.id, actions: releaseSelActions() } });
   }
 }
 // What the releases are: games and other software unless asked for the music, films and
@@ -2830,6 +2900,10 @@ function patchedRefTable(items) {
 // Pick a title by name: for "made from" set by hand.
 // Selection actions moving releases between titles: all of them into one new title, or into
 // a title picked by name.
+// What a list of releases does with the ones selected: the Releases list's set.
+function releaseSelActions() {
+  return [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ release_ids: ids }, done); } }, copySelAction('releases'), ...artSelActions('releases'), displaySelAction()].concat(releaseTitleActions());
+}
 function releaseTitleActions() {
   return [
     { label: tr('split into a new title'), run: async (ids, done) => {
@@ -3455,6 +3529,14 @@ async function showCombinedTitles() {
       { key: 'include_undone', label: tr('include decoupled'), type: 'check' },
     ],
     fetch: st => api('/api/v1/catalog/titles/merges' + qs({ search: st.search, title_id: only, grade: st.filters.grade, include_undone: st.filters.include_undone, limit: st.limit, offset: st.offset })),
+    // The row button for several at once (the app's same action): one request each; ones
+    // already undone fail and are counted.
+    selection: { key: r => r.id, actions: [{ label: tr('decouple selected'), run: async (ids, done) => {
+      if (!confirm(trf('Decouple {n} merge(s)? Splits among them are put back.', { n: ids.length }))) return;
+      let ok = 0, failed = 0;
+      for (const id of ids) { try { await api('/api/v1/catalog/titles/merges/' + id + '/decouple', { method: 'POST' }); ok++; } catch (e) { failed++; } }
+      toast(trf('{n} done, {failed} failed', { n: ok, failed }), failed > 0); done();
+    } }] },
   });
   // Every merge of the grade picked in the filter, 500 a request until none is left.
   const all = el(`<button class="btn small" title="${tr('decouple every merge of the grade picked in the filter')}">${tr('decouple all of this grade')}</button>`);
@@ -3554,7 +3636,14 @@ async function mergeSuggestions(status = 'pending', offset = 0) {
   // Several at once: the ticked ones, or the whole backlog of this status.
   const picks = () => [...box.querySelectorAll('[data-pick]:checked')].map(c => c.dataset.pick);
   const refreshBulk = () => { for (const b of box.querySelectorAll('[data-bulk]')) b.disabled = !picks().length; };
-  for (const c of box.querySelectorAll('[data-pick]')) c.onchange = refreshBulk;
+  // Shift + click ticks the rows from the last one ticked to this one, as in the lists.
+  const boxes = [...box.querySelectorAll('[data-pick]')];
+  let anchor = -1;
+  boxes.forEach((c, i) => {
+    c.title = tr(PICK_TITLE);
+    c.onclick = ev => { if (!ev.shiftKey || anchor < 0) return; ev.preventDefault(); setTimeout(() => { for (let j = Math.min(anchor, i); j <= Math.max(anchor, i); j++) boxes[j].checked = true; refreshBulk(); }, 0); };
+    c.onchange = () => { anchor = i; refreshBulk(); };
+  });
   const pageBox = box.querySelector('#ms-page');
   if (pageBox) pageBox.onchange = () => { for (const c of box.querySelectorAll('[data-pick]')) c.checked = pageBox.checked; refreshBulk(); };
   const bulk = async (action, body, n) => {
@@ -3680,7 +3769,7 @@ async function showTitle(id) {
     patchedZone.appendChild(card);
     // A page at a time from the server, with a search: one game can have thousands.
     const heading = card.querySelector('h2');
-    if (patchedReleases.length) makeGrid(card.querySelector('div'), { gridKey: 'title_patched', columns: releaseColumns().filter(c => c.key !== 'title_name'), filters: [], rowLink: r => 'collection/releases/' + r.id, isLocal: heldClass, context: r => releaseContext(r.id, r.name), gridCard: releaseCard,
+    if (patchedReleases.length) makeGrid(card.querySelector('div'), { gridKey: 'title_patched', columns: releaseColumns().filter(c => c.key !== 'title_name'), filters: [], rowLink: r => 'collection/releases/' + r.id, isLocal: heldClass, context: (r, sel) => releaseContext(r.id, r.name, { ids: sel }), gridCard: releaseCard, selection: { key: r => r.id, actions: releaseSelActions() },
       fetch: st => api('/api/v1/catalog/releases' + qs({ title_id: id, kinds: PATCHED_KINDS.join(','), material: 'game', view: 'collection', search: st.search, sort: st.sort, desc: st.desc, limit: st.limit, offset: st.offset })).then(p => { if (!st.search) heading.textContent = trf('Patched ROMs ({n})', { n: p.total + t.linked.length }); return p; }) });
     for (const row of card.querySelectorAll('tr[data-href]')) linkify(row, row.dataset.href);
   }
@@ -3847,8 +3936,8 @@ async function showRelease(id) {
       romLine.querySelector('button').onclick = e => { e.stopPropagation(); romLine.dispatchEvent(new MouseEvent('contextmenu', { clientX: e.clientX, clientY: e.clientY, bubbles: true })); };
       card.appendChild(romLine);
       const holder = el('<div></div>'); card.appendChild(holder);
-      makeGrid(holder, { columns: fileColumns(), search: false, filters: [], fetch: () => Promise.resolve({ items: rom.files, total: rom.files.length }), rowHover: archiveHover, pageSize: 500 });
-      holder.querySelector('.toolbar').remove(); holder.querySelector('.pager').remove();
+      makeGrid(holder, { columns: fileColumns(), search: false, filters: [], fetch: () => Promise.resolve({ items: rom.files, total: rom.files.length }), rowHover: archiveHover, pageSize: 500, selection: { key: f => f.id, actions: [copySelAction('files')] } });
+      bareGrid(holder);
     }
     g.appendChild(card);
   });
@@ -4095,6 +4184,8 @@ async function showFamily(id) {
     fetch: () => Promise.resolve({ items: f.members, total: f.members.length }),
     rowLink: r => 'collection/titles/' + r.title_id,
     isLocal: r => r.local_games > 0 ? 'local' : '',
+    // The versions picked: into a set, or copied, like titles anywhere else.
+    selection: { key: r => r.title_id, actions: [{ label: tr('add to set'), run: async (ids, done) => { await pickSet({ title_ids: ids }, done); } }, { label: tr('copy to…'), run: async ids => copyDialog({ title_ids: ids }, trf('{n} selected {kind}', { n: ids.length, kind: kindWord('titles') })) }] },
     gridCard: r => ({ title: r.name, media: r.cover_media_id, local: r.local_games > 0 ? 'local' : '', chips: memberBadges(r), sub: platformsHtml(r.platforms) + ' ' + (r.year || '') }),
   });
   // ▲ / ▼: delegated in the capture phase, since the rows are drawn after this runs (and
@@ -4216,8 +4307,19 @@ async function showBios() {
     ],
     fetch: st => api('/api/v1/catalog/bios' + qs({ search: st.search, limit: st.limit, offset: st.offset, from: st.filters.from, kind: st.filters.kind, platforms: st.filters.platform })),
     rowLink: r => r.from === 'dat' ? 'collection/releases/' + r.release_id : 'collection/files/' + r.file_id,
+    // A held row is selected by its file; one not held by its DAT entry, marked with NOT_HELD
+    // so the two never collide. Only files can be copied.
+    selection: { key: r => r.file_id ?? (r.release_id + BIOS_NOT_HELD), actions: [{ label: tr('copy to…'), run: async ids => {
+      const files = ids.filter(id => id < BIOS_NOT_HELD), skipped = ids.length - files.length;
+      if (!files.length) return toast(tr('none of the selected BIOS files is on disk'), true);
+      if (skipped) toast(trf('{n} not on disk left out', { n: skipped }));
+      copyDialog(copySelection('files', files), trf('{n} selected {kind}', { n: files.length, kind: kindWord('files') }));
+    } }] },
   });
 }
+
+// The BIOS list's selection key for a DAT entry no file of yours matches: 2^62, as the app's.
+const BIOS_NOT_HELD = 2 ** 62;
 
 async function showPatches() {
   view.innerHTML = '<div id="grid"></div>';
@@ -4316,8 +4418,8 @@ async function showRom(id) {
   attachContext(openBtn, async () => [{ label: tr('Open with'), head: true }].concat(await openWithItems({ rom_id: r.id })));
   openBtn.onclick = e => openBtn.dispatchEvent(new MouseEvent('contextmenu', { clientX: e.clientX, clientY: e.clientY, bubbles: true }));
   const holder = document.getElementById('rom-files');
-  makeGrid(holder, { columns: fileColumns(), search: false, filters: [], fetch: () => Promise.resolve({ items: r.files, total: r.files.length }), rowHover: archiveHover, rowLink: f => 'collection/files/' + f.id, pageSize: 500 });
-  holder.querySelector('.toolbar').remove(); holder.querySelector('.pager').remove();
+  makeGrid(holder, { columns: fileColumns(), search: false, filters: [], fetch: () => Promise.resolve({ items: r.files, total: r.files.length }), rowHover: archiveHover, rowLink: f => 'collection/files/' + f.id, pageSize: 500, selection: { key: f => f.id, actions: [copySelAction('files')] } });
+  bareGrid(holder);
 }
 
 async function showContents() {
@@ -5969,6 +6071,10 @@ async function showScan() {
       { key: 'status', label: tr('status'), type: 'select', options: () => `<option value="">${tr('all statuses')}</option>` + vocab.jobs.statuses.map(t => `<option>${t}</option>`).join('') },
     ],
     fetch: st => api('/api/v1/jobs' + qs({ job_type: SCAN_TYPES, status: st.filters.status, limit: st.limit, offset: st.offset })),
+    // The Jobs list's own actions for several at once.
+    selection: { key: j => j.id, actions: [{ label: tr('run next'), run: async (ids, done) => { await runNextJobs(ids); done(); } }, { label: tr('clear selected from the list'), run: async (ids, done) => {
+      try { const r = await api('/api/v1/jobs/clear', { method: 'POST', body: { ids } }); toast(r.kept ? trf('{n} job(s) cleared; {kept} still pending or running were kept', { n: r.removed, kept: r.kept }) : trf('{n} job(s) cleared', { n: r.removed })); done(); } catch (err) { toast(err.message, true); }
+    } }] },
   });
   refreshRunning();
   let ticks = 0;
@@ -6472,7 +6578,8 @@ async function showDats() {
   const onDisk = src => files.filter(f => f.source === src);
   const total = files.reduce((n, f) => n + f.bytes, 0);
   view.innerHTML = `<div class="card"><h2>${tr('Platforms')}</h2><div id="dat-plats"></div></div><div class="card"><h2>${tr('DAT sources')} ${explainKey('explain.data.dat_sources')}</h2><p class="muted">${tr('"declared" is what the DAT headers count (games / roms or files); "in database" is what the import produced under that source: titles, releases (one per game entry, discs rolled up) and content rows (one per distinct file).')}</p>
-    <table class="grid"><thead><tr><th rowspan="2">${tr('source')}</th><th rowspan="2">${tr('imports')}</th><th colspan="2">${tr('declared')}</th><th colspan="3">${tr('in database')}</th><th rowspan="2">${tr('last import')}</th><th rowspan="2">${tr('downloaded')}</th><th rowspan="2"></th></tr><tr><th>${tr('games')}</th><th>${tr('files')}</th><th>${tr('titles')}</th><th>${tr('releases')}</th><th>${tr('content')}</th></tr></thead><tbody>${sources.map(s => { const mine = onDisk(s.name); return `<tr><td>${cbadge('source', s.name)}</td><td class="num">${s.imports}</td><td class="num">${s.games}</td><td class="num">${s.files}</td><td class="num">${s.titles_in_db}</td><td class="num">${s.releases_in_db}</td><td class="num">${s.content_in_db}</td><td>${fmtDate(s.last_imported_at)}</td><td class="num">${mine.length ? `${mine.length} · ${fmtSize(mine.reduce((n, f) => n + f.bytes, 0))}` : '<span class="muted">—</span>'}</td><td style="white-space:nowrap"><button class="btn small" data-src="${esc(s.name)}" title="${tr('download the current DATs, then import what changed')}">${tr('sync')}</button> <button class="btn small" data-offline="${esc(s.name)}" ${mine.length ? '' : 'disabled'} title="${tr('import the downloaded files without the network')}">${tr('import downloaded')}</button> ${mine.length ? `<a class="link" href="${bundleUrl(s.name)}" download>${tr('download')}</a>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
+    <div class="toolbar" id="dat-pickbar" style="display:none"></div>
+    <table class="grid" id="dat-sources"><thead><tr><th rowspan="2"><input type="checkbox" data-pickall></th><th rowspan="2">${tr('source')}</th><th rowspan="2">${tr('imports')}</th><th colspan="2">${tr('declared')}</th><th colspan="3">${tr('in database')}</th><th rowspan="2">${tr('last import')}</th><th rowspan="2">${tr('downloaded')}</th><th rowspan="2"></th></tr><tr><th>${tr('games')}</th><th>${tr('files')}</th><th>${tr('titles')}</th><th>${tr('releases')}</th><th>${tr('content')}</th></tr></thead><tbody>${sources.map((s, i) => { const mine = onDisk(s.name); return `<tr><td><input type="checkbox" data-pick="${i}"></td><td>${cbadge('source', s.name)}</td><td class="num">${s.imports}</td><td class="num">${s.games}</td><td class="num">${s.files}</td><td class="num">${s.titles_in_db}</td><td class="num">${s.releases_in_db}</td><td class="num">${s.content_in_db}</td><td>${fmtDate(s.last_imported_at)}</td><td class="num">${mine.length ? `${mine.length} · ${fmtSize(mine.reduce((n, f) => n + f.bytes, 0))}` : '<span class="muted">—</span>'}</td><td style="white-space:nowrap"><button class="btn small" data-src="${esc(s.name)}" title="${tr('download the current DATs, then import what changed')}">${tr('sync')}</button> <button class="btn small" data-offline="${esc(s.name)}" ${mine.length ? '' : 'disabled'} title="${tr('import the downloaded files without the network')}">${tr('import downloaded')}</button> ${mine.length ? `<a class="link" href="${bundleUrl(s.name)}" download>${tr('download')}</a>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
     <div class="card"><h2>${tr('Downloaded DAT files')}</h2>
       <div class="toolbar">${files.length ? `<a class="btn" style="text-decoration:none" href="${bundleUrl('')}" download>${trf('download all ({n} files, {size})', { n: files.length, size: fmtSize(total) })}</a>` : ''}<button class="btn" id="dat-offline-all" ${files.length ? '' : 'disabled'}>${tr('import all downloaded (offline)')}</button>
         <span class="grow"></span><select id="dat-up-src"><option value="">${tr('source: from the bundle')}</option>${sources.map(s => `<option>${esc(s.name)}</option>`).join('')}</select><input type="file" id="dat-up-file" accept=".zip,.dat,.xml,.json"><button class="btn" id="dat-upload">${tr('upload')}</button>
@@ -6489,6 +6596,15 @@ async function showDats() {
   for (const b of view.querySelectorAll('[data-src]')) b.onclick = () => run({ job_type: 'dat_sync', source: b.dataset.src, import: true });
   for (const b of view.querySelectorAll('[data-offline]')) b.onclick = () => askDatImport({ job_type: 'dat_sync', source: b.dataset.offline, offline: true }, post);
   document.getElementById('dat-offline-all').onclick = () => askDatImport({ job_type: 'dat_sync', offline: true }, post);
+  // Several sources at once: one job each, as the row buttons queue them (the app's same bar).
+  wirePicks(document.getElementById('dat-sources'), sources.map(s => s.name), document.getElementById('dat-pickbar'), [
+    [tr('sync selected'), names => { for (const n of names) run({ job_type: 'dat_sync', source: n, import: true }); }],
+    [tr('import downloaded (selected)'), names => {
+      const chosen = names.filter(n => onDisk(n).length);
+      if (!chosen.length) return toast(tr('none of the selected sources has downloaded files'), true);
+      askDatImport({ job_type: 'dat_sync', offline: true }, body => { for (const n of chosen) post(Object.assign({}, body, { source: n })); });
+    }],
+  ]);
   queueable(...view.querySelectorAll('[data-src], [data-offline]'), document.getElementById('dat-offline-all'));
   document.getElementById('dat-upload').onclick = async () => {
     const file = document.getElementById('dat-up-file').files[0];
@@ -6946,9 +7062,17 @@ async function showUsers() {
 async function deviceList(host, path) {
   let list;
   try { list = await api(path); } catch (e) { host.innerHTML = `<div class="bad">${esc(e.message)}</div>`; return; }
-  host.innerHTML = `<h3>${tr('Signed-in devices')}</h3><table class="grid"><thead><tr><th>${tr('device')}</th><th>${tr('signed in')}</th><th>${tr('last used')}</th><th></th></tr></thead>
-    <tbody>${list.length ? list.map(d => `<tr><td>${esc(d.device)}${d.current ? ' ' + badge(tr('this one'), 'ok') : ''}</td><td>${fmtDate(d.created_at)}</td><td>${fmtDate(d.last_used_at)}</td>
-      <td><span class="link" data-revoke="${d.id}">${tr('sign out')}</span></td></tr>`).join('') : `<tr><td colspan="4" class="muted">${tr('none')}</td></tr>`}</tbody></table>`;
+  host.innerHTML = `<h3>${tr('Signed-in devices')}</h3><div class="toolbar selbar" style="display:none"></div><table class="grid"><thead><tr><th>${list.length ? '<input type="checkbox" data-pickall>' : ''}</th><th>${tr('device')}</th><th>${tr('signed in')}</th><th>${tr('last used')}</th><th></th></tr></thead>
+    <tbody>${list.length ? list.map((d, i) => `<tr><td><input type="checkbox" data-pick="${i}"></td><td>${esc(d.device)}${d.current ? ' ' + badge(tr('this one'), 'ok') : ''}</td><td>${fmtDate(d.created_at)}</td><td>${fmtDate(d.last_used_at)}</td>
+      <td><span class="link" data-revoke="${d.id}">${tr('sign out')}</span></td></tr>`).join('') : `<tr><td colspan="5" class="muted">${tr('none')}</td></tr>`}</tbody></table>`;
+  // Ticked devices, for signing several out at once.
+  wirePicks(host, list.map(d => String(d.id)), host.querySelector('.selbar'), [[tr('sign out selected'), async ids => {
+    if (!confirm(trf('Sign {n} device(s) out? They will have to sign in again.', { n: ids.length }))) return;
+    let failed = 0;
+    for (const id of ids) { try { await api(path + '/' + id, { method: 'DELETE' }); } catch (e) { failed++; toast(e.message, true); } }
+    toast(trf('{n} done, {failed} failed', { n: ids.length - failed, failed }), failed > 0);
+    deviceList(host, path);
+  }]]);
   host.querySelectorAll('[data-revoke]').forEach(a => a.onclick = async () => {
     if (!confirm(tr('Sign this device out? It will have to sign in again.'))) return;
     try { await api(path + '/' + a.dataset.revoke, { method: 'DELETE' }); toast(tr('signed out')); deviceList(host, path); } catch (e) { toast(e.message, true); }

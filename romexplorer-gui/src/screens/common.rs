@@ -287,7 +287,8 @@ pub fn material_sections(releases: &[Value]) -> Vec<(String, Rc<GridSpec>)> {
             let mut spec = GridSpec::new(&format!("material_{material}"), release_columns(), super::widgets::static_fetch(items))
                 .link(|r| Some(Route::Release { id: u(r, "id") }))
                 .local(held_class)
-                .context(|r, _| async move { release_context(u(&r, "id"), s(&r, "name"), None, None, None).await })
+                .context(|r, sel| async move { release_context(u(&r, "id"), s(&r, "name"), sel, None, None).await })
+                .select(|r| u(r, "id"), release_sel_actions())
                 .cards("releases", release_card);
             spec.search = false;
             spec.page_size = 500;
@@ -1196,6 +1197,25 @@ mod tests {
         // The peer count rides along as a quiet extra, never as the headline.
         assert!(held_badge(&row(1, 0, 2)).contains("+2 peer"));
     }
+}
+
+/// What a list of releases does with the ones selected -- the Releases list's set: add to a
+/// set, copy, download / export art, display, and the title moves.
+pub fn release_sel_actions() -> Vec<crate::components::SelAction> {
+    use crate::components::SelAction;
+    vec![
+        SelAction::new(&state::tr("add to set"), |ids| async move {
+            pick_set(json!({ "release_ids": ids }), None);
+            false
+        }),
+        super::copy::copy_action("releases"),
+        super::art::art_action("releases"),
+        super::art::export_art_action("releases"),
+        super::display::display_action(),
+    ]
+    .into_iter()
+    .chain(release_title_actions())
+    .collect()
 }
 
 /// Selection actions moving releases between titles: all of them into one new title, or into

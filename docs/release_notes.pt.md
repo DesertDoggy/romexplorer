@@ -17,6 +17,8 @@ de segurança antes de substituir uma versão.
 
 **Listas**
 - As vistas em cartões com muitas entradas abrem e deslizam mais depressa.
+- Shift+clique seleciona um intervalo, como no Windows e no macOS. Um clique junto a uma caixa marca-a em vez de abrir a entrada.
+- Seleção múltipla em mais listas: títulos combinados, tarefas do ecrã de análise, origens de DAT, ficheiros ROM, BIOS, ROM com patch, listas de material, versões definitivas e dispositivos com sessão iniciada.
 
 **Progresso**
 - Cada tarefa mostra o que está a fazer, o total e em que ponto vai, incluindo a pesquisa de pastas, as verificações e os passos da base de dados.

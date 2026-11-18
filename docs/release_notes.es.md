@@ -17,6 +17,8 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 **Listas**
 - Las vistas de tarjetas con muchas entradas se abren y desplazan más rápido.
+- Mayús+clic selecciona un rango, como en Windows y macOS. Un clic junto a una casilla la marca en lugar de abrir la entrada.
+- Selección múltiple en más listas: títulos combinados, trabajos de la pantalla de escaneo, fuentes DAT, archivos ROM, BIOS, ROM parcheadas, listas de material, versiones definitivas y dispositivos con sesión iniciada.
 
 **Progreso**
 - Cada tarea muestra lo que está haciendo, el total y cuánto lleva, también al recorrer carpetas, en las comprobaciones y en los pasos de la base de datos.

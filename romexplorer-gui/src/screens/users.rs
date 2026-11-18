@@ -289,6 +289,9 @@ fn ChangePassword() -> Element {
 /// Signed-in devices under `path` (one's own, or an account's for an admin), each revocable.
 #[component]
 fn DeviceList(path: String, reload: Signal<u64>) -> Element {
+    // Ticked devices (ids), for signing several out at once.
+    let mut picked = use_signal(std::collections::BTreeSet::<String>::new);
+    let pick_anchor = use_signal(|| None::<String>);
     let list_path = path.clone();
     let devices = use_resource(move || {
         let p = list_path.clone();
@@ -302,14 +305,34 @@ fn DeviceList(path: String, reload: Signal<u64>) -> Element {
         Some(Err(e)) => return rsx! { div { class: "bad", "{e.message}" } },
         Some(Ok(l)) => l.clone(),
     };
+    let pick_keys = std::rc::Rc::new(list.iter().map(|d| d.id.to_string()).collect::<Vec<_>>());
+    let sign_out_picked = {
+        let path = path.clone();
+        move |_| {
+            let ids: Vec<String> = picked.read().iter().cloned().collect();
+            let path = path.clone();
+            spawn(async move {
+                if !ui::confirm(&state::trf("Sign {n} device(s) out? They will have to sign in again.", &[("n", &ids.len().to_string())])).await { return; }
+                let mut failed = 0;
+                for id in &ids {
+                    if let Err(e) = api::delete(&format!("{path}/{id}")).await { failed += 1; ui::toast(e.message, true); }
+                }
+                ui::toast(state::trf("{n} done, {failed} failed", &[("n", &(ids.len() - failed).to_string()), ("failed", &failed.to_string())]), failed > 0);
+                picked.write().clear();
+                bump(reload);
+            });
+        }
+    };
     rsx! {
         h3 { {state::tr("Signed-in devices")} }
+        super::widgets::PickBar { picked, button { class: "btn small primary", onclick: sign_out_picked, {state::tr("sign out selected")} } }
         table { class: "grid",
-            thead { tr { th { {state::tr("device")} } th { {state::tr("signed in")} } th { {state::tr("last used")} } th {} } }
+            thead { tr { th { if !list.is_empty() { super::widgets::PickAll { keys: pick_keys.clone(), picked } } } th { {state::tr("device")} } th { {state::tr("signed in")} } th { {state::tr("last used")} } th {} } }
             tbody {
-                if list.is_empty() { tr { td { colspan: 4, class: "muted", {state::tr("none")} } } }
-                for d in list {
+                if list.is_empty() { tr { td { colspan: 5, class: "muted", {state::tr("none")} } } }
+                for (i, d) in list.into_iter().enumerate() {
                     tr { key: "{d.id}",
+                        td { super::widgets::PickBox { keys: pick_keys.clone(), index: i, picked, anchor: pick_anchor } }
                         td { "{d.device}" if d.current { " " Html { html: badge(&state::tr("this one"), "ok") } } }
                         td { {d.created_at.map(|t| html::fmt_date(&t.to_string())).unwrap_or_default()} }
                         td { {d.last_used_at.map(|t| html::fmt_date(&t.to_string())).unwrap_or_default()} }

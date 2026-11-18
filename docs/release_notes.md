@@ -14,6 +14,8 @@ replacing a build.
 
 **Lists**
 - Card grids with many entries open and scroll faster.
+- Shift+click selects a range of entries, as on Windows and macOS. Clicking next to a checkbox selects the entry instead of opening it.
+- Several entries can be selected in more lists: combined titles, the Scan screen's jobs, DAT sources, ROM files, BIOS, patched ROMs, material lists, definitive versions and signed-in devices.
 
 **Progress**
 - Every job shows what it is doing, the total and how far it is, including folder walks, checks and database steps.

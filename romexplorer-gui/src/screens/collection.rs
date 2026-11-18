@@ -292,6 +292,7 @@ fn RomPage(id: u64) -> Element {
     spec.bare = true;
     spec.search = false;
     spec.page_size = 500;
+    let spec = spec.select(|f| u(f, "id"), vec![super::copy::copy_action("files")]);
     let local_files_h = state::trf("Local files ({n})", &[("n", &files.len().to_string())]);
     rsx! {
         div { class: "crumbs", a { onclick: move |_| { navigator().push(Route::Roms {}); }, {state::tr("Roms")} } " › " span { class: "mono", "{common::file_name(&path)}" } }

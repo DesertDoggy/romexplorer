@@ -465,6 +465,9 @@ pub fn DataDats() -> Element {
     let mut up_source = use_signal(String::new);
     let mut up_file = use_signal(|| None::<dioxus::html::FileData>);
     let mut uploading = use_signal(|| false);
+    // DAT sources picked for "sync selected" / "import downloaded (selected)".
+    let picked = use_signal(std::collections::BTreeSet::<String>::new);
+    let pick_anchor = use_signal(|| None::<String>);
     let (sources, imports, files) = match &*data.read() {
         None => return rsx! { div { class: "muted", {state::tr("loading…")} } },
         Some(Err(e)) => return rsx! { div { class: "card bad", "{e.message}" } },
@@ -486,6 +489,28 @@ pub fn DataDats() -> Element {
     };
     let total: u64 = files.iter().map(|f| u(f, "bytes")).sum();
     let source_names: Vec<String> = sources.iter().map(|x| s(x, "name")).collect();
+    let pick_keys = std::rc::Rc::new(source_names.clone());
+    // Per source, one job each, as the row buttons queue them.
+    let sync_picked = move |_| {
+        for n in picked.read().iter() {
+            run(json!({ "job_type": "dat_sync", "source": n, "import": true }));
+        }
+    };
+    let held_sources: std::collections::BTreeSet<String> = files.iter().map(|f| s(f, "source")).collect();
+    let import_picked = move |_| {
+        let chosen: Vec<String> = picked.read().iter().filter(|n| held_sources.contains(*n)).cloned().collect();
+        if chosen.is_empty() {
+            ui::toast(state::tr("none of the selected sources has downloaded files"), true);
+            return;
+        }
+        super::widgets::ask_dat_import(json!({ "job_type": "dat_sync", "offline": true }), move |body: Value| {
+            for n in &chosen {
+                let mut b = body.clone();
+                b["source"] = json!(n);
+                post(b);
+            }
+        });
+    };
     rsx! {
         div { class: "card",
             h2 { {state::tr("Platforms")} }
@@ -494,21 +519,29 @@ pub fn DataDats() -> Element {
         div { class: "card",
             h2 { {state::tr("DAT sources")} " " ui::KeyExplain { keys: vec!["explain.data.dat_sources".to_string()] } }
             ui::Explain { p { {state::tr("\"declared\" is what the DAT headers count (games / roms or files); \"in database\" is what the import produced under that source: titles, releases (one per game entry, discs rolled up) and content rows (one per distinct file).")} } }
+            super::widgets::PickBar { picked,
+                button { class: "btn small primary", onclick: sync_picked, {state::tr("sync selected")} }
+                " "
+                button { class: "btn small primary", onclick: import_picked, {state::tr("import downloaded (selected)")} }
+                " "
+            }
             table { class: "grid",
                 thead {
-                    tr { th { rowspan: "2", {state::tr("source")} } th { rowspan: "2", {state::tr("imports")} } th { colspan: "2", {state::tr("declared")} } th { colspan: "3", {state::tr("in database")} } th { rowspan: "2", {state::tr("last import")} } th { rowspan: "2", {state::tr("downloaded")} } th { rowspan: "2" } }
+                    tr { th { rowspan: "2", super::widgets::PickAll { keys: pick_keys.clone(), picked } } th { rowspan: "2", {state::tr("source")} } th { rowspan: "2", {state::tr("imports")} } th { colspan: "2", {state::tr("declared")} } th { colspan: "3", {state::tr("in database")} } th { rowspan: "2", {state::tr("last import")} } th { rowspan: "2", {state::tr("downloaded")} } th { rowspan: "2" } }
                     tr { th { {state::tr("games")} } th { {state::tr("files")} } th { {state::tr("titles")} } th { {state::tr("releases")} } th { {state::tr("content")} } }
                 }
                 tbody {
-                    for x in sources {
+                    for (i, x) in sources.into_iter().enumerate() {
                         {
                             let name = s(&x, "name");
+                            let pick_keys = pick_keys.clone();
                             let mine: Vec<&Value> = files.iter().filter(|f| s(f, "source") == name).collect();
                             let held = mine.len();
                             let held_bytes: u64 = mine.iter().map(|f| u(f, "bytes")).sum();
                             let (n2, n3) = (name.clone(), name.clone());
                             rsx! {
                                 tr {
+                                    td { super::widgets::PickBox { keys: pick_keys, index: i, picked, anchor: pick_anchor } }
                                     td { Html { html: html::cbadge("source", &name, None, None) } }
                                     td { class: "num", "{s(&x, \"imports\")}" }
                                     td { class: "num", "{s(&x, \"games\")}" }
