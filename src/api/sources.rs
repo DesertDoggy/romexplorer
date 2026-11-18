@@ -181,7 +181,49 @@ async fn truncate(conn: &mut sqlx::MySqlConnection, table: &str) -> Result<u64> 
     Ok(rows.max(0) as u64)
 }
 
-pub async fn clear_catalog(app: &App, media: MediaOnReplace) -> Result<u64> {
+/// Every table [`clear_catalog`] empties, in order (children first), so its progress can
+/// say "table 12 of 41" before it starts.
+fn tables_to_clear() -> Vec<&'static str> {
+    let mut out = vec!["local_release_games", "title_media", "release_media"];
+    // Collection sets come from the main server now (`sync::catalog_tables`), so the local
+    // ones go with the catalogue they point into. Children first.
+    out.extend(["collection_set_releases", "collection_set_entries", "collection_sets"]);
+    out.extend(super::backup::CATALOG_TABLES.iter().copied().filter(|t| !CATALOG_KEEP.contains(t)));
+    // Every mirrored row references the catalogue by id, and those ids are about to mean
+    // something else, so the mirror has to be rebuilt too.
+    out.extend([
+        "remote_release_games",
+        "remote_game_roms",
+        "remote_rom_rahash",
+        "remote_rom_files",
+        "remote_game",
+        "remote_rom",
+        "remote_files",
+        "remote_directories",
+    ]);
+    // And the per-table hashes: without this the next sync compares the source's manifest
+    // against what we *used* to hold, concludes nothing has changed, and downloads nothing
+    // -- leaving the catalogue empty and every mirror row swept away as unresolved.
+    out.push("remote_sync_state");
+    out
+}
+
+/// Queues the catalogue clear (`catalog_clear`) a replacement needs, in the lane of the
+/// main source's sync (`sync:<id>`): a sync queued after it -- the "sync now" a user presses
+/// next -- runs only once the old catalogue is gone, as it did when the clear ran inside the
+/// request.
+pub async fn queue_clear(app: &App, media: MediaOnReplace, source_id: u16) -> Result<u64> {
+    let payload = serde_json::json!({ "source_id": source_id, "media": media });
+    Ok(crate::database::jobs::enqueue(&app.pool, crate::database::jobs::JobType::CatalogClear, payload).await?)
+}
+
+/// The `catalog_clear` job: throws the catalogue away, table by table, saying which.
+pub async fn clear_catalog(app: &App, media: MediaOnReplace, progress: &crate::database::jobs::Progress) -> Result<u64> {
+    use crate::database::jobs::thousands;
+    let tables = tables_to_clear();
+    // The media step counts as one more.
+    let total = tables.len() as u64 + 1;
+    progress.force(0, Some(total), "clearing the catalogue: starting").await;
     // Before the first TRUNCATE as well as after: a clear cut short must not leave mirrors
     // trusting their positions over rows that vanished without tombstones.
     crate::database::sync_rev::new_epoch(&app.pool).await?;
@@ -192,55 +234,37 @@ pub async fn clear_catalog(app: &App, media: MediaOnReplace) -> Result<u64> {
     sqlx::query("SET FOREIGN_KEY_CHECKS = 0").execute(&mut *conn).await?;
     let mut removed = 0u64;
     let result = async {
-        removed += truncate(&mut conn, "local_release_games").await?;
-
-        // Art: the files stay, but "which game is this of" is about to become false either
-        // way, so the junctions always go. What was recorded first is *which* junction each
-        // row was in -- provider art hangs off releases, manual picks off titles, and
-        // rebuilding from the provider id alone could not tell them apart.
-        if media == MediaOnReplace::Relink {
-            sqlx::query("INSERT IGNORE INTO media_relink (media_id, kind) SELECT media_id, 'title' FROM title_media").execute(&mut *conn).await?;
-            sqlx::query("INSERT IGNORE INTO media_relink (media_id, kind) SELECT media_id, 'release' FROM release_media").execute(&mut *conn).await?;
-        } else {
-            // Re-download: retire the rows now so nothing serves art that may be wrong, and
-            // leave the files for the ordinary media storage cleanup rather than unlinking
-            // them here.
-            sqlx::query("UPDATE media m SET m.deleted = TRUE WHERE EXISTS (SELECT 1 FROM title_media tm WHERE tm.media_id = m.id) OR EXISTS (SELECT 1 FROM release_media rm WHERE rm.media_id = m.id)")
-                .execute(&mut *conn)
-                .await?;
-        }
-        removed += truncate(&mut conn, "title_media").await?;
-        removed += truncate(&mut conn, "release_media").await?;
-
-        // Collection sets come from the main server now (`sync::catalog_tables`), so the
-        // local ones go with the catalogue they point into. Children first.
-        removed += truncate(&mut conn, "collection_set_releases").await?;
-        removed += truncate(&mut conn, "collection_set_entries").await?;
-        removed += truncate(&mut conn, "collection_sets").await?;
-        for table in super::backup::CATALOG_TABLES {
-            if CATALOG_KEEP.contains(&table) {
-                continue;
+        let (mut step, mut index) = (0u64, 0usize);
+        for table in &tables {
+            // Art: the files stay, but "which game is this of" is about to become false either
+            // way, so the junctions always go. What was recorded first is *which* junction each
+            // row was in -- provider art hangs off releases, manual picks off titles, and
+            // rebuilding from the provider id alone could not tell them apart.
+            if *table == "title_media" {
+                step += 1;
+                if media == MediaOnReplace::Relink {
+                    progress.force(step, Some(total), "clearing the catalogue: noting which art to re-link").await;
+                    sqlx::query("INSERT IGNORE INTO media_relink (media_id, kind) SELECT media_id, 'title' FROM title_media").execute(&mut *conn).await?;
+                    sqlx::query("INSERT IGNORE INTO media_relink (media_id, kind) SELECT media_id, 'release' FROM release_media").execute(&mut *conn).await?;
+                } else {
+                    // Re-download: retire the rows now so nothing serves art that may be wrong, and
+                    // leave the files for the ordinary media storage cleanup rather than unlinking
+                    // them here.
+                    progress.force(step, Some(total), "clearing the catalogue: retiring art to download again").await;
+                    sqlx::query("UPDATE media m SET m.deleted = TRUE WHERE EXISTS (SELECT 1 FROM title_media tm WHERE tm.media_id = m.id) OR EXISTS (SELECT 1 FROM release_media rm WHERE rm.media_id = m.id)")
+                        .execute(&mut *conn)
+                        .await?;
+                }
             }
-            removed += truncate(&mut conn, table).await?;
+            index += 1;
+            progress.force(step, Some(total), &format!("clearing the catalogue: table {index} of {} ({} rows cleared) {table}", tables.len(), thousands(removed))).await;
+            step += 1;
+            let n = truncate(&mut conn, table).await?;
+            // The sync state is bookkeeping, not catalogue rows: not counted, as before.
+            if *table != "remote_sync_state" {
+                removed += n;
+            }
         }
-        // Every mirrored row references the catalogue by id, and those ids are about to mean
-        // something else, so the mirror has to be rebuilt too.
-        for table in [
-            "remote_release_games",
-            "remote_game_roms",
-            "remote_rom_rahash",
-            "remote_rom_files",
-            "remote_game",
-            "remote_rom",
-            "remote_files",
-            "remote_directories",
-        ] {
-            removed += truncate(&mut conn, table).await?;
-        }
-        // And the per-table hashes: without this the next sync compares the source's manifest
-        // against what we *used* to hold, concludes nothing has changed, and downloads nothing
-        // -- leaving the catalogue empty and every mirror row swept away as unresolved.
-        truncate(&mut conn, "remote_sync_state").await?;
         // The lineage is about to be set by the first sync; until then this machine has no
         // catalogue at all, which is the honest state.
         sqlx::query("DELETE FROM settings WHERE `key` = ?").bind(crate::database::settings::KEY_CATALOG_FROM).execute(&mut *conn).await?;
@@ -302,6 +326,7 @@ fn row_to_source(row: &sqlx::mysql::MySqlRow) -> Result<RemoteSource> {
         last_sync_at: row.try_get("last_sync_at")?,
         created_at: row.try_get("created_at")?,
         tables: Vec::new(),
+        clear_job: None,
     })
 }
 
@@ -591,10 +616,10 @@ pub async fn create(app: &App, spec: &SourceSpec) -> Result<RemoteSource> {
             result.last_insert_id() as u16
         }
     };
-    if needs_replace {
-        clear_catalog(app, spec.media).await?;
-    }
-    get(app, id).await
+    // The clear itself is a job (`catalog_clear`): it empties some forty tables, and the
+    // screen follows its progress rather than a request that says nothing until it is done.
+    let clear_job = if needs_replace { Some(queue_clear(app, spec.media, id).await?) } else { None };
+    Ok(RemoteSource { clear_job, ..get(app, id).await? })
 }
 
 pub async fn update(app: &App, id: u16, spec: &SourceSpec) -> Result<RemoteSource> {
@@ -651,10 +676,10 @@ pub async fn update(app: &App, id: u16, spec: &SourceSpec) -> Result<RemoteSourc
     .await
     .map_err(|e| duplicate(e, &spec.role))?;
     // Only once the row is actually saved -- see `create`.
-    if needs_replace {
-        clear_catalog(app, spec.media).await?;
-    }
-    get(app, id).await
+    // The clear itself is a job (`catalog_clear`): it empties some forty tables, and the
+    // screen follows its progress rather than a request that says nothing until it is done.
+    let clear_job = if needs_replace { Some(queue_clear(app, spec.media, id).await?) } else { None };
+    Ok(RemoteSource { clear_job, ..get(app, id).await? })
 }
 
 /// Soft-deletes. The mirror rows stay until [`forget`] removes them, so disabling a source by
@@ -798,7 +823,7 @@ pub async fn set_mode(app: &App, mode: &str, replace_catalog: bool, media: Media
     use crate::database::settings::{self as db_settings, InstanceMode};
     let wanted = InstanceMode::parse(mode).ok_or_else(|| Error::invalid("mode must be standalone or client"))?;
     let current = db_settings::instance_mode(&app.pool).await?;
-    let mut cleared = 0u64;
+    let mut clear_job: Option<u64> = None;
     if wanted == InstanceMode::Client && current != InstanceMode::Client {
         let releases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM `release`").fetch_one(&app.pool).await?;
         let from = db_settings::get::<String>(&app.pool, db_settings::KEY_CATALOG_FROM).await?.filter(|s| !s.is_empty());
@@ -812,11 +837,14 @@ pub async fn set_mode(app: &App, mode: &str, replace_catalog: bool, media: Media
                     losses(app).await?
                 )));
             }
-            cleared = clear_catalog(app, media).await?;
+            // As a job (`catalog_clear`), in the main server's sync lane when there is one,
+            // so a sync queued after it runs on the cleared catalogue.
+            let main: Option<u16> = sqlx::query_scalar("SELECT id FROM remote_sources WHERE role = 'main' AND deleted = FALSE").fetch_optional(&app.pool).await?;
+            clear_job = Some(queue_clear(app, media, main.unwrap_or(0)).await?);
         }
     }
     db_settings::set(&app.pool, db_settings::KEY_INSTANCE_MODE, &wanted.name()).await?;
-    Ok(serde_json::json!({ "mode": wanted.name(), "catalog_rows_cleared": cleared }))
+    Ok(serde_json::json!({ "mode": wanted.name(), "clear_job": clear_job }))
 }
 
 #[cfg(test)]
@@ -888,11 +916,15 @@ mod mode_tests {
             JobType::AiBatchRate,
             // Reads this machine's ROMs into its own tables.
             JobType::RomAudioIndex,
+            // Empties the catalogue so a main server's can arrive: what becoming a client is.
+            JobType::CatalogClear,
+            // Collection sets, which a sets file has always been read into on any machine.
+            JobType::SetImport,
         ] {
             assert!(!t.writes_catalog(), "{} should be allowed on a client", t.name());
         }
         // Exhaustive: every job type is on one of the two lists above.
-        assert_eq!(JobType::ALL.len(), 10 + 28, "a new job type needs classifying in this test");
+        assert_eq!(JobType::ALL.len(), 10 + 30, "a new job type needs classifying in this test");
     }
 }
 

@@ -154,29 +154,40 @@ impl IgdbNames {
     }
 
     pub async fn resolve(&mut self, clients: &ProviderClients, games: &[IgdbGame]) -> Result<(), DatabaseError> {
+        self.resolve_reporting(clients, games, &crate::database::jobs::Progress::none()).await
+    }
+
+    /// [`Self::resolve`], saying which list of names it is asking IGDB for ("IGDB names:
+    /// genres (1 of 5)") -- each is a request per 500 ids, and a job of thousands of games
+    /// otherwise sat on one line through all of them.
+    pub async fn resolve_reporting(&mut self, clients: &ProviderClients, games: &[IgdbGame], progress: &crate::database::jobs::Progress) -> Result<(), DatabaseError> {
         let client = clients.igdb.as_ref().ok_or_else(|| DatabaseError::Provider("igdb client unavailable".to_string()))?;
         let missing = |have: &HashMap<i32, String>, ids: Vec<i32>| -> Vec<i32> {
             let mut seen = HashSet::new();
             ids.into_iter().filter(|id| !have.contains_key(id) && seen.insert(*id)).collect()
         };
+        progress.force(0, None, "IGDB names: genres (1 of 5)").await;
         let genre_ids = missing(&self.genres, games.iter().flat_map(|g| g.genres.clone().unwrap_or_default()).collect());
         for chunk in genre_ids.chunks(IGDB_LIST_MAX) {
             for g in client.get_genres_by_id(chunk.to_vec()).await? {
                 self.genres.insert(g.id, g.name);
             }
         }
+        progress.force(0, None, "IGDB names: player perspectives (2 of 5)").await;
         let perspective_ids = missing(&self.perspectives, games.iter().flat_map(|g| g.player_perspectives.clone().unwrap_or_default()).collect());
         for chunk in perspective_ids.chunks(IGDB_LIST_MAX) {
             for p in client.get_player_perspectives_by_id(chunk.to_vec()).await? {
                 self.perspectives.insert(p.id, p.name);
             }
         }
+        progress.force(0, None, "IGDB names: franchises (3 of 5)").await;
         let franchise_ids = missing(&self.franchises, games.iter().flat_map(|g| g.franchises.clone().unwrap_or_default().into_iter().chain(g.franchise)).collect());
         for chunk in franchise_ids.chunks(IGDB_LIST_MAX) {
             for f in client.get_franchises_by_id(chunk.to_vec()).await? {
                 self.franchises.insert(f.id, f.name);
             }
         }
+        progress.force(0, None, "IGDB names: companies (4 of 5)").await;
         let mut involved_ids: Vec<i32> = games.iter().flat_map(|g| g.involved_companies.clone().unwrap_or_default()).filter(|id| !self.involved.contains_key(id)).collect();
         involved_ids.sort_unstable();
         involved_ids.dedup();
@@ -191,6 +202,7 @@ impl IgdbNames {
                 self.companies.insert(c.id, c.name);
             }
         }
+        progress.force(0, None, "IGDB names: localized and alternative names (5 of 5)").await;
         self.resolve_names(clients, games).await
     }
 
@@ -637,6 +649,7 @@ pub async fn reapply_igdb(clients: &ProviderClients, pool: &MySqlPool, scope: Re
         ReapplyScope::All => "TRUE".to_string(),
         ReapplyScope::Missing => "NOT t.locales_locked AND NOT EXISTS (SELECT 1 FROM title_locales tlx WHERE tlx.title_id = tpl.title_id AND tlx.source = 'igdb')".to_string(),
     };
+    progress.force(0, None, "IGDB metadata: finding linked titles").await;
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT tpl.title_id, CAST(tpl.provider_id AS UNSIGNED) AS game_id, ig.raw_response_path FROM title_provider_links tpl \
          JOIN title t ON t.id = tpl.title_id AND t.deleted = FALSE \

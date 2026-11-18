@@ -10,10 +10,16 @@
 //! Inputs are lossless only: disc images, CHD, RVZ, CSO and PBP. A `.wua`, `.zar` or XISO
 //! has already lost the disc, so it is not taken.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use romexplorer::database::jobs::thousands;
+use serde::{Deserialize, Serialize};
 
 use romexplorer::common::models::Platform;
 
@@ -30,7 +36,7 @@ pub const SUPPORTED_EXTENSIONS: [&str; 31] = [
     "3dsx", "zcci", "zcia", "zcxi", "z3dsx",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
     CdChd,
     GdChd,
@@ -78,7 +84,7 @@ impl Target {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Input {
     /// Already a CHD: extract, read or hash it.
     Chd,
@@ -193,17 +199,63 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// The `.gdi` or `.cue` beside `track` that lists it (gdi first, as everywhere in romexplorer).
 pub fn sibling_sheet(track: &Path) -> Option<PathBuf> {
-    let dir = track.parent()?;
-    let mut sheets: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| matches!(extension(path).as_str(), "cue" | "gdi") && path.is_file())
-        .collect();
-    sheets.sort_by_key(|path| (extension(path) != "gdi", path.clone()));
-    sheets.into_iter().find(|sheet| descriptor_payload_paths(sheet).iter().any(|payload| same_file(payload, track)))
+    Sheets::default().sheet_for(track)
 }
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Sheets already read, for a walk that asks about many tracks: each folder is listed once and
+/// each sheet parsed once, not once per track beside it.
+#[derive(Default)]
+struct Sheets {
+    /// A folder's sheets, gdi first.
+    folders: HashMap<PathBuf, Vec<PathBuf>>,
+    /// The files a sheet lists.
+    payloads: HashMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl Sheets {
+    fn payloads(&mut self, sheet: &Path) -> &[PathBuf] {
+        self.payloads.entry(sheet.to_path_buf()).or_insert_with(|| descriptor_payload_paths(sheet))
+    }
+
+    fn sheet_for(&mut self, track: &Path) -> Option<PathBuf> {
+        let dir = track.parent()?.to_path_buf();
+        let sheets = match self.folders.get(&dir) {
+            Some(sheets) => sheets.clone(),
+            None => {
+                let mut sheets: Vec<PathBuf> = std::fs::read_dir(&dir)
+                    .ok()?
+                    .filter_map(|entry| entry.ok().map(|e| e.path()))
+                    .filter(|path| matches!(extension(path).as_str(), "cue" | "gdi") && path.is_file())
+                    .collect();
+                sheets.sort_by_key(|path| (extension(path) != "gdi", path.clone()));
+                self.folders.insert(dir, sheets.clone());
+                sheets
+            }
+        };
+        sheets.into_iter().find(|sheet| self.payloads(sheet).iter().any(|payload| same_file(payload, track)))
+    }
+}
+
+/// Says when a progress line is due: the first time, then at most ten times a second.
+#[derive(Default)]
+struct Ticker(Option<Instant>);
+
+impl Ticker {
+    fn due(&mut self) -> bool {
+        let now = Instant::now();
+        if self.0.is_some_and(|last| now.duration_since(last) < Duration::from_millis(100)) {
+            return false;
+        }
+        self.0 = Some(now);
+        true
+    }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>, found: &mut dyn FnMut(usize)) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|e| e.path())).collect();
     entries.sort();
@@ -214,9 +266,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             continue;
         }
         if path.is_dir() {
-            walk(&path, out);
+            walk(&path, out, found);
         } else if SUPPORTED_EXTENSIONS.contains(&extension(&path).as_str()) {
             out.push(path);
+            found(out.len());
         }
     }
 }
@@ -225,34 +278,103 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 /// directories walked recursively, and every track file a sheet in the list already covers
 /// dropped, so a `.cue` and its `.bin`s are one job, not several.
 pub fn expand(paths: &[PathBuf]) -> Vec<PathBuf> {
+    expand_with(paths, &|_| {})
+}
+
+/// [`expand`], saying how far it has got: "walking folders: 12,400 file(s) found so far",
+/// then "grouping tracks with their sheets: 3,100 of 12,400".
+pub fn expand_with(paths: &[PathBuf], on_progress: &dyn Fn(&str)) -> Vec<PathBuf> {
+    let mut ticker = Ticker::default();
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
-            walk(path, &mut files);
+            on_progress(&format!("walking folders: {} file(s) found so far", thousands(files.len() as u64)));
+            walk(path, &mut files, &mut |found| {
+                if ticker.due() {
+                    on_progress(&format!("walking folders: {} file(s) found so far", thousands(found as u64)));
+                }
+            });
         } else {
             files.push(path.clone());
         }
     }
     // A track dropped on its own stands for its disc, so two tracks of one disc are one job.
-    let files: Vec<PathBuf> =
-        files.into_iter().map(|path| if matches!(extension(&path).as_str(), "bin" | "img") { sibling_sheet(&path).unwrap_or(path) } else { path }).collect();
+    let total = thousands(files.len() as u64);
+    let mut sheets = Sheets::default();
+    let mut grouped = Vec::with_capacity(files.len());
+    for (i, path) in files.into_iter().enumerate() {
+        if ticker.due() {
+            on_progress(&format!("grouping tracks with their sheets: {} of {total}", thousands(i as u64 + 1)));
+        }
+        grouped.push(if matches!(extension(&path).as_str(), "bin" | "img") { sheets.sheet_for(&path).unwrap_or(path) } else { path });
+    }
     // Separators and case differ between a path as dropped and the same path as a sheet
     // names it; neither makes it a different file.
     let key = |path: &Path| path.to_string_lossy().replace('\\', "/").to_lowercase();
-    let covered: HashSet<String> =
-        files.iter().filter(|path| matches!(extension(path).as_str(), "cue" | "gdi")).flat_map(|sheet| descriptor_payload_paths(sheet)).map(|p| key(&p)).collect();
+    let mut covered = HashSet::new();
+    for sheet in grouped.iter().filter(|path| matches!(extension(path).as_str(), "cue" | "gdi")) {
+        covered.extend(sheets.payloads(sheet).iter().map(|p| key(p)));
+    }
     let mut seen = HashSet::new();
-    files.into_iter().filter(|path| !covered.contains(&key(path)) && seen.insert(key(path))).collect()
+    grouped.into_iter().filter(|path| !covered.contains(&key(path)) && seen.insert(key(path))).collect()
+}
+
+/// Runs `work` over `items` on up to `threads` threads (at most the machine's), in any
+/// order; the results come back in the items' order.
+pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], threads: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(threads).min(items.len()).max(1);
+    if threads == 1 {
+        return items.iter().map(work).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(index) else { break };
+                let result = work(item);
+                results.lock().unwrap()[index] = Some(result);
+            });
+        }
+    });
+    results.into_inner().unwrap().into_iter().map(|result| result.expect("every item ran")).collect()
+}
+
+/// [`classify`] for every input, several at a time (reading headers is mostly waiting on the
+/// disk), saying "checking formats: 812 of 4,000 (name)".
+pub fn classify_all(inputs: &[PathBuf], on_progress: &(dyn Fn(&str) + Sync)) -> Vec<Result<Input, String>> {
+    let (done, ticker, total) = (AtomicUsize::new(0), Mutex::new(Ticker::default()), thousands(inputs.len() as u64));
+    parallel_map(inputs, 8, |path| {
+        let result = classify(path);
+        let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if ticker.lock().unwrap().due() {
+            on_progress(&format!("checking formats: {} of {total} ({})", thousands(done as u64), file_name(path)));
+        }
+        result
+    })
+}
+
+/// Of `inputs`, classified as [`classify_all`] did, the ones a create would make a lossy
+/// output of ([`Target::is_lossy`]).
+pub fn lossy_of(inputs: &[PathBuf], classified: &[Result<Input, String>]) -> Vec<(PathBuf, Target)> {
+    inputs
+        .iter()
+        .zip(classified)
+        .filter_map(|(path, input)| match input {
+            Ok(Input::Image { target, .. }) if target.is_lossy() => Some((path.clone(), *target)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The inputs a create would make a lossy output of ([`Target::is_lossy`]), for the warning
 /// asked or printed first.
 pub fn lossy_targets(inputs: &[PathBuf]) -> Vec<(PathBuf, Target)> {
-    inputs
-        .iter()
-        .filter_map(|path| match classify(path) {
-            Ok(Input::Image { target, .. }) if target.is_lossy() => Some((path.clone(), target)),
-            _ => None,
-        })
-        .collect()
+    lossy_of(inputs, &classify_all(inputs, &|_| {}))
+}
+
+/// The kinds [`classify_all`] worked out, by input, for [`crate::batch::Batch::classified`].
+pub fn known(inputs: &[PathBuf], classified: Vec<Result<Input, String>>) -> HashMap<PathBuf, Input> {
+    inputs.iter().cloned().zip(classified).filter_map(|(path, input)| input.ok().map(|input| (path, input))).collect()
 }

@@ -19,6 +19,10 @@ pub struct RemoteSource {
     pub created_at: Option<chrono::NaiveDateTime>,
     /// Per-table sync state, so a screen can show what is current without a second call.
     pub tables: Vec<SourceTable>,
+    /// Set on the answer to a save that replaces the catalogue: the `catalog_clear` job doing
+    /// it, for the screen to follow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_job: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

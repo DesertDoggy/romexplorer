@@ -21,6 +21,19 @@ pub fn esc(s: &str) -> String {
     out
 }
 
+/// A count with thousands separators, "12,345": the console's `fmtCount`.
+pub fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub fn fmt_size(n: Option<u64>) -> String {
     let Some(n) = n else { return String::new() };
     let units = ["B", "KiB", "MiB", "GiB", "TiB"];

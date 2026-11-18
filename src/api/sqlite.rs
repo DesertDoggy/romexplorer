@@ -115,8 +115,15 @@ pub async fn export(app: &App, tables: &[&str], path: &Path, progress: &crate::d
         .execute(&out)
         .await?;
 
-    // Exact, not the optimizer's estimate: see `rows::exact_rows`.
-    let estimate = super::rows::exact_rows(app, tables).await;
+    // Exact, not the optimizer's estimate: see `rows::exact_rows`. Counted here, a table at
+    // a time, so the row says which table it is counting (`hashes` takes seconds).
+    let mut estimate = super::rows::estimated_rows(app, tables).await;
+    for (i, table) in tables.iter().enumerate() {
+        progress.report(i as u64, Some(tables.len() as u64), &format!("counting rows: table {} of {} ({table})", i + 1, tables.len())).await;
+        if let Ok(n) = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM `{table}`"))).fetch_one(&app.pool).await {
+            estimate[i] = n.max(0) as u64;
+        }
+    }
     let total_rows: u64 = estimate.iter().sum();
     let mut rows_done = 0u64;
 
@@ -303,7 +310,8 @@ pub async fn import(app: &App, path: &Path, allowed: &[&str], adopt_ownership: b
     // file is a cheap index scan, and it is what turns the bar from "table 7 of 77" -- which
     // stalls for most of the import inside `hashes` -- into a real fraction.
     let mut sizes: Vec<u64> = Vec::with_capacity(wanted.len());
-    for table in &wanted {
+    for (i, table) in wanted.iter().enumerate() {
+        progress.report(i as u64, Some(wanted.len() as u64), &format!("counting rows: table {} of {} ({table})", i + 1, wanted.len())).await;
         let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM \"{table}\""))).fetch_one(&db).await.unwrap_or(0);
         sizes.push(n as u64);
     }

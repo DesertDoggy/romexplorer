@@ -376,6 +376,15 @@ fn stamp(path: &Path) -> (u64, u64) {
     (if meta.is_dir() { 0 } else { meta.len() }, modified)
 }
 
+/// How far [`Library::build_with`] has got.
+#[derive(Debug, Clone, Copy)]
+pub enum BuildStep<'a> {
+    /// Listing the folders: `found` sets so far.
+    Listing { found: usize },
+    /// Reading set `done + 1` of `total` (`set`), or all `total` read (`set` is `None`).
+    Reading { done: usize, total: usize, set: Option<&'a Path> },
+}
+
 /// The sets of the rip library folders, fingerprinted, with a matcher per system.
 pub struct Library {
     sets: Vec<(PathBuf, RipSystem)>,
@@ -385,8 +394,20 @@ pub struct Library {
 
 impl Library {
     /// Reads the sets under `folders`. Fingerprints are kept in `cache` (a JSON file) by path,
-    /// size and time, so only new or changed sets are read again.
+    /// size and time, so only new or changed sets are read again. `progress` hears
+    /// `(done, total)` per set and a last `(total, total)` once all are read.
     pub fn build(folders: &[PathBuf], cache: Option<&Path>, mut progress: impl FnMut(usize, usize)) -> Self {
+        Self::build_with(folders, cache, |step| {
+            if let BuildStep::Reading { done, total, .. } = step {
+                progress(done, total);
+            }
+        })
+    }
+
+    /// [`Library::build`], saying more as it goes: how many sets the folders hold so far
+    /// while they are listed, then each set by name as it is read, and `total` of `total`
+    /// at the end.
+    pub fn build_with(folders: &[PathBuf], cache: Option<&Path>, mut progress: impl FnMut(BuildStep<'_>)) -> Self {
         // A cache of another format, or one that doesn't read, is read again from the sets.
         let old: HashMap<PathBuf, CachedSet> = cache
             .and_then(|c| std::fs::read(c).ok())
@@ -397,11 +418,16 @@ impl Library {
             .into_iter()
             .map(|c| (c.path.clone(), c))
             .collect();
-        let paths: Vec<PathBuf> = folders.iter().flat_map(|f| super::rip_sets::sets_in(f)).collect();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        progress(BuildStep::Listing { found: 0 });
+        for folder in folders {
+            paths.extend(super::rip_sets::sets_in(folder));
+            progress(BuildStep::Listing { found: paths.len() });
+        }
         let mut fresh = Vec::with_capacity(paths.len());
         let mut changed = old.len() != paths.len();
         for (i, path) in paths.iter().enumerate() {
-            progress(i, paths.len());
+            progress(BuildStep::Reading { done: i, total: paths.len(), set: Some(path) });
             let (size, modified) = stamp(path);
             let entry = match old.get(path) {
                 Some(c) if c.size == size && c.modified == modified => c.clone(),
@@ -412,6 +438,7 @@ impl Library {
             };
             fresh.push(entry);
         }
+        progress(BuildStep::Reading { done: paths.len(), total: paths.len(), set: None });
         if let Some(c) = cache.filter(|_| changed) {
             write_cache(c, &CacheFile { format: CACHE_FORMAT, sets: fresh.clone() });
         }

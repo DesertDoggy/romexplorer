@@ -693,6 +693,14 @@ fn is_same_file(a: &Path, b: &Path) -> bool {
 }
 
 pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
+    plan_reporting(app, req, &crate::database::jobs::Progress::none()).await
+}
+
+/// [`plan`] inside a copy job: "planning: game 312 of 4,180: <name>", then "checking
+/// destinations: game 1,204 of 9,880".
+pub async fn plan_reporting(app: &App, req: &CopyFilesRequest, progress: &crate::database::jobs::Progress) -> Result<Planned> {
+    use crate::database::jobs::thousands;
+    progress.force(0, None, "planning: reading the mounts and settings").await;
     let root = super::check_destination(&req.destination)?;
     let mut warnings: Vec<String> = Vec::new();
     let mut no_mount: HashSet<String> = HashSet::new();
@@ -725,9 +733,14 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
 
     // --- stage 1/2/3: selection -> items ---
     let mut items: Vec<CopyItem> = Vec::new();
+    progress.force(0, None, "planning: finding the selected releases").await;
     let releases = releases_for(app, req, &mut warnings).await?;
     let prefer_decrypted = super::prefer_decrypted(app).await?;
+    let selected = (releases.len() + req.selection.game_ids.len() + req.selection.rom_ids.len() + req.selection.file_ids.len()) as u64;
+    let mut at = 0u64;
     for release_id in releases {
+        at += 1;
+        progress.report(at - 1, Some(selected), &format!("planning: release {} of {} ({} item(s) so far)", thousands(at), thousands(selected), thousands(items.len() as u64))).await;
         let holders = holders_for(app, release_id, &mounted).await?;
         if holders.is_empty() {
             continue;
@@ -739,6 +752,8 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
         }
     }
     for g in &req.selection.game_ids {
+        at += 1;
+        progress.report(at - 1, Some(selected), &format!("planning: game {} of {} ({} item(s) so far)", thousands(at), thousands(selected), thousands(items.len() as u64))).await;
         let row = match g.source_id {
             None => sqlx::query("SELECT name, playlist_file_id FROM local_game WHERE id = ? AND deleted = FALSE").bind(g.id).fetch_optional(&app.pool).await?,
             Some(sid) => sqlx::query("SELECT name, playlist_file_id FROM remote_game WHERE source_id = ? AND id = ? AND deleted = FALSE").bind(sid).bind(g.id).fetch_optional(&app.pool).await?,
@@ -753,9 +768,13 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
         items.extend(items_for_game(app, g.source_id, g.id, &row.try_get::<String, _>("name")?, row.try_get("playlist_file_id")?, release_id, &source_mounts, &name, &mut no_mount).await?);
     }
     for r in &req.selection.rom_ids {
+        at += 1;
+        progress.report(at - 1, Some(selected), &format!("planning: ROM {} of {} ({} item(s) so far)", thousands(at), thousands(selected), thousands(items.len() as u64))).await;
         items.extend(item_for_rom(app, *r, &mounts, &name_of(r.source_id), &mut no_mount).await?);
     }
     for f in &req.selection.file_ids {
+        at += 1;
+        progress.report(at - 1, Some(selected), &format!("planning: file {} of {} ({} item(s) so far)", thousands(at), thousands(selected), thousands(items.len() as u64))).await;
         items.extend(item_for_file(app, *f, &mounts, &name_of(f.source_id), &mut no_mount).await?);
     }
 
@@ -772,6 +791,7 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
     // machine, skip what this machine has; up to the server, skip what the server has. A
     // copy within one collection skips nothing -- a second copy in another format is the
     // whole point of it.
+    progress.force(0, None, "planning: listing what is already held").await;
     let held: HashSet<u64> = if req.mode.skips_local_holdings() {
         held_content_ids(app).await?
     } else if req.mode.skips_source_holdings() {
@@ -821,7 +841,9 @@ pub async fn plan(app: &App, req: &CopyFilesRequest) -> Result<Planned> {
             }
         }
     }
+    let n_items = items.len() as u64;
     for (index, item) in items.iter().enumerate() {
+        progress.report(index as u64, Some(n_items), &format!("checking destinations: {} of {} ({} file(s) so far): {}", thousands(index as u64 + 1), thousands(n_items), thousands(files.len() as u64), item.game_name)).await;
         let platform = apply_combine(item.platform, &combine);
         let release_name = item.release_id.and_then(|r| release_names.get(&r)).map(String::as_str).unwrap_or("");
         let own: Vec<(Vec<String>, PathBuf)> = match item.game {

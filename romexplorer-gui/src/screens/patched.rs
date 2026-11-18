@@ -306,6 +306,14 @@ fn PatchLinks() -> Element {
     };
     let mut picked = use_signal(Vec::<u64>::new);
     let page_ids: Vec<u64> = items.iter().map(|l| u(l, "id")).collect();
+    // The bulk change running (it answers when done): its button says so, and all four wait.
+    let mut working = use_signal(|| None::<(&'static str, bool)>);
+    let label = move |action: &'static str, all: bool, idle: String| -> String {
+        match working() {
+            Some(w) if w == (action, all) => state::tr(if action == "accept" { "Confirming the base links…" } else { "Unlinking the releases…" }),
+            _ => idle,
+        }
+    };
     let bulk = move |action: &'static str, all: bool, n: u64| {
         let ids = picked();
         spawn(async move {
@@ -315,7 +323,10 @@ fn PatchLinks() -> Element {
                     return;
                 }
             }
-            match api::post("/api/v1/catalog/base-links/bulk", json!({ "action": action, "ids": if all { Vec::new() } else { ids }, "all": all })).await {
+            working.set(Some((action, all)));
+            let answer = api::post("/api/v1/catalog/base-links/bulk", json!({ "action": action, "ids": if all { Vec::new() } else { ids }, "all": all })).await;
+            working.set(None);
+            match answer {
                 Ok(r) => {
                     let done = u(&r, "changed").to_string();
                     ui::toast(if action == "accept" { state::trf("confirmed {n} link(s)", &[("n", &done)]) } else { state::trf("unlinked {n} release(s)", &[("n", &done)]) }, false);
@@ -349,14 +360,14 @@ fn PatchLinks() -> Element {
                         onchange: { let page_ids = page_ids.clone(); move |e: Event<FormData>| picked.set(if e.checked() { page_ids.clone() } else { Vec::new() }) } }
                     " " {state::tr("select this page")}
                 }
-                button { class: "btn small primary", disabled: picked().is_empty(), onclick: move |_| bulk("accept", false, 0), {state::tr("confirm selected")} }
+                button { class: "btn small primary", disabled: picked().is_empty() || working().is_some(), onclick: move |_| bulk("accept", false, 0), {label("accept", false, state::tr("confirm selected"))} }
                 " "
-                button { class: "btn small", disabled: picked().is_empty(), onclick: move |_| bulk("reject", false, 0), {state::tr("unlink selected")} }
+                button { class: "btn small", disabled: picked().is_empty() || working().is_some(), onclick: move |_| bulk("reject", false, 0), {label("reject", false, state::tr("unlink selected"))} }
                 span { class: "spacer" }
                 if st == "suggested" && search().is_empty() {
-                    button { class: "btn small", onclick: move |_| bulk("accept", true, total), {state::trf("confirm all {n}", &[("n", &total.to_string())])} }
+                    button { class: "btn small", disabled: working().is_some(), onclick: move |_| bulk("accept", true, total), {label("accept", true, state::trf("confirm all {n}", &[("n", &total.to_string())]))} }
                     " "
-                    button { class: "btn small", onclick: move |_| bulk("reject", true, total), {state::trf("unlink all {n}", &[("n", &total.to_string())])} }
+                    button { class: "btn small", disabled: working().is_some(), onclick: move |_| bulk("reject", true, total), {label("reject", true, state::trf("unlink all {n}", &[("n", &total.to_string())]))} }
                 }
             }
         }

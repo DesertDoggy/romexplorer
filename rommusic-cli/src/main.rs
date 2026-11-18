@@ -151,15 +151,24 @@ fn run() -> i32 {
             }
         }
     }
+    let mut printer = Printer::default();
     if !a.o.originals.is_empty() {
         eprintln!("reading the original-format music sets in {}", a.o.originals.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
     }
-    let library = rommusic::load_library(&a.o.originals, &mut |_| {});
+    let library = rommusic::load_library(&a.o.originals, &mut |event| printer.event(event));
+    printer.clear();
     let cancel = AtomicBool::new(false);
     let mut failed = 0;
     let folders = rommusic::music_folders(&a.inputs, &a.o);
-    for (input, folder) in a.inputs.iter().zip(&folders) {
-        let result = if a.list { list(input, folder, &a.o, library.as_ref()) } else { rommusic::process(input, folder, &a.o, library.as_ref(), &cancel, &mut print_event) };
+    let total = a.inputs.len();
+    for (n, (input, folder)) in a.inputs.iter().zip(&folders).enumerate() {
+        let name = input.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| input.display().to_string());
+        printer.input = format!("input {} of {total}: {name}", n + 1);
+        if !a.list {
+            println!("[{}/{total}] {name}: looking for music", n + 1);
+        }
+        let result = if a.list { list(input, folder, &a.o, library.as_ref(), &mut printer) } else { rommusic::process(input, folder, &a.o, library.as_ref(), &cancel, &mut |event| printer.event(event)) };
+        printer.clear();
         if let Err(e) = result {
             eprintln!("{}: {e}", input.display());
             failed += 1;
@@ -168,8 +177,9 @@ fn run() -> i32 {
     finish(i32::from(failed > 0))
 }
 
-fn list(input: &std::path::Path, folder: &std::path::Path, o: &Options, library: Option<&romexplorer::rom::rip_match::Library>) -> Result<(), String> {
-    let plan = rommusic::prepare(input, o, library)?;
+fn list(input: &std::path::Path, folder: &std::path::Path, o: &Options, library: Option<&romexplorer::rom::rip_match::Library>, printer: &mut Printer) -> Result<(), String> {
+    let plan = rommusic::prepare_with(input, o, library, &mut |event| printer.event(event))?;
+    printer.clear();
     println!("{} -> {}", input.display(), folder.display());
     for (n, job) in plan.jobs.iter().enumerate() {
         println!("  {:02}  {}", n + 1, job.describe());
@@ -177,19 +187,92 @@ fn list(input: &std::path::Path, folder: &std::path::Path, o: &Options, library:
     Ok(())
 }
 
-fn print_event(event: Event) {
-    match event {
-        Event::Found { input, folder, .. } => println!("{} -> {}", input.display(), folder.display()),
-        Event::TrackStarted { number, total, name } => {
-            let width = if total >= 100 { 3 } else { 2 };
-            print!("  {number:0width$} {name} ... ");
+/// What a run prints: finished lines on stdout, and one status line on stderr rewritten in
+/// place (`\r`) while something long goes on.
+#[derive(Default)]
+struct Printer {
+    /// "input 2 of 9: name.chd", ahead of what it is doing.
+    input: String,
+    /// Characters on the status line now.
+    width: usize,
+    /// "  03 name ... ", while that track is being written.
+    track: Option<String>,
+}
+
+impl Printer {
+    /// Kept short of a usual console's width: a wrapped line cannot be rewritten in place.
+    const MAX: usize = 110;
+
+    fn status(&mut self, text: &str) {
+        let text: String = if text.chars().count() > Self::MAX { text.chars().take(Self::MAX - 1).chain(std::iter::once('…')).collect() } else { text.to_string() };
+        let shown = text.chars().count();
+        eprint!("\r{text}{:pad$}", "", pad = self.width.saturating_sub(shown));
+        self.width = shown;
+        let _ = std::io::stderr().flush();
+    }
+
+    fn clear(&mut self) {
+        if self.width > 0 {
+            eprint!("\r{:pad$}\r", "", pad = self.width);
+            let _ = std::io::stderr().flush();
+            self.width = 0;
+        }
+    }
+
+    /// The track line, ending in `tail` ("42%", "encoding FLAC"), rewritten in place.
+    fn track(&mut self, tail: &str) {
+        if let Some(prefix) = &self.track {
+            print!("\r{prefix}{tail}      ");
             let _ = std::io::stdout().flush();
         }
-        Event::TrackWritten { ms, .. } => println!("{}", rommusic::length(ms)),
-        Event::TrackFailed { error, .. } => println!("failed: {error}"),
-        Event::OriginalsWritten { count, folder } => println!("  {count} original file(s) in {}", folder.display()),
-        Event::NoOriginals => println!("  (no original files: CD audio and music sequenced in a cartridge have none)"),
-        Event::Library { .. } | Event::Reading { .. } | Event::TrackProgress { .. } => {}
+    }
+
+    fn event(&mut self, event: Event) {
+        let n = rommusic::thousands;
+        match event {
+            Event::LibraryListing { found } => self.status(&format!("walking original-format folders: {} set(s) found so far", n(found))),
+            Event::Library { done, total, set: Some(set) } => self.status(&format!("reading original-format music sets: {} of {} ({set})", n(done + 1), n(total))),
+            Event::Library { set: None, .. } => self.clear(),
+            Event::Probing { file, count, .. } => {
+                let input = self.input.clone();
+                self.status(&format!("{input} - probing {}: {file}", n(count)));
+            }
+            Event::Running { second, of } => {
+                let input = self.input.clone();
+                self.status(&format!("{input} - running the game to start its music: {second} of {of} s"));
+            }
+            Event::Found { input, folder, .. } => {
+                self.clear();
+                println!("{} -> {}", input.display(), folder.display());
+            }
+            Event::TrackStarted { number, total, name } => {
+                self.clear();
+                let width = if total >= 100 { 3 } else { 2 };
+                let prefix = format!("  {number:0width$} {name} ... ");
+                print!("{prefix}");
+                let _ = std::io::stdout().flush();
+                self.track = Some(prefix);
+            }
+            Event::TrackProgress { fraction, .. } => self.track(&format!("{:.0}%", fraction * 100.0)),
+            Event::TrackEncoding { .. } => self.track("encoding FLAC"),
+            Event::TrackWritten { ms, .. } => {
+                // Padded over whatever the line said last ("encoding FLAC").
+                println!("\r{}{}{:20}", self.track.take().unwrap_or_default(), rommusic::length(ms), "");
+            }
+            Event::TrackFailed { error, .. } => {
+                println!("\r{}failed: {error}{:20}", self.track.take().unwrap_or_default(), "");
+            }
+            Event::Copying { number, total, name, bytes } => self.status(&format!("copying original files: {} of {} ({name}, {})", n(number), n(total), rommusic::size(bytes))),
+            Event::OriginalsWritten { count, folder } => {
+                self.clear();
+                println!("  {count} original file(s) in {}", folder.display());
+            }
+            Event::NoOriginals => {
+                self.clear();
+                println!("  (no original files: CD audio and music sequenced in a cartridge have none)");
+            }
+            Event::Reading { .. } => {}
+        }
     }
 }
 

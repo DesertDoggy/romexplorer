@@ -278,6 +278,11 @@ async fn serve(path: &str, query: &str) -> Result<Located, (u16, String)> {
             let served = api::audio::file(app, id, &Default::default()).await.map_err(from_api)?;
             read(served.path, served.mime).await
         }
+        // What a player waiting on a conversion asks (`rxPlayer`'s "waiting for another").
+        ["api", "v1", "audio", "converting"] => {
+            let body = serde_json::to_vec(&api::audio_convert::status()).unwrap_or_default();
+            Ok(Located::Memory(api::audio_ram::Bytes::from(body), "application/json"))
+        }
         ["api", "v1", "audio", "rom", id, "file"] => {
             let id: u64 = id.parse().map_err(|_| (400u16, "audio id must be a number".to_string()))?;
             // Decoded out of the ROM on its first play, then read from the audio cache.

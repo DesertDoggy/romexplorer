@@ -289,6 +289,38 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
                 return Err(Error::invalid("scan_hashes: at least one of crc32, md5, sha1 must stay on -- those are the hashes DATs are matched by"));
             }
         }
+        db_settings::KEY_ARCHIVE_HASHES => {
+            let map = value.as_object().ok_or_else(|| Error::invalid("archive_hashes must be an object algorithm -> true/false"))?;
+            for (algorithm, on) in map {
+                if !ARCHIVE_HASH_ALGORITHMS.contains(&algorithm.as_str()) {
+                    return Err(Error::invalid(format!("archive_hashes: {algorithm} must be one of {}", ARCHIVE_HASH_ALGORITHMS.join(", "))));
+                }
+                if !on.is_boolean() {
+                    return Err(Error::invalid(format!("archive_hashes: {algorithm} must be true or false")));
+                }
+            }
+            // Keys left out keep their defaults (sha1 and xxh3_128 on, the rest off).
+            let on = |k: &str| map.get(k).and_then(|v| v.as_bool()).unwrap_or(matches!(k, "sha1" | "xxh3_128"));
+            if !ARCHIVE_HASH_ALGORITHMS.iter().any(|k| on(k)) {
+                return Err(Error::invalid("archive_hashes: at least one hash must stay on"));
+            }
+        }
+        db_settings::KEY_ARCHIVE_CONTENT_HASHES => {
+            let map = value.as_object().ok_or_else(|| Error::invalid("archive_content_hashes must be an object algorithm -> true/false"))?;
+            for (algorithm, on) in map {
+                if !ARCHIVE_HASH_ALGORITHMS.contains(&algorithm.as_str()) {
+                    return Err(Error::invalid(format!("archive_content_hashes: {algorithm} must be one of {}", ARCHIVE_HASH_ALGORITHMS.join(", "))));
+                }
+                if !on.is_boolean() {
+                    return Err(Error::invalid(format!("archive_content_hashes: {algorithm} must be true or false")));
+                }
+            }
+            // As `scan_hashes`: what is inside an archive is what DATs match.
+            let on = |k: &str| map.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+            if !(on("crc32") || on("md5") || on("sha1")) {
+                return Err(Error::invalid("archive_content_hashes: at least one of crc32, md5, sha1 must stay on -- those are the hashes DATs are matched by"));
+            }
+        }
         db_settings::KEY_SCAN_HEURISTICS => {
             let map = value.as_object().ok_or_else(|| Error::invalid("scan_heuristics must be an object {\"ext\": bool, \"path\": bool}"))?;
             for (key, on) in map {
@@ -717,6 +749,8 @@ pub fn validate(key: &str, value: &Value) -> Result<()> {
 
 /// The six `hashes.algorithm` values, as `scan_hashes` names them.
 pub const SCAN_HASH_ALGORITHMS: [&str; 6] = ["crc32", "xxh3_128", "md5", "sha1", "sha256", "ra_hash"];
+/// The five `archive_hashes` names (no ra_hash: that is a ROM's, not a file's).
+pub const ARCHIVE_HASH_ALGORITHMS: [&str; 5] = ["crc32", "xxh3_128", "md5", "sha1", "sha256"];
 
 pub const UI_COLOR_KINDS: [&str; 6] = ["category", "platform", "region", "language", "source", "archive_format"];
 pub const UI_ICON_KINDS: [&str; 4] = ["platform", "region", "language", "source"];

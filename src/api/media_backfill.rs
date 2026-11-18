@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use sqlx::Row;
 
-use crate::database::jobs::Progress;
+use crate::database::jobs::{self, Progress};
 use crate::database::providers::igdb_localized;
 use crate::database::providers::media::{self, Attached, MediaTarget};
 use crate::database::providers::raw_store::RawStore;
@@ -201,12 +201,30 @@ async fn restore_missing_files(app: &App, request: &MediaBackfillRequest, summar
     }
     let rows = query.fetch_all(&app.pool).await?;
     let roots = crate::database::media_store::Roots::load(&app.pool, &app.paths.media_dir()).await?;
-    let mut missing = Vec::new();
+    let mut files: Vec<(u64, std::path::PathBuf)> = Vec::with_capacity(rows.len());
     for row in &rows {
-        let path = roots.resolve(row.try_get::<Option<String>, _>("root_role")?.as_deref(), &row.try_get::<String, _>("path")?);
-        if !path.is_file() {
-            missing.push(row.try_get::<u64, _>("id")?);
-        }
+        files.push((row.try_get::<u64, _>("id")?, roots.resolve(row.try_get::<Option<String>, _>("root_role")?.as_deref(), &row.try_get::<String, _>("path")?)));
+    }
+    // A stat each, a few hundred at a time on the blocking pool and several batches at once:
+    // on a network share one at a time was the slow part of a run with nothing missing.
+    use futures_util::StreamExt;
+    const BATCH: usize = 256;
+    let th = crate::database::jobs::thousands;
+    let checked_total = files.len() as u64;
+    let mut checked = 0u64;
+    let mut missing = Vec::new();
+    let batches: Vec<Vec<(u64, std::path::PathBuf)>> = files.chunks(BATCH).map(<[_]>::to_vec).collect();
+    let mut stats = futures_util::stream::iter(batches.into_iter().map(|batch| tokio::task::spawn_blocking(move || {
+        let n = batch.len() as u64;
+        (n, batch.into_iter().filter(|(_, path)| !path.is_file()).map(|(id, _)| id).collect::<Vec<u64>>())
+    })))
+    .buffered(8);
+    progress.force(0, Some(checked_total), &format!("checking art files on disk: 0 of {}", th(checked_total))).await;
+    while let Some(batch) = stats.next().await {
+        let (n, gone) = batch.map_err(|e| Error::internal(format!("media_backfill: checking art files: {e}")))?;
+        checked += n;
+        missing.extend(gone);
+        progress.report(checked, Some(checked_total), &format!("checking art files on disk: {} of {} ({} missing)", th(checked), th(checked_total), th(missing.len() as u64))).await;
     }
     let total = missing.len() as u64;
     for (i, id) in missing.into_iter().enumerate() {
@@ -305,29 +323,51 @@ pub async fn run(app: &App, request: &MediaBackfillRequest, progress: &Progress)
         None => Some(0),
         Some(c) => c.strip_prefix("xlenore:").map(|id| id.parse().unwrap_or(0)),
     };
+    let mut steps = jobs::Steps::new(
+        progress,
+        &[
+            ("backfill_restore", "Putting back missing art files"),
+            ("backfill_serial", "PS1/PS2 covers by serial"),
+            ("backfill_tgdb", "Linking to TheGamesDB"),
+            ("backfill_entries", "Art from linked providers"),
+        ],
+        &summary.scope,
+    );
     // A selection run is about new art for what was picked; putting back the whole
     // collection's missing files is the full run's business.
+    steps.start(1).await;
     if resume.is_none() && selected.is_none() {
         progress.force(0, None, "looking for art whose file is missing").await;
         restore_missing_files(app, request, &mut summary, progress).await?;
         progress.save_checkpoint("xlenore:0").await;
+        steps.done(format!("{} put back", summary.restored)).await;
+    } else {
+        steps.done(if resume.is_some() { "done in an earlier run".to_string() } else { "not for a selection".to_string() }).await;
     }
     // Covers by serial before the providers: a free source, and where it ranks above them
     // what it gives is not then fetched from a provider as well.
     let serial_asked = request.providers.iter().any(|p| p == xlenore::NAME);
+    steps.start(2).await;
     if let Some(from) = serial_from.filter(|_| request.providers.is_empty() || serial_asked) {
+        progress.force(0, None, "PS1/PS2 covers by serial: finding releases with a serial").await;
+        let before = summary.downloaded;
         serial_covers(app, request, selected.as_deref(), &ask, from, &mut summary, progress).await?;
         progress.save_checkpoint("entries:").await;
+        steps.done(format!("{} release(s), {} downloaded", summary.serial_releases, summary.downloaded - before)).await;
+    } else {
+        steps.done(if serial_from.is_none() { "done in an earlier run".to_string() } else { "not asked".to_string() }).await;
     }
     if serial_asked && request.providers.iter().all(|p| p == xlenore::NAME) {
         if summary.serial_releases == 0 {
             summary.stopped = Some("no PS1 or PS2 release in scope has a serial to look its cover up by".to_string());
         }
+        steps.finish();
         return Ok(summary);
     }
     // TheGamesDB asked for: link what is in scope from its free dump first, each release to
     // its own region's entry -- so a set needs no sync of its own, and no allowance is spent
     // linking. A per-platform sync would cost a call per 20 games of the whole platform.
+    steps.start(3).await;
     if ask.is_asked() && request.providers.iter().any(|p| p == Provider::TheGamesDb.name()) {
         progress.force(0, None, "linking to TheGamesDB from its dump").await;
         let ids: Vec<u64> = match &selected {
@@ -342,13 +382,18 @@ pub async fn run(app: &App, request: &MediaBackfillRequest, progress: &Progress)
         };
         let regions = crate::database::providers::thegamesdb_region::TgdbRegions::load(&app.clients(), &app.paths.provider_cache_dir()).await?;
         let priority = settings::region_priority(&app.pool).await?;
-        let (linked, cached) = crate::database::providers::thegamesdb_region::link_releases(&app.pool, &regions, &priority, &ids).await?;
+        let (linked, cached) = crate::database::providers::thegamesdb_region::link_releases(&app.pool, &regions, &priority, &ids, progress).await?;
         if !cached {
             summary.stopped = Some("TheGamesDB's game list isn't downloaded here yet: run a thegamesdb \"full\" sync once (Jobs › Metadata request) -- it is its free dump and uses no allowance".to_string());
+            steps.finish();
             return Ok(summary);
         }
         summary.linked = linked;
+        steps.done(format!("{linked} release(s) linked")).await;
+    } else {
+        steps.done("not asked".to_string()).await;
     }
+    steps.start(4).await;
     progress.force(0, None, "finding linked releases").await;
     let (releases, entries) = entries(app, request, selected.as_deref()).await?;
     summary.releases = releases;
@@ -362,6 +407,7 @@ pub async fn run(app: &App, request: &MediaBackfillRequest, progress: &Progress)
         };
         let how = if request.providers.iter().any(|p| p == Provider::TheGamesDb.name()) { "no name matched TheGamesDB's list: link them by hand on the release page" } else { "run a sync of it (Jobs › Metadata request) or link them by hand first" };
         summary.stopped = Some(format!("{what} is linked to {which}: {how}"));
+        steps.finish();
         return Ok(summary);
     }
     let total = entries.len() as u64;
@@ -422,7 +468,8 @@ pub async fn run(app: &App, request: &MediaBackfillRequest, progress: &Progress)
                 }
             }
         }
-        progress.report(i as u64, Some(total), &format!("{} of {total} provider entries ({releases} release(s)), {} downloaded", i + 1, summary.downloaded)).await;
+        let th = crate::database::jobs::thousands;
+        progress.report(i as u64, Some(total), &format!("entry {} of {}: {} {provider_id} ({} release(s)), {} downloaded", th(i as u64 + 1), th(total), provider.name(), targets.len(), th(summary.downloaded))).await;
         // Every few seconds, the entry before this one is done.
         if i > start && saved.elapsed() >= std::time::Duration::from_secs(5) {
             let ((p, id), _) = &entries[i - 1];
@@ -446,6 +493,8 @@ pub async fn run(app: &App, request: &MediaBackfillRequest, progress: &Progress)
             }
         }
     }
+    steps.done(format!("{} entries, {} downloaded, {} already here", summary.entries, summary.downloaded, summary.already)).await;
+    steps.finish();
     Ok(summary)
 }
 

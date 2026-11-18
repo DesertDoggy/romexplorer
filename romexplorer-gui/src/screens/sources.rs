@@ -52,7 +52,7 @@ pub fn ConfigSources() -> Element {
                 }
             }
             div { class: "toolbar",
-                button { class: "btn primary", onclick: move |_| source_dialog(None, EventHandler::new(move |_| bump(reload))), {state::tr("add source")} }
+                button { class: "btn primary", onclick: move |_| source_dialog(None, EventHandler::new(move |clear: Option<u64>| { bump(reload); if clear.is_some() { let mut watch = watch; watch.set(clear); } })), {state::tr("add source")} }
             }
             if let Some(id) = watch() { JobWatch { key: "{id}", job_id: id, on_done: refresh } }
             table { class: "grid",
@@ -149,7 +149,7 @@ fn SourceRow(source: RemoteSource, checks: Signal<HashMap<u16, String>>, watch: 
                     {state::tr("art")}
                 }
                 " "
-                span { class: "link", onclick: move |_| source_dialog(Some(edit_src.clone()), EventHandler::new(move |_| bump(reload))), {state::tr("edit")} }
+                span { class: "link", onclick: move |_| source_dialog(Some(edit_src.clone()), EventHandler::new(move |clear: Option<u64>| { bump(reload); if clear.is_some() { let mut watch = watch; watch.set(clear); } })), {state::tr("edit")} }
                 if source.tls_fingerprint.is_some() {
                     " "
                     span { class: "link", title: state::tr("after the other machine's certificate was replaced on purpose"),
@@ -323,7 +323,8 @@ fn MountDialog(source_id: u16, source_name: String, done: super::common::DoneFn)
 }
 
 /// Add (`None`) or edit a source.
-pub fn source_dialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) {
+/// `on_done` gets the `catalog_clear` job a save that replaced the catalogue queued, to follow.
+pub fn source_dialog(existing: Option<RemoteSource>, on_done: EventHandler<Option<u64>>) {
     ui::open_modal(move || rsx! { SourceDialog { existing: existing.clone(), on_done } });
 }
 
@@ -355,7 +356,7 @@ fn NetworkSources(on_pick: EventHandler<romexplorer_types::discovery::Found>) ->
 }
 
 #[component]
-fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> Element {
+fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<Option<u64>>) -> Element {
     let (id, has_token) = existing.as_ref().map(|s| (Some(s.id), s.has_token)).unwrap_or((None, false));
     let mut name = use_signal(|| existing.as_ref().map(|s| s.name.clone()).unwrap_or_default());
     let (address0, port0) = api::split_base(&existing.as_ref().map(|s| s.base_url.clone()).unwrap_or_default());
@@ -388,10 +389,10 @@ fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> El
                 }
             };
             match send(spec.clone()).await {
-                Ok(_) => {
+                Ok(saved) => {
                     ui::toast(state::tr("saved"), false);
                     ui::close_modal();
-                    on_done.call(());
+                    on_done.call(saved.clear_job);
                 }
                 // Designating a main server on a machine that built its own catalogue: the
                 // server refuses without consent and says what would be lost. Ask, then resend.
@@ -405,7 +406,8 @@ fn SourceDialog(existing: Option<RemoteSource>, on_done: EventHandler<()>) -> El
                         spec.media = media;
                         spawn_forever(async move {
                             match send(spec).await {
-                                Ok(_) => { ui::toast(state::tr("saved — the catalogue was cleared; run a sync now"), false); on_done.call(()); }
+                                // The clear runs as a job: the screen follows it where "add source" is.
+                                Ok(saved) => { ui::toast(state::tr("saved — clearing the catalogue; run a sync once it is done"), false); on_done.call(saved.clear_job); }
                                 Err(e) => ui::toast(e.message, true),
                             }
                         });

@@ -214,13 +214,12 @@ fn main() {
             .expect("couldn't start the async runtime");
         let guard = rt.enter();
 
-        let boot = match rt.block_on(boot::prepare()) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("romexplorer: {e}");
-                std::process::exit(1);
-            }
-        };
+        // The database, its updates and the worker start in the background while the window
+        // opens on a start screen saying which step is running (`Root`): an update with
+        // schema changes or data upgrades used to be minutes with no window at all. The
+        // screens themselves still mount only once it is done, so the pool exists before any
+        // `use_resource` fires (no Connect screen flash).
+        boot::start_in_background(&rt);
 
         // Quitting has to stop the worker and the bundled database -- nothing else owns them.
         // Not after `launch`: dioxus-desktop runs tao's event loop, whose `run` is `-> !` and
@@ -230,7 +229,7 @@ fn main() {
         // loop's last event before that exit. The shutdown runs on its own thread because this
         // one is inside the runtime's context, where `block_on` is not allowed.
         let handle = rt.handle().clone();
-        let mut boot = Some(boot);
+        let mut quitting = false;
         let cfg = dioxus::desktop::Config::new()
             .with_menu(None)
             // The window's own file-drop handler swallows HTML drag and drop on Windows (and
@@ -242,13 +241,15 @@ fn main() {
             .with_window(dioxus::desktop::WindowBuilder::new().with_title("romexplorer").with_inner_size(dioxus::desktop::LogicalSize::new(1400.0, 900.0)))
             .with_custom_event_handler(move |event, _| {
                 if let dioxus::desktop::tao::event::Event::LoopDestroyed = event {
-                    if let Some(boot) = boot.take() {
+                    if !std::mem::replace(&mut quitting, true) {
                         let handle = handle.clone();
-                        let _ = std::thread::spawn(move || handle.block_on(boot.shutdown())).join();
+                        // A start-up still running is waited for, so a database it is starting
+                        // is stopped rather than orphaned.
+                        let _ = std::thread::spawn(move || handle.block_on(boot::shutdown_when_settled(std::time::Duration::from_secs(120)))).join();
                     }
                 }
             });
-        dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+        dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(Root);
         // Unreachable (see above); kept alive until then by being in scope.
         drop(guard);
         drop(rt);
@@ -270,7 +271,59 @@ fn main() {
             }
             api::set_backend(Box::new(api::companion::CompanionBackend));
         }
-        dioxus::launch(App);
+        dioxus::launch(Root);
+    }
+}
+
+/// The desktop window's root: a start screen with what start-up is doing until it is done
+/// (`boot::start_in_background`), then the app. Elsewhere the app at once.
+#[component]
+fn Root() -> Element {
+    #[cfg(feature = "local")]
+    {
+        let mut line = use_signal(romexplorer::common::startup::current);
+        let mut stage = use_signal(|| None::<Result<(), String>>);
+        use_future(move || async move {
+            loop {
+                match boot::stage() {
+                    boot::Stage::Starting => {}
+                    boot::Stage::Ready => {
+                        stage.set(Some(Ok(())));
+                        return;
+                    }
+                    boot::Stage::Failed(e) => {
+                        stage.set(Some(Err(e)));
+                        return;
+                    }
+                }
+                let now = romexplorer::common::startup::current();
+                if *line.peek() != now {
+                    line.set(now);
+                }
+                ui::sleep(150).await;
+            }
+        });
+        match stage() {
+            Some(Ok(())) => {}
+            Some(Err(e)) => return rsx! { StartScreen { line: format!("Start-up failed: {e}"), failed: true } },
+            None => return rsx! { StartScreen { line: line().unwrap_or_else(|| "Starting".to_string()), failed: false } },
+        }
+    }
+    rsx! { App {} }
+}
+
+/// What the window shows while the database starts and updates: one line, the current step.
+/// English, like the log it mirrors: the UI language is a setting in the database that is
+/// not open yet.
+#[cfg(feature = "local")]
+#[component]
+fn StartScreen(line: String, failed: bool) -> Element {
+    rsx! {
+        document::Title { "romexplorer" }
+        div { style: "position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; font-family:system-ui, sans-serif; background:#11141c; color:#d7dbe6",
+            div { style: "font-size:22px; font-weight:600", "romexplorer" }
+            div { style: if failed { "color:#ff8a8a; max-width:80vw; text-align:center; white-space:pre-wrap" } else { "opacity:.8; max-width:80vw; text-align:center" }, "{line}" }
+        }
     }
 }
 

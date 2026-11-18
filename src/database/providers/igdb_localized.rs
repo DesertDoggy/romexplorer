@@ -188,6 +188,21 @@ pub async fn attach(
     ask: &Ask,
     linked: &[(Vec<MediaTarget>, &Game)],
 ) -> Result<u32, DatabaseError> {
+    attach_reporting(http, pool, media_dir, clients, root, ask, linked, &super::media::Reporting::none()).await
+}
+
+/// [`attach`], saying which title it is on ("localized covers 40 of 312").
+#[allow(clippy::too_many_arguments)]
+async fn attach_reporting(
+    http: &reqwest::Client,
+    pool: &MySqlPool,
+    media_dir: &Path,
+    clients: &ProviderClients,
+    root: &Path,
+    ask: &Ask,
+    linked: &[(Vec<MediaTarget>, &Game)],
+    report: &super::media::Reporting<'_>,
+) -> Result<u32, DatabaseError> {
     let rules = super::super::settings::MediaRules::load(pool).await?;
     if !ask.allows(&rules, Provider::Igdb.name(), "box", Some("front")) {
         return Ok(0);
@@ -197,13 +212,16 @@ pub async fn attach(
         return Ok(0);
     }
     if clients.is_available(Provider::Igdb) {
+        report.say(&format!("localized covers: asking IGDB for {} game(s)", crate::database::jobs::thousands(games.len() as u64))).await;
         if let Err(e) = prefetch(clients, root, &games).await {
             log::warn!("media: igdb localized covers: {e}");
         }
     }
     let priority = super::super::settings::region_priority(pool).await?;
     let mut made = 0u32;
-    for (targets, game) in linked {
+    let n = linked.len() as u64;
+    for (i, (targets, game)) in linked.iter().enumerate() {
+        report.say(&format!("localized covers {} of {} ({made} attached)", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(n))).await;
         let Some(covers) = cached(root, game.id).filter(|c| !c.is_empty()) else { continue };
         let mut by_url: Vec<(&str, Vec<MediaTarget>)> = Vec::new();
         for target in targets {
@@ -287,14 +305,16 @@ async fn refile(pool: &MySqlPool, media_dir: &Path, url: &str, provider_id: &str
 }
 
 /// [`attach`] for the titles a sync just linked, each to every release of its title.
-pub async fn attach_for_titles(http: &reqwest::Client, pool: &MySqlPool, media_dir: &Path, clients: &ProviderClients, root: &Path, linked: &[(u64, &Game)]) -> Result<u32, DatabaseError> {
+pub async fn attach_for_titles(http: &reqwest::Client, pool: &MySqlPool, media_dir: &Path, clients: &ProviderClients, root: &Path, linked: &[(u64, &Game)], report: &super::media::Reporting<'_>) -> Result<u32, DatabaseError> {
     let mut targeted = Vec::new();
-    for (title_id, game) in linked {
+    let n = linked.len() as u64;
+    for (i, (title_id, game)) in linked.iter().enumerate() {
+        report.say(&format!("localized covers: finding releases, title {} of {}", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(n))).await;
         if game.game_localizations.as_ref().is_some_and(|l| !l.is_empty()) {
             targeted.push((super::media::release_targets(pool, *title_id, Provider::Igdb, &game.id.to_string()).await?, *game));
         }
     }
-    attach(http, pool, media_dir, clients, root, &Ask::Auto, &targeted).await
+    attach_reporting(http, pool, media_dir, clients, root, &Ask::Auto, &targeted, report).await
 }
 
 #[cfg(test)]

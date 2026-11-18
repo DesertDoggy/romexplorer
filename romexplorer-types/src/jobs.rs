@@ -11,7 +11,7 @@ pub enum JobType {
     MediaDownload,
     ProviderQuery,
     ProviderBulkSync,
-    /// Payload: `{"directory_id": u64, "mode": "full"|"new_only"|"rehash", "platform":
+    /// Payload: `{"directory_id": u64, "mode": "full"|"new_only"|"changed"|"rehash", "platform":
     /// "all"|<app_platform_id>}` (see `FileScanMode`). One job type, not three --
     /// full/new-only/rehash are payload modes of the same `FileScan`, never separate
     /// `JobType` variants, since they're one capability family distinguished only by how
@@ -123,10 +123,17 @@ pub enum JobType {
     /// banks and records each track, so a title page can play them like a CD player.
     /// Payload: [`RomAudioIndexRequest`].
     RomAudioIndex,
+    /// Throws this machine's catalogue away so a main server's can take its place
+    /// (`api::sources::clear_catalog`), queued by a save that designates a main server or
+    /// switches to client mode. Payload `{"source_id": u16, "media": "relink"|"redownload"}`.
+    CatalogClear,
+    /// Reads a collection-sets file into this catalogue (`api::set_file::import`), entry by
+    /// entry. Payload: `{"file": <sets file>, "names": [..]}`.
+    SetImport,
 }
 
 impl JobType {
-    pub const ALL: [JobType; 38] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate, JobType::RomAudioIndex];
+    pub const ALL: [JobType; 40] = [JobType::DatSync, JobType::MediaDownload, JobType::ProviderQuery, JobType::ProviderBulkSync, JobType::FileScan, JobType::HashMatch, JobType::DbOptimize, JobType::PlaymatchFill, JobType::MediaRelayout, JobType::RaAccountSync, JobType::RaGenreFetch, JobType::TitleDedupe, JobType::IgdbReapply, JobType::RaPatchDownload, JobType::TitleMergeAudit, JobType::BackupDatabase, JobType::BackupCatalog, JobType::BackupDatSeed, JobType::CatalogSync, JobType::MediaSync, JobType::RestoreBackup, JobType::SqliteExport, JobType::SqliteImport, JobType::CopyFiles, JobType::IntegrityCheck, JobType::SheetCreate, JobType::SheetVerify, JobType::M3uVerify, JobType::AudioScan, JobType::AudioSync, JobType::MediaBackfill, JobType::RaBadges, JobType::DictionaryBuild, JobType::AudioAutotag, JobType::DisplayData, JobType::ArtworkExport, JobType::AiBatchRate, JobType::RomAudioIndex, JobType::CatalogClear, JobType::SetImport];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -168,6 +175,8 @@ impl JobType {
             Self::ArtworkExport => "artwork_export",
             Self::AiBatchRate => "ai_batch_rate",
             Self::RomAudioIndex => "rom_audio_index",
+            Self::CatalogClear => "catalog_clear",
+            Self::SetImport => "set_import",
         }
     }
 
@@ -223,18 +232,22 @@ pub enum FileScanMode {
     /// Same walk as `Full`, but skips any path whose `files` row already exists and isn't
     /// soft-deleted -- only genuinely new (or revived) files get hashed.
     NewOnly,
+    /// Same walk as `NewOnly`, and also reads a recorded file whose size or modified time
+    /// differs from its row -- a file replaced or edited under the same name.
+    Changed,
     /// No directory walk at all: re-reads and rehashes every existing, non-deleted
     /// `files` row already under the directory.
     Rehash,
 }
 
 impl FileScanMode {
-    pub const ALL: [FileScanMode; 3] = [FileScanMode::Full, FileScanMode::NewOnly, FileScanMode::Rehash];
+    pub const ALL: [FileScanMode; 4] = [FileScanMode::Full, FileScanMode::NewOnly, FileScanMode::Changed, FileScanMode::Rehash];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Full => "full",
             Self::NewOnly => "new_only",
+            Self::Changed => "changed",
             Self::Rehash => "rehash",
         }
     }
@@ -266,6 +279,10 @@ pub struct JobRow {
     pub claimed_at: Option<NaiveDateTime>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    /// Seconds since it started: up to now while it runs, up to its end once finished; none
+    /// while it waits. The UIs show it, and the time left from it and the bar.
+    #[serde(default)]
+    pub elapsed_secs: Option<u64>,
     /// 0 = background; higher first, in the lane's fast slot.
     pub priority: u16,
     /// Waits its turn: starts only when nothing else is running or waiting, rather than

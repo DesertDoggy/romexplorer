@@ -388,6 +388,7 @@ pub async fn run(app: &App, source_id: Option<u16>, progress: &Progress) -> Resu
     let rules = crate::database::settings::MediaRules::load(&app.pool).await?;
     let is_client = crate::database::settings::instance_mode(&app.pool).await? == crate::database::settings::InstanceMode::Client;
 
+    progress.force(0, None, &format!("{}: reading the server's art list", source.name)).await;
     let rows: Vec<RemoteRow> = sqlx::query("SELECT id, media_type, sub_category, source, provider_id, source_url, content_sha1, path FROM remote_media WHERE source_id = ? AND deleted = FALSE ORDER BY id")
         .bind(source_id)
         .fetch_all(&app.pool)
@@ -409,7 +410,27 @@ pub async fn run(app: &App, source_id: Option<u16>, progress: &Progress) -> Resu
     let total = rows.len() as u64;
     progress.force(0, Some(total.max(1)), &format!("{}: {total} art row(s) on the server{}", source.name, if is_online { "" } else { " (offline -- fetching from providers)" })).await;
 
+    let th = crate::database::jobs::thousands;
     for (i, row) in rows.iter().enumerate() {
+        // Every row, whatever becomes of it: most are already here, and a run of those used
+        // to leave the row on the last fetch for minutes.
+        progress
+            .report(
+                i as u64,
+                Some(total),
+                &format!(
+                    "{}: art {} of {}: {} fetched, {} already here, {} not available{}{}",
+                    source.name,
+                    th(i as u64 + 1),
+                    th(total),
+                    th(summary.from_server + summary.from_provider),
+                    th(summary.already_held + summary.linked_existing),
+                    th(summary.failed),
+                    if summary.streamed_only > 0 { format!(", {} left to stream", th(summary.streamed_only)) } else { String::new() },
+                    if summary.bytes > 0 { format!(" ({})", crate::database::jobs::human_bytes(summary.bytes)) } else { String::new() }
+                ),
+            )
+            .await;
         summary.considered += 1;
         if is_client && !rules.keeps(&row.media_type) {
             summary.streamed_only += 1;
@@ -437,7 +458,6 @@ pub async fn run(app: &App, source_id: Option<u16>, progress: &Progress) -> Resu
 
         let Some((Fetched { bytes, content_type }, origin)) = obtain(app, &source, is_online, fallback, row).await? else {
             summary.failed += 1;
-            progress.report(i as u64 + 1, Some(total), &format!("{}: {} fetched, {} not available", source.name, summary.from_server + summary.from_provider, summary.failed)).await;
             continue;
         };
 
@@ -495,13 +515,6 @@ pub async fn run(app: &App, source_id: Option<u16>, progress: &Progress) -> Resu
             }
             Origin::Provider => summary.from_provider += 1,
         }
-        progress
-            .report(
-                i as u64 + 1,
-                Some(total),
-                &format!("{}: {} from the server, {} from providers, {} not available -- {}", source.name, summary.from_server, summary.from_provider, summary.failed, crate::database::jobs::human_bytes(summary.bytes)),
-            )
-            .await;
     }
     progress
         .force(

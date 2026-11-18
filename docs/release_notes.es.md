@@ -8,6 +8,33 @@ Haz una copia de seguridad antes de sustituir una versión.
 
 ## Cambios
 
+**Escaneo**
+- Se añadió «Escaneo rápido (cambiados)»: también lee los archivos que cambiaron de tamaño o fecha.
+- Los hashes del escaneo se ajustan por separado para archivos normales, archivos comprimidos y su contenido. Los archivos comprimidos usan sha1 y xxh3_128 por defecto.
+
+**Copia**
+- Una copia iniciada de nuevo comprueba varios archivos ya presentes en el destino a la vez.
+
+**Listas**
+- Las vistas de tarjetas con muchas entradas se abren y desplazan más rápido.
+
+**Progreso**
+- Cada tarea muestra lo que está haciendo, el total y cuánto lleva, también al recorrer carpetas, en las comprobaciones y en los pasos de la base de datos.
+- Las tareas con varios pasos muestran la lista de pasos.
+- Las tareas tienen el botón «detalles».
+- Las tareas en curso muestran el tiempo transcurrido y el restante.
+- Las descargas grandes y las comprobaciones de archivos muestran cuánto se ha leído.
+- Vaciar el catálogo e importar un archivo de colecciones se ejecutan como tareas.
+- La aplicación de escritorio muestra lo que está haciendo mientras arranca.
+
+**Audio**
+- Se pueden convertir varias pistas a la vez para reproducirlas.
+
+## Correcciones
+
+- El progreso del escaneo de audio se detenía mientras medía el volumen.
+- El progreso del índice de música de las ROM solo avanzaba cada 500 ROM.
+
 # romexplorer 0.2.2 (alpha)
 
 Alfa: el esquema de la base de datos puede cambiar entre versiones sin forma de actualizarlo.

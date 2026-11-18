@@ -5,6 +5,8 @@ chdlite is released separately from romexplorer; these notes cover chdlite only.
 ## Changes
 
 - **RetroAchievements.** The list ships as assets/radb.bin and can be replaced with a newer one.
+- **Progress.** Shows each file's step and size, and every file running at once.
+- Searching folders, checking formats and planning outputs show their progress and run faster.
 
 # chdlite 0.3.3
 

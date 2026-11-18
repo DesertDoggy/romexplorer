@@ -8,6 +8,33 @@ Faites une sauvegarde avant de remplacer une version.
 
 ## Changements
 
+**Analyse**
+- Ajout de « Analyse rapide (modifiés) » : elle lit aussi les fichiers dont la taille ou la date a changé.
+- Les hash de l'analyse se règlent séparément pour les fichiers ordinaires, les fichiers d'archive et le contenu des archives. Les fichiers d'archive utilisent sha1 et xxh3_128 par défaut.
+
+**Copie**
+- Une copie relancée vérifie plusieurs fichiers déjà présents à la destination à la fois.
+
+**Listes**
+- Les vues en cartes avec beaucoup d'entrées s'ouvrent et défilent plus vite.
+
+**Progression**
+- Chaque tâche indique ce qu'elle fait, le total et où elle en est, y compris pendant le parcours des dossiers, les vérifications et les étapes de base de données.
+- Les tâches en plusieurs étapes listent leurs étapes.
+- Les tâches ont un bouton « détails ».
+- Les tâches en cours indiquent le temps écoulé et le temps restant.
+- Les gros téléchargements et les vérifications de fichiers indiquent la quantité déjà lue.
+- Vider le catalogue et importer un fichier de collections s'exécutent comme des tâches.
+- L'application de bureau indique ce qu'elle fait pendant son démarrage.
+
+**Audio**
+- Plusieurs pistes peuvent être converties en même temps pour la lecture.
+
+## Corrections
+
+- La progression de l'analyse audio s'arrêtait pendant la mesure du volume sonore.
+- La progression de l'index de musique des ROM n'avançait que toutes les 500 ROM.
+
 # romexplorer 0.2.2 (alpha)
 
 Alpha : le schéma de la base de données peut changer d'une version à l'autre sans mise à niveau.

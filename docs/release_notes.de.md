@@ -8,6 +8,33 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
+**Scan**
+- „Schneller Scan (geänderte)“ wurde hinzugefügt: Er liest auch Dateien, deren Größe oder Datum sich geändert hat.
+- Die Scan-Hashes werden getrennt für normale Dateien, Archivdateien und den Inhalt von Archiven eingestellt. Archivdateien nutzen standardmäßig sha1 und xxh3_128.
+
+**Kopieren**
+- Eine erneut gestartete Kopie prüft die schon am Ziel liegenden Dateien mehrere auf einmal.
+
+**Listen**
+- Kartenansichten mit vielen Einträgen öffnen und scrollen schneller.
+
+**Fortschritt**
+- Jeder Job zeigt, was er gerade tut, die Gesamtzahl und wie weit er ist, auch beim Durchsuchen von Ordnern, bei Prüfungen und Datenbankschritten.
+- Jobs aus mehreren Schritten listen ihre Schritte auf.
+- Jobs haben die Schaltfläche „Details“.
+- Laufende Jobs zeigen die bisherige und die verbleibende Zeit.
+- Große Downloads und Dateiprüfungen zeigen, wie viel schon gelesen ist.
+- Das Leeren des Katalogs und der Import einer Set-Datei laufen als Jobs.
+- Die Desktop-App zeigt beim Start, was sie gerade tut.
+
+**Audio**
+- Mehrere Titel können gleichzeitig für die Wiedergabe umgewandelt werden.
+
+## Fehlerbehebungen
+
+- Der Fortschritt des Audio-Scans stand still, während die Lautheit gemessen wurde.
+- Der Fortschritt des ROM-Musikindex bewegte sich nur alle 500 ROMs.
+
 # romexplorer 0.2.2 (alpha)
 
 Alpha: Das Datenbankschema kann sich zwischen Versionen ohne Upgrade-Möglichkeit ändern. Erstellen

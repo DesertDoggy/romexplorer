@@ -10,8 +10,8 @@ use std::sync::Mutex;
 
 use crate::batch::{self, Batch, BatchEvent, WORKER_FLAG};
 use crate::cart::{N64_FORMATS, NES_FORMATS, SNES_FORMATS};
-use crate::classify::expand;
-use crate::job::Mode;
+use crate::classify::{classify_all, expand_with, known, lossy_of};
+use crate::job::{Mode, Progress};
 use crate::settings::{CompMode, LitePreset, Settings, CUE_STYLES, GDROM_SHEETS, RVZ_BLOCKS, RVZ_CODECS};
 
 /// What the binary does with a bare path.
@@ -289,6 +289,43 @@ fn exe_name() -> String {
     std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase())).unwrap_or_else(|| "chdlite".to_string())
 }
 
+#[derive(Clone)]
+enum FileState {
+    Waiting,
+    Running(Progress),
+    Done,
+}
+
+/// The one status line under the printed output, rewritten in place with `\r`.
+#[derive(Default)]
+struct StatusLine {
+    /// Characters on it now, to blank out what a shorter line leaves behind.
+    width: Mutex<usize>,
+}
+
+impl StatusLine {
+    /// Kept short of a usual console's width: a wrapped line cannot be rewritten in place.
+    const MAX: usize = 110;
+
+    fn show(&self, text: &str) {
+        let text: String = if text.chars().count() > Self::MAX { text.chars().take(Self::MAX - 1).chain(std::iter::once('…')).collect() } else { text.to_string() };
+        let mut width = self.width.lock().unwrap();
+        let shown = text.chars().count();
+        eprint!("\r  {text}{:pad$}", "", pad = width.saturating_sub(shown));
+        *width = shown;
+        let _ = std::io::stderr().flush();
+    }
+
+    fn clear(&self) {
+        let mut width = self.width.lock().unwrap();
+        if *width > 0 {
+            eprint!("\r{:pad$}\r", "", pad = *width + 2);
+            let _ = std::io::stderr().flush();
+            *width = 0;
+        }
+    }
+}
+
 /// Runs the console tool and returns the process exit code: 0 on success, 1 when anything
 /// failed, 2 for a usage error.
 pub fn main(default: DefaultMode) -> i32 {
@@ -306,7 +343,7 @@ pub fn main(default: DefaultMode) -> i32 {
         println!("{}", crate::ra::list_summary());
         return 0;
     }
-    if let Err(err) = crate::natives::ensure() {
+    if let Err(err) = crate::natives::ensure_with(&|text| eprintln!("{name}: {text}")) {
         eprintln!("{name}: {err}");
         return finish(1);
     }
@@ -324,64 +361,96 @@ pub fn main(default: DefaultMode) -> i32 {
         eprintln!("{name}: no such file or directory: {}", missing.display());
         return finish(2);
     }
-    let inputs = expand(&parsed.paths);
+    let quiet = parsed.mode == Mode::Read;
+    let line = StatusLine::default();
+    let say = |text: &str| {
+        if !quiet {
+            line.show(text);
+        }
+    };
+    let inputs = expand_with(&parsed.paths, &say);
+    line.clear();
     if inputs.is_empty() {
         eprintln!("{name}: nothing to do -- no disc images, .chd, .rvz, .cso, .pbp, cartridge dumps or 3DS titles in what was given");
         return finish(2);
     }
+    let mut classified = std::collections::HashMap::new();
     if matches!(parsed.mode, Mode::Lite | Mode::Comp) && parsed.settings.output.lossy_warning {
-        let lossy: Vec<String> = crate::classify::lossy_targets(&inputs).into_iter().map(|(path, target)| format!("{} -> {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), target.label())).collect();
+        let kinds = classify_all(&inputs, &say);
+        line.clear();
+        let lossy: Vec<String> = lossy_of(&inputs, &kinds).into_iter().map(|(path, target)| format!("{} -> {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), target.label())).collect();
         if !lossy.is_empty() {
             eprintln!("{name}: warning: lossy, not for bit-perfect archiving (the disc image can't be got back): {}", lossy.join(", "));
         }
+        classified = known(&inputs, kinds);
     }
 
     let total = inputs.len();
     let label = |index: usize| inputs[index].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Workers even one at a time: Ctrl-C can then stop a CHD creation part-way and put back a
     // file it was replacing, rather than wait for it or leave half of it.
-    let batch = Batch { mode: parsed.mode, inputs: inputs.clone(), settings: parsed.settings, always_workers: true, ctrl_c_cancels: true };
-    // Per-file percent, for one status line under whatever has been printed so far.
-    let percents: Mutex<Vec<f32>> = Mutex::new(vec![0.0; total]);
-    let quiet = parsed.mode == Mode::Read;
-    let status = |percents: &[f32]| {
+    let batch = Batch { mode: parsed.mode, inputs: inputs.clone(), settings: parsed.settings, always_workers: true, ctrl_c_cancels: true, classified };
+    // Where each file is, for one status line under whatever has been printed so far.
+    let state: Mutex<Vec<FileState>> = Mutex::new(vec![FileState::Waiting; total]);
+    let status = |files: &[FileState]| {
         if quiet {
             return;
         }
-        let done = percents.iter().filter(|p| **p >= 100.0).count();
-        let overall = percents.iter().sum::<f32>() / total as f32;
-        eprint!("\r  {overall:5.1}%  {done}/{total} done ");
-        let _ = std::io::stderr().flush();
+        let running: Vec<usize> = files.iter().enumerate().filter(|(_, f)| matches!(f, FileState::Running(_))).map(|(i, _)| i).collect();
+        let done = files.iter().filter(|f| matches!(f, FileState::Done)).count();
+        let overall = files
+            .iter()
+            .map(|f| match f {
+                FileState::Waiting => 0.0,
+                FileState::Running(p) => p.percent.clamp(0.0, 99.9),
+                FileState::Done => 100.0,
+            })
+            .sum::<f32>()
+            / total as f32;
+        let text = match running.as_slice() {
+            [one] => {
+                let FileState::Running(progress) = &files[*one] else { unreachable!() };
+                format!("file {} of {total}: {} - {}", one + 1, label(*one), progress.describe())
+            }
+            [] => format!("{done} of {total} done · {overall:.0}%"),
+            several => format!("{} running · {done} of {total} done · {overall:.0}%", several.len()),
+        };
+        line.show(&text);
     };
-    let clear = || eprint!("\r{:40}\r", "");
     let cancel = AtomicBool::new(false);
     let failed = batch::run(&batch, &cancel, &|event| {
-        let mut percents = percents.lock().unwrap();
+        let mut files = state.lock().unwrap();
         match event {
-            BatchEvent::Started { .. } => {}
-            BatchEvent::Progress { index, percent } => {
-                percents[index] = percent.clamp(0.0, 99.9);
-                status(&percents);
+            BatchEvent::Status(text) => say(&text),
+            BatchEvent::Started { index } => {
+                files[index] = FileState::Running(Progress::default());
+                status(&files);
+            }
+            BatchEvent::Progress { index, progress } => {
+                files[index] = FileState::Running(progress);
+                status(&files);
             }
             BatchEvent::Message { index, text } => {
-                clear();
+                line.clear();
                 println!("[{}/{total}] {}: {text}", index + 1, label(index));
+                status(&files);
             }
             BatchEvent::Finished { index, result } => {
-                percents[index] = 100.0;
-                clear();
+                files[index] = FileState::Done;
+                line.clear();
                 match result {
                     // A multi-line result (read, hash) is a report of its own.
                     Ok(text) if text.contains('\n') => println!("{text}\n"),
                     Ok(text) => println!("[{}/{total}] {}: {text}", index + 1, label(index)),
                     Err(err) => println!("[{}/{total}] {}: FAILED: {err}", index + 1, label(index)),
                 }
-                if percents.iter().any(|p| *p < 100.0) {
-                    status(&percents);
+                if files.iter().any(|f| !matches!(f, FileState::Done)) {
+                    status(&files);
                 }
             }
         }
     });
+    line.clear();
     if total > 1 {
         println!("{} done, {failed} failed", total - failed);
     }

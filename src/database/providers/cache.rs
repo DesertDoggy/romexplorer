@@ -348,6 +348,12 @@ pub async fn link_for_content(pool: &MySqlPool, content_id: u64, provider: Provi
 /// is linked to takes the RA game whose hash it is. `scope`, an SQL list of directory ids,
 /// limits it to roms with a file there; `console` to one RA console. Returns links written.
 pub async fn link_ra_rom_hashes(pool: &MySqlPool, scope: Option<&str>, console: Option<u32>) -> Result<u64, DatabaseError> {
+    link_ra_rom_hashes_reporting(pool, scope, console, &crate::database::jobs::Progress::none()).await
+}
+
+/// [`link_ra_rom_hashes`] inside a job: says it is looking, then "linking 120 of 800".
+pub async fn link_ra_rom_hashes_reporting(pool: &MySqlPool, scope: Option<&str>, console: Option<u32>, progress: &crate::database::jobs::Progress) -> Result<u64, DatabaseError> {
+    progress.force(0, None, "RetroAchievements hashes: finding ROMs with a known RA hash").await;
     let mut sql = String::from(
         "SELECT DISTINCT lrg.release_id, rh.ra_game_id FROM local_rom_rahash lrr \
          JOIN hashes h ON h.id = lrr.hash_id AND h.algorithm = 'ra_hash' \
@@ -365,7 +371,9 @@ pub async fn link_ra_rom_hashes(pool: &MySqlPool, scope: Option<&str>, console: 
     }
     let rows: Vec<(u64, u32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(pool).await?;
     let mut links = 0;
-    for (release_id, ra_game_id) in rows {
+    let n = rows.len() as u64;
+    for (i, (release_id, ra_game_id)) in rows.into_iter().enumerate() {
+        progress.report(i as u64, Some(n), &format!("RetroAchievements hashes: linking {} of {}", crate::database::jobs::thousands(i as u64 + 1), crate::database::jobs::thousands(n))).await;
         link_release(pool, release_id, Provider::RetroAchievements, &ra_game_id.to_string(), Confidence::Exact).await?;
         links += 1;
     }

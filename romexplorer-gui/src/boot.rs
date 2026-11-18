@@ -84,14 +84,17 @@ pub async fn prepare() -> Result<Boot, Box<dyn std::error::Error>> {
             server_config = server_config.with_root_password(root);
         }
         let mut db = MariaDbServer::new(server_config);
+        romexplorer::common::startup::report("Starting the database");
         db.start().await?;
         eprintln!("started the bundled database on 127.0.0.1:{} (datadir {})", config.port, datadir.display());
         embedded = Some(db);
     }
 
+    romexplorer::common::startup::report("Opening the database");
     let app = App::open(paths.clone(), config.clone()).await?;
     let pool = app.pool.clone();
     romexplorer::database::warm::start(&pool, &stored, local_db);
+    romexplorer::common::startup::report("Starting the worker");
 
     let (stop_worker, stop_rx) = tokio::sync::watch::channel(false);
     let lock = worker::take_worker_lock(&pool).await;
@@ -109,4 +112,58 @@ pub async fn prepare() -> Result<Boot, Box<dyn std::error::Error>> {
 
     crate::api::set_backend(Box::new(LocalBackend::new(app, worker.is_some())));
     Ok(Boot { embedded, stop_worker, worker, lock })
+}
+
+/// Where start-up stands, for the start screen the window shows until it is done.
+pub enum Stage {
+    Starting,
+    Ready,
+    Failed(String),
+}
+
+static BOOT: std::sync::Mutex<Option<Boot>> = std::sync::Mutex::new(None);
+static STAGE: std::sync::Mutex<Option<Result<(), String>>> = std::sync::Mutex::new(None);
+
+/// Runs [`prepare`] on `rt` while the window opens: the window shows a start screen with
+/// what start-up is doing (`common::startup`) instead of nothing at all, which on an
+/// update with schema changes or data upgrades used to be minutes of no window.
+pub fn start_in_background(rt: &tokio::runtime::Runtime) {
+    // A thread of its own blocking on the runtime, rather than a spawned task: `prepare`'s
+    // error type is not `Send`.
+    let handle = rt.handle().clone();
+    std::thread::spawn(move || {
+        let outcome = handle.block_on(prepare());
+        let stage = match outcome {
+            Ok(boot) => {
+                *BOOT.lock().unwrap_or_else(|p| p.into_inner()) = Some(boot);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("romexplorer: {e}");
+                Err(e.to_string())
+            }
+        };
+        *STAGE.lock().unwrap_or_else(|p| p.into_inner()) = Some(stage);
+    });
+}
+
+pub fn stage() -> Stage {
+    match &*STAGE.lock().unwrap_or_else(|p| p.into_inner()) {
+        None => Stage::Starting,
+        Some(Ok(())) => Stage::Ready,
+        Some(Err(e)) => Stage::Failed(e.clone()),
+    }
+}
+
+/// On quit: waits (up to `limit`) for a start-up still running, so a database it is
+/// starting is stopped rather than orphaned, then stops what it left running.
+pub async fn shutdown_when_settled(limit: Duration) {
+    let until = std::time::Instant::now() + limit;
+    while matches!(stage(), Stage::Starting) && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let boot = BOOT.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(boot) = boot {
+        boot.shutdown().await;
+    }
 }

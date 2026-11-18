@@ -1486,6 +1486,8 @@ fn a_game_tree_with_subfolders_is_one_game_in_a_scan() {
         heuristics: detect::HeuristicFlags::ALL,
         shapes: Vec::new(),
         files_seen: None,
+        folder_seen: None,
+        configured: Default::default(),
     };
     let hint = |dir: &str| game_root_bundle(&root.path().join(dir), root.path(), &ctx).and_then(|b| b.platform_hint);
     assert_eq!(hint("Vita/One"), Some(Platform::PlayStationVita));

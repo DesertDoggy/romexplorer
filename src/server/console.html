@@ -164,6 +164,11 @@ input[type=color] { width:44px; height:26px; padding:0; border:1px solid var(--l
 .two { display:grid; grid-template-columns:1fr 1fr; gap:14px; } @media (max-width:900px) { .two { grid-template-columns:1fr; } }
 .cardgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:12px; }
 .gcard { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; cursor:pointer; display:flex; flex-direction:column; }
+/* Off-screen cards are not laid out or painted until they scroll near: a 500-card page
+   lays out only what is visible. `auto` keeps each card's real height once it has been
+   drawn, so the scrollbar settles. Table rows get no such rule: containment has no effect
+   on table rows. Kept the same in app.css and console.html. */
+.gcard { content-visibility:auto; contain-intrinsic-size:auto 150px auto 260px; }
 .gcard:hover { border-color:#3d76ad; }
 .gcard.local { box-shadow:inset 0 3px 0 var(--ok); }
 .gcard.unsynced { box-shadow:inset 0 3px 0 var(--warn); }
@@ -437,6 +442,13 @@ document.getElementById('btn-token').onclick = () => askSignIn('');
 
 function toast(msg, bad) { const t = document.createElement('div'); if (bad) t.className = 'bad'; t.textContent = msg; document.getElementById('toast').appendChild(t); setTimeout(() => t.remove(), bad ? 8000 : 3500); }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// A button whose request does its work before it answers: it says what is happening and
+// stays disabled until the answer, then is put back (the app's `ui::busy`).
+async function busyWhile(btn, text, work) {
+  const label = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.textContent = text; }
+  try { return await work(); } finally { if (btn) { btn.disabled = false; btn.innerHTML = label; } }
+}
 // Purging soft-deleted rows is destructive and almost never wanted, so it gets the same
 // two-stage gate the app's GUI uses: the counts and why they matter, then a plain
 // "are you sure". Two confirm()s in series is the console's version of a consent modal.
@@ -2312,7 +2324,7 @@ async function showAudio() {
     const sel = document.getElementById('romidx-platform');
     const which = sel.value ? sel.options[sel.selectedIndex].text : tr('all platforms');
     if (!confirm(trf('Clear the ROM audio index of {which}? The next index reads those ROMs again.', { which }))) return;
-    try { const r = await api('/api/v1/audio/rom/clear', { method: 'POST', body: { platform: sel.value ? Number(sel.value) : null } }); toast(trf('{n} ROM(s) cleared', { n: r.cleared })); reload(); } catch (e) { toast(e.message, true); }
+    try { const r = await busyWhile(document.getElementById('romidx-clear'), tr('Clearing the music index…'), () => api('/api/v1/audio/rom/clear', { method: 'POST', body: { platform: sel.value ? Number(sel.value) : null } })); toast(trf('{n} ROM(s) cleared', { n: r.cleared })); reload(); } catch (e) { toast(e.message, true); }
   };
   queueable(...view.querySelectorAll('[data-scan]'), document.getElementById('audio-fetch'), document.getElementById('audio-autotag'), ...view.querySelectorAll('[data-romidx]'));
 }
@@ -2328,7 +2340,11 @@ function indexingText(ix) {
 async function pagePlayer(query) {
   if (!window.rxPlayer) return;
   const page = location.hash;
-  let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { window.rxPlayer.stop(); return; }
+  // The answer can wait on the page's cartridges being indexed (a known music map is read
+  // while the page waits): said, rather than an empty space, once it takes a moment.
+  const slow = setTimeout(() => { if (location.hash === page && !view.querySelector('.rx-indexing')) view.insertBefore(el(`<div class="toolbar rx-indexing muted">${esc(tr("Indexing this game's music…"))}</div>`), view.firstChild); }, 700);
+  let list; try { list = await api('/api/v1/audio/playlist' + qs(query)); } catch (e) { clearTimeout(slow); for (const old of view.querySelectorAll('.rx-indexing')) old.remove(); window.rxPlayer.stop(); return; }
+  clearTimeout(slow);
   for (const old of view.querySelectorAll('.rx-videos, .rx-indexing')) old.remove();
   // A title page whose ROMs have video sound (a title movie): this title's own on / off,
   // over the audio_rom_videos setting.
@@ -2356,7 +2372,7 @@ async function pagePlayer(query) {
     try { await api('/api/v1/audio/hidden', { method: 'PUT', body: { title_id: list.hide_title, id: t.id, rom: !!t.rom, hidden } }); toast(hidden ? tr('hidden from this page') : tr('restored')); } catch (e) { toast(e.message, true); }
   } : null;
   window.rxPlayer.start(host, list.tracks.map(playable),
-    { previous: tr('previous'), next: tr('next'), 'hidden tracks': tr('hidden tracks'), 'click to listen': tr('click to listen'), restore: tr('restore'), undo: tr('undo'), "don't play this track on this page again": tr("don't play this track on this page again"), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)': tr('normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)'), crossfade: tr('crossfade'), 'crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)': tr('crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)') },
+    { previous: tr('previous'), next: tr('next'), 'hidden tracks': tr('hidden tracks'), 'click to listen': tr('click to listen'), restore: tr('restore'), undo: tr('undo'), "don't play this track on this page again": tr("don't play this track on this page again"), stop: tr('stop'), shuffle: tr('shuffle'), mute: tr('mute'), playlist: tr('playlist'), position: tr('position'), 'play / pause': tr('play / pause'), volume: tr('volume'), normalise: tr('normalise'), 'normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)': tr('normalise: play every track at about the same loudness (loud tracks are turned down; quiet ROM tracks are turned up)'), crossfade: tr('crossfade'), 'crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)': tr('crossfade: the next track fades in while this one fades out, overlapping by this many ms (0 = off)'), 'Converting for playback…': tr('Converting for playback…'), 'Waiting for another conversion…': tr('Waiting for another conversion…') },
     { keep: !!list.keep_playing, hidden: (list.hidden || []).map(t => Object.assign(playable(t), { album: t.album })), onHide });
 }
 
@@ -2913,16 +2929,16 @@ async function patchLinks(status = 'suggested', offset = 0, search = '') {
   for (const c of box.querySelectorAll('[data-pick]')) c.onchange = refreshBulk;
   const pageBox = box.querySelector('#pl-page');
   if (pageBox) pageBox.onchange = () => { for (const c of box.querySelectorAll('[data-pick]')) c.checked = pageBox.checked; refreshBulk(); };
-  const bulk = async (action, body, n) => {
+  const bulk = async (action, body, n, btn) => {
     if (body.all && !confirm(action === 'accept' ? trf('Confirm all {n} suggested links?', { n }) : trf('Unlink all {n} suggested links? Each release leaves the game it was placed under.', { n }))) return;
     try {
-      const r = await api('/api/v1/catalog/base-links/bulk', { method: 'POST', body: Object.assign({ action }, body) });
+      const r = await busyWhile(btn, action === 'accept' ? tr('Confirming the base links…') : tr('Unlinking the releases…'), () => api('/api/v1/catalog/base-links/bulk', { method: 'POST', body: Object.assign({ action }, body) }));
       toast(action === 'accept' ? trf('confirmed {n} link(s)', { n: r.changed }) : trf('unlinked {n} release(s)', { n: r.changed }));
       again(status, 0, search);
     } catch (e) { toast(e.message, true); }
   };
-  for (const b of box.querySelectorAll('[data-bulk]')) b.onclick = () => bulk(b.dataset.bulk, { ids: picks() }, picks().length);
-  for (const b of box.querySelectorAll('[data-all]')) b.onclick = () => bulk(b.dataset.all, { all: true }, page.total);
+  for (const b of box.querySelectorAll('[data-bulk]')) b.onclick = () => bulk(b.dataset.bulk, { ids: picks() }, picks().length, b);
+  for (const b of box.querySelectorAll('[data-all]')) b.onclick = () => bulk(b.dataset.all, { all: true }, page.total, b);
 }
 // A patched release's language is the one it was translated into: stated by its name, or a guess.
 function releaseLangBadges(r) { return langBadges(r.languages) + (r.languages && r.languages_state === 'guessed' ? `<span class="muted" title="${esc(tr('guessed from a folder or a loose word, not stated by the name'))}">?</span>` : ''); }
@@ -3163,7 +3179,7 @@ async function showDictionary() {
 async function showManualOrders() {
   view.innerHTML = `<div class="card"><h2>${tr('Manual order')}</h2><p class="muted">${tr("Titles whose releases you put in your own order (drag ⋮⋮ or ▲▼ in a title's release list). Your order beats every other rule — region, language, demo / patch, edition and version — and decides the title's name and art in the lists. Select titles and reset them to the default order, or reset all.")}</p></div><div class="card"><div id="grid"></div></div>`;
   const resetAll = el(`<button class="btn small danger">${tr('reset all')}</button>`);
-  resetAll.onclick = async () => { if (!confirm(tr('Put every title back in the default release order?'))) return; try { const r = await api('/api/v1/catalog/titles/release-orders/clear', { method: 'POST', body: { all: true } }); toast(trf('reset {n} title(s)', { n: r.cleared })); grid.reload(); } catch (e) { toast(e.message, true); } };
+  resetAll.onclick = async () => { if (!confirm(tr('Put every title back in the default release order?'))) return; try { const r = await busyWhile(resetAll, tr('Resetting every release order…'), () => api('/api/v1/catalog/titles/release-orders/clear', { method: 'POST', body: { all: true } })); toast(trf('reset {n} title(s)', { n: r.cleared })); grid.reload(); } catch (e) { toast(e.message, true); } };
   const grid = makeGrid(document.getElementById('grid'), {
     columns: [
       { key: 'title', label: tr('title'), render: r => `<a class="link" href="#collection/titles/${r.title_id}">${esc(r.title_name)}</a>` },
@@ -4404,8 +4420,12 @@ function setsFileCard(host, after) {
     box.querySelector('#sf-go').onclick = async () => {
       const names = [...box.querySelectorAll('[data-sf]')].filter(c => c.checked).map(c => doc.sets[Number(c.dataset.sf)].name);
       if (!names.length) return toast(tr('tick at least one set'), true);
-      try {
-        const r = await api('/api/v1/sets/import', { method: 'POST', body: { file: doc, names } });
+      // The import runs as a job (`set_import`): its progress here until it ends, then the
+      // result as a table.
+      let queued; try { queued = await api('/api/v1/sets/import', { method: 'POST', body: { file: doc, names } }); } catch (err) { return toast(err.message, true); }
+      watchJob(queued.job_id, box, async j => {
+        if (j.status !== 'done') return toast(j.last_error || j.status, true);
+        const r = (j.result && j.result.sets) || [];
         const missing = r.flatMap(x => x.missing.map(m => `<tr><td>${esc(x.name)}</td><td>${esc(m.kind)}</td><td class="mono">${esc(m.name)}</td><td class="bad">${esc(m.reason)}</td></tr>`));
         box.innerHTML = `<table class="grid"><thead><tr><th>${trc('sets', 'set')}</th><th class="num">${tr('added')}</th><th class="num">${tr('already there')}</th><th class="num">${tr('not found')}</th></tr></thead><tbody>${r.map(x => `<tr><td>${esc(x.name)}${x.created ? ' ' + badge(tr('new'), 'ok') : ''}</td><td class="num">${x.added}</td><td class="num">${x.already}</td><td class="num">${x.missing.length}</td></tr>`).join('')}</tbody></table>
           ${missing.length ? `<table class="grid"><thead><tr><th>${trc('sets', 'set')}</th><th>${tr('kind')}</th><th>${tr('not found')}</th><th>${tr('why')}</th></tr></thead><tbody>${missing.join('')}</tbody></table>` : ''}`;
@@ -4414,7 +4434,7 @@ function setsFileCard(host, after) {
         const kept = box.innerHTML;
         await after();
         const again = document.querySelector('#sets-file #sf-box'); if (again) again.innerHTML = kept;
-      } catch (err) { toast(err.message, true); }
+      });
     };
   };
 }
@@ -5165,23 +5185,31 @@ function settingEditor(key, value) {
       api('/api/v1/parallel/auto').then(a => { auto = a; show(); }).catch(() => {});
       return { el: box, get };
     }
-    case 'scan_hashes': case 'scan_heuristics': {
+    case 'scan_hashes': case 'archive_hashes': case 'archive_content_hashes': case 'scan_heuristics': {
+      // The same lists as the app's SCAN_HASHES / ARCHIVE_HASHES / ARCHIVE_CONTENT_HASHES.
+      const hashSet = key !== 'scan_heuristics';
       const items = key === 'scan_hashes'
         ? [['crc32', 'crc32', true], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', true], ['sha1', 'sha1', true], ['sha256', 'sha256', false], ['ra_hash', 'ra_hash', true]]
+        : key === 'archive_hashes'
+        ? [['crc32', 'crc32', false], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', false], ['sha1', 'sha1', true], ['sha256', 'sha256', false]]
+        : key === 'archive_content_hashes'
+        ? [['crc32', 'crc32', true], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', true], ['sha1', 'sha1', true], ['sha256', 'sha256', false]]
         : [['ext', tr('by file extension'), true], ['path', tr('by the directory names above it'), true]];
       current = {}; for (const [k, , d] of items) current[k] = typeof (value || {})[k] === 'boolean' ? value[k] : d;
-      box.appendChild(el(`<div class="muted">${key === 'scan_hashes' ? tr('Which hashes a file scan computes. DATs are matched by crc32, md5 and sha1, so at least one of those three stays on; ra_hash is skipped where the platform has no RetroAchievements console id.') : tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
+      if (key === 'scan_hashes') box.appendChild(el(`<div class="muted">${tr('Which hashes a file scan computes. DATs are matched by crc32, md5 and sha1, so at least one of those three stays on; ra_hash is skipped where the platform has no RetroAchievements console id.')}</div>`));
+      if (key === 'scan_heuristics') box.appendChild(el(`<div class="muted">${tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
       const row = el('<div class="radios"></div>');
-      // scan_hashes: the last of crc32 / md5 / sha1 that is on can't be turned off -- DATs are
-      // matched by those three (the server refuses a list without one). The app's same rule.
-      const dat = ['crc32', 'md5', 'sha1'];
+      // The last of crc32 / md5 / sha1 that is on can't be turned off -- DATs are matched by
+      // those three (the server refuses a list without one); for the archive file, the last
+      // one of all. The app's same rule.
+      const keep = key === 'archive_hashes' ? ['crc32', 'xxh3_128', 'md5', 'sha1', 'sha256'] : ['crc32', 'md5', 'sha1'];
       const boxes = {};
-      const lock = () => { if (key !== 'scan_hashes') return; const on = dat.filter(k => current[k]); for (const k of dat) boxes[k].disabled = on.length === 1 && on[0] === k; };
+      const lock = () => { if (!hashSet) return; const on = keep.filter(k => current[k]); for (const k of keep) boxes[k].disabled = on.length === 1 && on[0] === k; };
       for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); boxes[k] = l.firstElementChild; l.firstElementChild.onchange = e => { current[k] = e.target.checked; lock(); }; row.appendChild(l); }
-      if (key === 'scan_hashes' && !dat.some(k => current[k])) current.crc32 = boxes.crc32.checked = true;
+      if (hashSet && !keep.some(k => current[k])) { const k = key === 'archive_hashes' ? 'sha1' : 'crc32'; current[k] = boxes[k].checked = true; }
       lock();
       box.appendChild(row);
-      if (key === 'scan_hashes') box.appendChild(el(`<div class="muted">${tr('At least one of crc32, md5 and sha1 stays on: DATs are matched by those.')}</div>`));
+      if (hashSet) box.appendChild(el(`<div class="muted">${key === 'archive_hashes' ? tr('At least one stays on.') : tr('At least one of crc32, md5 and sha1 stays on: DATs are matched by those.')}</div>`));
       return { el: box, get };
     }
     case 'serial_match': {
@@ -5861,9 +5889,9 @@ async function showJobs() {
   });
   // By status: finished jobs only. A selection also removes a job that never started and asks
   // a running one to stop (it stays, cancelled, until cleared).
-  const clearJobs = async body => {
+  const clearJobs = async (body, btn) => {
     try {
-      const r = await api('/api/v1/jobs/clear', { method: 'POST', body });
+      const r = await busyWhile(btn, tr('Clearing the jobs…'), () => api('/api/v1/jobs/clear', { method: 'POST', body }));
       toast(r.kept ? trf('{n} job(s) cleared; {kept} still pending or running were kept', { n: r.removed, kept: r.kept }) : trf('{n} job(s) cleared', { n: r.removed }));
       grid.reload(); refreshHeader();
     } catch (err) { toast(err.message, true); }
@@ -5871,7 +5899,7 @@ async function showJobs() {
   for (const b of document.querySelectorAll('#jobclear [data-clear]')) b.onclick = () => {
     const status = b.dataset.clear;
     if (!confirm(status ? trf('Clear every {status} job from the list?', { status: tr(status) }) : tr('Clear every finished job (done, failed, cancelled) from the list?'))) return;
-    clearJobs(status ? { statuses: [status] } : {});
+    clearJobs(status ? { statuses: [status] } : {}, b);
   };
   jobsTimer = setInterval(() => { if (location.hash.replace(/^#/, '') === 'jobs') { grid.reload(); refreshHeader(); } }, 2000);
 }
@@ -5891,6 +5919,7 @@ async function showScan() {
         <span>
           <button class="btn primary" data-mode="full" type="button">${tr('Full scan')}</button>
           <button class="btn" data-mode="new_only" type="button">${tr('Quick scan (new only)')}</button>
+          <button class="btn" data-mode="changed" type="button" title="${tr('reads new files, and files whose size or modified date changed since they were last read')}">${tr('Quick scan (changed)')}</button>
           <button class="btn" data-mode="rehash" type="button">${tr('Rehash')}</button>
           <button class="btn" data-hm="new" type="button">${tr('Hash match (new)')}</button>
           <button class="btn" data-hm="all" type="button">${tr('Hash match (all)')}</button>
@@ -5983,6 +6012,57 @@ function stepLabel(st) {
     audit_wronglink: tr('Titles whose own files name another game'),
     audit_merges: tr('Merges made through an IGDB game'),
     audit_links: tr('IGDB links made by hash, name or search'),
+    // Other jobs' steps (`jobs::Steps`).
+    audio_walk: tr('Walk the audio folders'),
+    audio_read: tr('Read tags'),
+    audio_loudness: tr('Measure loudness'),
+    title_cleanup: tr('Clean-up'),
+    display_sfo: tr('PS3 PARAM.SFO'),
+    display_ipbin: tr('Dreamcast IP.BIN'),
+    display_pcsx2: tr('PCSX2 widescreen patches'),
+    display_mame: tr('MAME machine list'),
+    relayout_move: tr('Move files into the layout'),
+    relayout_rehome: tr('Move laid-out files to where the layout puts them now'),
+    backfill_restore: tr('Putting back missing art files'),
+    backfill_serial: tr('PS1/PS2 covers by serial'),
+    backfill_tgdb: tr('Linking to TheGamesDB'),
+    backfill_entries: tr('Art from linked providers'),
+    mobile_scope: tr('Working out what the phone gets'),
+    mobile_lists: tr('Reading the lists'),
+    mobile_pages: tr('Title and release pages'),
+    mobile_ra: tr('RetroAchievements games and progress'),
+    mobile_covers: tr('Covers'),
+    mobile_tables: tr('Copying the catalogue tables'),
+    mobile_finish: tr('Finishing the file'),
+    optimize_jobs: tr('Finished jobs older than 30 days'),
+    optimize_rom_file_links: tr('Links to deleted files'),
+    optimize_files: tr('Deleted files'),
+    optimize_game_rom_links: tr('Game links of deleted ROMs'),
+    optimize_roms: tr('Deleted ROMs'),
+    optimize_release_game_links: tr('Release links of deleted games'),
+    optimize_games: tr('Deleted games'),
+    optimize_hashes: tr('Hashes of deleted content'),
+    optimize_content: tr('Deleted content'),
+    scan_walk: tr('Walk the folder'),
+    scan_precheck: tr('Check the files found'),
+    scan_hash: tr('Read and hash'),
+    scan_playlists: tr('Playlists and system files'),
+    scan_missing: tr('Mark missing files'),
+    scan_links: tr('Drop stale release links'),
+    match_unlink: tr('Remove the links to make again'),
+    match_dat_resolve: tr('DAT resolve'),
+    match_ra_hashes: tr('RetroAchievements hashes'),
+    match_dat: tr('DAT match'),
+    match_serial: tr('Serial match'),
+    match_rom_platforms: tr('ROM platforms'),
+    match_kinds: tr('Sort what no DAT matched'),
+    match_targets: tr('Find the games to look up'),
+    match_dumps: tr('Hasheous downloaded dumps'),
+    match_lookups: tr('Hasheous lookups'),
+    match_playmatch: tr('Own tables and PlayMatch'),
+    match_linking: tr('Link what the lookups found'),
+    match_followups: tr('Follow-up jobs'),
+    match_platforms: tr('File platforms'),
   })[st.key] || st.label || '';
 }
 function fmtSecs(secs) { return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'); }
@@ -6008,8 +6088,62 @@ function stepsHtml(j, full) {
   return `<div class="runsteps">${d.scope ? `<div class="muted">${esc(d.scope)}</div>` : ''}${rows}</div>`;
 }
 // A job's live progress (written by the worker about once a second): a bar when the total is
-// known, else just the count, plus what it's doing right now.
-function progressCell(j) { return progressBar(j, false); }
+// known, else just the count, plus what it's doing right now. With a "details" button when
+// there is more to it: opened, the whole message, the step list and the files being read --
+// what the Scan tab's Running now shows. Used by the jobs and scan lists and a form's job
+// watch; the app's `JobProgress`.
+function progressCell(j) {
+  progressSeen.set(j.id, j);
+  const more = progressHasMore(j), open = more && progressOpen.has(j.id);
+  const body = open ? progressFull(j) + stepsHtml(j, true) + runningFilesHtml(j) : progressBar(j, false);
+  const btn = more ? `<button class="btn small" type="button" onclick="event.stopPropagation(); toggleProgress(${j.id}, this)">${open ? tr('hide details') : tr('details')}</button>` : '';
+  return `<div class="progcell" style="display:flex; align-items:flex-start; gap:6px"><div style="flex:1; min-width:0">${body}</div>${btn}</div>`;
+}
+// The jobs whose progress is opened out (kept across the lists' redraws), and the last copy
+// of each job drawn, to redraw its cell at once when the button is pressed.
+var progressOpen = new Set(), progressSeen = new Map();
+function progressHasMore(j) {
+  const d = j.progress_detail || {};
+  return (Array.isArray(d.steps) && d.steps.length > 0) || (Array.isArray(d.files) && d.files.length > 0) || (j.progress_message || '').length > 90;
+}
+function toggleProgress(id, btn) {
+  if (!progressOpen.delete(id)) progressOpen.add(id);
+  const cell = btn.closest('.progcell'), j = progressSeen.get(id);
+  if (cell && j) cell.outerHTML = progressCell(j);
+}
+// How long a job has run: m:ss, or h:mm:ss from an hour (the app's `fmt_elapsed`).
+function fmtElapsed(secs) { return secs >= 3600 ? Math.floor(secs / 3600) + ':' + String(Math.floor(secs / 60) % 60).padStart(2, '0') + ':' + String(secs % 60).padStart(2, '0') : fmtSecs(secs); }
+// Time left in words: under a minute, whole minutes below an hour, then hours and minutes to
+// the nearest ten (the app's `fmt_left`).
+function fmtLeft(secs) {
+  if (secs < 60) return tr('under a minute left');
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return trf('about {n} min left', { n: mins });
+  const tens = Math.round(secs / 600) * 10, h = Math.floor(tens / 60), m = tens % 60;
+  return m ? trf('about {h} h {m} min left', { h, m }) : trf('about {h} h left', { h });
+}
+// Where each job's bar was first seen to start: [total, done, elapsed]. A job whose bar
+// restarts for another phase (a new total, or the count going back) is timed from there, not
+// from the job's start (the app's `ETA_ANCHORS`).
+var etaAnchors = new Map();
+// "running 3:12 · about 4 min left" for a running job: how long it has run (the server's
+// `elapsed_secs`), and once ~3% of a known total and 10 s have gone by, the time left at the
+// rate so far (the app's `timing_html`).
+function timingHtml(j) {
+  if (j.status !== 'in_progress' || j.elapsed_secs == null) return '';
+  const elapsed = j.elapsed_secs, done = j.progress_done || 0, total = j.progress_total || 0;
+  let said = trf('running {t}', { t: fmtElapsed(elapsed) });
+  if (total > 0) {
+    let a = etaAnchors.get(j.id);
+    if (!a) etaAnchors.set(j.id, a = [total, 0, 0]);
+    if (a[0] !== total || done < a[1] || elapsed < a[2]) etaAnchors.set(j.id, a = [total, done, elapsed]);
+    const moved = done - a[1], spent = elapsed - a[2];
+    if (done < total && moved >= 0.03 * total && spent >= 10) said += ' · ' + fmtLeft((total - done) * spent / moved);
+  }
+  return `<span class="muted eta">${esc(said)}</span>`;
+}
+// A count with thousands separators, "12,345" (the app's `html::thousands`).
+function fmtCount(n) { return Number(n).toLocaleString('en-US'); }
 // The same with the whole message, wrapping onto more lines when it is long: for a running
 // job shown on its own (the Scan tab's Running now), where there is room for all of it.
 function progressFull(j) { return progressBar(j, true); }
@@ -6017,9 +6151,9 @@ function progressBar(j, full) {
   if (j.progress_done == null && !j.progress_message) return '';
   // Rounded down: 100% only once it is all done, never while the last bit is still going.
   const pct = j.progress_total ? Math.min(100, Math.floor(100 * j.progress_done / j.progress_total)) : null;
-  const bar = pct !== null ? `<div class="pbar"><div style="width:${pct}%"></div></div><span class="num">${pct}%</span>` : (j.progress_done ? `<span class="num">${j.progress_done}</span>` : ''); // a bare 0 beside the message only reads as stuck
+  const bar = pct !== null ? `<div class="pbar"><div style="width:${pct}%"></div></div><span class="num">${pct}%</span>` : (j.progress_done ? `<span class="num">${fmtCount(j.progress_done)}</span>` : ''); // a bare 0 beside the message only reads as stuck
   const msg = j.progress_message || '';
-  return `<div class="prog${full ? ' full' : ''}" title="${esc(msg)}">${bar}${full ? '' : stepsHtml(j, false)}<span class="muted">${esc(full ? msg : msg.slice(0, 90))}</span></div>`;
+  return `<div class="prog${full ? ' full' : ''}" title="${esc(msg)}">${bar}${full ? '' : stepsHtml(j, false)}${timingHtml(j)}<span class="muted">${esc(full ? msg : msg.slice(0, 90))}</span></div>`;
 }
 // Pending: cancelled at once. Running: the worker aborts it within a tick (~5 s); what it
 // already committed stays, the rest is redone by a later run.
@@ -6290,7 +6424,7 @@ async function showAiPage() {
   cache.querySelector('#aiclear').onclick = async () => {
     if (!confirm(tr('Remove the saved AI answers? Asking again costs money.'))) return;
     const [source, provider] = (cache.querySelector('#aiclearsrc').value || ':').split(':');
-    try { const r = await api('/api/v1/ai/clear', { method: 'POST', body: { purpose: cache.querySelector('#aiclearwhat').value || null, keep_pinned: cache.querySelector('#aikeeppinned').checked, source: source || null, provider: provider || null } }); toast(trf('{n} answer(s) removed', { n: r.removed })); showAiPage(); } catch (e) { toast(e.message, true); }
+    try { const r = await busyWhile(cache.querySelector('#aiclear'), tr('Removing the saved answers…'), () => api('/api/v1/ai/clear', { method: 'POST', body: { purpose: cache.querySelector('#aiclearwhat').value || null, keep_pinned: cache.querySelector('#aikeeppinned').checked, source: source || null, provider: provider || null } })); toast(trf('{n} answer(s) removed', { n: r.removed })); showAiPage(); } catch (e) { toast(e.message, true); }
   };
   cache.querySelector('#aiexport').onclick = async () => {
     try { const list = await api('/api/v1/ai/export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(list, null, 1)], { type: 'application/json' })); a.download = 'romexplorer-ai-answers.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); } catch (e) { toast(e.message, true); }
@@ -6571,7 +6705,7 @@ function configFileCard(host) {
       const sections = [...box.querySelectorAll('[data-cfg]')].filter(c => c.checked).map(c => c.dataset.cfg);
       if (!sections.length) return toast(tr('tick at least one section'), true);
       try {
-        const r = await api('/api/v1/config/import', { method: 'POST', body: { config, sections } });
+        const r = await busyWhile(document.getElementById('cfg-go'), tr('Importing the configuration…'), () => api('/api/v1/config/import', { method: 'POST', body: { config, sections } }));
         configImported = r;
         // Settings take effect as a Save would: the console's copy of them (the UI language
         // among them) is read again, and the page drawn again with it.
@@ -6735,7 +6869,14 @@ function sourceDialog(s, done) {
       // refuses without consent and says what would be lost. Ask, then resend with it.
       closeModal();
       consentDialog(tr("Replace this machine's catalogue?"), err.message.replace(/^conflict: /, ''), async media => {
-        try { await send(Object.assign({}, body, { replace_catalog: true, media })); toast(tr('saved — the catalogue was cleared; run a sync now')); done(); } catch (e2) { toast(e2.message, true); }
+        // The clear runs as a job (`catalog_clear`): followed where "add source" is.
+        try {
+          const r = await send(Object.assign({}, body, { replace_catalog: true, media }));
+          toast(tr('saved — clearing the catalogue; run a sync once it is done'));
+          await done();
+          const box = document.getElementById('src-watch');
+          if (r && r.clear_job && box) watchJob(r.clear_job, box, () => showSources());
+        } catch (e2) { toast(e2.message, true); }
       });
     }
   };
