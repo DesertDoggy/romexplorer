@@ -241,12 +241,14 @@ fn sweep_parts_counting(root: &Path, depth: u32, seen: &std::sync::atomic::Atomi
 ///
 /// The read checks `cancel` between chunks: over SMB it can take minutes, and a cancelled
 /// check answers "not there" (the caller stops on the flag next).
-async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64, cancel: &Cancel) -> (bool, bool) {
+///
+/// `rows` are the content's `hashes` rows, loaded for every file of the job at once
+/// ([`hash_rows_for`]) rather than one query per file.
+async fn already_there(dst: &Path, rows: &[(String, String)], size: u64, cancel: &Cancel) -> (bool, bool) {
     let Ok(meta) = std::fs::metadata(dst) else { return (false, false) };
     if meta.len() != size {
         return (false, false);
     }
-    let rows: Vec<(String, String)> = sqlx::query_as("SELECT algorithm, value_hex FROM hashes WHERE content_id = ?").bind(content_id).fetch_all(&app.pool).await.unwrap_or_default();
     use crate::rom::hash::HashFlags;
     let pick = ["xxh3_128", "crc32", "md5", "sha1", "sha256"].into_iter().find_map(|algo| rows.iter().find(|(a, _)| a == algo).map(|(a, v)| (a.clone(), v.clone())));
     let Some((algo, expected)) = pick else { return (true, true) };
@@ -290,6 +292,20 @@ async fn already_there(app: &App, dst: &Path, content_id: u64, size: u64, cancel
         })
         .is_some_and(|v| v.eq_ignore_ascii_case(&expected));
     (matches, false)
+}
+
+/// The `hashes` rows of every content id given, 1000 ids per query.
+async fn hash_rows_for(app: &App, ids: impl IntoIterator<Item = u64>) -> Result<std::collections::HashMap<u64, Vec<(String, String)>>> {
+    let ids: Vec<u64> = ids.into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let mut out: std::collections::HashMap<u64, Vec<(String, String)>> = std::collections::HashMap::new();
+    for part in ids.chunks(1000) {
+        let list = part.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        let rows: Vec<(u64, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT content_id, algorithm, value_hex FROM hashes WHERE content_id IN ({list})"))).fetch_all(&app.pool).await?;
+        for (id, algo, value) in rows {
+            out.entry(id).or_default().push((algo, value));
+        }
+    }
+    Ok(out)
 }
 
 /// Rewrites an `.m3u`'s lines to the names this job actually produced.
@@ -458,7 +474,53 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
     // `fail` policy stops at the first conflict). Then the files that need copying run several
     // at once (`api::parallel`), and what each came to is folded into the summary as it ends.
     let mut work: Vec<&PlannedCopy> = Vec::new();
-    for file in planned.files.iter() {
+
+    // The resume check stats every destination and reads each that holds a file of the right size,
+    // which over SMB is most of a re-run. It answers the same thing whatever the order, so it
+    // runs first, several files at once under the job's own limits; the ordered pass below
+    // only looks the answer up.
+    let resume: std::collections::HashMap<usize, (bool, bool)> = {
+        use crate::api::parallel::{Gate, Tier};
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+        let candidates: Vec<(usize, &PlannedCopy)> = planned
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.skip.is_none() && (f.format == OutputFormat::Same || f.source.member.is_some()))
+            .collect();
+        let mut answers = std::collections::HashMap::new();
+        if !candidates.is_empty() {
+            let rows = hash_rows_for(app, candidates.iter().map(|(_, f)| f.source.content_id)).await?;
+            let setting = crate::database::settings::parallel_files(&app.pool, crate::database::settings::KEY_COPY_PARALLEL).await?;
+            let dst_root = root.clone();
+            let auto = tokio::task::spawn_blocking(move || setting.auto_limits(&dst_root, crate::rom::hash::HashFlags::default(), crate::rom::operation::JobStages::default())).await.map_err(|e| Error::internal(e.to_string()))?;
+            let gate = Gate::new(setting.resolve(auto));
+            let n = candidates.len();
+            progress.force(0, None, &format!("checking {n} destination file(s) for copies already made")).await;
+            let empty: Vec<(String, String)> = Vec::new();
+            let mut running: FuturesUnordered<_> = candidates
+                .iter()
+                .map(|&(i, file)| {
+                    let (gate, cancel, rows, empty) = (&gate, &cancel, &rows, &empty);
+                    async move {
+                        let _slot = gate.enter(Tier::of(file.source.size)).await;
+                        let held = rows.get(&file.source.content_id).unwrap_or(empty);
+                        (i, file, already_there(&file.destination, held, file.source.size, cancel).await)
+                    }
+                })
+                .collect();
+            let mut checked = 0usize;
+            while let Some((i, file, answer)) = running.next().await {
+                checked += 1;
+                let name = file.destination.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                progress.report(0, None, &format!("checking the destination for copies already made: {checked} of {n}, last: {name}")).await;
+                answers.insert(i, answer);
+            }
+        }
+        answers
+    };
+
+    for (index, file) in planned.files.iter().enumerate() {
         if cancel.is_set() {
             summary.cancelled = true;
             break;
@@ -482,7 +544,8 @@ pub async fn run(app: &App, req: &CopyFilesRequest, progress: &Progress, job_id:
         // so hashing it against the source's own hash would read the whole file to learn
         // nothing.
         let (same, size_only) = if file.format == OutputFormat::Same || file.source.member.is_some() {
-            already_there(app, &file.destination, file.source.content_id, file.source.size, &cancel).await
+            // Checked above; anything not there had no file of the right size.
+            resume.get(&index).copied().unwrap_or((false, false))
         } else {
             // A converted output's bytes are not the source's, so there is nothing of its own
             // recorded to compare against on a first run. An existing non-empty file is taken

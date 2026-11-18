@@ -11,7 +11,7 @@ pub enum JobType {
     MediaDownload,
     ProviderQuery,
     ProviderBulkSync,
-    /// Payload: `{"directory_id": u64, "mode": "full"|"new_only"|"rehash", "platform":
+    /// Payload: `{"directory_id": u64, "mode": "full"|"new_only"|"changed"|"rehash", "platform":
     /// "all"|<app_platform_id>}` (see `FileScanMode`). One job type, not three --
     /// full/new-only/rehash are payload modes of the same `FileScan`, never separate
     /// `JobType` variants, since they're one capability family distinguished only by how
@@ -232,18 +232,22 @@ pub enum FileScanMode {
     /// Same walk as `Full`, but skips any path whose `files` row already exists and isn't
     /// soft-deleted -- only genuinely new (or revived) files get hashed.
     NewOnly,
+    /// Same walk as `NewOnly`, and also reads a recorded file whose size or modified time
+    /// differs from its row -- a file replaced or edited under the same name.
+    Changed,
     /// No directory walk at all: re-reads and rehashes every existing, non-deleted
     /// `files` row already under the directory.
     Rehash,
 }
 
 impl FileScanMode {
-    pub const ALL: [FileScanMode; 3] = [FileScanMode::Full, FileScanMode::NewOnly, FileScanMode::Rehash];
+    pub const ALL: [FileScanMode; 4] = [FileScanMode::Full, FileScanMode::NewOnly, FileScanMode::Changed, FileScanMode::Rehash];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Full => "full",
             Self::NewOnly => "new_only",
+            Self::Changed => "changed",
             Self::Rehash => "rehash",
         }
     }

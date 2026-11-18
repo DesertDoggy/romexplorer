@@ -8,6 +8,16 @@ Sie ein Backup, bevor Sie einen Build ersetzen.
 
 ## Änderungen
 
+**Scan**
+- „Schneller Scan (geänderte)“ wurde hinzugefügt: Er liest auch Dateien, deren Größe oder Datum sich geändert hat.
+- Die Scan-Hashes werden getrennt für normale Dateien, Archivdateien und den Inhalt von Archiven eingestellt. Archivdateien nutzen standardmäßig sha1 und xxh3_128.
+
+**Kopieren**
+- Eine erneut gestartete Kopie prüft die schon am Ziel liegenden Dateien mehrere auf einmal.
+
+**Listen**
+- Kartenansichten mit vielen Einträgen öffnen und scrollen schneller.
+
 **ROM-Audio**
 - Der ROM-Musikindex kann mehrere ROMs gleichzeitig lesen (Standard 4, in den Audio-Einstellungen änderbar).
 - Der ROM-Musikindex liest pro Titel nur die am höchsten eingestufte Kopie, andere Kopien nur, wenn sie keine Musik hat.

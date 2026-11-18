@@ -1181,7 +1181,7 @@ async fn lost_title_links(app: &App) {
 
     // "Hash match all"'s reset: the statement runs (no directory in scope, so it changes nothing).
     let req = api::jobs::HashMatchRequest { directory_id: 0, to_dat: false, to_hasheous: true, to_playmatch: true, all: true };
-    api::scan::unlink_for_rematch(pool, "0", &req).await.unwrap();
+    api::scan::unlink_for_rematch(pool, "0", &req, &romexplorer::database::jobs::Progress::none()).await.unwrap();
     assert!(api::links::title_has_provider(pool, title, Provider::Igdb).await.unwrap());
 }
 
@@ -1392,7 +1392,7 @@ async fn sets_file(app: &App) {
     api::sets::delete(app, set.id).await.unwrap();
 
     let file: api::set_file::SetFile = serde_json::from_str(&text).unwrap();
-    let done = api::set_file::import(app, &api::set_file::ImportRequest { file: file.clone(), names: Vec::new() }).await.unwrap();
+    let done = api::set_file::import(app, &api::set_file::ImportRequest { file: file.clone(), names: Vec::new() }, &romexplorer::database::jobs::Progress::none()).await.unwrap().sets;
     assert_eq!(done.len(), 1);
     assert!(done[0].created && done[0].added == 3, "{done:?}");
     assert_eq!(done[0].missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["Setfile Nowhere (Japan)"]);
@@ -1401,7 +1401,7 @@ async fn sets_file(app: &App) {
     let description: Option<String> = sqlx::query_scalar("SELECT description FROM collection_sets WHERE id = ?").bind(done[0].set_id).fetch_one(pool).await.unwrap();
     assert_eq!(description.as_deref(), Some("for the trip"));
     // Again: into the same set, nothing added twice.
-    let again = api::set_file::import(app, &api::set_file::ImportRequest { file, names: Vec::new() }).await.unwrap();
+    let again = api::set_file::import(app, &api::set_file::ImportRequest { file, names: Vec::new() }, &romexplorer::database::jobs::Progress::none()).await.unwrap().sets;
     assert!(!again[0].created && again[0].added == 0 && again[0].already == 3 && again[0].set_id == done[0].set_id, "{again:?}");
     api::sets::delete(app, done[0].set_id).await.unwrap();
 }

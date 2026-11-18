@@ -322,13 +322,21 @@ fn detect_for(candidate: &RomCandidate, hint: Option<Platform>) -> Detect {
 /// `detect` (a signature-confirmed hint, see [`detect_for`]); the container's own bytes hashed
 /// beside the decode of its members; disc members named and sheets rebuilt in the
 /// installation's `sheet_style`. `whole_file`: the path alone, a sheet not expanded.
-fn scan_args(detect: Detect, flags: HashFlags, style: crate::common::models::CueSheetStyle, whole_file: bool) -> SingleArgs {
+///
+/// `flags` is what a regular file is hashed with (`settings::scan_hashes`). `archive` is
+/// (what an archive file's own bytes are hashed with, what is inside it is hashed with):
+/// `settings::archive_hashes` (sha1 + xxh3_128 by default -- DATs list an archive's members,
+/// never the archive, so the file needs only enough to be identified and compared) and
+/// `settings::archive_content_hashes`.
+fn scan_args(detect: Detect, flags: HashFlags, archive: (HashFlags, HashFlags), style: crate::common::models::CueSheetStyle, whole_file: bool) -> SingleArgs {
     let flags = if flags.is_empty() { HashFlags::default() } else { flags.difference(HashFlags::RAHASH) };
+    let (file, members) = (archive.0.difference(HashFlags::RAHASH), archive.1.difference(HashFlags::RAHASH));
     SingleArgs {
         stages: StageSwitches { hash: true, ..StageSwitches::NONE },
         hash_flags: flags,
+        member_hash_flags: Some(if members.is_empty() { flags } else { members }),
         detect,
-        container_hash: Some(flags),
+        container_hash: Some(if file.is_empty() { flags } else { file }),
         whole_file,
         ..SingleArgs::default()
     }
@@ -1172,13 +1180,20 @@ async fn recorded_rows(pool: &MySqlPool, hashes: &[String]) -> Result<HashMap<St
 async fn precheck(pool: &MySqlPool, mode: FileScanMode, since: Option<chrono::NaiveDateTime>, candidates: &[RomCandidate], measured: &[Measured], progress: &crate::database::jobs::Progress) -> Result<Vec<bool>> {
     let n = candidates.len();
     let mut skip = vec![false; n];
+    // `Some(Some(since))`: a full scan started again; `Some(None)`: a changed-files scan,
+    // which reads a recorded file again only when its size or modified time moved.
     let resume = match (mode, since) {
         (FileScanMode::NewOnly, _) => None,
-        (FileScanMode::Full, Some(since)) => Some(since),
+        (FileScanMode::Changed, _) => Some(None),
+        (FileScanMode::Full, Some(since)) => Some(Some(since)),
         // Every other mode reads every candidate.
         _ => return Ok(skip),
     };
-    let what = if resume.is_some() { "checking what an earlier run already read" } else { "checking which files are already recorded" };
+    let what = match resume {
+        Some(Some(_)) => "checking what an earlier run already read",
+        Some(None) => "checking which files changed",
+        None => "checking which files are already recorded",
+    };
     let mut skipped = 0u64;
     progress.force(0, Some(n as u64), &format!("{what}: 0 of {}", thousands(n as u64))).await;
     const CHUNK: usize = 1000;
@@ -1189,7 +1204,7 @@ async fn precheck(pool: &MySqlPool, mode: FileScanMode, since: Option<chrono::Na
         let paths: Vec<Vec<(String, Option<u64>)>> = chunk
             .iter()
             .map(|candidate| {
-                if resume.is_none() && candidate.kind == rom_scan::CandidateKind::DirectoryBundle {
+                if !matches!(resume, Some(Some(_))) && candidate.kind == rom_scan::CandidateKind::DirectoryBundle {
                     crate::rom::platforms::directory_payload_paths(&candidate.path).into_iter().map(|f| (sha1_hex(&f.display().to_string()), std::fs::metadata(&f).ok().map(|m| m.len()))).collect()
                 } else {
                     vec![(sha1_hex(&candidate.path.display().to_string()), None)]
@@ -1202,12 +1217,15 @@ async fn precheck(pool: &MySqlPool, mode: FileScanMode, since: Option<chrono::Na
             let i = base + j;
             let row = paths[j].first().and_then(|(h, _)| rows.get(h));
             skip[i] = match resume {
-                None if candidate.kind == rom_scan::CandidateKind::DirectoryBundle => !paths[j].is_empty() && paths[j].iter().all(|(h, len)| len.is_some() && rows.get(h).is_some_and(|r| r.live && r.size == *len)),
+                // A folder game is judged as new-only judges it, in a changed-files scan too.
+                None | Some(None) if candidate.kind == rom_scan::CandidateKind::DirectoryBundle => !paths[j].is_empty() && paths[j].iter().all(|(h, len)| len.is_some() && rows.get(h).is_some_and(|r| r.live && r.size == *len)),
                 None => row.is_some_and(|r| r.live),
-                // A `FileScanMode::Changed` scan slots in beside these: skip a plain file whose
-                // live row is `unchanged` (size and `last_modified`, as below, from
-                // `measured[i].file`), without the `last_full_check` condition.
-                Some(since) => match (row, measured[i].file) {
+                // Changed files: a live row whose size and age still match the file.
+                Some(None) => match (row, measured[i].file) {
+                    (Some(r), Some((len, modified))) => r.live && r.unchanged(len, modified),
+                    _ => false,
+                },
+                Some(Some(since)) => match (row, measured[i].file) {
                     (Some(r), Some((len, modified))) => r.live && r.last_full_check.is_some_and(|t| t > since) && r.unchanged(len, modified),
                     _ => false,
                 },
@@ -1216,7 +1234,11 @@ async fn precheck(pool: &MySqlPool, mode: FileScanMode, since: Option<chrono::Na
                 skipped += 1;
             }
             let name = candidate.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-            let tally = if resume.is_some() { format!("{} already read", thousands(skipped)) } else { format!("{} new", thousands(i as u64 + 1 - skipped)) };
+            let tally = match resume {
+                Some(Some(_)) => format!("{} already read", thousands(skipped)),
+                Some(None) => format!("{} changed or new", thousands(i as u64 + 1 - skipped)),
+                None => format!("{} new", thousands(i as u64 + 1 - skipped)),
+            };
             progress.report(i as u64 + 1, Some(n as u64), &format!("{what}: {} of {} ({tally}): {name}", thousands(i as u64 + 1), thousands(n as u64))).await;
         }
     }
@@ -1241,6 +1263,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     // was asked for. `ra_wanted` is tracked separately because it needs a console id the
     // scan cannot always resolve -- see `hash_options`.
     let (flags, ra_wanted) = settings::scan_hashes(&app.pool).await?;
+    let archive = (settings::archive_hashes(&app.pool).await?, settings::archive_content_hashes(&app.pool).await?);
     settings::apply_chd_reader(&app.pool).await?;
     settings::apply_scan_pkg_titles(&app.pool).await?;
     let _ = crate::rom::chd_info::take_check_report();
@@ -1357,6 +1380,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
     let checked_note = match (req.mode, since) {
         (FileScanMode::NewOnly, _) => format!("{} of {} already recorded", thousands(summary.skipped_existing), thousands(n as u64)),
         (FileScanMode::Full, Some(_)) => format!("{} of {} already read by an earlier run", thousands(summary.skipped_existing), thousands(n as u64)),
+        (FileScanMode::Changed, _) => format!("{} of {} unchanged", thousands(summary.skipped_existing), thousands(n as u64)),
         _ => format!("{} file(s), {}", thousands(n as u64), human_bytes(total_bytes)),
     };
     if let (FileScanMode::Full, Some(_)) = (req.mode, since) {
@@ -1378,7 +1402,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
         }
         let detect = detect_for(candidate, hint_for(candidate, owner_of(&children, &candidate.path).and_then(|c| c.platform).or(forced)));
         let name = candidate.path.display().to_string();
-        jobs.push((first_folder(Path::new(&dir.path), &candidate.path), sizes[i], name, (candidate.path.clone(), scan_args(detect, flags, style, false), sizes[i], (i, detect))));
+        jobs.push((first_folder(Path::new(&dir.path), &candidate.path), sizes[i], name, (candidate.path.clone(), scan_args(detect, flags, archive, style, false), sizes[i], (i, detect))));
     }
     // Every candidate is one `Single`, read once whatever it is: a plain file, an archive and
     // its members, a sheet and its tracks. Results are written as each finishes; the writes
@@ -1421,7 +1445,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
                 } else {
                     summary.errors.push(format!("{main}: {message}"));
                 }
-                scan_one(candidate.path.clone(), scan_args(detect, flags, style, true)).await
+                scan_one(candidate.path.clone(), scan_args(detect, flags, archive, style, true)).await
             }
             Err(e) => Err(Error::internal(e.to_string())),
         };
@@ -1506,6 +1530,7 @@ pub async fn run_file_scan_since(app: &App, req: &FileScanRequest, since: Option
 /// rest of it. The result says what was read, what each game is linked to, and which DAT
 /// releases list the bytes, so a game left unlinked shows what it should have matched.
 async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: HashFlags, ra_wanted: bool, progress: &crate::database::jobs::Progress) -> Result<ScanSummary> {
+    let archive = (settings::archive_hashes(&app.pool).await?, settings::archive_content_hashes(&app.pool).await?);
     let pool = &app.pool;
     let (path, deleted): (String, bool) = sqlx::query_as("SELECT path, deleted FROM local_files WHERE id = ?").bind(file_id).fetch_optional(pool).await?.ok_or_else(|| Error::not_found(format!("no file {file_id}")))?;
     let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
@@ -1566,7 +1591,7 @@ async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: Hash
         .enumerate()
         .map(|(i, c)| {
             let detect = detect_for(c, hint_for(c, forced));
-            (String::new(), Job { input: c.path.clone(), args: scan_args(detect, flags, style, false), size: sizes[i], tag: (i, detect) })
+            (String::new(), Job { input: c.path.clone(), args: scan_args(detect, flags, archive, style, false), size: sizes[i], tag: (i, detect) })
         })
         .collect();
     let wanted = candidates.len();
@@ -1589,7 +1614,7 @@ async fn rescan_file(app: &App, req: &FileScanRequest, file_id: u64, flags: Hash
                 } else {
                     summary.errors.push(format!("{main}: {message}"));
                 }
-                scan_one(candidate.path.clone(), scan_args(detect, flags, style, true)).await
+                scan_one(candidate.path.clone(), scan_args(detect, flags, archive, style, true)).await
             }
             Err(e) => Err(Error::internal(e.to_string())),
         };
@@ -1826,6 +1851,7 @@ fn candidate_bytes(path: &std::path::Path) -> u64 {
 
 async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: HashFlags, mut summary: ScanSummary, progress: &crate::database::jobs::Progress) -> Result<ScanSummary> {
     progress.force(0, None, &format!("listing the recorded files of {}", dir.path)).await;
+    let archive = (settings::archive_hashes(&app.pool).await?, settings::archive_content_hashes(&app.pool).await?);
     let rows = sqlx::query("SELECT id, path, archive_format, size FROM local_files WHERE directory_id = ? AND deleted = FALSE ORDER BY id").bind(dir.id).fetch_all(&app.pool).await?;
     summary.candidates = rows.len() as u64;
     let n = rows.len();
@@ -1858,7 +1884,7 @@ async fn rehash(app: &App, dir: &Directory, forced: Option<Platform>, flags: Has
             }
         };
         // Each recorded file on its own: a sheet's tracks are rows of their own here.
-        jobs.push((first_folder(Path::new(&dir.path), &p), Job { input: p, args: scan_args(Detect::Verify(forced), flags, style, true), size, tag: (path, archive_format) }));
+        jobs.push((first_folder(Path::new(&dir.path), &p), Job { input: p, args: scan_args(Detect::Verify(forced), flags, archive, style, true), size, tag: (path, archive_format) }));
     }
     for part in gone.chunks(1000) {
         progress.force(n as u64, Some(n as u64), &format!("marking {} recorded file(s) missing", thousands(gone.len() as u64))).await;

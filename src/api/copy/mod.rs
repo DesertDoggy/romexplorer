@@ -401,7 +401,9 @@ pub async fn check_file(app: &App, path: &std::path::Path, content_id: u64, popu
     let Some((algorithm, expected)) = comparison_hash(app, content_id, Some(populate)).await? else {
         return Ok((CheckOutcome::Unverifiable, 0));
     };
-    let already_has_populate = recorded_hash(app, content_id, algorithm_name(populate)).await?.is_some();
+    // `comparison_hash` tries `populate` first, so it picked anything else only because the
+    // catalogue does not record `populate` -- no second query needed to know.
+    let already_has_populate = algorithm == populate;
     let mut flags = HashFlags::algorithm_to_flag(algorithm);
     if !already_has_populate {
         flags |= HashFlags::algorithm_to_flag(populate);

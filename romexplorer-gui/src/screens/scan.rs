@@ -202,6 +202,9 @@ pub fn Scan() -> Element {
                     button { class: "btn", r#type: "button", onclick: { let scan = scan.clone(); move |_| scan("new_only") }, {state::tr("Quick scan (new only)")} }
                     crate::ui::QueueButton {}
                     " "
+                    button { class: "btn", r#type: "button", title: state::tr("reads new files, and files whose size or modified date changed since they were last read"), onclick: { let scan = scan.clone(); move |_| scan("changed") }, {state::tr("Quick scan (changed)")} }
+                    crate::ui::QueueButton {}
+                    " "
                     button { class: "btn", r#type: "button", onclick: { let scan = scan.clone(); move |_| scan("rehash") }, {state::tr("Rehash")} }
                     crate::ui::QueueButton {}
                     " "

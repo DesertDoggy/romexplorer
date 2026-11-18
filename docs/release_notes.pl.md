@@ -8,6 +8,16 @@ zapasową przed podmianą wersji.
 
 ## Zmiany
 
+**Skanowanie**
+- Dodano „Szybkie skanowanie (zmienione)”: odczytuje też pliki, których rozmiar lub data się zmieniły.
+- Hashe skanowania ustawia się osobno dla zwykłych plików, plików archiwów i zawartości archiwów. Pliki archiwów domyślnie używają sha1 i xxh3_128.
+
+**Kopiowanie**
+- Ponownie uruchomione kopiowanie sprawdza kilka plików już obecnych w miejscu docelowym naraz.
+
+**Listy**
+- Widoki kart z wieloma pozycjami otwierają się i przewijają szybciej.
+
 **Dźwięk z ROM-ów**
 - Indeks muzyki z ROM-ów może czytać kilka ROM-ów naraz (domyślnie 4, do zmiany w ustawieniach dźwięku).
 - Indeks muzyki z ROM-ów czyta tylko najwyżej ocenianą kopię każdego tytułu, a inne kopie tylko wtedy, gdy ta nie ma muzyki.

@@ -164,6 +164,11 @@ input[type=color] { width:44px; height:26px; padding:0; border:1px solid var(--l
 .two { display:grid; grid-template-columns:1fr 1fr; gap:14px; } @media (max-width:900px) { .two { grid-template-columns:1fr; } }
 .cardgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:12px; }
 .gcard { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; cursor:pointer; display:flex; flex-direction:column; }
+/* Off-screen cards are not laid out or painted until they scroll near: a 500-card page
+   lays out only what is visible. `auto` keeps each card's real height once it has been
+   drawn, so the scrollbar settles. Table rows get no such rule: containment has no effect
+   on table rows. Kept the same in app.css and console.html. */
+.gcard { content-visibility:auto; contain-intrinsic-size:auto 150px auto 260px; }
 .gcard:hover { border-color:#3d76ad; }
 .gcard.local { box-shadow:inset 0 3px 0 var(--ok); }
 .gcard.unsynced { box-shadow:inset 0 3px 0 var(--warn); }
@@ -5180,23 +5185,31 @@ function settingEditor(key, value) {
       api('/api/v1/parallel/auto').then(a => { auto = a; show(); }).catch(() => {});
       return { el: box, get };
     }
-    case 'scan_hashes': case 'scan_heuristics': {
+    case 'scan_hashes': case 'archive_hashes': case 'archive_content_hashes': case 'scan_heuristics': {
+      // The same lists as the app's SCAN_HASHES / ARCHIVE_HASHES / ARCHIVE_CONTENT_HASHES.
+      const hashSet = key !== 'scan_heuristics';
       const items = key === 'scan_hashes'
         ? [['crc32', 'crc32', true], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', true], ['sha1', 'sha1', true], ['sha256', 'sha256', false], ['ra_hash', 'ra_hash', true]]
+        : key === 'archive_hashes'
+        ? [['crc32', 'crc32', false], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', false], ['sha1', 'sha1', true], ['sha256', 'sha256', false]]
+        : key === 'archive_content_hashes'
+        ? [['crc32', 'crc32', true], ['xxh3_128', 'xxh3_128', true], ['md5', 'md5', true], ['sha1', 'sha1', true], ['sha256', 'sha256', false]]
         : [['ext', tr('by file extension'), true], ['path', tr('by the directory names above it'), true]];
       current = {}; for (const [k, , d] of items) current[k] = typeof (value || {})[k] === 'boolean' ? value[k] : d;
-      box.appendChild(el(`<div class="muted">${key === 'scan_hashes' ? tr('Which hashes a file scan computes. DATs are matched by crc32, md5 and sha1, so at least one of those three stays on; ra_hash is skipped where the platform has no RetroAchievements console id.') : tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
+      if (key === 'scan_hashes') box.appendChild(el(`<div class="muted">${tr('Which hashes a file scan computes. DATs are matched by crc32, md5 and sha1, so at least one of those three stays on; ra_hash is skipped where the platform has no RetroAchievements console id.')}</div>`));
+      if (key === 'scan_heuristics') box.appendChild(el(`<div class="muted">${tr("Which guesses a scan may make about a file's platform when nothing identifies it.")}</div>`));
       const row = el('<div class="radios"></div>');
-      // scan_hashes: the last of crc32 / md5 / sha1 that is on can't be turned off -- DATs are
-      // matched by those three (the server refuses a list without one). The app's same rule.
-      const dat = ['crc32', 'md5', 'sha1'];
+      // The last of crc32 / md5 / sha1 that is on can't be turned off -- DATs are matched by
+      // those three (the server refuses a list without one); for the archive file, the last
+      // one of all. The app's same rule.
+      const keep = key === 'archive_hashes' ? ['crc32', 'xxh3_128', 'md5', 'sha1', 'sha256'] : ['crc32', 'md5', 'sha1'];
       const boxes = {};
-      const lock = () => { if (key !== 'scan_hashes') return; const on = dat.filter(k => current[k]); for (const k of dat) boxes[k].disabled = on.length === 1 && on[0] === k; };
+      const lock = () => { if (!hashSet) return; const on = keep.filter(k => current[k]); for (const k of keep) boxes[k].disabled = on.length === 1 && on[0] === k; };
       for (const [k, lab] of items) { const l = el(`<label><input type="checkbox" ${current[k] ? 'checked' : ''}> ${esc(lab)}</label>`); boxes[k] = l.firstElementChild; l.firstElementChild.onchange = e => { current[k] = e.target.checked; lock(); }; row.appendChild(l); }
-      if (key === 'scan_hashes' && !dat.some(k => current[k])) current.crc32 = boxes.crc32.checked = true;
+      if (hashSet && !keep.some(k => current[k])) { const k = key === 'archive_hashes' ? 'sha1' : 'crc32'; current[k] = boxes[k].checked = true; }
       lock();
       box.appendChild(row);
-      if (key === 'scan_hashes') box.appendChild(el(`<div class="muted">${tr('At least one of crc32, md5 and sha1 stays on: DATs are matched by those.')}</div>`));
+      if (hashSet) box.appendChild(el(`<div class="muted">${key === 'archive_hashes' ? tr('At least one stays on.') : tr('At least one of crc32, md5 and sha1 stays on: DATs are matched by those.')}</div>`));
       return { el: box, get };
     }
     case 'serial_match': {
@@ -5906,6 +5919,7 @@ async function showScan() {
         <span>
           <button class="btn primary" data-mode="full" type="button">${tr('Full scan')}</button>
           <button class="btn" data-mode="new_only" type="button">${tr('Quick scan (new only)')}</button>
+          <button class="btn" data-mode="changed" type="button" title="${tr('reads new files, and files whose size or modified date changed since they were last read')}">${tr('Quick scan (changed)')}</button>
           <button class="btn" data-mode="rehash" type="button">${tr('Rehash')}</button>
           <button class="btn" data-hm="new" type="button">${tr('Hash match (new)')}</button>
           <button class="btn" data-hm="all" type="button">${tr('Hash match (all)')}</button>

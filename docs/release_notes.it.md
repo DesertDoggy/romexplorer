@@ -8,6 +8,16 @@ aggiornamento. Fai un backup prima di sostituire una build.
 
 ## Modifiche
 
+**Scansione**
+- Aggiunta «Scansione rapida (modificati)»: legge anche i file con dimensione o data cambiate.
+- Gli hash della scansione si impostano separatamente per file normali, file d'archivio e contenuto degli archivi. I file d'archivio usano sha1 e xxh3_128 come predefinito.
+
+**Copia**
+- Una copia riavviata controlla più file già presenti nella destinazione insieme.
+
+**Elenchi**
+- Le viste a schede con molte voci si aprono e scorrono più velocemente.
+
 **Audio delle ROM**
 - L'indice della musica delle ROM può leggere più ROM insieme (4 come predefinito, modificabile nelle impostazioni audio).
 - L'indice della musica delle ROM legge solo la copia meglio classificata di ogni titolo, e le altre solo se quella non ha musica.
