@@ -105,21 +105,15 @@ et démarre sa propre base de données.
 
 ### Outils en ligne de commande (chdlite)
 
-Déposez une image disque, obtenez un CHD ou un RVZ. `chdlite` (rapide) et `chdcomp` (le plus
-compact) fonctionnent dans les deux sens : une image non compressée est compressée, un `.chd` ou un
-`.rvz` est extrait. `chdread` affiche les métadonnées d'un fichier et `chdhash` calcule son hash.
-Chaque outil fait une seule chose : un fichier déposé sur l'exécutable déclenche la bonne action.
-`chdlite-gui` fait la même chose dans une fenêtre. Chaque réglage existe aussi sous forme d'option
-de ligne de commande (`--help`). chdlite est publié séparément : voir
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite convertit les images disque en CHD ou RVZ et inversement, lit leurs métadonnées et calcule
+leur hash, par glisser-déposer, dans une fenêtre ou une app Android. Il est publié séparément : voir
+[chdlite/README.fr.md](chdlite/README.fr.md).
 
 ### Outil en ligne de commande (rommusic)
 
-Déposez une ROM, une image disque ou un dossier extrait sur `rommusic` : il
-écrit la musique de fond du jeu en FLAC dans un dossier à côté. Chaque réglage existe aussi sous
-forme d'option (`--help`). Les systèmes pris en charge sont listés dans
-[Audio des ROM](#audio-des-rom). rommusic est publié séparément : voir
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic écrit la musique d'un jeu en FLAC à partir de sa ROM ou de son image disque, par
+glisser-déposer, dans une fenêtre ou une app Android. Il est publié séparément : voir
+[rommusic-cli/README.fr.md](rommusic-cli/README.fr.md).
 
 ### Clés des fournisseurs
 

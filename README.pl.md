@@ -104,19 +104,15 @@ uruchamia własną bazę danych.
 
 ### Narzędzia wiersza poleceń (chdlite)
 
-Upuść obraz płyty, a otrzymasz CHD lub RVZ. `chdlite` (szybki) i `chdcomp` (najmniejszy plik)
-działają w obie strony: nieskompresowany obraz jest kompresowany, a plik `.chd` lub `.rvz`
-rozpakowywany. `chdread` pokazuje metadane pliku, a `chdhash` liczy jego hash. Każde narzędzie
-robi jedną rzecz, więc plik upuszczony na plik wykonywalny zostanie obsłużony właściwie;
-`chdlite-gui` robi to samo w oknie. Każda opcja jest też dostępna jako flaga (`--help`). chdlite
-jest wydawany osobno: zobacz [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite konwertuje obrazy płyt do CHD lub RVZ i z powrotem, czyta ich metadane i liczy hash,
+przez przeciągnij i upuść, w oknie i w aplikacji Android. Jest wydawany osobno: zobacz
+[chdlite/README.pl.md](chdlite/README.pl.md).
 
 ### Narzędzie wiersza poleceń (rommusic)
 
-Upuść na `rommusic` ROM, obraz płyty lub zrzucony folder, a zapisze muzykę w
-tle gry jako FLAC w folderze obok. Każda opcja jest też dostępna jako flaga (`--help`). Obsługiwane
-systemy są wymienione w [Dźwięk z ROM-ów](#dźwięk-z-rom-ów). rommusic jest wydawany osobno: zobacz
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic zapisuje muzykę z gry jako FLAC z jej ROM-u lub obrazu płyty, przez przeciągnij i upuść,
+w oknie i w aplikacji Android. Jest wydawany osobno: zobacz
+[rommusic-cli/README.pl.md](rommusic-cli/README.pl.md).
 
 ### Klucze dostawców
 

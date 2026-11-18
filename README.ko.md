@@ -97,19 +97,14 @@ ROM 컬렉션 관리 도구입니다. 폴더를 스캔하고, 모든 파일을 �
 
 ### 명령줄 도구(chdlite)
 
-디스크 이미지를 끌어다 놓으면 CHD나 RVZ가 만들어집니다. `chdlite`(빠름)와 `chdcomp`(최소 용량)는
-양방향으로 동작합니다. 압축되지 않은 이미지는 압축하고, `.chd`나 `.rvz`는 추출합니다. `chdread`는
-파일의 메타데이터를 보여 주고, `chdhash`는 해시를 계산합니다. 도구마다 하는 일이 하나라서 실행 파일에
-파일을 끌어다 놓기만 하면 알맞은 작업이 수행됩니다. `chdlite-gui`는 같은 기능을 창에서 제공합니다.
-모든 옵션은 플래그로도 지정할 수 있습니다(`--help`). chdlite는 별도로 릴리스됩니다.
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md)를 참고하십시오.
+chdlite는 디스크 이미지를 CHD나 RVZ로 변환하고 되돌리며, 메타데이터를 읽고 해시를 계산합니다. 끌어다
+놓기, 창, Android 앱이 있습니다. 별도로 릴리스됩니다. [chdlite/README.ko.md](chdlite/README.ko.md)를
+참고하십시오.
 
 ### 명령줄 도구(rommusic)
 
-ROM, 디스크 이미지, 덤프한 폴더를 `rommusic`에 끌어다 놓으면 게임의 배경 음악을 FLAC으로
-옆 폴더에 저장합니다. 모든 옵션은 플래그로도 지정할 수 있습니다(`--help`). 지원 기종은
-[ROM 오디오](#rom-오디오)를 참고하십시오. rommusic은 별도로 릴리스됩니다.
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md)를 참고하십시오.
+rommusic은 ROM이나 디스크 이미지에서 게임 음악을 FLAC으로 저장합니다. 끌어다 놓기, 창, Android 앱이
+있습니다. 별도로 릴리스됩니다. [rommusic-cli/README.ko.md](rommusic-cli/README.ko.md)를 참고하십시오.
 
 ### 제공자 키
 

@@ -101,21 +101,15 @@ avvio serve clic destro > Apri). Il primo avvio crea e avvia il proprio database
 
 ### Strumenti da riga di comando (chdlite)
 
-Si trascina un'immagine disco e si ottiene un CHD o un RVZ. `chdlite` (veloce) e `chdcomp` (il più
-compatto) funzionano in entrambi i sensi: un'immagine non compressa viene compressa, un `.chd` o un
-`.rvz` viene estratto. `chdread` mostra i metadati di un file e `chdhash` ne calcola l'hash. Ogni
-strumento fa una sola cosa, così un file trascinato sull'eseguibile fa la cosa giusta;
-`chdlite-gui` fa lo stesso in una finestra. Ogni opzione è disponibile anche come flag (`--help`).
-chdlite viene pubblicato separatamente: vedere
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite converte le immagini disco in CHD o RVZ e viceversa, ne legge i metadati e ne calcola
+l'hash, con trascina e rilascia, una finestra e un'app Android. È rilasciato separatamente: vedi
+[chdlite/README.it.md](chdlite/README.it.md).
 
 ### Strumento da riga di comando (rommusic)
 
-Si trascina su `rommusic` una ROM, un'immagine disco o una cartella estratta
-e scrive la musica di sottofondo del gioco in FLAC in una cartella accanto. Ogni opzione è
-disponibile anche come flag (`--help`). I sistemi supportati sono elencati in
-[Audio delle ROM](#audio-delle-rom). rommusic è rilasciato separatamente: vedi
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic scrive la musica di un gioco in FLAC dalla sua ROM o immagine disco, con trascina e
+rilascia, una finestra e un'app Android. È rilasciato separatamente: vedi
+[rommusic-cli/README.it.md](rommusic-cli/README.it.md).
 
 ### Chiavi dei provider
 

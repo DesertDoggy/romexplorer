@@ -100,19 +100,15 @@ Linux で動作し、サーバー（ブラウザから使うコンソールと W
 
 ### コマンドラインツール（chdlite）
 
-ディスクイメージをドロップすると、CHD か RVZ ができます。`chdlite`（高速）と `chdcomp`（最小サイズ）は
-どちら向きにも使えます。非圧縮のイメージは圧縮し、`.chd` や `.rvz` は展開します。`chdread` はメタデータを
-表示し、`chdhash` はハッシュを計算します。ツールごとに役割が決まっているので、実行ファイルにファイルを
-ドロップするだけで目的の処理が行われます。`chdlite-gui` は同じ機能をウィンドウで使えます。どの
-オプションもフラグで指定できます（`--help`）。chdlite は別途リリースしています。
-[docs/chdlite_release_notes.ja.md](docs/chdlite_release_notes.ja.md) を参照してください。
+chdlite は、ディスクイメージを CHD・RVZ に変換・展開し、メタデータの読み取りとハッシュ計算もできます。
+ドラッグ＆ドロップ、ウィンドウ版、Android アプリがあります。別途リリースしています。
+[chdlite/README.ja.md](chdlite/README.ja.md) を参照してください。
 
 ### コマンドラインツール（rommusic）
 
-ROM・ディスクイメージ・ダンプしたフォルダーを `rommusic` にドロップすると、
-ゲームの BGM を FLAC で隣のフォルダーに書き出します。どのオプションもフラグで指定できます（`--help`）。
-対応機種は [ROM の音声](#rom-の音声) を参照してください。rommusic は別途リリースしています。
-[docs/rommusic_release_notes.ja.md](docs/rommusic_release_notes.ja.md) を参照してください。
+rommusic は、ROM やディスクイメージからゲームの音楽を FLAC で書き出します。ドラッグ＆ドロップ、
+ウィンドウ版、Android アプリがあります。別途リリースしています。
+[rommusic-cli/README.ja.md](rommusic-cli/README.ja.md) を参照してください。
 
 ### プロバイダーのキー
 

@@ -103,19 +103,15 @@ sua própria base de dados.
 
 ### Ferramentas de linha de comandos (chdlite)
 
-Largue uma imagem de disco e obtenha um CHD ou um RVZ. `chdlite` (rápido) e `chdcomp` (mais
-pequeno) funcionam nos dois sentidos: uma imagem não comprimida é comprimida e um `.chd` ou `.rvz` é
-extraído. `chdread` mostra os metadados de um ficheiro e `chdhash` calcula o seu hash. Cada
-ferramenta faz uma só coisa, pelo que um ficheiro largado sobre o executável faz o que deve;
-`chdlite-gui` faz o mesmo numa janela. Todas as opções existem também como parâmetro (`--help`). O
-chdlite é publicado em separado: consulte [docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+O chdlite converte imagens de disco para CHD ou RVZ e vice-versa, lê os metadados e calcula o hash,
+com arrastar e largar, uma janela e uma app Android. É publicado em separado: consulte
+[chdlite/README.pt.md](chdlite/README.pt.md).
 
 ### Ferramenta de linha de comandos (rommusic)
 
-Largue no `rommusic` uma ROM, uma imagem de disco ou uma pasta extraída e ele escreve a música de fundo do jogo em FLAC numa pasta ao lado. Todas as opções existem
-também como parâmetro (`--help`). Os sistemas suportados estão em
-[Áudio das ROM](#áudio-das-rom). O rommusic é publicado em separado: consulte
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+O rommusic escreve a música de um jogo em FLAC a partir da ROM ou imagem de disco, com arrastar e
+largar, uma janela e uma app Android. É publicado em separado: consulte
+[rommusic-cli/README.pt.md](rommusic-cli/README.pt.md).
 
 ### Chaves dos fornecedores
 

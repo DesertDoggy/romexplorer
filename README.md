@@ -95,19 +95,14 @@ launch needs right-click > Open). The first launch creates and starts its own da
 
 ### Command-line tools (chdlite)
 
-Drop a disc image, get a CHD or RVZ. `chdlite` (fast) and `chdcomp` (smallest) work both
-ways: an uncompressed image is compressed, and a `.chd` or `.rvz` is extracted. `chdread` shows
-a file's metadata and `chdhash` hashes it. Each tool does one thing, so a file dropped onto the
-executable does the right thing; `chdlite-gui` is the same in a window. Every option is also a
-flag (`--help`). chdlite is released separately: see
-[docs/chdlite_release_notes.md](docs/chdlite_release_notes.md).
+chdlite converts disc images to CHD or RVZ and back, reads their metadata and hashes them, with
+drag and drop, a window and an Android app. It is released separately: see
+[chdlite/README.md](chdlite/README.md).
 
 ### Command-line tool (rommusic)
 
-Drop a ROM, disc image or dumped folder on `rommusic` and it writes the game's
-background music as FLAC in a folder beside it. Every option is also a flag (`--help`). The
-systems it reads are listed under [ROM audio](#rom-audio). rommusic is released separately: see
-[docs/rommusic_release_notes.md](docs/rommusic_release_notes.md).
+rommusic writes a game's music as FLAC from its ROM or disc image, with drag and drop, a window
+and an Android app. It is released separately: see [rommusic-cli/README.md](rommusic-cli/README.md).
 
 ### Provider keys
 
